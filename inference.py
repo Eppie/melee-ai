@@ -4,8 +4,10 @@ controller actions."""
 from __future__ import annotations
 
 from typing import Sequence
+from collections import deque
 
 import numpy as np
+import torch
 
 import melee
 from melee import enums
@@ -192,3 +194,64 @@ def apply_model_output(controller: melee.controller.Controller, outputs: Sequenc
     # Analog sticks
     controller.tilt_analog(enums.Button.BUTTON_MAIN, float(outputs[7]), float(outputs[8]))
     controller.tilt_analog(enums.Button.BUTTON_C, float(outputs[9]), float(outputs[10]))
+
+
+def infer_and_act(
+    model: torch.nn.Module,
+    controller: melee.controller.Controller,
+    gs: melee.gamestate.GameState,
+    *,
+    p1_port: int = 1,
+    p2_port: int = 2,
+    threshold: float = 0.5,
+    device: torch.device | None = None,
+    sequence_length: int = 60,
+) -> None:
+    """Run the model on ``gs`` and apply the predicted actions to ``controller``.
+
+    Parameters
+    ----------
+    model:
+        Trained PyTorch model producing predictions ordered as ``TARGET_COLUMNS``.
+    controller:
+        ``libmelee`` controller instance to manipulate.
+    gs:
+        Current game state obtained from ``console.step()``.
+    p1_port:
+        Controller port of the bot (player we control).
+    p2_port:
+        Controller port of the opponent.
+    threshold:
+        Probability threshold for digital button presses.
+    device:
+        Device on which to run the model. Defaults to the device of ``model``'s
+        parameters.
+    sequence_length:
+        Number of previous frames the model expects as input.
+    """
+
+    # Maintain a per-port history of feature vectors
+    if not hasattr(infer_and_act, "_history"):
+        infer_and_act._history: dict[tuple[int, int], deque[np.ndarray]] = {}
+
+    key = (p1_port, p2_port)
+    history = infer_and_act._history.setdefault(key, deque(maxlen=sequence_length))
+
+    feats = gamestate_to_input(gs, p1_port=p1_port, p2_port=p2_port)
+    history.append(feats)
+
+    if len(history) < sequence_length:
+        # Not enough past frames yet
+        return
+
+    stacked = np.stack(history, axis=0)
+    x = torch.from_numpy(stacked)
+
+    dev = device if device is not None else next(model.parameters()).device
+    x = x.to(dev).unsqueeze(0)
+
+    model.eval()
+    with torch.no_grad():
+        preds = model(x)[0].detach().cpu().tolist()
+
+    apply_model_output(controller, preds, threshold=threshold)

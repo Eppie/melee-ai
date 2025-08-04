@@ -5,6 +5,9 @@ import sys
 import melee
 import random
 
+from inference import infer_and_act, FEATURE_COLUMNS, TARGET_COLUMNS
+from MLPModel import FeedForwardNet, MLPConfig
+
 
 # This example program demonstrates how to use the Melee API to run a console,
 #   setup controllers, and send button presses over to a console
@@ -70,6 +73,14 @@ if __name__ == "__main__":
             type=melee.ControllerType.STANDARD)
     }
 
+    # Initialize the model used for inference
+    SEQUENCE_LENGTH = 60
+    model_cfg = MLPConfig(
+        input_dim=SEQUENCE_LENGTH * len(FEATURE_COLUMNS),
+        output_dim=len(TARGET_COLUMNS),
+    )
+    model = FeedForwardNet(model_cfg)
+
 
     # This isn't necessary, but makes it so that Dolphin will get killed when you ^C
     def signal_handler(sig, frame):
@@ -131,7 +142,13 @@ if __name__ == "__main__":
                 # NOTE: This is where your AI does all of its stuff!
                 # This line will get hit once per frame, so here is where you read
                 #   in the gamestate and decide what buttons to push on the controller
-                melee.techskill.multishine(ai_state=gamestate.players[port], controller=controller)
+                infer_and_act(
+                    model,
+                    controller,
+                    gamestate,
+                    p1_port=port,
+                    p2_port=1,
+                )
 
             # Log this frame's detailed info if we're in game
             if log:

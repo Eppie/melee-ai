@@ -981,10 +981,46 @@ class Console:
         playerstate.action_frame = int(np.ndarray((1,), ">f", event_bytes, 0x22)[0])
 
         try:
-            sb4 = int(np.ndarray((1,), ">B", event_bytes, 0x29)[0])
-            playerstate.is_powershield = (sb4 & 0x20) == 0x20
+            sb1 = int(np.ndarray((1,), ">B", event_bytes, 0x26)[0])
         except TypeError:
-            playerstate.is_powershield = False
+            sb1 = 0
+        playerstate.is_absorbing = (sb1 & 0x02) == 0x02
+        playerstate.reflect_owner_doesnt_change = (sb1 & 0x08) == 0x08
+        playerstate.is_reflect_active = (sb1 & 0x10) == 0x10
+
+        try:
+            sb2 = int(np.ndarray((1,), ">B", event_bytes, 0x27)[0])
+        except TypeError:
+            sb2 = 0
+        playerstate.is_subaction_invulnerable = (sb2 & 0x04) == 0x04
+        playerstate.is_fastfalling = (sb2 & 0x08) == 0x08
+        playerstate.is_defender_in_hitlag = (sb2 & 0x10) == 0x10
+        playerstate.is_in_hitlag = (sb2 & 0x20) == 0x20
+
+        try:
+            sb3 = int(np.ndarray((1,), ">B", event_bytes, 0x28)[0])
+        except TypeError:
+            sb3 = 0
+        playerstate.is_holding_character = (sb3 & 0x04) == 0x04
+        playerstate.is_shield_active = (sb3 & 0x80) == 0x80
+
+        try:
+            sb4 = int(np.ndarray((1,), ">B", event_bytes, 0x29)[0])
+        except TypeError:
+            sb4 = 0
+        playerstate.is_in_hitstun = (sb4 & 0x02) == 0x02
+        playerstate.is_touching_shield = (sb4 & 0x04) == 0x04
+        playerstate.is_powershield = (sb4 & 0x20) == 0x20
+
+        try:
+            sb5 = int(np.ndarray((1,), ">B", event_bytes, 0x2A)[0])
+        except TypeError:
+            sb5 = 0
+        playerstate.is_cloaked = (sb5 & 0x02) == 0x02
+        playerstate.is_follower = (sb5 & 0x08) == 0x08
+        playerstate.is_inactive = (sb5 & 0x10) == 0x10
+        playerstate.is_dead = (sb5 & 0x40) == 0x40
+        playerstate.is_offscreen = (sb5 & 0x80) == 0x80
 
         try:
             playerstate.hitstun_frames_left = int(np.ndarray((1,), ">f", event_bytes, 0x2B)[0])

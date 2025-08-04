@@ -76,7 +76,10 @@ class PlayerState(object):
                  'speed_ground_x_self', 'cursor_x', 'cursor_y', 'coin_down', 'controller_status', 'off_stage', 'iasa',
                  'moonwalkwarning', 'controller_state', 'ecb_bottom', 'ecb_top', 'ecb_left', 'ecb_right',
                  'costume', 'cpu_level', 'is_holding_cpu_slider', 'nana', 'position', 'cursor', 'ecb', 'nickName', 'connectCode',
-                 'displayName', 'team_id', 'is_powershield')
+                 'displayName', 'team_id', 'is_powershield', 'is_absorbing', 'reflect_owner_doesnt_change',
+                 'is_reflect_active', 'is_subaction_invulnerable', 'is_fastfalling', 'is_defender_in_hitlag',
+                 'is_in_hitlag', 'is_holding_character', 'is_shield_active', 'is_in_hitstun',
+                 'is_touching_shield', 'is_cloaked', 'is_follower', 'is_inactive', 'is_dead', 'is_offscreen')
     def __init__(self):
         # This value is what the character currently is IN GAME
         #   So this will have no meaning while in menus
@@ -174,6 +177,39 @@ class PlayerState(object):
         """(string): The Slippi Online display name for the play. Might be blank"""
         self.team_id = 0
         """(int): The team ID of the player. This is different than costume, and only relevant during teams."""
+
+        self.is_absorbing = False
+        """(bool): Is absorber active (e.g. G&W bucket)"""
+        self.reflect_owner_doesnt_change = False
+        """(bool): Reflect active without changing projectile ownership"""
+        self.is_reflect_active = False
+        """(bool): Is reflect active"""
+        self.is_subaction_invulnerable = False
+        """(bool): Has temporary intangibility or invincibility from subaction"""
+        self.is_fastfalling = False
+        """(bool): Is fastfalling"""
+        self.is_defender_in_hitlag = False
+        """(bool): Is the defender in hitlag (not shield hitlag)"""
+        self.is_in_hitlag = False
+        """(bool): Is in hitlag"""
+        self.is_holding_character = False
+        """(bool): Is holding another character due to grab/command grab"""
+        self.is_shield_active = False
+        """(bool): Is shield active"""
+        self.is_in_hitstun = False
+        """(bool): Is in hitstun"""
+        self.is_touching_shield = False
+        """(bool): Owner's detection hitbox is touching shield bubble"""
+        self.is_cloaked = False
+        """(bool): Is cloaking device active"""
+        self.is_follower = False
+        """(bool): Is follower (e.g. Nana)"""
+        self.is_inactive = False
+        """(bool): Is inactive"""
+        self.is_dead = False
+        """(bool): Is dead"""
+        self.is_offscreen = False
+        """(bool): Is offscreen"""
 
 class Projectile:
     """ Represents the state of a projectile (items, lasers, etc...) """

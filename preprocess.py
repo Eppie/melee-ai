@@ -1,43 +1,23 @@
 from __future__ import annotations
 
-from typing import TypedDict
-import pyarrow.compute as pc
-
 import concurrent.futures
 import hashlib
 import os
-from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
+from typing import TypedDict
 
 import numpy as np
 import peppi_py
 import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 import pyarrow.types as pat
-from pyarrow import parquet as pq
 
-REPLAYS_DIR = Path("/Users/eppie/Downloads/replays_sorted/FOX_vs_FOX")
-OUT_DIR = Path("shards")
+from config import REPLAYS_DIR, OUT_DIR, CHUNK_SIZE
+from libmelee.melee.enums import Button
+
 OUT_DIR.mkdir(exist_ok=True)
-COMBINED_OUT_PATH = OUT_DIR / "all_frames.parquet"
-
-CHUNK_SIZE = 1000  # number of replays per output Parquet file
-
-
-class Button(Enum):
-    """A single button on a GCN controller
-
-    Note:
-        String values represent the Dolphin input string for that button"""
-    BUTTON_A = "A"
-    BUTTON_B = "B"
-    BUTTON_X = "X"
-    BUTTON_Y = "Y"
-    BUTTON_Z = "Z"
-    BUTTON_L = "L"
-    BUTTON_R = "R"  # Control sticks considered "buttons" here
-    BUTTON_MAIN = "MAIN"
-    BUTTON_C = "C"
 
 
 class Buttons(NamedTuple):
@@ -86,27 +66,18 @@ class FlagBits(TypedDict):
     mask: int  # bit-mask to test
 
 
-# ────────────────────────────────────────────────────────────────────────────────
 # Bit-definitions we care about ─ indices are *within* the state_flags tuple.
 # The first element (index 0) is “State Bit Flags 1”, which we ignore.
-# ────────────────────────────────────────────────────────────────────────────────
 FLAG_DEFS: dict[str, FlagBits] = {
-    # State Bit Flags 2  (state_flags[1])
     "has_temp_intang": {"idx": 1, "mask": 0x04},
     "is_fastfalling": {"idx": 1, "mask": 0x08},
     "defender_hitlag": {"idx": 1, "mask": 0x10},
     "in_hitlag": {"idx": 1, "mask": 0x20},
-
-    # State Bit Flags 3  (state_flags[2])
     "is_grabbing": {"idx": 2, "mask": 0x04},
     "shield_active": {"idx": 2, "mask": 0x80},
-
-    # State Bit Flags 4  (state_flags[3])
     "in_hitstun": {"idx": 3, "mask": 0x02},
     "shield_touch": {"idx": 3, "mask": 0x04},
     "powershield": {"idx": 3, "mask": 0x20},
-
-    # State Bit Flags 5  (state_flags[4])
     "is_dead": {"idx": 4, "mask": 0x40},
     "offscreen": {"idx": 4, "mask": 0x80},
 }
@@ -224,7 +195,6 @@ def process_chunk_npy(paths: list[str], chunk_idx: int) -> tuple[int, str]:
     return int(mat.shape[0]), str(data_path)
 
 
-
 def table_from_slp(path: str) -> pa.Table | None:
     """
     Turn one .slp file into a flattened pyarrow.Table.
@@ -246,6 +216,34 @@ def table_from_slp(path: str) -> pa.Table | None:
             else pa.array(arr)
         )
 
+    def _unitize_minus1_to1(arr) -> pa.Array | None:
+        """
+        Map [-1, 1] -> [0, 1] using Arrow compute, null-safe and version-friendly
+        """
+        if arr is None:
+            return None
+
+        a = arr if isinstance(arr, pa.Array) else pa.array(arr, type=pa.float32())
+
+        # (a + 1) / 2
+        out = pc.divide(
+            pc.add(a, pa.scalar(1.0, pa.float32())),
+            pa.scalar(2.0, pa.float32())
+        )
+
+        # out = max(0.0, min(out, 1.0))
+        out = pc.if_else(
+            pc.less(out, pa.scalar(0.0, pa.float32())),
+            pa.scalar(0.0, pa.float32()),
+            out,
+        )
+        out = pc.if_else(
+            pc.greater(out, pa.scalar(1.0, pa.float32())),
+            pa.scalar(1.0, pa.float32()),
+            out,
+        )
+        return out
+
     # Helper to add every per‑player column without duplicating code
     def _add_player(prefix: str, pre, post) -> None:
         # State‑flag Booleans
@@ -262,18 +260,19 @@ def table_from_slp(path: str) -> pa.Table | None:
         add(f"{prefix}_btn_l_analog", pre.triggers_physical.l)
         add(f"{prefix}_btn_r_analog", pre.triggers_physical.r)
 
-        # Button bit‑flags → BooleanArrays
-        for btn_name, bool_arr in zip(
-                Buttons._fields,
-                get_buttons(pre.buttons_physical.to_numpy(zero_copy_only=False)),
-        ):
-            add(f"{prefix}_btn_{btn_name.lower()}", bool_arr)
+        # Button bit‑flags --> BooleanArrays
+        buttons = get_buttons(pre.buttons_physical.to_numpy(zero_copy_only=False))
+        add(f"{prefix}_btn_a", buttons.A)
+        add(f"{prefix}_btn_b", buttons.B)
+        add(f"{prefix}_btn_z", buttons.Z)
+        add(f"{prefix}_btn_xy", np.logical_or(buttons.X, buttons.Y))
+        add(f"{prefix}_btn_lr", np.logical_or(buttons.L, buttons.R))
 
         # Stick positions
-        add(f"{prefix}_pre_joystick_x", pre.joystick.x)
-        add(f"{prefix}_pre_joystick_y", pre.joystick.y)
-        add(f"{prefix}_pre_cstick_x", pre.cstick.x)
-        add(f"{prefix}_pre_cstick_y", pre.cstick.y)
+        add(f"{prefix}_pre_joystick_x", _unitize_minus1_to1(pre.joystick.x))
+        add(f"{prefix}_pre_joystick_y", _unitize_minus1_to1(pre.joystick.y))
+        add(f"{prefix}_pre_cstick_x", _unitize_minus1_to1(pre.cstick.x))
+        add(f"{prefix}_pre_cstick_y", _unitize_minus1_to1(pre.cstick.y))
 
     # Add data for both players using the helper
     for _prefix, _pre, _post in (
@@ -289,9 +288,55 @@ def table_from_slp(path: str) -> pa.Table | None:
     return pa.Table.from_pydict(cols)
 
 
+
+def process_chunk(paths: list[str], chunk_idx: int) -> tuple[int, str]:
+    """
+    Process a batch of .slp files and write one Parquet shard.
+
+    Parameters
+    ----------
+    paths :
+        Absolute paths to the .slp replay files in this chunk.
+    chunk_idx :
+        Chunk number (used to name the output file).
+
+    Returns
+    -------
+    (rows_written, parquet_path) :
+        Number of rows actually written (0 if no usable data)
+        and the absolute path to the Parquet file.
+    """
+    tables: list[pa.Table] = []
+    for p in paths:
+        tbl = process_slp(p)
+        if tbl is not None:
+            tables.append(tbl)
+
+    parquet_path = OUT_DIR / f"frames_chunk_{chunk_idx:03d}.parquet"
+
+    # ── Handle the degenerate “no data” case ────────────────────────────
+    if not tables:
+        # Parquet requires at least one column, so write a single null column.
+        empty_tbl = pa.table({"_dummy": pa.nulls(0, pa.null())})
+        pq.write_table(empty_tbl, parquet_path)
+        return 0, str(parquet_path)
+
+    # ── Concatenate and write ───────────────────────────────────────────
+    combined = pa.concat_tables(tables, promote_options="default")
+
+    pq.write_table(
+        combined,
+        parquet_path,
+        compression="zstd",          # good balance of speed & size
+        write_statistics=True,       # enables min/max push-downs later
+    )
+
+    return combined.num_rows, str(parquet_path)
+
 def main() -> None:
-    """Convert all .slp replays into Parquet in parallel, one file per 1,000 replays."""
-    slp_files = sorted(REPLAYS_DIR.rglob("*.slp"))
+    """Convert all .slp replays into npy in parallel, one file per replay."""
+    slp_files = sorted(REPLAYS_DIR.rglob("*.slp"), reverse=True)
+    # print(slp_files)
     if not slp_files:
         print(f"No .slp files found in {REPLAYS_DIR}")
         return
@@ -307,7 +352,7 @@ def main() -> None:
         for chunk_idx in range(total_chunks):
             start = chunk_idx * CHUNK_SIZE
             chunk_paths = [str(p) for p in slp_files[start:start + CHUNK_SIZE]]
-            futures.append(exe.submit(process_chunk_npy, chunk_paths, chunk_idx))
+            futures.append(exe.submit(process_chunk, chunk_paths, chunk_idx))
         for fut in concurrent.futures.as_completed(futures):
             rows_written, out_path = fut.result()
             if rows_written == 0:

@@ -2,23 +2,11 @@
 import argparse
 import signal
 import sys
+
+import numpy as np
+
 import melee
-import random
-
-from inference import infer_and_act, FEATURE_COLUMNS, TARGET_COLUMNS
-from MLPModel import FeedForwardNet, MLPConfig
-
-
-# This example program demonstrates how to use the Melee API to run a console,
-#   setup controllers, and send button presses over to a console
-
-def check_port(value):
-    ivalue = int(value)
-    if ivalue < 1 or ivalue > 4:
-        raise argparse.ArgumentTypeError("%s is an invalid controller port. \
-                                         Must be 1, 2, 3, or 4." % value)
-    return ivalue
-
+from inference import CHECKPOINT_PATH, InferenceEngine, gamestate_to_input, apply_model_output, debug_dump_model_inputs
 
 if __name__ == "__main__":
 
@@ -33,39 +21,20 @@ if __name__ == "__main__":
                         help='Path to melee iso.')
 
     args = parser.parse_args()
-
-    # This logger object is useful for retroactively debugging issues in your bot
-    #   You can write things to it each frame, and it will create a CSV file describing the match
-    log = None
-    if args.debug:
-        log = melee.Logger()
-
-    # Create our Console object.
-    #   This will be one of the primary objects that we will interface with.
-    #   The Console represents the virtual or hardware system Melee is playing on.
-    #   Through this object, we can get "GameState" objects per-frame so that your
-    #       bot can actually "see" what's happening in the game
     console = melee.Console(
         path=args.dolphin_executable_path,
         slippi_address=args.address,
-        logger=log,
         save_replays=args.debug,
         copy_home_directory=False,
         tmp_home_directory=False
     )
-
-    # Create our Controller object
-    #   The controller is the second primary object your bot will interact with
-    #   Your controller is your way of sending button presses to the game, whether
-    #   virtual or physical.
-
     ports = [1, 2]
 
     controllers = {
         1: melee.Controller(
             console=console,
             port=1,
-            type=melee.ControllerType.GCN_ADAPTER,
+            type=melee.ControllerType.STANDARD,
         ),
         2: melee.Controller(
             console=console,
@@ -73,25 +42,11 @@ if __name__ == "__main__":
             type=melee.ControllerType.STANDARD)
     }
 
-    # Initialize the model used for inference
-    SEQUENCE_LENGTH = 60
-    model_cfg = MLPConfig(
-        input_dim=SEQUENCE_LENGTH * len(FEATURE_COLUMNS),
-        output_dim=len(TARGET_COLUMNS),
-    )
-    model = FeedForwardNet(model_cfg)
 
-
-    # This isn't necessary, but makes it so that Dolphin will get killed when you ^C
     def signal_handler(sig, frame):
         for controller in controllers.values():
             controller.disconnect()
         console.stop()
-        if args.debug:
-            log.writelog()
-            print("")  # because the ^C will be on the terminal
-            print("Log file created: " + log.filename)
-        print("Shutting down cleanly...")
         sys.exit(0)
 
 
@@ -106,23 +61,16 @@ if __name__ == "__main__":
         print("ERROR: Failed to connect to the console.")
         sys.exit(-1)
     print("Console connected")
-
-    # Plug our controller in
-    #   Due to how named pipes work, this has to come AFTER running dolphin
-    #   NOTE: If you're loading a movie file, don't connect the controller,
-    #   dolphin will hang waiting for input and never receive it
-    print("Connecting controller to console...")
     for controller in controllers.values():
         if not controller.connect():
             print("ERROR: Failed to connect the controller.")
             sys.exit(-1)
     print("Controller connected")
 
-    costume = 0
-    framedata = melee.framedata.FrameData()
-
     menu_helper = melee.MenuHelper()
-
+    engine = InferenceEngine(CHECKPOINT_PATH, threshold=0.5)
+    BOT_PORT = 1
+    OPP_PORT = 2
     # Main loop
     while True:
         # "step" to the next frame
@@ -137,23 +85,18 @@ if __name__ == "__main__":
 
         # What menu are we in?
         if gamestate.menu_state in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]:
-            bot_controllers = {2: controllers[2]}
-            for port, controller in bot_controllers.items():
-                # NOTE: This is where your AI does all of its stuff!
-                # This line will get hit once per frame, so here is where you read
-                #   in the gamestate and decide what buttons to push on the controller
-                infer_and_act(
-                    model,
-                    controller,
-                    gamestate,
-                    p1_port=port,
-                    p2_port=1,
-                )
+            feat: np.ndarray = gamestate_to_input(gamestate, p1_port=BOT_PORT, p2_port=OPP_PORT)
 
-            # Log this frame's detailed info if we're in game
-            if log:
-                log.logframe(gamestate)
-                log.writeframe()
+            engine.push_frame(feat)
+
+            if engine.ready():
+                outputs: np.ndarray = engine.infer()  # (C,), aligned with TARGET_COLUMNS
+                # Send to bot controller
+                apply_model_output(controllers[BOT_PORT], outputs.tolist())
+                window = np.stack(list(engine.buffer), axis=0)  # (T=60, F)
+                debug_dump_model_inputs(window, show_window_stats=True, which_frame="last")
+            # melee.techskill.multishine(ai_state=gamestate.players[port], controller=controller)
+
         else:
             for port, controller in controllers.items():
                 menu_helper.menu_helper_simple(
@@ -164,7 +107,3 @@ if __name__ == "__main__":
                     costume=port,
                     autostart=port == 1,
                     swag=False)
-
-            # If we're not in game, don't log the frame
-            if log:
-                log.skipframe()

@@ -1,3 +1,12 @@
-numpy
-pyarrow
+numpy~=2.1.3
+pyarrow~=17.0.0
 peppi_py
+packaging~=25.0
+enet~=0.0.0
+setuptools~=80.9.0
+torch~=2.7.1
+tqdm~=4.67.1
+melee~=0.38.1
+duckdb~=1.3.2
+matplotlib~=3.10.3
+scikit-learn~=1.7.1

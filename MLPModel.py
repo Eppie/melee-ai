@@ -10,13 +10,16 @@ from torch import nn
 
 def gelu_init(m: nn.Module) -> None:
     if isinstance(m, nn.Linear):
-        nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")  # good for GELU/Relu-family
+        nn.init.kaiming_uniform_(
+            m.weight, nonlinearity="relu"
+        )  # good for GELU/Relu-family
         nn.init.zeros_(m.bias)
 
 
 @dataclass(slots=True)
 class MLPConfig:
     """Hyperparameters for the feed-forward network."""
+
     input_dim: int
     output_dim: int
     hidden_dims: Sequence[int] = (2048, 1024, 512, 256)

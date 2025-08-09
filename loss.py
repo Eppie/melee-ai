@@ -22,20 +22,24 @@ class SimpleHybridLoss(nn.Module):
     """
 
     def __init__(
-            self,
-            bce_indices: Sequence[int],
-            reg_indices: Sequence[int],
-            *,
-            pos_weight: Optional[Tensor] = None,
-            bce_weight: float = 1.0,
-            reg_weight: float = 1.0,
+        self,
+        bce_indices: Sequence[int],
+        reg_indices: Sequence[int],
+        *,
+        pos_weight: Optional[Tensor] = None,
+        bce_weight: float = 1.0,
+        reg_weight: float = 1.0,
     ) -> None:
         super().__init__()
         self.bce_idx = list(bce_indices)
         self.reg_idx = list(reg_indices)
         self.register_buffer(
             "pos_weight",
-            None if pos_weight is None else torch.as_tensor(pos_weight, dtype=torch.float32),
+            (
+                None
+                if pos_weight is None
+                else torch.as_tensor(pos_weight, dtype=torch.float32)
+            ),
         )
         self.bce_weight = float(bce_weight)
         self.reg_weight = float(reg_weight)
@@ -48,14 +52,15 @@ class SimpleHybridLoss(nn.Module):
         """
         # Buttons
         bce = F.binary_cross_entropy_with_logits(
-            preds[:, self.bce_idx], targets[:, self.bce_idx],
-            pos_weight=self.pos_weight, reduction="mean"
+            preds[:, self.bce_idx],
+            targets[:, self.bce_idx],
+            pos_weight=self.pos_weight,
+            reduction="mean",
         )
 
         # Sticks
         reg = F.smooth_l1_loss(
-            preds[:, self.reg_idx], targets[:, self.reg_idx],
-            beta=1.0, reduction="mean"
+            preds[:, self.reg_idx], targets[:, self.reg_idx], beta=1.0, reduction="mean"
         )
 
         return self.bce_weight * bce + self.reg_weight * reg
@@ -65,25 +70,32 @@ class SimpleHybridLoss(nn.Module):
     def components(self, preds: Tensor, targets: Tensor) -> Dict[str, float]:
         """Return {'bce':…, 'reg':…, 'total':…} for logging."""
         bce = F.binary_cross_entropy_with_logits(
-            preds[:, self.bce_idx], targets[:, self.bce_idx],
-            pos_weight=self.pos_weight, reduction="mean"
+            preds[:, self.bce_idx],
+            targets[:, self.bce_idx],
+            pos_weight=self.pos_weight,
+            reduction="mean",
         ).item()
 
         reg = F.smooth_l1_loss(
-            preds[:, self.reg_idx], targets[:, self.reg_idx],
-            beta=1.0, reduction="mean"
+            preds[:, self.reg_idx], targets[:, self.reg_idx], beta=1.0, reduction="mean"
         ).item()
 
-        return {"bce": bce, "reg": reg, "total": self.bce_weight * bce + self.reg_weight * reg}
+        return {
+            "bce": bce,
+            "reg": reg,
+            "total": self.bce_weight * bce + self.reg_weight * reg,
+        }
 
 
 def _focal_bce_with_logits(
-        logits: Tensor,
-        targets: Tensor,
-        *,
-        pos_weight: Optional[Tensor] = None,  # shape [C] or None
-        alpha: Optional[Tensor] = None,  # weight for positives per label in [0,1]; shape [C] or scalar
-        gamma: float = 0.0,  # 0 -> plain BCE, >0 -> focal
+    logits: Tensor,
+    targets: Tensor,
+    *,
+    pos_weight: Optional[Tensor] = None,  # shape [C] or None
+    alpha: Optional[
+        Tensor
+    ] = None,  # weight for positives per label in [0,1]; shape [C] or scalar
+    gamma: float = 0.0,  # 0 -> plain BCE, >0 -> focal
 ) -> Tensor:
     """
     Numerically-stable BCE with logits + optional focal modulation and alpha balancing.
@@ -150,33 +162,47 @@ class BalancedHybridLoss(nn.Module):
     """
 
     def __init__(
-            self,
-            bce_indices: Sequence[int],
-            reg_indices: Sequence[int],
-            *,
-            pos_weight: Optional[Tensor] = None,
-            alpha: Optional[Tensor] = None,
-            focal_gamma: float = 0.0,
-            reg_beta: float = 0.02,
-            reg_scale: Optional[Tensor] = None,
-            bce_group_weight: float = 1.0,
-            reg_group_weight: float = 1.0,
-            # gating params:
-            enable_gating: bool = True,
-            gate_source: Literal["target", "pred"] = "target",
-            gate_type: Literal["hard", "soft"] = "hard",
-            rest_value: float = 0.5,
-            deadzone: float = 0.05,
-            soft_floor: float = 0.0,
-            clamp_for_gating: bool = True,
+        self,
+        bce_indices: Sequence[int],
+        reg_indices: Sequence[int],
+        *,
+        pos_weight: Optional[Tensor] = None,
+        alpha: Optional[Tensor] = None,
+        focal_gamma: float = 0.0,
+        reg_beta: float = 0.02,
+        reg_scale: Optional[Tensor] = None,
+        bce_group_weight: float = 1.0,
+        reg_group_weight: float = 1.0,
+        # gating params:
+        enable_gating: bool = True,
+        gate_source: Literal["target", "pred"] = "target",
+        gate_type: Literal["hard", "soft"] = "hard",
+        rest_value: float = 0.5,
+        deadzone: float = 0.05,
+        soft_floor: float = 0.0,
+        clamp_for_gating: bool = True,
     ) -> None:
         super().__init__()
-        self.register_buffer("pos_weight",
-                             None if pos_weight is None else torch.as_tensor(pos_weight, dtype=torch.float32))
-        self.register_buffer("alpha",
-                             None if alpha is None else torch.as_tensor(alpha, dtype=torch.float32))
-        self.register_buffer("reg_scale",
-                             None if reg_scale is None else torch.as_tensor(reg_scale, dtype=torch.float32))
+        self.register_buffer(
+            "pos_weight",
+            (
+                None
+                if pos_weight is None
+                else torch.as_tensor(pos_weight, dtype=torch.float32)
+            ),
+        )
+        self.register_buffer(
+            "alpha",
+            None if alpha is None else torch.as_tensor(alpha, dtype=torch.float32),
+        )
+        self.register_buffer(
+            "reg_scale",
+            (
+                None
+                if reg_scale is None
+                else torch.as_tensor(reg_scale, dtype=torch.float32)
+            ),
+        )
 
         self.bce_idx = list(bce_indices)
         self.reg_idx = list(reg_indices)
@@ -210,7 +236,11 @@ class BalancedHybridLoss(nn.Module):
             logits = preds[:, self.bce_idx]  # [B, C_bce]
             tgt_bce = targets[:, self.bce_idx]
             loss_bce = _focal_bce_with_logits(
-                logits, tgt_bce, pos_weight=self.pos_weight, alpha=self.alpha, gamma=self.focal_gamma
+                logits,
+                tgt_bce,
+                pos_weight=self.pos_weight,
+                alpha=self.alpha,
+                gamma=self.focal_gamma,
             )  # scalar
 
         # ----- Regression (Smooth L1 / Huber), gated from regression channels -----
@@ -218,7 +248,9 @@ class BalancedHybridLoss(nn.Module):
             p = preds[:, self.reg_idx]  # [B, C_reg]
             t = targets[:, self.reg_idx]  # [B, C_reg]
 
-            reg = F.smooth_l1_loss(p, t, beta=self.reg_beta, reduction="none")  # [B, C_reg]
+            reg = F.smooth_l1_loss(
+                p, t, beta=self.reg_beta, reduction="none"
+            )  # [B, C_reg]
             if self.reg_scale is not None:
                 reg = reg * self.reg_scale  # broadcast [C_reg] -> [B, C_reg]
 
@@ -235,7 +267,9 @@ class BalancedHybridLoss(nn.Module):
                     w = (delta >= self.deadzone).to(reg.dtype)  # [B, C_reg] in {0,1}
                 else:
                     # Soft weight grows with distance beyond deadzone, normalized to [0,1]
-                    max_dev = max(self.rest_value, 1.0 - self.rest_value)  # e.g., 0.5 if rest=0.5
+                    max_dev = max(
+                        self.rest_value, 1.0 - self.rest_value
+                    )  # e.g., 0.5 if rest=0.5
                     denom = max(1e-6, (max_dev - self.deadzone))
                     w = ((delta - self.deadzone) / denom).clamp(0.0, 1.0).to(reg.dtype)
                     if self.soft_floor > 0.0:
@@ -261,14 +295,20 @@ class BalancedHybridLoss(nn.Module):
             logits = preds[:, self.bce_idx]
             tgt_bce = targets[:, self.bce_idx]
             out["bce"] = _focal_bce_with_logits(
-                logits, tgt_bce, pos_weight=self.pos_weight, alpha=self.alpha, gamma=self.focal_gamma
+                logits,
+                tgt_bce,
+                pos_weight=self.pos_weight,
+                alpha=self.alpha,
+                gamma=self.focal_gamma,
             ).item()
 
         # ----- Regression (Smooth L1 / Huber), with optional gating from regression channels -----
         if self.reg_idx:
             p = preds[:, self.reg_idx]  # [B, C_reg]
             t = targets[:, self.reg_idx]  # [B, C_reg]
-            reg = F.smooth_l1_loss(p, t, beta=self.reg_beta, reduction="none")  # [B, C_reg]
+            reg = F.smooth_l1_loss(
+                p, t, beta=self.reg_beta, reduction="none"
+            )  # [B, C_reg]
             if self.reg_scale is not None:
                 reg = reg * self.reg_scale  # broadcast [C_reg] -> [B, C_reg]
 
@@ -284,7 +324,9 @@ class BalancedHybridLoss(nn.Module):
                 if self.gate_type == "hard":
                     w = (delta >= self.deadzone).to(reg.dtype)  # {0,1}
                 else:
-                    max_dev = max(self.rest_value, 1.0 - self.rest_value)  # typically 0.5 when rest=0.5
+                    max_dev = max(
+                        self.rest_value, 1.0 - self.rest_value
+                    )  # typically 0.5 when rest=0.5
                     denom = max(1e-6, (max_dev - self.deadzone))
                     w = ((delta - self.deadzone) / denom).clamp(0.0, 1.0).to(reg.dtype)
                     if self.soft_floor > 0.0:
@@ -298,5 +340,7 @@ class BalancedHybridLoss(nn.Module):
 
             out["reg"] = reg_mean
 
-        out["total"] = self.bce_group_weight * out.get("bce", 0.0) + self.reg_group_weight * out.get("reg", 0.0)
+        out["total"] = self.bce_group_weight * out.get(
+            "bce", 0.0
+        ) + self.reg_group_weight * out.get("reg", 0.0)
         return out

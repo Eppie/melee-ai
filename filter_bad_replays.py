@@ -20,10 +20,11 @@ ALLOWED_STAGES = {0x03, 0x08, 0x02, 0x1F, 0x20, 0x1C}
 
 class Character(Enum):
     """A Melee character External ID."""
-    FALCON = 0x00            # Captain Falcon
-    DK = 0x01                # Donkey Kong
+
+    FALCON = 0x00  # Captain Falcon
+    DK = 0x01  # Donkey Kong
     FOX = 0x02
-    GNW = 0x03               # Mr. Game & Watch
+    GNW = 0x03  # Mr. Game & Watch
     KIRBY = 0x04
     BOWSER = 0x05
     LINK = 0x06
@@ -33,19 +34,19 @@ class Character(Enum):
     MEWTWO = 0x0A
     NESS = 0x0B
     PEACH = 0x0C
-    PIKA = 0x0D              # Pikachu
-    ICS = 0x0E               # Ice Climbers
-    PUFF = 0x0F              # Jigglypuff
+    PIKA = 0x0D  # Pikachu
+    ICS = 0x0E  # Ice Climbers
+    PUFF = 0x0F  # Jigglypuff
     SAMUS = 0x10
     YOSHI = 0x11
     ZELDA = 0x12
     SHEIK = 0x13
     FALCO = 0x14
-    YLINK = 0x15             # Young Link
-    DOC = 0x16               # Dr. Mario
+    YLINK = 0x15  # Young Link
+    DOC = 0x16  # Dr. Mario
     ROY = 0x17
     PICHU = 0x18
-    GANON = 0x19             # Ganondorf
+    GANON = 0x19  # Ganondorf
     MASTER_HAND = 0x1A
     WIREFRAME_MALE = 0x1B
     WIREFRAME_FEMALE = 0x1C

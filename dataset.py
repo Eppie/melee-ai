@@ -28,8 +28,8 @@ class NumPySequenceDataset(IterableDataset[Tuple[torch.Tensor, torch.Tensor]]):
     """
 
     def __init__(
-            self,
-            files: List[str],
+        self,
+        files: List[str],
     ) -> None:
         super().__init__()
         if not files:
@@ -49,7 +49,7 @@ class NumPySequenceDataset(IterableDataset[Tuple[torch.Tensor, torch.Tensor]]):
         wi = get_worker_info()
         if wi is None:
             return self.files
-        return self.files[wi.id:: wi.num_workers]
+        return self.files[wi.id :: wi.num_workers]
 
     def __iter__(self) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
         part_files = self._file_partition()
@@ -76,8 +76,12 @@ class NumPySequenceDataset(IterableDataset[Tuple[torch.Tensor, torch.Tensor]]):
             if missing_feats or missing_tgts:
                 continue
 
-            feat_idx = np.array([col_names.index(c) for c in FEATURE_COLUMNS], dtype=np.int64)
-            tgt_idx = np.array([col_names.index(c) for c in TARGET_COLUMNS], dtype=np.int64)
+            feat_idx = np.array(
+                [col_names.index(c) for c in FEATURE_COLUMNS], dtype=np.int64
+            )
+            tgt_idx = np.array(
+                [col_names.index(c) for c in TARGET_COLUMNS], dtype=np.int64
+            )
 
             # `frame_id` is optional; if absent, disable frame-based filtering
             frame_idx = col_names.index("frame_id") if "frame_id" in col_names else -1
@@ -218,11 +222,13 @@ class NumPySequenceDataset(IterableDataset[Tuple[torch.Tensor, torch.Tensor]]):
             for s in starts:
                 if frame_idx >= 0:
                     # Filter: any frame_id inside the window < 0 => skip
-                    frame_col = mat[s: s + SEQUENCE_LENGTH, frame_idx]
+                    frame_col = mat[s : s + SEQUENCE_LENGTH, frame_idx]
                     if np.any(frame_col < 0):
                         continue
 
-                x_np = mat[s: s + SEQUENCE_LENGTH, :][:, feat_idx]  # [SEQUENCE_LENGTH, F]
+                x_np = mat[s : s + SEQUENCE_LENGTH, :][
+                    :, feat_idx
+                ]  # [SEQUENCE_LENGTH, F]
                 y_np = mat[s + SEQUENCE_LENGTH, :][tgt_idx]  # predict t+1
 
                 # Determine whether to flip 0/1 stick constants based on the first frame_id parity
@@ -262,7 +268,7 @@ class NumPySequenceDataset(IterableDataset[Tuple[torch.Tensor, torch.Tensor]]):
                     y_np[p1_cy_tgt_pos] = np.float32(1.0 if flip_sticks else 0.0)
 
                 if not (np.isfinite(x_np).all() and np.isfinite(y_np).all()):
-                    print('Infinite or NaN!')
+                    print("Infinite or NaN!")
                     continue
                 X = torch.from_numpy(np.ascontiguousarray(x_np))  # float32
                 y = torch.from_numpy(np.ascontiguousarray(y_np))  # float32

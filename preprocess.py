@@ -44,12 +44,14 @@ BUTTON_MASKS = {
 
 
 def get_buttons(button_bits: np.ndarray) -> Buttons:
-    return Buttons(**{
-        name: np.asarray(
-            np.bitwise_and(button_bits, BUTTON_MASKS[button]),
-            dtype=bool)
-        for name, button in LIBMELEE_BUTTONS.items()
-    })
+    return Buttons(
+        **{
+            name: np.asarray(
+                np.bitwise_and(button_bits, BUTTON_MASKS[button]), dtype=bool
+            )
+            for name, button in LIBMELEE_BUTTONS.items()
+        }
+    )
 
 
 def file_sha256(path: Path, chunk_size: int = 1 << 20) -> str:
@@ -92,8 +94,10 @@ def _bit_is_set(arr: pa.UInt8Array, mask: int) -> pa.BooleanArray:
 
 
 def extract_state_flags(
-        state_flags: tuple[pa.UInt8Array, pa.UInt8Array, pa.UInt8Array,
-        pa.UInt8Array, pa.UInt8Array] | None,
+    state_flags: (
+        tuple[pa.UInt8Array, pa.UInt8Array, pa.UInt8Array, pa.UInt8Array, pa.UInt8Array]
+        | None
+    ),
 ) -> dict[str, pa.BooleanArray]:
     """
     Convert Slippi's packed `state_flags` into named BooleanArrays.
@@ -145,9 +149,17 @@ def _table_to_numpy_matrix(table: pa.Table) -> tuple[np.ndarray, list[str]]:
     for name, chunked in zip(table.column_names, table.columns):
         typ = chunked.type
         if pat.is_boolean(typ):
-            arr = chunked.combine_chunks().to_numpy(zero_copy_only=False).astype(np.float32, copy=False)
+            arr = (
+                chunked.combine_chunks()
+                .to_numpy(zero_copy_only=False)
+                .astype(np.float32, copy=False)
+            )
         elif pat.is_integer(typ) or pat.is_floating(typ):
-            arr = chunked.combine_chunks().to_numpy(zero_copy_only=False).astype(np.float32, copy=False)
+            arr = (
+                chunked.combine_chunks()
+                .to_numpy(zero_copy_only=False)
+                .astype(np.float32, copy=False)
+            )
         else:
             # Drop non-numeric columns (e.g., strings like file_hash, source_file)
             continue
@@ -211,9 +223,9 @@ def table_from_slp(path: str) -> pa.Table | None:
 
     def add(col: str, arr) -> None:
         cols[col] = (
-            pa.nulls(frame_count) if arr is None
-            else arr if isinstance(arr, pa.Array)
-            else pa.array(arr)
+            pa.nulls(frame_count)
+            if arr is None
+            else arr if isinstance(arr, pa.Array) else pa.array(arr)
         )
 
     def _unitize_minus1_to1(arr) -> pa.Array | None:
@@ -227,8 +239,7 @@ def table_from_slp(path: str) -> pa.Table | None:
 
         # (a + 1) / 2
         out = pc.divide(
-            pc.add(a, pa.scalar(1.0, pa.float32())),
-            pa.scalar(2.0, pa.float32())
+            pc.add(a, pa.scalar(1.0, pa.float32())), pa.scalar(2.0, pa.float32())
         )
 
         # out = max(0.0, min(out, 1.0))
@@ -276,17 +287,14 @@ def table_from_slp(path: str) -> pa.Table | None:
 
     # Add data for both players using the helper
     for _prefix, _pre, _post in (
-            ("p1", p1_pre, p1_post),
-            ("p2", p2_pre, p2_post),
+        ("p1", p1_pre, p1_post),
+        ("p2", p2_pre, p2_post),
     ):
         _add_player(_prefix, _pre, _post)
 
-    cols["source_file"] = pa.array(
-        [Path(path).name] * frame_count, type=pa.string()
-    )
+    cols["source_file"] = pa.array([Path(path).name] * frame_count, type=pa.string())
 
     return pa.Table.from_pydict(cols)
-
 
 
 def process_chunk(paths: list[str], chunk_idx: int) -> tuple[int, str]:
@@ -327,11 +335,12 @@ def process_chunk(paths: list[str], chunk_idx: int) -> tuple[int, str]:
     pq.write_table(
         combined,
         parquet_path,
-        compression="zstd",          # good balance of speed & size
-        write_statistics=True,       # enables min/max push-downs later
+        compression="zstd",  # good balance of speed & size
+        write_statistics=True,  # enables min/max push-downs later
     )
 
     return combined.num_rows, str(parquet_path)
+
 
 def main() -> None:
     """Convert all .slp replays into npy in parallel, one file per replay."""
@@ -344,14 +353,16 @@ def main() -> None:
     total_chunks = (len(slp_files) + CHUNK_SIZE - 1) // CHUNK_SIZE
     cpu_count = os.cpu_count() or 4
 
-    print(f"Processing {len(slp_files)} replays in {total_chunks} chunks "
-          f"using up to {cpu_count} processes...")
+    print(
+        f"Processing {len(slp_files)} replays in {total_chunks} chunks "
+        f"using up to {cpu_count} processes..."
+    )
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=cpu_count) as exe:
         futures: list[concurrent.futures.Future[tuple[int, str]]] = []
         for chunk_idx in range(total_chunks):
             start = chunk_idx * CHUNK_SIZE
-            chunk_paths = [str(p) for p in slp_files[start:start + CHUNK_SIZE]]
+            chunk_paths = [str(p) for p in slp_files[start : start + CHUNK_SIZE]]
             futures.append(exe.submit(process_chunk, chunk_paths, chunk_idx))
         for fut in concurrent.futures.as_completed(futures):
             rows_written, out_path = fut.result()

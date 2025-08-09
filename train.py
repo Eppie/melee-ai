@@ -12,8 +12,16 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from RecurrentNet import RecurrentConfig, RecurrentNet
-from config import TARGET_COLUMNS, SEQUENCE_LENGTH, CLASSIFICATION_TARGETS, REGRESSION_TARGETS, FEATURE_COLUMNS, \
-    BCE_INDICES, REG_INDICES, BATCH_SIZE
+from config import (
+    TARGET_COLUMNS,
+    SEQUENCE_LENGTH,
+    CLASSIFICATION_TARGETS,
+    REGRESSION_TARGETS,
+    FEATURE_COLUMNS,
+    BCE_INDICES,
+    REG_INDICES,
+    BATCH_SIZE,
+)
 from dataset import NumPySequenceDataset
 from loss import SimpleHybridLoss
 
@@ -30,13 +38,13 @@ RECURRENT_CONFIG = RecurrentConfig(
 
 
 def train_one_epoch(
-        model: nn.Module,
-        loader: DataLoader,
-        criterion: nn.Module,  # expects .components(preds, y) if available
-        optimiser: optim.Optimizer,
-        device: torch.device,
-        steps_per_epoch: Optional[int] = None,
-        log_every: int = 1,
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,  # expects .components(preds, y) if available
+    optimiser: optim.Optimizer,
+    device: torch.device,
+    steps_per_epoch: Optional[int] = None,
+    log_every: int = 1,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -44,7 +52,9 @@ def train_one_epoch(
     total_reg = 0.0
     n_batches = 0
 
-    iterable = loader if steps_per_epoch is None else itertools.islice(loader, steps_per_epoch)
+    iterable = (
+        loader if steps_per_epoch is None else itertools.islice(loader, steps_per_epoch)
+    )
     with tqdm(desc="Training", leave=False, dynamic_ncols=True) as pbar:
         for step, (X, y) in enumerate(iterable, start=1):
             X, y = X.to(device), y.to(device)
@@ -63,13 +73,17 @@ def train_one_epoch(
             # If the criterion exposes components(), use it (it should be @torch.no_grad()).
             bce = reg = float("nan")
             if hasattr(criterion, "components"):
-                comps = criterion.components(preds, y)  # {"bce": ..., "reg": ..., "total": ...}
+                comps = criterion.components(
+                    preds, y
+                )  # {"bce": ..., "reg": ..., "total": ...}
                 bce = comps.get("bce", float("nan"))
                 reg = comps.get("reg", float("nan"))
                 step_total = comps.get("total", step_total)
 
-            if not np.isnan(bce): total_bce += bce
-            if not np.isnan(reg): total_reg += reg
+            if not np.isnan(bce):
+                total_bce += bce
+            if not np.isnan(reg):
+                total_reg += reg
 
             if step % log_every == 0:
                 pbar.set_postfix(
@@ -93,16 +107,22 @@ if __name__ == "__main__":
     print(f"Num classification targets: {len(CLASSIFICATION_TARGETS)}")
     print(f"Sequence length: {SEQUENCE_LENGTH}")
     print(f"Num features: {len(FEATURE_COLUMNS)}")
-    tfrecord_glob = '/Users/eppie/melee-ai/shards/frames_chunk_000.npy'
+    tfrecord_glob = "/Users/eppie/melee-ai/shards/frames_chunk_000.npy"
     num_dataloader_workers = os.cpu_count() or 2
 
-    files = sorted(f for f in glob.glob(tfrecord_glob) if not f.endswith('.columns.npy'))
-    print(f"Initializing NumPy streaming dataset from {len(files)} shard(s) matching: {tfrecord_glob}")
+    files = sorted(
+        f for f in glob.glob(tfrecord_glob) if not f.endswith(".columns.npy")
+    )
+    print(
+        f"Initializing NumPy streaming dataset from {len(files)} shard(s) matching: {tfrecord_glob}"
+    )
     if not files:
         print(f"\n--- ERROR: No .npy shards found for pattern '{tfrecord_glob}'. ---\n")
         exit()
 
-    dataset = NumPySequenceDataset(files=files,)
+    dataset = NumPySequenceDataset(
+        files=files,
+    )
 
     loader = DataLoader(
         dataset,
@@ -116,7 +136,9 @@ if __name__ == "__main__":
 
     device = torch.device("mps" if torch.mps.is_available() else "cpu")
 
-    print(f"Model Config: Input Dim={RECURRENT_CONFIG.input_dim}, Output Dim={RECURRENT_CONFIG.output_dim}")
+    print(
+        f"Model Config: Input Dim={RECURRENT_CONFIG.input_dim}, Output Dim={RECURRENT_CONFIG.output_dim}"
+    )
     model = RecurrentNet(RECURRENT_CONFIG, feature_dim=len(FEATURE_COLUMNS)).to(device)
     print(f"Training on device: {device}")
     criterion = SimpleHybridLoss(
@@ -130,7 +152,9 @@ if __name__ == "__main__":
     print("\nStarting training...")
     for epoch in range(30):
         stats = train_one_epoch(model, loader, criterion, optimizer, device)
-        print(f"Epoch {epoch:02d} | total={stats['total']:.4f} | bce={stats['bce']:.4f} | reg={stats['reg']:.4f}")
+        print(
+            f"Epoch {epoch:02d} | total={stats['total']:.4f} | bce={stats['bce']:.4f} | reg={stats['reg']:.4f}"
+        )
         model_ckpt_path = "trained_mlp_model.pt"
         torch.save(model.state_dict(), model_ckpt_path)
         print(f"Model saved to {model_ckpt_path}")

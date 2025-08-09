@@ -19,7 +19,9 @@ from libmelee.melee.gamestate import GameState, PlayerState
 from train import RECURRENT_CONFIG
 
 
-def gamestate_to_input(gs: GameState, *, p1_port: int = 1, p2_port: int = 2) -> np.ndarray:
+def gamestate_to_input(
+    gs: GameState, *, p1_port: int = 1, p2_port: int = 2
+) -> np.ndarray:
     """Convert the current :class:`~melee.gamestate.GameState` into a feature vector.
 
     Parameters
@@ -83,7 +85,8 @@ def gamestate_to_input(gs: GameState, *, p1_port: int = 1, p2_port: int = 2) -> 
         float(p1.controller_state.button[enums.Button.BUTTON_A]),
         float(p1.controller_state.button[enums.Button.BUTTON_B]),
         float(p1.controller_state.button[enums.Button.BUTTON_Z]),
-        p1_xy, p1_lr,
+        p1_xy,
+        p1_lr,
         float(p1.controller_state.main_stick[0]),
         float(p1.controller_state.main_stick[1]),
         float(p1.controller_state.c_stick[0]),
@@ -107,7 +110,8 @@ def gamestate_to_input(gs: GameState, *, p1_port: int = 1, p2_port: int = 2) -> 
         float(p2.controller_state.button[enums.Button.BUTTON_A]),
         float(p2.controller_state.button[enums.Button.BUTTON_B]),
         float(p2.controller_state.button[enums.Button.BUTTON_Z]),
-        p2_xy, p2_lr,
+        p2_xy,
+        p2_lr,
         float(p2.controller_state.main_stick[0]),
         float(p2.controller_state.main_stick[1]),
         float(p2.controller_state.c_stick[0]),
@@ -118,32 +122,36 @@ def gamestate_to_input(gs: GameState, *, p1_port: int = 1, p2_port: int = 2) -> 
 
 
 _DIGITAL_TARGETS: Set[str] = {
-    'p1_btn_a', 'p1_btn_b', 'p1_btn_z', 'p1_btn_xy', 'p1_btn_lr'
+    "p1_btn_a",
+    "p1_btn_b",
+    "p1_btn_z",
+    "p1_btn_xy",
+    "p1_btn_lr",
 }
 _BUTTON_SHORT: Dict[str, str] = {
-    'p1_btn_a': 'A',
-    'p1_btn_b': 'B',
-    'p1_btn_z': 'Z',
-    'p1_btn_xy': 'X/Y',
-    'p1_btn_lr': 'L/R',
+    "p1_btn_a": "A",
+    "p1_btn_b": "B",
+    "p1_btn_z": "Z",
+    "p1_btn_xy": "X/Y",
+    "p1_btn_lr": "L/R",
 }
 _ANALOG_LABEL: Dict[str, str] = {
-    'p1_btn_l_analog': 'L_SHOULDER',
-    'p1_btn_r_analog': 'R_SHOULDER',
-    'p1_pre_joystick_x': 'MAIN_X',
-    'p1_pre_joystick_y': 'MAIN_Y',
-    'p1_pre_cstick_x': 'C_X',
-    'p1_pre_cstick_y': 'C_Y',
+    "p1_btn_l_analog": "L_SHOULDER",
+    "p1_btn_r_analog": "R_SHOULDER",
+    "p1_pre_joystick_x": "MAIN_X",
+    "p1_pre_joystick_y": "MAIN_Y",
+    "p1_pre_cstick_x": "C_X",
+    "p1_pre_cstick_y": "C_Y",
 }
 
 
 def debug_dump_model_inputs(
-        inputs: Sequence[float] | Sequence[Sequence[float]] | np.ndarray,
-        *,
-        writer: Optional[Callable[[str], None]] = None,
-        show_window_stats: bool = False,
-        which_frame: str = "last",  # "last" | "first" | "index"
-        frame_index: Optional[int] = None,  # used when which_frame == "index"
+    inputs: Sequence[float] | Sequence[Sequence[float]] | np.ndarray,
+    *,
+    writer: Optional[Callable[[str], None]] = None,
+    show_window_stats: bool = False,
+    which_frame: str = "last",  # "last" | "first" | "index"
+    frame_index: Optional[int] = None,  # used when which_frame == "index"
 ) -> None:
     """
     Pretty-print the features that are fed to the model, aligned with FEATURE_COLUMNS.
@@ -165,7 +173,9 @@ def debug_dump_model_inputs(
     if arr.ndim == 1:
         # Single frame (F,)
         if arr.shape[0] != len(FEATURE_COLUMNS):
-            sink(f"[debug] Feature length mismatch: got {arr.shape[0]}, expected {len(FEATURE_COLUMNS)}")
+            sink(
+                f"[debug] Feature length mismatch: got {arr.shape[0]}, expected {len(FEATURE_COLUMNS)}"
+            )
             return
         _dump_feature_vector(arr, sink)
         return
@@ -177,7 +187,9 @@ def debug_dump_model_inputs(
     # Window (T, F)
     T, F = arr.shape
     if F != len(FEATURE_COLUMNS):
-        sink(f"[debug] Feature width mismatch: got {F}, expected {len(FEATURE_COLUMNS)}")
+        sink(
+            f"[debug] Feature width mismatch: got {F}, expected {len(FEATURE_COLUMNS)}"
+        )
         return
 
     if which_frame == "first":
@@ -190,10 +202,14 @@ def debug_dump_model_inputs(
             return
         idx = frame_index
     else:
-        sink(f"[debug] Unknown which_frame='{which_frame}' (use 'first' | 'last' | 'index').")
+        sink(
+            f"[debug] Unknown which_frame='{which_frame}' (use 'first' | 'last' | 'index')."
+        )
         return
 
-    sink(f"[debug] Window shape: T={T}, F={F}. Showing frame {idx} {'(last)' if idx == T - 1 else ''}")
+    sink(
+        f"[debug] Window shape: T={T}, F={F}. Showing frame {idx} {'(last)' if idx == T - 1 else ''}"
+    )
     _dump_feature_vector(arr[idx], sink)
 
     if show_window_stats:
@@ -224,11 +240,11 @@ def _dump_window_stats(win: np.ndarray, sink: Callable[[str], None]) -> None:
 
 
 def debug_dump_model_outputs(
-        outputs_before: Sequence[float],
-        outputs_after: Sequence[float],
-        *,
-        threshold: float = 0.5,
-        writer: Optional[Callable[[str], None]] = None,
+    outputs_before: Sequence[float],
+    outputs_after: Sequence[float],
+    *,
+    threshold: float = 0.5,
+    writer: Optional[Callable[[str], None]] = None,
 ) -> None:
     """
     Print a table mapping each TARGET_COLUMNS entry to its value before/after processing.
@@ -243,7 +259,9 @@ def debug_dump_model_outputs(
 
     n = len(TARGET_COLUMNS)
     if len(outputs_before) != n or len(outputs_after) != n:
-        sink(f"[debug] Mismatched lengths: before={len(outputs_before)}, after={len(outputs_after)}, expected={n}")
+        sink(
+            f"[debug] Mismatched lengths: before={len(outputs_before)}, after={len(outputs_after)}, expected={n}"
+        )
         return
 
     header = f"{'Idx':>3}  {'Target':<20} {'Kind':<9} {'Raw':>9} {'After':>9}  {'Decision':<8}"
@@ -265,10 +283,12 @@ def debug_dump_model_outputs(
             decision = ""  # not applicable
             label = f"{name}({_ANALOG_LABEL.get(name, 'ANALOG')})"
 
-        sink(f"{i:>3}  {label:<20} {kind:<9} {raw_val:>9.4f} {post_val:>9.4f}  {decision:<8}")
+        sink(
+            f"{i:>3}  {label:<20} {kind:<9} {raw_val:>9.4f} {post_val:>9.4f}  {decision:<8}"
+        )
 
 
-BTN_ORDER_STR: List[str] = ['A', 'B', 'Z', 'X/Y', 'L/R']
+BTN_ORDER_STR: List[str] = ["A", "B", "Z", "X/Y", "L/R"]
 BTN_ORDER_ENUM: List[enums.Button] = [
     enums.Button.BUTTON_A,
     enums.Button.BUTTON_B,
@@ -279,9 +299,11 @@ BTN_ORDER_ENUM: List[enums.Button] = [
 
 
 def thresholds_from_pos_weight(
-        pos_weight: Sequence[float],
-        *,
-        alpha: Optional[float] = None,  # if you later introduce per-label alpha, pass a scalar for a warm start
+    pos_weight: Sequence[float],
+    *,
+    alpha: Optional[
+        float
+    ] = None,  # if you later introduce per-label alpha, pass a scalar for a warm start
 ) -> Tuple[Dict[enums.Button, float], Dict[str, float]]:
     """
     Convert class-imbalance weights into per-button probability thresholds.
@@ -295,7 +317,9 @@ def thresholds_from_pos_weight(
         (THRESH_ON, THRESH_ON_STR)
     """
     if len(pos_weight) != len(BTN_ORDER_ENUM):
-        raise ValueError(f"Expected {len(BTN_ORDER_ENUM)} weights, got {len(pos_weight)}")
+        raise ValueError(
+            f"Expected {len(BTN_ORDER_ENUM)} weights, got {len(pos_weight)}"
+        )
 
     w: List[float] = [float(x) for x in pos_weight]
 
@@ -304,13 +328,19 @@ def thresholds_from_pos_weight(
     else:
         a = float(alpha)
         wneg = 1.0 - a
-        tau_list = [(wneg / (wi * a + wneg)) if (wi * a + wneg) > 0.0 else 0.5 for wi in w]
+        tau_list = [
+            (wneg / (wi * a + wneg)) if (wi * a + wneg) > 0.0 else 0.5 for wi in w
+        ]
 
     # Optionally round for readability; remove round(...) if you want full precision
     tau_list = [round(t, 6) for t in tau_list]
 
-    thresh_on: Dict[enums.Button, float] = {btn: t for btn, t in zip(BTN_ORDER_ENUM, tau_list)}
-    thresh_on_str: Dict[str, float] = {name: t for name, t in zip(BTN_ORDER_STR, tau_list)}
+    thresh_on: Dict[enums.Button, float] = {
+        btn: t for btn, t in zip(BTN_ORDER_ENUM, tau_list)
+    }
+    thresh_on_str: Dict[str, float] = {
+        name: t for name, t in zip(BTN_ORDER_STR, tau_list)
+    }
     return thresh_on, thresh_on_str
 
 
@@ -349,7 +379,9 @@ def apply_model_output(controller: Controller, outputs: Sequence[float]) -> None
             controller.release_button(btn)
 
     # Analog sticks
-    controller.tilt_analog(enums.Button.BUTTON_MAIN, float(outputs[5]), float(outputs[6]))
+    controller.tilt_analog(
+        enums.Button.BUTTON_MAIN, float(outputs[5]), float(outputs[6])
+    )
     controller.tilt_analog(enums.Button.BUTTON_C, float(outputs[7]), float(outputs[8]))
 
 
@@ -358,10 +390,10 @@ CHECKPOINT_PATH: str = "/Users/eppie/melee-ai/trained_mlp_model.pt"
 # Which target columns are digital vs analog (same as in training)
 
 # For clipping analog ranges (should match your data conventions)
-IDX_JS_X: int = TARGET_COLUMNS.index('p1_pre_joystick_x')  # [0, 1]
-IDX_JS_Y: int = TARGET_COLUMNS.index('p1_pre_joystick_y')  # [0, 1]
-IDX_CS_X: int = TARGET_COLUMNS.index('p1_pre_cstick_x')  # [0, 1]
-IDX_CS_Y: int = TARGET_COLUMNS.index('p1_pre_cstick_y')  # [0, 1]
+IDX_JS_X: int = TARGET_COLUMNS.index("p1_pre_joystick_x")  # [0, 1]
+IDX_JS_Y: int = TARGET_COLUMNS.index("p1_pre_joystick_y")  # [0, 1]
+IDX_CS_X: int = TARGET_COLUMNS.index("p1_pre_cstick_x")  # [0, 1]
+IDX_CS_Y: int = TARGET_COLUMNS.index("p1_pre_cstick_y")  # [0, 1]
 
 
 class InferenceEngine:
@@ -373,10 +405,15 @@ class InferenceEngine:
     def __init__(self, checkpoint_path: str, threshold: float = 0.5) -> None:
         self.threshold = threshold
 
-        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cuda"
-        if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(
+            "mps"
+            if torch.backends.mps.is_available()
+            else "cuda" if torch.cuda.is_available() else "cpu"
+        )
 
-        self.model = RecurrentNet(RECURRENT_CONFIG, feature_dim=len(FEATURE_COLUMNS)).to(self.device)
+        self.model = RecurrentNet(
+            RECURRENT_CONFIG, feature_dim=len(FEATURE_COLUMNS)
+        ).to(self.device)
         state = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model.eval()
@@ -385,8 +422,11 @@ class InferenceEngine:
 
     def push_frame(self, feature_vec: np.ndarray) -> None:
         """Append one (F,) feature vector for the current frame."""
-        assert feature_vec.dtype == np.float32 and feature_vec.ndim == 1 and feature_vec.shape[0] == len(
-            FEATURE_COLUMNS), f"{feature_vec.dtype}, {feature_vec.ndim}, {feature_vec.shape}, {len(FEATURE_COLUMNS)}"
+        assert (
+            feature_vec.dtype == np.float32
+            and feature_vec.ndim == 1
+            and feature_vec.shape[0] == len(FEATURE_COLUMNS)
+        ), f"{feature_vec.dtype}, {feature_vec.ndim}, {feature_vec.shape}, {len(FEATURE_COLUMNS)}"
         self.buffer.append(feature_vec)
 
     def ready(self) -> bool:

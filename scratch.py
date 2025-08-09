@@ -176,7 +176,8 @@ class ToyTasks:
                 (y.size(0), y.size(1)), dtype=torch.long
             )  # dummy zeros
             return tgt_in, y
-        bos = torch.full((y.size(0), 1), BOS_ID, dtype=torch.long)
+        bos_id = BOS_ID if dec_vocab > BOS_ID else dec_vocab - 1
+        bos = torch.full((y.size(0), 1), bos_id, dtype=torch.long)
         return torch.cat([bos, y[:, :-1]], 1), y
 
     @staticmethod
@@ -346,10 +347,11 @@ class ToyTasks:
                     impact[t] = random.choice([idx["L"], idx["R"], idx["U"], idx["D"]])
                 y = torch.full((L,), idx["C"], dtype=torch.long)
                 for t in range(L):
-                    if impact[t] != idx["C"]:
+                    dir_t = int(impact[t])
+                    if dir_t != idx["C"]:
                         t0 = t + delay
                         for j in range(t0, min(L, t0 + M)):
-                            y[j] = opp[impact[t]]
+                            y[j] = opp[dir_t]
                 return impact, y, {}, {}, {}
 
         spec = TaskSpec(Vx, Vy, True, {}, {}, {"dec_ce": 1.0})

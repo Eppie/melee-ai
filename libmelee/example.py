@@ -94,7 +94,7 @@ if __name__ == "__main__":
                 # Send to bot controller
                 apply_model_output(controllers[BOT_PORT], outputs.tolist())
                 window = np.stack(list(engine.buffer), axis=0)  # (T=60, F)
-                debug_dump_model_inputs(window, show_window_stats=True, which_frame="last")
+                # debug_dump_model_inputs(window, show_window_stats=True, which_frame="last")
             # melee.techskill.multishine(ai_state=gamestate.players[port], controller=controller)
 
         else:

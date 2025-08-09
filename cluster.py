@@ -3,15 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
-from matplotlib.colors import LogNorm
-from sklearn.cluster import KMeans
-# from sklearn_extra.cluster import KMedoids
-
-import random
-from typing import Literal, Optional
-
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
+from sklearn.cluster import KMeans
 
 SHARDS_DIR = Path("/Users/eppie/melee-ai/shards")
 DEFAULT_GLOB = str(SHARDS_DIR / "frames_chunk_*.parquet")
@@ -136,5 +131,5 @@ if __name__ == "__main__":
     centroids = kmeans_representatives(xy, w, k)
     plot_representatives(xy, w, centroids,
                          title=f"{k} k-means centroids")
-    centroids.sort()
+    centroids = centroids[centroids[:,0].argsort()]
     print(f"centroids: {centroids}")

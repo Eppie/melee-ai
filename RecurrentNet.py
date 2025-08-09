@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Sequence, Callable, Optional
+from typing import Literal, Callable, Optional
 
 import torch
 from torch import nn, Tensor
@@ -49,7 +49,7 @@ class RecurrentNet(nn.Module):
     """
     Encoder (LayerNorm + GRU/LSTM) → last hidden state → 2-step decoder loop:
 
-        step 0: predict sticks  (tanh)   → embed → GRUCell
+        step 0: predict sticks  (sigmoid [0,1]) → embed → GRUCell
         step 1: predict buttons (logits) → embed → GRUCell
 
     Returns tensor shaped [B, 9] in TARGET_COLUMNS order
@@ -88,9 +88,6 @@ class RecurrentNet(nn.Module):
         if cfg.weight_init is not None:
             self.apply(cfg.weight_init)
 
-    # --------------------------------------------------------------------- #
-    # forward
-    # --------------------------------------------------------------------- #
     def forward(self, x: Tensor, y: Tensor | None = None) -> Tensor:
         """
         Parameters
@@ -116,7 +113,7 @@ class RecurrentNet(nn.Module):
             y_btn, y_stick = y[:, BUTTON_SLICE], y[:, STICK_SLICE]
 
         # ------- step 0 : sticks -------
-        stick_out = torch.tanh(self.stick_head(h_dec))          # [-1,1]
+        stick_out = torch.sigmoid(self.stick_head(h_dec))        # [0,1]
         stick_in = y_stick if use_teacher else stick_out.detach()
         h_dec = self.dec_cell(self.stick_embed(stick_in), h_dec)
 
@@ -127,7 +124,3 @@ class RecurrentNet(nn.Module):
 
         # 3) Concatenate in canonical order
         return torch.cat([btn_logits, stick_out], dim=-1)       # [B,9]
-
-    # convenience: last linear layer with logits (for priors etc.)
-    def get_last_linear(self) -> nn.Linear:
-        return self.button_head

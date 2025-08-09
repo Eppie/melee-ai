@@ -414,15 +414,8 @@ class InferenceEngine:
         # Sigmoid on digital button positions
         preds[BCE_INDICES] = torch.sigmoid(preds[BCE_INDICES])
 
-        # Clamp analog ranges
-        # preds[IDX_JS_X] = preds[IDX_JS_X].clamp(0.0, 1.0)
-        # preds[IDX_JS_Y] = preds[IDX_JS_Y].clamp(0.0, 1.0)
-        # preds[IDX_CS_X] = preds[IDX_CS_X].clamp(0.0, 1.0)
-        # preds[IDX_CS_Y] = preds[IDX_CS_Y].clamp(0.0, 1.0)
-        # Convert tanh (−1..1) → unit interval and clamp
-        tanh_to_unit = lambda t: (t + 1.0) * 0.5
         for idx in (IDX_JS_X, IDX_JS_Y, IDX_CS_X, IDX_CS_Y):
-            preds[idx] = tanh_to_unit(preds[idx]).clamp_(0.0, 1.0)
+            preds[idx] = preds[idx].clamp_(0.0, 1.0)
         preds = preds.detach().cpu().numpy()
         debug_dump_model_outputs(preds_before, preds)
         return preds

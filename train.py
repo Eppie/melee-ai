@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import itertools
 import os
 from typing import Optional
 
@@ -14,17 +15,17 @@ from RecurrentNet import RecurrentConfig, RecurrentNet
 from config import TARGET_COLUMNS, SEQUENCE_LENGTH, CLASSIFICATION_TARGETS, REGRESSION_TARGETS, FEATURE_COLUMNS, \
     BCE_INDICES, REG_INDICES, BATCH_SIZE
 from dataset import NumPySequenceDataset
-from loss import BalancedHybridLoss, SimpleHybridLoss
+from loss import SimpleHybridLoss
 
 RECURRENT_CONFIG = RecurrentConfig(
     input_dim=len(FEATURE_COLUMNS),
     output_dim=len(TARGET_COLUMNS),
     hidden_size=1024,
     num_layers=4,
-    dropout=0.1,
+    dropout=0.0,
     bidirectional=False,  # start unidirectional for causal prediction
     kind="lstm",
-    embed_dim=128,
+    embed_dim=32,
 )
 
 
@@ -101,12 +102,7 @@ if __name__ == "__main__":
         print(f"\n--- ERROR: No .npy shards found for pattern '{tfrecord_glob}'. ---\n")
         exit()
 
-    dataset = NumPySequenceDataset(
-        files=files,
-        target_columns=TARGET_COLUMNS,
-        feature_columns=FEATURE_COLUMNS,
-        sequence_length=SEQUENCE_LENGTH,
-    )
+    dataset = NumPySequenceDataset(files=files,)
 
     loader = DataLoader(
         dataset,
@@ -118,66 +114,19 @@ if __name__ == "__main__":
     )
     print(f"DataLoader initialized with {num_dataloader_workers} workers.")
 
-    # --- 3. Configure and create the model ---
     device = torch.device("mps" if torch.mps.is_available() else "cpu")
 
     print(f"Model Config: Input Dim={RECURRENT_CONFIG.input_dim}, Output Dim={RECURRENT_CONFIG.output_dim}")
     model = RecurrentNet(RECURRENT_CONFIG, feature_dim=len(FEATURE_COLUMNS)).to(device)
     print(f"Training on device: {device}")
-
-    # --- 4. Set up the combined loss function ---
-
-    import itertools
-    #
-    # with torch.no_grad():
-    #     pos = torch.zeros(len(BCE_INDICES))
-    #     neg = torch.zeros(len(BCE_INDICES))
-    #     for _, y in itertools.islice(loader, 16384):  # sample some batches
-    #         t = y[:, BCE_INDICES].float()
-    #         pos += t.sum(0)
-    #         neg += (1.0 - t).sum(0)
-    # pos_weight = (neg / pos.clamp_min(1.0))
-    # pos_weight = (neg / pos.clamp_min(1.0)).clamp(max=100.0)
-    # print(f"Positive weight: {pos_weight}")
-    # --- Initialize final layer biases to class/target priors ---
-    # with torch.no_grad():
-    #     last_linear = (
-    #         model.get_last_linear()
-    #         if hasattr(model, "get_last_linear")
-    #         else next(m for m in reversed(model.net) if isinstance(m, nn.Linear))
-    #     )
-    #
-    #     # For classification heads (BCE)
-    #     p = (pos / (pos + neg).clamp_min(1.0)).to(device).clamp(1e-4, 1 - 1e-4)
-    #     last_linear.bias[BCE_INDICES] = torch.logit(p)
-    #
-    #     # For regression heads, center near the rest value used in gating
-    #     last_linear.bias[REG_INDICES] = 0.5
     criterion = SimpleHybridLoss(
         bce_indices=BCE_INDICES,
         reg_indices=REG_INDICES,
-        # pos_weight=pos_weight.to(device),  # same imbalance weighting you computed
         bce_weight=1.0,
-        reg_weight=2.0,  # if you still want sticks ×2
+        reg_weight=2.0,
     ).to(device)
-    # criterion = BalancedHybridLoss(
-    #     bce_indices=BCE_INDICES,
-    #     reg_indices=REG_INDICES,
-    #     pos_weight=pos_weight.to(device),
-    #     focal_gamma=1.0,
-    #     reg_beta=0.02,
-    #     bce_group_weight=1.0,
-    #     reg_group_weight=2.0,
-        # enable_gating=True,
-        # gate_source="target",  # start with target-based gating (stable)
-        # gate_type="soft",  # or "soft" to weight by distance from 0.5
-        # rest_value=0.5,
-        # deadzone=0.02,  # tune to your device's deadzone (e.g., 0.05–0.12)
-        # soft_floor=0.1,  # e.g., 0.1 if you want a small gradient when near rest
-    # )
     optimizer = optim.AdamW(model.parameters(), lr=3e-4)
 
-    # --- 5. Run the training loop ---
     print("\nStarting training...")
     for epoch in range(30):
         stats = train_one_epoch(model, loader, criterion, optimizer, device)

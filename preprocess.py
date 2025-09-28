@@ -1,378 +1,683 @@
 from __future__ import annotations
 
-import concurrent.futures
-import hashlib
-import os
+import csv
+from enum import IntEnum, auto
 from pathlib import Path
-from typing import NamedTuple
-from typing import TypedDict
+from typing import Dict, Mapping
 
 import numpy as np
-import peppi_py
-import pyarrow as pa
-import pyarrow.compute as pc
-import pyarrow.parquet as pq
-import pyarrow.types as pat
 
-from config import REPLAYS_DIR, OUT_DIR, CHUNK_SIZE
-from libmelee.melee.enums import Button
+from libmelee.melee import enums
+from libmelee.melee.enums import Action
 
-OUT_DIR.mkdir(exist_ok=True)
+MAX_FRAMES: int = (60 * 60 * 8) + 123  # Full 8 minute replay
 
 
-class Buttons(NamedTuple):
-    A: np.bool_
-    B: np.bool_
-    X: np.bool_
-    Y: np.bool_
-    Z: np.bool_
-    L: np.bool_
-    R: np.bool_
+class ActionCategory(IntEnum):
+    DEAD = 0
+    ENTERING_STAGE = auto()
+    GROUNDED_MOVEMENT = auto()
+    AERIAL_MOVEMENT = auto()
+    GROUNDED_LIGHT = auto()
+    GROUNDED_STRONG = auto()
+    AERIAL_NORMALS = auto()
+    HITSTUN = auto()
+    ITEMS = auto()
+    SHIELDING = auto()
+    OTHER_GROUNDED = auto()
+    TECH = auto()
+    SHIELD_BREAK = auto()
+    GRAB = auto()
+    THROW = auto()
+    BEING_GRABBED = auto()
+    DODGE_REBOUND = auto()
+    BEING_THROWN = auto()
+    MISSED_TECH = auto()
+    EDGE = auto()
+    TAUNT = auto()
+    DK_SPECIFIC = auto()
+    JIGGLY_SPECIFIC = auto()
+    MEWTWO_SPECIFIC = auto()
+    FOX_SPECIFIC = auto()
+    CAPTURE = auto()
+    SPECIALS = auto()
+    KIRBY_SPECIFIC = auto()
+    OTHER = auto()
 
 
-LIBMELEE_BUTTONS = {name: Button(name) for name in Buttons._fields}
-
-BUTTON_MASKS = {
-    Button.BUTTON_A: 0x0100,
-    Button.BUTTON_B: 0x0200,
-    Button.BUTTON_X: 0x0400,
-    Button.BUTTON_Y: 0x0800,
-    Button.BUTTON_Z: 0x0010,
-    Button.BUTTON_R: 0x0020,
-    Button.BUTTON_L: 0x0040,
-}
-
-
-def get_buttons(button_bits: np.ndarray) -> Buttons:
-    return Buttons(
-        **{
-            name: np.asarray(
-                np.bitwise_and(button_bits, BUTTON_MASKS[button]), dtype=bool
-            )
-            for name, button in LIBMELEE_BUTTONS.items()
-        }
-    )
-
-
-def file_sha256(path: Path, chunk_size: int = 1 << 20) -> str:
-    """Return the SHA‑256 digest of *path* as a hexadecimal string."""
-    sha = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(chunk_size), b""):
-            sha.update(chunk)
-    return sha.hexdigest()
-
-
-class FlagBits(TypedDict):
-    idx: int  # index within the 5-tuple of state-flag arrays
-    mask: int  # bit-mask to test
-
-
-# Bit-definitions we care about ─ indices are *within* the state_flags tuple.
-# The first element (index 0) is “State Bit Flags 1”, which we ignore.
-FLAG_DEFS: dict[str, FlagBits] = {
-    "has_temp_intang": {"idx": 1, "mask": 0x04},
-    "is_fastfalling": {"idx": 1, "mask": 0x08},
-    "defender_hitlag": {"idx": 1, "mask": 0x10},
-    "in_hitlag": {"idx": 1, "mask": 0x20},
-    "is_grabbing": {"idx": 2, "mask": 0x04},
-    "shield_active": {"idx": 2, "mask": 0x80},
-    "in_hitstun": {"idx": 3, "mask": 0x02},
-    "shield_touch": {"idx": 3, "mask": 0x04},
-    "powershield": {"idx": 3, "mask": 0x20},
-    "is_dead": {"idx": 4, "mask": 0x40},
-    "offscreen": {"idx": 4, "mask": 0x80},
-}
-
-
-def _bit_is_set(arr: pa.UInt8Array, mask: int) -> pa.BooleanArray:
-    """Return a BooleanArray with `True` where *mask* is asserted in *arr*."""
-    return pc.not_equal(
-        pc.bit_wise_and(arr, pa.scalar(mask, pa.uint8())),
-        pa.scalar(0, pa.uint8()),
-    )
-
-
-def extract_state_flags(
-    state_flags: (
-        tuple[pa.UInt8Array, pa.UInt8Array, pa.UInt8Array, pa.UInt8Array, pa.UInt8Array]
-        | None
+USED_BY_CATEGORY: Mapping[ActionCategory, tuple[Action, ...]] = {
+    ActionCategory.DEAD: (
+        Action.DEAD_DOWN,
+        Action.DEAD_LEFT,
+        Action.DEAD_RIGHT,
+        Action.DEAD_FLY_STAR,
+        Action.DEAD_FLY,
+        Action.DEAD_FLY_SPLATTER,
+        Action.DEAD_FLY_SPLATTER_FLAT,
     ),
-) -> dict[str, pa.BooleanArray]:
+    ActionCategory.ENTERING_STAGE: (
+        Action.ON_HALO_DESCENT,
+        Action.ON_HALO_WAIT,
+        Action.ENTRY,
+        Action.ENTRY_START,
+        Action.ENTRY_END,
+    ),
+    ActionCategory.GROUNDED_MOVEMENT: (
+        Action.STANDING,
+        Action.WALK_SLOW,
+        Action.WALK_MIDDLE,
+        Action.WALK_FAST,
+        Action.TURNING,
+        Action.TURNING_RUN,
+        Action.DASHING,
+        Action.RUNNING,
+        Action.RUN_BRAKE,
+        Action.KNEE_BEND,
+        Action.CROUCH_START,
+        Action.CROUCHING,
+        Action.CROUCH_END,
+        Action.ROLL_FORWARD,
+        Action.ROLL_BACKWARD,
+        Action.SPOTDODGE,
+        Action.PLATFORM_DROP,
+        Action.EDGE_TEETERING_START,
+        Action.EDGE_TEETERING,
+        Action.SLIDING_OFF_EDGE,
+    ),
+    ActionCategory.AERIAL_MOVEMENT: (
+        Action.JUMPING_FORWARD,
+        Action.JUMPING_BACKWARD,
+        Action.JUMPING_ARIAL_FORWARD,
+        Action.JUMPING_ARIAL_BACKWARD,
+        Action.FALLING,
+        Action.FALLING_AERIAL,
+        Action.DEAD_FALL,
+        Action.TUMBLING,
+        Action.LANDING,
+        Action.LANDING_SPECIAL,
+    ),
+    ActionCategory.GROUNDED_LIGHT: (
+        Action.NEUTRAL_ATTACK_1,
+        Action.NEUTRAL_ATTACK_2,
+        Action.NEUTRAL_ATTACK_3,
+        Action.LOOPING_ATTACK_START,
+        Action.LOOPING_ATTACK_MIDDLE,
+        Action.LOOPING_ATTACK_END,
+        Action.DASH_ATTACK,
+        Action.FTILT_HIGH,
+        Action.FTILT_HIGH_MID,
+        Action.FTILT_MID,
+        Action.FTILT_LOW_MID,
+        Action.FTILT_LOW,
+        Action.UPTILT,
+        Action.DOWNTILT,
+    ),
+    ActionCategory.GROUNDED_STRONG: (
+        Action.FSMASH_HIGH,
+        Action.FSMASH_MID_HIGH,
+        Action.FSMASH_MID,
+        Action.FSMASH_MID_LOW,
+        Action.FSMASH_LOW,
+        Action.UPSMASH,
+        Action.DOWNSMASH,
+    ),
+    ActionCategory.AERIAL_NORMALS: (
+        Action.NAIR,
+        Action.FAIR,
+        Action.BAIR,
+        Action.UAIR,
+        Action.DAIR,
+        Action.NAIR_LANDING,
+        Action.FAIR_LANDING,
+        Action.BAIR_LANDING,
+        Action.UAIR_LANDING,
+        Action.DAIR_LANDING,
+    ),
+    ActionCategory.HITSTUN: (
+        Action.DAMAGE_HIGH_1,
+        Action.DAMAGE_HIGH_2,
+        Action.DAMAGE_HIGH_3,
+        Action.DAMAGE_NEUTRAL_1,
+        Action.DAMAGE_NEUTRAL_2,
+        Action.DAMAGE_NEUTRAL_3,
+        Action.DAMAGE_LOW_1,
+        Action.DAMAGE_LOW_2,
+        Action.DAMAGE_LOW_3,
+        Action.DAMAGE_AIR_1,
+        Action.DAMAGE_AIR_2,
+        Action.DAMAGE_AIR_3,
+        Action.DAMAGE_FLY_HIGH,
+        Action.DAMAGE_FLY_NEUTRAL,
+        Action.DAMAGE_FLY_LOW,
+        Action.DAMAGE_FLY_TOP,
+        Action.DAMAGE_FLY_ROLL,
+    ),
+    ActionCategory.ITEMS: (
+        Action.ITEM_PICKUP_LIGHT,
+        Action.ITEM_THROW_LIGHT_FORWARD,
+        Action.ITEM_THROW_LIGHT_BACK,
+        Action.ITEM_THROW_LIGHT_HIGH,
+        Action.ITEM_THROW_LIGHT_LOW,
+        Action.ITEM_THROW_LIGHT_DASH,
+        Action.ITEM_THROW_LIGHT_AIR_FORWARD,
+        Action.ITEM_THROW_LIGHT_AIR_BACK,
+        Action.ITEM_THROW_LIGHT_AIR_HIGH,
+        Action.ITEM_THROW_LIGHT_AIR_LOW,
+        Action.ITEM_THROW_LIGHT_SMASH_FORWARD,
+        Action.ITEM_THROW_LIGHT_SMASH_BACK,
+        Action.ITEM_THROW_LIGHT_SMASH_UP,
+        Action.ITEM_THROW_LIGHT_SMASH_DOWN,
+        Action.ITEM_THROW_LIGHT_AIR_SMASH_FORWARD,
+        Action.ITEM_THROW_LIGHT_AIR_SMASH_BACK,
+        Action.ITEM_THROW_LIGHT_AIR_SMASH_HIGH,
+        Action.ITEM_THROW_LIGHT_AIR_SMASH_LOW,
+        Action.BEAM_SWORD_SWING_3,
+        Action.BEAM_SWORD_SWING_4,
+        Action.ITEM_THROW_LIGHT_DROP,
+    ),
+    ActionCategory.SHIELDING: (
+        Action.SHIELD_START,
+        Action.SHIELD,
+        Action.SHIELD_RELEASE,
+        Action.SHIELD_STUN,
+        Action.SHIELD_REFLECT,
+    ),
+    ActionCategory.OTHER_GROUNDED: (
+        Action.TECH_MISS_UP,
+        Action.LYING_GROUND_UP,
+        Action.LYING_GROUND_UP_HIT,
+        Action.GROUND_GETUP,
+        Action.GROUND_ATTACK_UP,
+        Action.GROUND_ROLL_FORWARD_UP,
+        Action.GROUND_ROLL_BACKWARD_UP,
+        Action.TECH_MISS_DOWN,
+        Action.LYING_GROUND_DOWN,
+        Action.DAMAGE_GROUND,
+        Action.NEUTRAL_GETUP,
+        Action.GETUP_ATTACK,
+        Action.GROUND_ROLL_FORWARD_DOWN,
+        Action.GROUND_ROLL_BACKWARD_DOWN,
+    ),
+    ActionCategory.TECH: (
+        Action.NEUTRAL_TECH,
+        Action.FORWARD_TECH,
+        Action.BACKWARD_TECH,
+        Action.WALL_TECH,
+        Action.WALL_TECH_JUMP,
+        Action.CEILING_TECH,
+    ),
+    ActionCategory.SHIELD_BREAK: (
+        Action.SHIELD_BREAK_FLY,
+        Action.SHIELD_BREAK_FALL,
+        Action.SHIELD_BREAK_DOWN_U,
+        Action.SHIELD_BREAK_DOWN_D,
+        Action.SHIELD_BREAK_STAND_U,
+        Action.SHIELD_BREAK_STAND_D,
+        Action.SHIELD_BREAK_TEETER,
+    ),
+    ActionCategory.GRAB: (
+        Action.GRAB,
+        Action.GRAB_PULLING,
+        Action.GRAB_RUNNING,
+        Action.GRAB_RUNNING_PULLING,
+        Action.GRAB_WAIT,
+        Action.GRAB_PUMMEL,
+        Action.GRAB_BREAK,
+    ),
+    ActionCategory.THROW: (
+        Action.THROW_FORWARD,
+        Action.THROW_BACK,
+        Action.THROW_UP,
+        Action.THROW_DOWN,
+        Action.GRAB_PULLING_HIGH,
+        Action.GRABBED_WAIT_HIGH,
+        Action.PUMMELED_HIGH,
+    ),
+    ActionCategory.BEING_GRABBED: (
+        Action.GRAB_PULL,
+        Action.GRABBED,
+        Action.GRAB_PUMMELED,
+        Action.GRAB_ESCAPE,
+        Action.GRAB_JUMP,
+    ),
+    ActionCategory.DODGE_REBOUND: (
+        Action.AIRDODGE,
+        Action.REBOUND_STOP,
+        Action.REBOUND,
+    ),
+    ActionCategory.BEING_THROWN: (
+        Action.THROWN_FORWARD,
+        Action.THROWN_BACK,
+        Action.THROWN_UP,
+        Action.THROWN_DOWN,
+    ),
+    ActionCategory.MISSED_TECH: (
+        Action.BOUNCE_WALL,
+        Action.BOUNCE_CEILING,
+        Action.BUMP_WALL,
+        Action.BUMP_CIELING,
+    ),
+    ActionCategory.EDGE: (
+        Action.EDGE_CATCHING,
+        Action.EDGE_HANGING,
+        Action.EDGE_GETUP_SLOW,
+        Action.EDGE_GETUP_QUICK,
+        Action.EDGE_ATTACK_SLOW,
+        Action.EDGE_ATTACK_QUICK,
+        Action.EDGE_ROLL_SLOW,
+        Action.EDGE_ROLL_QUICK,
+        Action.EDGE_JUMP_1_SLOW,
+        Action.EDGE_JUMP_2_SLOW,
+        Action.EDGE_JUMP_1_QUICK,
+        Action.EDGE_JUMP_2_QUICK,
+    ),
+    ActionCategory.TAUNT: (
+        Action.TAUNT_RIGHT,
+        Action.TAUNT_LEFT,
+    ),
+    ActionCategory.DK_SPECIFIC: (
+        Action.SHOULDERED_WAIT,
+        Action.SHOULDERED_WALK_SLOW,
+        Action.SHOULDERED_WALK_MIDDLE,
+        Action.SHOULDERED_TURN,
+        Action.THROWN_FF,
+        Action.THROWN_FB,
+        Action.THROWN_F_HIGH,
+        Action.THROWN_F_LOW,
+        Action.BURY,
+        Action.BURY_WAIT,
+        Action.BURY_JUMP,
+        Action.DK_GROUND_POUND_START,
+        Action.DK_GROUND_POUND,
+        Action.DK_GROUND_POUND_END,
+    ),
+    ActionCategory.JIGGLY_SPECIFIC: (
+        Action.DAMAGE_SONG,
+        Action.DAMAGE_SONG_WAIT,
+        Action.DAMAGE_SONG_RV,
+    ),
+    ActionCategory.MEWTWO_SPECIFIC: (
+        Action.DAMAGE_BIND,
+        Action.THROWN_MEWTWO,
+        Action.THROWN_MEWTWO_AIR,
+    ),
+    ActionCategory.FOX_SPECIFIC: (
+        Action.SHINE_TURN,
+        Action.DOWN_B_STUN,
+        Action.DOWN_B_AIR,
+        Action.UP_B_GROUND,
+    ),
+    ActionCategory.CAPTURE: (
+        Action.CAPTURE_CAPTAIN,
+        Action.CAPTURE_YOSHI,
+        Action.CAPTURE_DAMAGE_KOOPA,
+        Action.CAPTURE_WAIT_KOOPA,
+        Action.CAPTURE_DAMAGE_KOOPA_AIR,
+        Action.CAPTURE_WAIT_KOOPA_AIR,
+        Action.CAPTURE_KIRBY,
+        Action.CAPTURE_WAIT_KIRBY,
+        Action.CAPTURE_KOOPA_AIR_HIT,
+    ),
+    ActionCategory.SPECIALS: (
+        Action.DAMAGE_ICE,
+        Action.DAMAGE_ICE_JUMP,
+        Action.DOWN_REFLECT,
+        Action.LASER_GUN_PULL,
+        Action.NEUTRAL_B_CHARGING,
+        Action.NEUTRAL_B_ATTACKING,
+        Action.NEUTRAL_B_FULL_CHARGE,
+        Action.WAIT_ITEM,
+        Action.NEUTRAL_B_CHARGING_AIR,
+        Action.NEUTRAL_B_ATTACKING_AIR,
+        Action.NEUTRAL_B_FULL_CHARGE_AIR,
+        Action.SWORD_DANCE_1,
+        Action.SWORD_DANCE_2_HIGH,
+        Action.SWORD_DANCE_2_MID,
+        Action.SWORD_DANCE_3_HIGH,
+        Action.SWORD_DANCE_3_MID,
+        Action.SWORD_DANCE_3_LOW,
+        Action.SWORD_DANCE_4_HIGH,
+        Action.SWORD_DANCE_4_MID,
+        Action.SWORD_DANCE_4_LOW,
+        Action.SWORD_DANCE_1_AIR,
+        Action.SWORD_DANCE_2_HIGH_AIR,
+        Action.DOWN_B_GROUND_START,
+        Action.DOWN_B_GROUND,
+        Action.SWORD_DANCE_3_MID_AIR,
+        Action.SWORD_DANCE_3_LOW_AIR,
+        Action.SHINE_RELEASE_AIR,
+        Action.MARTH_COUNTER,
+        Action.PARASOL_FALLING,
+        Action.MARTH_COUNTER_FALLING,
+        Action.NESS_SHEILD_START,
+        Action.NESS_SHEILD_AIR,
+        Action.ZITABATA,
+        Action.NESS_SHEILD_AIR_END,
+        Action.THROWN_KOOPA_END_F,
+        Action.THROWN_KOOPA_END_B,
+        Action.THROWN_KOOPA_AIR_END_F,
+        Action.THROWN_KOOPA_AIR_END_B,
+    ),
+    ActionCategory.KIRBY_SPECIFIC: (
+        Action.THROWN_KIRBY_DRINK_S_SHOT,
+        Action.THROWN_KIRBY_SPIT_S_SHOT,
+        Action.KIRBY_BLADE_GROUND,
+        Action.KIRBY_BLADE_UP,
+        Action.KIRBY_BLADE_APEX,
+        Action.KIRBY_BLADE_DOWN,
+        Action.KIRBY_STONE_FORMING_GROUND,
+        Action.KIRBY_STONE_RESTING,
+        Action.KIRBY_STONE_RELEASE,
+        Action.KIRBY_STONE_FORMING_AIR,
+        Action.KIRBY_STONE_FALLING,
+    ),
+    ActionCategory.OTHER: (
+        Action.YOSHI_EGG,
+        Action.THROWN_KOOPA_F,
+        Action.THROWN_KOOPA_B,
+        Action.THROWN_KOOPA_AIR_F,
+        Action.THROWN_KOOPA_AIR_B,
+        Action.THROWN_KIRBY_STAR,
+        Action.THROWN_COPY_STAR,
+        Action.THROWN_KIRBY,
+        Action.UNKNOWN_ANIMATION,
+        Action.THROWN_DOWN_2,
+    ),
+}
+
+# === 2) Build dense indices and lookup maps ===
+_ACTION_TO_DENSE: Dict[Action, int] = {}
+_ACTION_TO_CATEGORY: Dict[Action, ActionCategory] = {}
+
+_dense_counter = 0
+for cat in ActionCategory:
+    actions = USED_BY_CATEGORY.get(cat, ())
+    for a in actions:
+        if a in _ACTION_TO_DENSE:
+            raise RuntimeError(f"Duplicate action in USED_BY_CATEGORY: {a}")
+        _ACTION_TO_DENSE[a] = _dense_counter
+        _ACTION_TO_CATEGORY[a] = cat
+        _dense_counter += 1
+
+NUM_USED_ACTIONS: int = _dense_counter
+
+# Build inverse map: dense id -> original Action enum
+_DENSE_TO_ACTION: Dict[int, Action] = {v: k for k, v in _ACTION_TO_DENSE.items()}
+
+
+def dense_to_action(dense_id: int) -> Action:
     """
-    Convert Slippi's packed `state_flags` into named BooleanArrays.
+    Convert a dense index [0, NUM_USED_ACTIONS) back to the original Action enum.
 
-    If `state_flags` is None, this function returns an empty dict so callers can safely skip these columns.
-
-    Returns
-    -------
-    Dict[str, pyarrow.BooleanArray]
-        Keys are the human-readable field names defined in ``FLAG_DEFS``.
-        Every returned BooleanArray has the same length as the original
-        flag arrays (i.e. one element per frame).
+    Accepts Python ints and NumPy integer types.
+    Raises:
+        ValueError: if the id is out of range or not in the inverse map.
     """
-    if state_flags is None:
-        # Gracefully handle missing state_flags by skipping derived columns.
-        # Returning an empty dict allows callers to proceed without adding
-        # these columns, and downstream concatenation with promote=True will
-        # fill them as nulls where absent.
-        return {}
-
-    out: dict[str, pa.BooleanArray] = {}
-    for human_name, spec in FLAG_DEFS.items():
-        out[human_name] = _bit_is_set(state_flags[spec["idx"]], spec["mask"])
-
-    return out
+    try:
+        return _DENSE_TO_ACTION[int(dense_id)]
+    except (KeyError, ValueError):
+        raise ValueError(f"dense_id {int(dense_id)} is not a valid dense Action id (0..{NUM_USED_ACTIONS - 1})")
 
 
-def process_slp(path: str) -> pa.Table | None:
-    # print(f"Processing {path}")
-    """Read one .slp file, return an Arrow Table with an added file_hash column."""
-    tbl = table_from_slp(path)
-    if tbl is None:
-        return None
-
-    digest = file_sha256(Path(path))
-    hash_col = pa.array([digest] * tbl.num_rows, type=pa.string())
-    return tbl.append_column("file_hash", hash_col)
+def dense_to_action_name(dense_id: int) -> str:
+    """Return the original Action enum name for a dense index (e.g., 'JUMPING_FORWARD')."""
+    return dense_to_action(dense_id).name
 
 
-def _table_to_numpy_matrix(table: pa.Table) -> tuple[np.ndarray, list[str]]:
-    """Convert a pyarrow.Table to a dense float32 NumPy matrix and column names.
-
-    Keeps only numeric/boolean columns. Booleans are cast to 0/1. Integers and
-    floats are cast to float32. Non-numeric (e.g., strings) are dropped.
-    Returns (matrix, column_names). Shape is [num_rows, num_selected_cols].
-    """
-    cols: list[np.ndarray] = []
-    names: list[str] = []
-    for name, chunked in zip(table.column_names, table.columns):
-        typ = chunked.type
-        if pat.is_boolean(typ):
-            arr = (
-                chunked.combine_chunks()
-                .to_numpy(zero_copy_only=False)
-                .astype(np.float32, copy=False)
-            )
-        elif pat.is_integer(typ) or pat.is_floating(typ):
-            arr = (
-                chunked.combine_chunks()
-                .to_numpy(zero_copy_only=False)
-                .astype(np.float32, copy=False)
-            )
-        else:
-            # Drop non-numeric columns (e.g., strings like file_hash, source_file)
-            continue
-        cols.append(arr)
-        names.append(name)
-
-    if not cols:
-        # No numeric columns; return an empty (N, 0) matrix
-        return np.empty((table.num_rows, 0), dtype=np.float32), []
-
-    # Column-stack into [N, K]
-    mat = np.column_stack(cols)
-    return mat, names
+def _preprocess_frame(frame: int) -> np.int32:
+    processed_frame = frame + 123
+    assert 0 <= processed_frame <= MAX_FRAMES, f"Processed frame {processed_frame} is out of range (0, {MAX_FRAMES})"
+    return np.int32(processed_frame)
 
 
-def process_chunk_npy(paths: list[str], chunk_idx: int) -> tuple[int, str]:
-    """Process a list of .slp paths and write one NumPy .npy shard (and columns).
-
-    Writes:
-      - shards/frames_chunk_{idx:03d}.npy          # float32 matrix [N, K]
-      - shards/frames_chunk_{idx:03d}.columns.npy  # UTF-8 column names [K]
-    Returns (rows_written, matrix_path).
-    """
-    tables: list[pa.Table] = []
-    for p in paths:
-        tbl = process_slp(p)
-        if tbl is not None:
-            tables.append(tbl)
-
-    data_path = OUT_DIR / f"frames_chunk_{chunk_idx:03d}.npy"
-    cols_path = OUT_DIR / f"frames_chunk_{chunk_idx:03d}.columns.npy"
-
-    if not tables:
-        # Create empty placeholders for consistency
-        np.save(data_path, np.empty((0, 0), dtype=np.float32))
-        np.save(cols_path, np.array([], dtype=np.str_))
-        return 0, str(data_path)
-
-    combined = pa.concat_tables(tables, promote_options="default")
-    mat, names = _table_to_numpy_matrix(combined)
-
-    # Save matrix and column names (unicode array, no pickle required)
-    np.save(data_path, mat)
-    np.save(cols_path, np.array(names, dtype=np.str_))
-    return int(mat.shape[0]), str(data_path)
-
-
-def table_from_slp(path: str) -> pa.Table | None:
-    """
-    Turn one .slp file into a flattened pyarrow.Table.
-    """
-    game = peppi_py.read_slippi(path)
-
-    frames = game.frames
-    port_data = frames.ports
-    p1_pre, p1_post = port_data[0].leader.pre, port_data[0].leader.post
-    p2_pre, p2_post = port_data[1].leader.pre, port_data[1].leader.post
-    frame_count = len(p1_pre.random_seed)
-
-    cols: dict[str, pa.Array] = {"frame_id": frames.id}
-
-    def add(col: str, arr) -> None:
-        cols[col] = (
-            pa.nulls(frame_count)
-            if arr is None
-            else arr if isinstance(arr, pa.Array) else pa.array(arr)
-        )
-
-    def _unitize_minus1_to1(arr) -> pa.Array | None:
-        """
-        Map [-1, 1] -> [0, 1] using Arrow compute, null-safe and version-friendly
-        """
-        if arr is None:
-            return None
-
-        a = arr if isinstance(arr, pa.Array) else pa.array(arr, type=pa.float32())
-
-        # (a + 1) / 2
-        out = pc.divide(
-            pc.add(a, pa.scalar(1.0, pa.float32())), pa.scalar(2.0, pa.float32())
-        )
-
-        # out = max(0.0, min(out, 1.0))
-        out = pc.if_else(
-            pc.less(out, pa.scalar(0.0, pa.float32())),
-            pa.scalar(0.0, pa.float32()),
-            out,
-        )
-        out = pc.if_else(
-            pc.greater(out, pa.scalar(1.0, pa.float32())),
-            pa.scalar(1.0, pa.float32()),
-            out,
-        )
-        return out
-
-    # Helper to add every per‑player column without duplicating code
-    def _add_player(prefix: str, pre, post) -> None:
-        # State‑flag Booleans
-        for flag_name, bool_arr in extract_state_flags(post.state_flags).items():
-            add(f"{prefix}_{flag_name}", bool_arr)
-
-        # Core numeric / categorical data
-        add(f"{prefix}_pos_x", pre.position.x)
-        add(f"{prefix}_pos_y", pre.position.y)
-        add(f"{prefix}_action_state", post.state)
-        add(f"{prefix}_percent", post.percent)
-        add(f"{prefix}_stocks", post.stocks)
-        add(f"{prefix}_character", post.character)
-        add(f"{prefix}_btn_l_analog", pre.triggers_physical.l)
-        add(f"{prefix}_btn_r_analog", pre.triggers_physical.r)
-
-        # Button bit‑flags --> BooleanArrays
-        buttons = get_buttons(pre.buttons_physical.to_numpy(zero_copy_only=False))
-        add(f"{prefix}_btn_a", buttons.A)
-        add(f"{prefix}_btn_b", buttons.B)
-        add(f"{prefix}_btn_z", buttons.Z)
-        add(f"{prefix}_btn_xy", np.logical_or(buttons.X, buttons.Y))
-        add(f"{prefix}_btn_lr", np.logical_or(buttons.L, buttons.R))
-
-        # Stick positions
-        add(f"{prefix}_pre_joystick_x", _unitize_minus1_to1(pre.joystick.x))
-        add(f"{prefix}_pre_joystick_y", _unitize_minus1_to1(pre.joystick.y))
-        add(f"{prefix}_pre_cstick_x", _unitize_minus1_to1(pre.cstick.x))
-        add(f"{prefix}_pre_cstick_y", _unitize_minus1_to1(pre.cstick.y))
-
-    # Add data for both players using the helper
-    for _prefix, _pre, _post in (
-        ("p1", p1_pre, p1_post),
-        ("p2", p2_pre, p2_post),
-    ):
-        _add_player(_prefix, _pre, _post)
-
-    cols["source_file"] = pa.array([Path(path).name] * frame_count, type=pa.string())
-
-    return pa.Table.from_pydict(cols)
-
-
-def process_chunk(paths: list[str], chunk_idx: int) -> tuple[int, str]:
-    """
-    Process a batch of .slp files and write one Parquet shard.
-
-    Parameters
-    ----------
-    paths :
-        Absolute paths to the .slp replay files in this chunk.
-    chunk_idx :
-        Chunk number (used to name the output file).
-
-    Returns
-    -------
-    (rows_written, parquet_path) :
-        Number of rows actually written (0 if no usable data)
-        and the absolute path to the Parquet file.
-    """
-    tables: list[pa.Table] = []
-    for p in paths:
-        tbl = process_slp(p)
-        if tbl is not None:
-            tables.append(tbl)
-
-    parquet_path = OUT_DIR / f"frames_chunk_{chunk_idx:03d}.parquet"
-
-    # ── Handle the degenerate “no data” case ────────────────────────────
-    if not tables:
-        # Parquet requires at least one column, so write a single null column.
-        empty_tbl = pa.table({"_dummy": pa.nulls(0, pa.null())})
-        pq.write_table(empty_tbl, parquet_path)
-        return 0, str(parquet_path)
-
-    # ── Concatenate and write ───────────────────────────────────────────
-    combined = pa.concat_tables(tables, promote_options="default")
-
-    pq.write_table(
-        combined,
-        parquet_path,
-        compression="zstd",  # good balance of speed & size
-        write_statistics=True,  # enables min/max push-downs later
+def _preprocess_stage(stage: enums.Stage) -> np.int32:
+    return np.int32(
+        {
+            enums.Stage.FINAL_DESTINATION: 1,
+            enums.Stage.BATTLEFIELD: 2,
+            enums.Stage.POKEMON_STADIUM: 3,
+            enums.Stage.DREAMLAND: 4,
+            enums.Stage.FOUNTAIN_OF_DREAMS: 5,
+            enums.Stage.YOSHIS_STORY: 6,
+        }[stage]
     )
 
-    return combined.num_rows, str(parquet_path)
+
+def _preprocess_character(character: enums.Character) -> np.int32:
+    assert 0 <= character.value <= 26
+    return np.int32(character.value)
 
 
-def main() -> None:
-    """Convert all .slp replays into npy in parallel, one file per replay."""
-    slp_files = sorted(REPLAYS_DIR.rglob("*.slp"), reverse=True)
-    # print(slp_files)
-    if not slp_files:
-        print(f"No .slp files found in {REPLAYS_DIR}")
-        return
+# def _preprocess_action(action: Action) -> tuple[np.int32, np.int32]:
+#     """
+#     Map a (used) Action to:
+#       1) a dense np.int32 id in [0, NUM_USED_ACTIONS)
+#       2) a category id as np.int32 (ActionCategory value)
+#
+#     Raises:
+#         ValueError: if the action is not in the 'used' set above.
+#     """
+#     try:
+#         dense = _ACTION_TO_DENSE[action]
+#         cat = _ACTION_TO_CATEGORY[action]
+#     except KeyError:
+#         raise ValueError(f"Action {action.name} (0x{action.value:02x}) is not in the used-action set")
+#     return np.int32(dense), np.int32(int(cat))
 
-    total_chunks = (len(slp_files) + CHUNK_SIZE - 1) // CHUNK_SIZE
-    cpu_count = os.cpu_count() or 4
+def _preprocess_action(action: Action) -> np.int32:
+    return np.int32(action.value)
 
-    print(
-        f"Processing {len(slp_files)} replays in {total_chunks} chunks "
-        f"using up to {cpu_count} processes..."
-    )
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=cpu_count) as exe:
-        futures: list[concurrent.futures.Future[tuple[int, str]]] = []
-        for chunk_idx in range(total_chunks):
-            start = chunk_idx * CHUNK_SIZE
-            chunk_paths = [str(p) for p in slp_files[start : start + CHUNK_SIZE]]
-            futures.append(exe.submit(process_chunk, chunk_paths, chunk_idx))
-        for fut in concurrent.futures.as_completed(futures):
-            rows_written, out_path = fut.result()
-            if rows_written == 0:
-                print(f"{out_path}: no data, skipping.")
-            else:
-                print(f"Wrote {rows_written} rows → {out_path}")
+def _preprocess_x_y_buttons(button_x: bool, button_y: bool) -> np.float32:
+    return np.float32(np.logical_or(button_x, button_y))
 
-    print("Conversion complete.")
+
+def _preprocess_l_r_buttons(button_l: bool, button_r: bool) -> np.float32:
+    return np.float32(np.logical_or(button_l, button_r))
+
+
+def winsor_signed_sqrt(x: np.ndarray, p_lo: float = 1.0, p_hi: float = 99.0) -> np.ndarray:
+    lo = np.percentile(x, p_lo)
+    hi = np.percentile(x, p_hi)
+    xw = np.clip(x, lo, hi)
+    return np.sign(xw) * np.sqrt(np.abs(xw).astype(np.float32) + 1e-8)
+
+
+def write_action_map_csv(path: Path | str = "action_map.csv") -> None:
+    mapping: Dict[int, Action] = _DENSE_TO_ACTION
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["dense_id", "action", "action_value"])  # headers
+        for dense_id in sorted(mapping.keys()):
+            act = mapping[dense_id]
+            w.writerow([dense_id, act.name, int(act.value)])
 
 
 if __name__ == "__main__":
-    main()
+    write_action_map_csv("action_map.csv")
+
+# def category_of(action: Action) -> ActionCategory:
+#     if action not in _ACTION_TO_CATEGORY:
+#         raise ValueError(f"Action {action.name} (0x{action.value:02x}) is not in the used-action set")
+#     return _ACTION_TO_CATEGORY[action]
+#
+#
+# def category_name(cat_id: int) -> str:
+#     return ActionCategory(cat_id).name
+#
+#
+# def dense_size() -> int:
+#     return NUM_USED_ACTIONS
+
+
+from typing import Tuple
+import numpy as np
+
+
+def snap_replay_to_palette(
+        raw_xy01: np.ndarray,
+        palette11: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    xy = np.asarray(raw_xy01, dtype=np.float32)
+    if xy.shape[-1] != 2:
+        raise ValueError("raw_xy01 must have last dimension size 2")
+    P = np.asarray(palette11, dtype=np.float32)
+    if P.ndim != 2 or P.shape[1] != 2:
+        raise ValueError("palette11 must have shape (K, 2)")
+
+    orig_shape = xy.shape
+    V01 = xy.reshape(-1, 2)
+
+    # Map [0,1] -> [-1,1], clip to unit circle (rarely necessary but safe).
+    V11 = np.clip(V01 * 2.0 - 1.0, -1.0, 1.0)
+    r2 = np.einsum("ij,ij->i", V11, V11)
+    over = r2 > 1.0
+    if np.any(over):
+        V11[over] /= np.sqrt(r2[over])[..., None]
+
+    # Precompute palette norms; vectorized nearest neighbor search.
+    P_norm2 = np.einsum("ij,ij->i", P, P)  # (K,)
+    V_norm2 = np.einsum("ij,ij->i", V11, V11)  # (N,)
+    V_dot_PT = V11 @ P.T  # (N, K)
+    d2 = V_norm2[:, None] + P_norm2[None, :] - 2.0 * V_dot_PT
+
+    idx = np.argmin(d2, axis=1).astype(np.int32)
+    snapped = P[idx]
+
+    return snapped.reshape(orig_shape), idx.reshape(orig_shape[:-1])
+
+
+def model_to_dolphin01(
+        model_out: np.ndarray,
+        palette11: np.ndarray | None = None,
+) -> np.ndarray:
+    arr = np.asarray(model_out)
+
+    if np.issubdtype(arr.dtype, np.integer):
+        if palette11 is None:
+            raise ValueError("palette11 must be provided when converting indices")
+        P = np.asarray(palette11, dtype=np.float32)
+        coords11 = P[arr]
+    else:
+        coords11 = np.asarray(model_out, dtype=np.float32)
+        if coords11.shape[-1] != 2:
+            raise ValueError("model_out must have last dimension size 2")
+
+    # Clamp to unit circle to be safe.
+    r2 = np.einsum("...i,...i->...", coords11, coords11)
+    over = r2 > 1.0
+    if np.any(over):
+        coords11 = coords11.copy()
+        coords11[over] /= np.sqrt(r2[over])[..., None]
+
+    # Map [-1,1] -> [0,1]
+    xy01 = np.clip(coords11 * 0.5 + 0.5, 0.0, 1.0).astype(np.float32)
+    return xy01
+
+
+FOX_STICK_64: list[tuple[float, float]] = [
+    # --- Essentials ---
+    (0.0, -1.0),  # 01 Hard down – ASDI-down, CC, fast-fall
+    (-1.0, 0.0),  # 02 Hard left – max drift, horiz DI
+    (0.0, 1.0),  # 03 Hard up – survival vs horizontals, Firefox charge positioning
+    (1.0, 0.0),  # 04 Hard right – max drift, horiz DI
+    (0.0, 0.0),  # 05 Neutral – buffering, re-center
+
+    # --- Shield-drop (engine accepts -0.6875..-0.6625; one precise value suffices) ---
+    (0.0, -0.6750),  # 06 Shield-drop Y (canonical pick in the allowed band)
+
+    # --- Wavedash / waveland / ledgedash (down-toward). Keep both shallow (distance) and ~45° (Fox ledgedash) ---
+    (0.9500, -0.2875),  # 07 16.84° down-right – shallowest legal; max slide if grounded
+    (0.9300, -0.3500),  # 08 ~21° down-right – shallow WD
+    (0.8625, -0.5000),  # 09 30° down-right – standard long WD
+    (0.8125, -0.5750),  # 10 ~35° down-right – distance/consistency trade
+    (0.7625, -0.6375),  # 11 ~40° down-right – reliable ground contact
+    (0.7000, -0.7000),  # 12 45° down-right – Fox ledgedash (~45° best GALINT)
+    (0.6375, -0.7625),  # 13 50° down-right – safer vs slants
+    (-0.9500, -0.2875),  # 14 16.84° down-left – mirror
+    (-0.9300, -0.3500),  # 15 ~21° down-left – mirror
+    (-0.8625, -0.5000),  # 16 30° down-left – mirror
+    (-0.8125, -0.5750),  # 17 ~35° down-left – mirror
+    (-0.7625, -0.6375),  # 18 ~40° down-left – mirror
+    (-0.7000, -0.7000),  # 19 45° down-left – Fox ledgedash mirror
+    (-0.6375, -0.7625),  # 20 50° down-left – mirror
+
+    # --- Firefox (Up+B) right/up – dense angles for unfair recoveries ---
+    (0.9000, 0.4125),  # 21 ~24.5° – shallow Firefox
+    (0.8625, 0.5000),  # 22 30°
+    (0.8125, 0.5750),  # 23 35°
+    (0.7625, 0.6375),  # 24 40°
+    (0.7000, 0.7000),  # 25 45° – baseline diagonal
+    (0.6375, 0.7625),  # 26 50°
+    (0.5750, 0.8125),  # 27 55°
+    (0.5000, 0.8625),  # 28 60°
+    (0.4125, 0.9000),  # 29 65°
+    (0.3500, 0.9300),  # 30 70°
+    (0.2875, 0.9500),  # 31 75° – steep threader
+
+    # --- Firefox (Up+B) left/up – mirrors ---
+    (-0.9000, 0.4125),  # 32 ~24.5° left
+    (-0.8625, 0.5000),  # 33 30° left
+    (-0.8125, 0.5750),  # 34 35° left
+    (-0.7625, 0.6375),  # 35 40° left
+    (-0.7000, 0.7000),  # 36 45° left
+    (-0.6375, 0.7625),  # 37 50° left
+    (-0.5750, 0.8125),  # 38 55° left
+    (-0.5000, 0.8625),  # 39 60° left
+    (-0.4125, 0.9000),  # 40 65° left
+    (-0.3500, 0.9300),  # 41 70° left
+    (-0.2875, 0.9500),  # 42 75° left
+
+    # --- Ultra-steep Firefox angles (beyond rectangle-legal; superhuman recoveries) ---
+    (0.1750, 0.9750),  # 43 ~80° right/up – high thread under/over guards
+    (0.0875, 0.9875),  # 44 ~85° right/up – near-vertical sweetspot
+    (-0.1750, 0.9750),  # 45 ~80° left/up – mirror
+    (-0.0875, 0.9875),  # 46 ~85° left/up – mirror
+
+    # --- Universal 45° diagonals (DI/ASDI, drift, recoveries) ---
+    (0.7071, 0.7071),  # 47 45° up-right – survival DI corner (approx; <=1 magnitude)
+    (-0.7071, 0.7071),  # 48 135° up-left – mirror
+    (-0.7071, -0.7071),  # 49 225° down-left – combo DI down-away
+    (0.7071, -0.7071),  # 50 315° down-right – combo DI down-away
+
+    # --- DI ring (8-point, ~22.5° steps; grid-aligned to 0.925/0.375 for unit radius) ---
+    (0.9250, 0.3750),  # 51 ~22.5° – shallow-KB survival DI
+    (0.3750, 0.9250),  # 52 ~67.5°
+    (-0.3750, 0.9250),  # 53 ~112.5°
+    (-0.9250, 0.3750),  # 54 ~157.5°
+    (-0.9250, -0.3750),  # 55 ~202.5°
+    (-0.3750, -0.9250),  # 56 ~247.5°
+    (0.3750, -0.9250),  # 57 ~292.5°
+    (0.9250, -0.3750),  # 58 ~337.5°
+
+    # --- Steep ASDI/slide-off helpers (mirroring rectangle C-stick diagonals) ---
+    (0.5250, 0.8500),  # 59 Up-right steep ASDI / platform slide-off
+    (-0.5250, 0.8500),  # 60 Up-left steep ASDI / platform slide-off
+
+    # --- Exact thresholds of axis activation (tilts, walk, ambiguous DI, pivot control) ---
+    (0.6625, 0.0),  # 61 X=+0.6625 – tilt/walk cutoff; avoids X-smash
+    (-0.6625, 0.0),  # 62 X=-0.6625 – mirror
+    (0.2875, 0.0),  # 63 X=+0.2875 – minimal axis activation; dash/turn micro-timing
+    (-0.2875, 0.0),  # 64 X=-0.2875 – mirror
+]
+
+# (Optional) quick sanity checks for your pipeline:
+assert len(FOX_STICK_64) == 64
+assert (
+        max(x * x + y * y for x, y in FOX_STICK_64) <= 1.0 + 1e-9
+)
+# all inside unit circle
+
+C_STICK_XY_CLUSTER_CENTERS_V0_1: np.ndarray = np.array(
+    np.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [-1.0, 0.0],
+        [0.0, -1.0],
+        [0.0, 1.0],
+        [-0.7, -0.7],
+        [0.7, -0.7],
+        [0.7, 0.7],
+        [-0.7, 0.7],
+    ])
+)

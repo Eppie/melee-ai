@@ -1,4 +1,4 @@
-""" A custom logger for a console. Writes the gametstate out to a CSV file
+""" A custom logger for a console. Writes the gamestate out to a CSV file
         so you can retroactively view the game frame-by-frame"""
 
 import csv
@@ -6,8 +6,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-class Logger():
-    """A custom logger for a console. Writes the gametstate out to a CSV file each frame
+class Logger:
+    """A custom logger for a console. Writes the gamestate out to a CSV file each frame
             so you can retroactively view the game frame-by-frame"""
     def __init__(self):
         timestamp = Path(str(datetime.now()).replace(" ", "-").replace(":", "-") + ".csv")

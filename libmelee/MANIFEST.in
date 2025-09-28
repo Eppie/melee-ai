@@ -1,4 +1,0 @@
-include melee/framedata.csv
-include melee/actiondata.csv
-include melee/characterdata.csv
-include melee/GALE01r2.ini

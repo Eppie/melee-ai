@@ -9,8 +9,8 @@ try:
 except ImportError:
     pass
 
-from melee.console import Console
-from melee import enums
+from libmelee.melee.console import Console
+from libmelee.melee import enums
 
 def fix_analog_stick(x: float) -> float:
     """Fixes the analog stick values to match Console.step output."""
@@ -100,6 +100,7 @@ class Controller:
               Also adjusts the analog triggers in an analogous way.
         """
         self._is_dolphin = console.is_dolphin
+        self.pipe = None
         if self._is_dolphin:
             self.pipe_path = console.get_dolphin_pipes_path(port)
             self.pipe = None

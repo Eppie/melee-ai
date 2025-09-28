@@ -3,30 +3,29 @@
 This can be Dolphin (Slippi's Ishiiruka) or an SLP file. The Console object
 is your method to start and stop Dolphin, set configs, and get the latest GameState.
 """
-import base64
-import configparser
-import csv
+
+from collections import defaultdict
 import dataclasses
 import enum
-import logging
-import math
-import os
-import platform
-import shutil
-import stat
-import struct
-import subprocess
-import tempfile
-import time
-from collections import defaultdict
-from pathlib import Path
-from typing import Optional, Final
-
-import numpy as np
+from typing import Optional
 from packaging import version
 
+import logging
+import time
+import os
+import stat
+import configparser
+import csv
+import subprocess
+import platform
+import math
+import base64
+import numpy as np
+from pathlib import Path
+import shutil
+import tempfile
+
 from libmelee.melee import enums
-from libmelee.melee import stages
 from libmelee.melee.enums import Action
 from libmelee.melee.gamestate import GameState, Projectile, PlayerState
 from libmelee.melee.slippstream import (
@@ -36,21 +35,18 @@ from libmelee.melee.slippstream import (
     EVENT_TO_STAGE,
 )
 from libmelee.melee.slpfilestreamer import SLPFileStreamer
+from libmelee.melee import stages
 
 
 class SlippiVersionTooLow(Exception):
     """Raised when the Slippi version is not recent enough"""
-
     def __init__(self, message):
         self.message = message
-
 
 class InvalidDolphinPath(Exception):
     """Raised when given path to Dolphin is invalid"""
-
     def __init__(self, message):
         self.message = message
-
 
 def _ignore_fifos(src, names):
     fifos = []
@@ -60,10 +56,8 @@ def _ignore_fifos(src, names):
             fifos.append(name)
     return fifos
 
-
 def _copytree_safe(src, dst):
     shutil.copytree(src, dst, ignore=_ignore_fifos)
-
 
 def _default_home_path(path: str) -> str:
     return '/Users/eppie/Library/Application Support/com.project-slippi.dolphin/netplay/User/'
@@ -81,20 +75,14 @@ def _default_home_path(path: str) -> str:
 
     raise FileNotFoundError("Could not find dolphin home directory.")
 
-
 def read_byte(event_bytes: bytes, offset: int):
     return np.ndarray((1,), ">B", event_bytes, offset)[0]
 
-
-def read_shift_jis(event_bytes: bytes, offset: int) -> str:
-    # Same behavior, but fast scan with memoryview
-    mv = memoryview(event_bytes)
+def read_shift_jis(event_bytes: bytes, offset: int):
     end = offset
-    # Find NUL terminator
-    while mv[end] != 0:
+    while event_bytes[end] != 0:
         end += 1
-    return bytes(mv[offset:end]).decode('shift-jis')
-
+    return event_bytes[offset:end].decode('shift-jis')
 
 def get_exe_path(path: str) -> str:
     """Return the path to the dolphin executable"""
@@ -109,7 +97,7 @@ def get_exe_path(path: str) -> str:
         exe_name = "Slippi Dolphin.exe"
     elif platform.system() == "Darwin":
         exe_name = "Slippi Dolphin"
-    else:  # Linux
+    else: # Linux
         exe_name = "dolphin-emu"
 
     return os.path.join(*exe_path, exe_name)
@@ -122,48 +110,16 @@ class DolphinBuild(enum.Enum):
     PLAYBACK = enum.auto()
     EXI_AI = enum.auto()
 
-
 _STRING_TO_BUILD = {
     'Playback': DolphinBuild.PLAYBACK,
     'ExiAI': DolphinBuild.EXI_AI,
 }
-# Precompiled Structs (big-endian)
-_S_I: Final = struct.Struct(">i")
-_S_H: Final = struct.Struct(">H")
-_S_B: Final = struct.Struct(">B")
-_S_b: Final = struct.Struct(">b")
-_S_F: Final = struct.Struct(">f")
-_S_F4: Final = struct.Struct(">4f")
-_S_2F: Final = struct.Struct(">2f")
-_S_6F: Final = struct.Struct(">6f")
-
-
-def _i32(mv: memoryview, off: int) -> int:
-    return _S_I.unpack_from(mv, off)[0]
-
-
-def _u16(mv: memoryview, off: int) -> int:
-    return _S_H.unpack_from(mv, off)[0]
-
-
-def _u8(mv: memoryview, off: int) -> int:
-    return _S_B.unpack_from(mv, off)[0]
-
-
-def _i8(mv: memoryview, off: int) -> int:
-    return _S_b.unpack_from(mv, off)[0]
-
-
-def _f32(mv: memoryview, off: int) -> float:
-    return _S_F.unpack_from(mv, off)[0]
-
 
 @dataclasses.dataclass
 class DolphinVersion:
     mainline: bool
     version: str
     build: DolphinBuild
-
 
 def get_dolphin_version(path: str) -> DolphinVersion:
     exe_path = get_exe_path(path)
@@ -215,7 +171,6 @@ def get_dolphin_version(path: str) -> DolphinVersion:
 
     return DolphinVersion(False, version, build)
 
-
 @dataclasses.dataclass
 class DumpConfig:
     dump: bool = False
@@ -240,12 +195,10 @@ class DumpConfig:
         gfx_ini.set(section, 'BitrateKbps', "3000")
         gfx_ini.set(section, 'InternalResolutionFrameDumps', "True")
 
-
 # pylint: disable=too-many-instance-attributes
 class Console:
     """The console object that represents your Dolphin / Wii / SLP file
     """
-
     def __init__(self,
                  path: Optional[str] = None,
                  is_dolphin: bool = True,
@@ -276,7 +229,7 @@ class Console:
                  use_exi_inputs=False,
                  enable_ffw=False,
                  dump_config: Optional[DumpConfig] = None,
-                 ):
+                ):
         """Create a Console object
 
         Args:
@@ -362,9 +315,9 @@ class Console:
         """(str): The SLP version this stream/file currently is."""
         self._allow_old_version = allow_old_version
         self._use_manual_bookends = False
-        self._costumes = {0: 0, 1: 0, 2: 0, 3: 0}
-        self._cpu_level = {0: 0, 1: 0, 2: 0, 3: 0}
-        self._team_id = {0: 0, 1: 0, 2: 0, 3: 0}
+        self._costumes = {0:0, 1:0, 2:0, 3:0}
+        self._cpu_level = {0:0, 1:0, 2:0, 3:0}
+        self._team_id = {0:0, 1:0, 2:0, 3:0}
         self._is_teams = False
         self._display_names: dict[int, str] = {}
         self._connect_codes: dict[int, str] = {}
@@ -425,9 +378,9 @@ class Console:
         # Prepare some structures for fixing melee data
         path = os.path.dirname(os.path.realpath(__file__))
         with open(path + "/actiondata.csv") as csvfile:
-            # A list of dicts containing the frame data
+            #A list of dicts containing the frame data
             actiondata = list(csv.DictReader(csvfile))
-            # Dict of sets
+            #Dict of sets
             self.zero_indices = defaultdict(set)
             for line in actiondata:
                 if line["zeroindex"] == "True":
@@ -439,7 +392,7 @@ class Console:
             reader = csv.DictReader(csvfile)
             for line in reader:
                 del line["Character"]
-                # Convert all fields to numbers
+                #Convert all fields to numbers
                 for key, value in line.items():
                     line[key] = float(value)
                 self.characterdata[enums.Character(line["CharacterIndex"])] = line
@@ -542,15 +495,15 @@ class Console:
             shutil.rmtree(self.temp_dir)
             self.temp_dir = None
 
-    def _setup_home_directory(self, ):
+    def _setup_home_directory(self,):
         self._setup_dolphin_ini()
 
         if self.user_json_path:
-            home_path = self._get_dolphin_home_path()
-            slippi_path = os.path.join(home_path, 'Slippi')
-            os.makedirs(slippi_path, exist_ok=True)
-            user_json_path = os.path.join(slippi_path, 'user.json')
-            shutil.copyfile(self.user_json_path, user_json_path)
+          home_path = self._get_dolphin_home_path()
+          slippi_path = os.path.join(home_path, 'Slippi')
+          os.makedirs(slippi_path, exist_ok=True)
+          user_json_path = os.path.join(slippi_path, 'user.json')
+          shutil.copyfile(self.user_json_path, user_json_path)
 
         if self.setup_gecko_codes:
             self._setup_gecko_codes()
@@ -570,23 +523,23 @@ class Console:
                 config.add_section(section)
 
         if self.is_mainline:
-            config.set("Slippi", 'EnableSpectator', "True")
-            config.set("Slippi", 'SpectatorLocalPort', str(self.slippi_port))
-            config.set("Slippi", 'OnlineDelay', str(self.online_delay))
-            config.set("Slippi", 'BlockingPipes', str(self.blocking_input))
+          config.set("Slippi", 'EnableSpectator', "True")
+          config.set("Slippi", 'SpectatorLocalPort', str(self.slippi_port))
+          config.set("Slippi", 'OnlineDelay', str(self.online_delay))
+          config.set("Slippi", 'BlockingPipes', str(self.blocking_input))
 
-            config.set("Slippi", "SaveReplays", str(self.save_replays))
-            if self.replay_dir:
-                config.set("Slippi", "ReplayDir", self.replay_dir)
+          config.set("Slippi", "SaveReplays", str(self.save_replays))
+          if self.replay_dir:
+              config.set("Slippi", "ReplayDir", self.replay_dir)
         else:
-            config.set("Core", 'SlippiEnableSpectator', "True")
-            config.set("Core", 'SlippiSpectatorLocalPort', str(self.slippi_port))
-            config.set("Core", 'SlippiOnlineDelay', str(self.online_delay))
-            config.set("Core", 'BlockingPipes', str(self.blocking_input))
+          config.set("Core", 'SlippiEnableSpectator', "True")
+          config.set("Core", 'SlippiSpectatorLocalPort', str(self.slippi_port))
+          config.set("Core", 'SlippiOnlineDelay', str(self.online_delay))
+          config.set("Core", 'BlockingPipes', str(self.blocking_input))
 
-            config.set("Core", "SlippiSaveReplays", str(self.save_replays))
-            if self.replay_dir:
-                config.set("Core", "SlippiReplayDir", self.replay_dir)
+          config.set("Core", "SlippiSaveReplays", str(self.save_replays))
+          if self.replay_dir:
+              config.set("Core", "SlippiReplayDir", self.replay_dir)
 
         # Turn on background input so we don't need to have window focus on dolphin
         config.set("Input", 'backgroundinput', "True")
@@ -675,12 +628,12 @@ class Console:
             if not os.path.exists(pipes_path):
                 os.mkfifo(pipes_path)
 
-        # Read in dolphin's controller config file
+        #Read in dolphin's controller config file
         controller_config_path = os.path.join(self._get_dolphin_config_path(), "GCPadNew.ini")
         config = configparser.ConfigParser()
         config.read(controller_config_path)
 
-        # Add a bot standard controller config to the given port
+        #Add a bot standard controller config to the given port
         section = "GCPad" + str(port)
         if not config.has_section(section):
             config.add_section(section)
@@ -718,7 +671,7 @@ class Console:
             # Note: this actually applies to digital presses. If set to 100,
             # digital presses no longer work because the comparison is strict.
             config.set(section, 'Triggers/Threshold', '90')
-        # This section is unused if it's not a standard input (I think...)
+        #This section is unused if it's not a standard input (I think...)
         else:
             config.set(section, 'Device', 'XInput2/0/Virtual core pointer')
 
@@ -730,7 +683,7 @@ class Console:
         config.read(dolphin_config_path)
         # Indexed at 0. "6" means standard controller, "12" means GCN Adapter
         #  The enum is scoped to the proper value, here
-        config.set("Core", 'SIDevice' + str(port - 1), controllertype.value)
+        config.set("Core", 'SIDevice'+str(port-1), controllertype.value)
         with open(dolphin_config_path, 'w') as dolphinfile:
             config.write(dolphinfile)
 
@@ -764,8 +717,7 @@ class Console:
             elif message["type"] == "game_event":
                 if len(message["payload"]) > 0:
                     if self.is_dolphin:
-                        frame_ended = self.__handle_slippstream_events(base64.b64decode(message["payload"]),
-                                                                       self._temp_gamestate)
+                        frame_ended = self.__handle_slippstream_events(base64.b64decode(message["payload"]), self._temp_gamestate)
                     else:
                         frame_ended = self.__handle_slippstream_events(message["payload"], self._temp_gamestate)
 
@@ -787,87 +739,93 @@ class Console:
         gamestate.consoleNick = self._slippstream.consoleNick
         for i, names in self._slippstream.players.items():
             try:
-                gamestate.players[int(i) + 1].nickName = names["names"]["netplay"]
+                gamestate.players[int(i)+1].nickName = names["names"]["netplay"]
             except KeyError:
                 pass
             try:
-                gamestate.players[int(i) + 1].connectCode = names["names"]["code"]
+                gamestate.players[int(i)+1].connectCode = names["names"]["code"]
             except KeyError:
                 pass
 
         for port, player in gamestate.players.items():
-            i = port - 1
-            if i in self._display_names:
-                player.displayName = self._display_names[i]
-            if i in self._connect_codes:
-                player.connectCode = self._connect_codes[i]
+          i = port - 1
+          if i in self._display_names:
+            player.displayName = self._display_names[i]
+          if i in self._connect_codes:
+            player.connectCode = self._connect_codes[i]
 
         # Start the processing timer now that we're done reading messages
         self._frametimestamp = time.time()
         return gamestate
 
-    def __handle_slippstream_events(self, event_bytes: bytes, gamestate: GameState) -> bool:
+    def __handle_slippstream_events(self, event_bytes: bytes, gamestate: GameState):
         """ Handle a series of events, provided sequentially in a byte array """
         gamestate.menu_state = enums.Menu.IN_GAME
-        mv = memoryview(event_bytes)
-        while len(mv) > 0:
-            command_byte = mv[0]
+        while len(event_bytes) > 0:
+            command_byte = event_bytes[0]
+
             event_type = EVENT_TYPE_BY_BYTE[command_byte]
             if event_type is None:
                 logging.error("Got invalid event type: %s", command_byte)
                 return False
 
             if event_type == EventType.MENU_EVENT:
+                # https://github.com/project-slippi/dolphin/issues/31
                 logging.error("Got a menu event in the middle of a frame. Continuing anyway.")
-                self.__handle_slippstream_menu_event(mv.tobytes(), gamestate)
+                self.__handle_slippstream_menu_event(event_bytes, gamestate)
                 return True
 
             if event_type == EventType.PAYLOADS:
-                # Build payload size table once from the payload blob
-                payload_size = mv[1]
                 cursor = 0x2
+                payload_size = event_bytes[1]
                 num_commands = (payload_size - 1) // 3
-                for _ in range(num_commands):
-                    cmd = _u8(mv, cursor)
-                    cmd_len = _u16(mv, cursor + 0x1)
-                    self.eventsize[cmd] = cmd_len + 1
+                for i in range(0, num_commands):
+                    command = np.ndarray((1,), ">B", event_bytes, cursor)[0]
+                    command_len = np.ndarray((1,), ">H", event_bytes, cursor + 0x1)[0]
+                    self.eventsize[command] = command_len+1
                     cursor += 3
-                mv = mv[payload_size + 1:]
+                event_bytes = event_bytes[payload_size + 1:]
                 continue
 
             event_size = self.eventsize[command_byte]
-            if len(mv) < event_size:
+            if len(event_bytes) < event_size:
                 logging.warning("Something went wrong unpacking events. Data is probably missing")
                 return False
 
-            chunk = mv[:event_size]
-            mv = mv[event_size:]
-
             if event_type == EventType.FRAME_START:
-                continue
+                event_bytes = event_bytes[event_size:]
 
             elif event_type == EventType.GAME_START:
-                self.__game_start(gamestate, chunk)
-                # First frame: flush controllers
+                self.__game_start(gamestate, event_bytes)
+                event_bytes = event_bytes[event_size:]
+                # The game needs to know what to press on the first frame of the game
+                #   Just give it empty input. Characters are not actionable anyway.
                 for controller in self.controllers:
                     controller.release_all()
                     controller.flush()
 
             elif event_type == EventType.GAME_END:
+                event_bytes = event_bytes[event_size:]
                 return self._use_manual_bookends
 
             elif event_type == EventType.PRE_FRAME:
-                self.__pre_frame(gamestate, chunk)
+                self.__pre_frame(gamestate, event_bytes)
+                event_bytes = event_bytes[event_size:]
 
             elif event_type == EventType.POST_FRAME:
-                self.__post_frame(gamestate, chunk)
+                self.__post_frame(gamestate, event_bytes)
+                event_bytes = event_bytes[event_size:]
 
             elif event_type == EventType.GECKO_CODES:
-                pass
+                event_bytes = event_bytes[event_size:]
 
             elif event_type == EventType.FRAME_BOOKEND:
-                self.__frame_bookend(gamestate, chunk)
+                self.__frame_bookend(gamestate, event_bytes)
+                event_bytes = event_bytes[event_size:]
+                # If this is an old frame, then don't return it.
                 if gamestate.frame <= self._frame and self.skip_rollback_frames:
+                    # In blocking mode we still need to flush the controllers
+                    # on rollback frames, otherwise the game will hang.
                     if self.blocking_input:
                         for controller in self.controllers:
                             controller.flush()
@@ -876,10 +834,15 @@ class Console:
                 return True
 
             elif event_type == EventType.ITEM_UPDATE:
-                self.__item_update(gamestate, chunk)
+                self.__item_update(gamestate, event_bytes)
+                event_bytes = event_bytes[event_size:]
 
             elif event_type in [EventType.FOD_INFO, EventType.DL_INFO, EventType.PS_INFO]:
+                # TODO: Handle these events
+                event_bytes = event_bytes[event_size:]
+
                 expected_stage = EVENT_TO_STAGE[event_type]
+
                 if self._current_stage is not expected_stage:
                     logging.warning("Got stage info for %s, but gamestate says %s", expected_stage, gamestate.stage)
 
@@ -894,8 +857,7 @@ class Console:
         minor = np.ndarray((1,), ">B", event_bytes, 0x2)[0]
         version_num = np.ndarray((1,), ">B", event_bytes, 0x3)[0]
         self.slp_version = str(major) + "." + str(minor) + "." + str(version_num)
-        self._use_manual_bookends = self._allow_old_version and (
-                version.parse(self.slp_version) < version.parse("3.0.0"))
+        self._use_manual_bookends = self._allow_old_version and (version.parse(self.slp_version) < version.parse("3.0.0"))
         if major < 3 and not self._allow_old_version:
             raise SlippiVersionTooLow(self.slp_version)
         try:
@@ -929,173 +891,245 @@ class Console:
                 connect_code = read_shift_jis(event_bytes, 0x221 + 0xA * i)
                 self._connect_codes[i] = connect_code.replace(shift_jis_hash, '#')
 
-    def __pre_frame(self, gamestate: GameState, event_bytes: bytes) -> None:
-        mv = memoryview(event_bytes)
-        controller_port = mv[0x5] + 1
+    def __pre_frame(self, gamestate: GameState, event_bytes):
+        # Grab the physical controller state and put that into the controller state
+        controller_port = np.ndarray((1,), ">B", event_bytes, 0x5)[0] + 1
 
         if controller_port not in gamestate.players:
             gamestate.players[controller_port] = PlayerState()
-        ps = gamestate.players[controller_port]
+        playerstate = gamestate.players[controller_port]
 
-        # Nana?
-        if mv[0x6] == 1:
-            ps.nana = PlayerState()
-            ps = ps.nana
+        # Is this Nana?
+        if np.ndarray((1,), ">B", event_bytes, 0x6)[0] == 1:
+            playerstate.nana = PlayerState()
+            playerstate = playerstate.nana
 
-        stick_vals = _S_F4.unpack_from(event_bytes, 0x19)
-        ps.controller_state.main_stick = (
-            (stick_vals[0] / 2.0) + 0.5,
-            (stick_vals[1] / 2.0) + 0.5,
-        )
-        ps.controller_state.c_stick = (
-            (stick_vals[2] / 2.0) + 0.5,
-            (stick_vals[3] / 2.0) + 0.5,
-        )
+        main_x = (np.ndarray((1,), ">f", event_bytes, 0x19)[0] / 2) + 0.5
+        main_y = (np.ndarray((1,), ">f", event_bytes, 0x1D)[0] / 2) + 0.5
+        playerstate.controller_state.main_stick = (main_x, main_y)
 
-        # Raw main stick (added in later versions)
-        raw_main_x = _S_b.unpack_from(event_bytes, 0x3B)[0] if len(mv) > 0x3B else 0
-        raw_main_y = _S_b.unpack_from(event_bytes, 0x40)[0] if len(mv) > 0x40 else 0
-        ps.controller_state.raw_main_stick = (raw_main_x, raw_main_y)
+        c_x = (np.ndarray((1,), ">f", event_bytes, 0x21)[0] / 2) + 0.5
+        c_y = (np.ndarray((1,), ">f", event_bytes, 0x25)[0] / 2) + 0.5
+        playerstate.controller_state.c_stick = (c_x, c_y)
 
-        trigger = _S_F.unpack_from(event_bytes, 0x29)[0]
-        ps.controller_state.l_shoulder = trigger
-        ps.controller_state.r_shoulder = trigger
+        raw_main_x = 0  # Added in 1.2.0
+        raw_main_y = 0  # Added in 3.15.0
+        try:
+            raw_main_x = int(np.ndarray((1,), ">b", event_bytes, 0x3B)[0])
+        except TypeError:
+            pass
+        try:
+            raw_main_y = int(np.ndarray((1,), ">b", event_bytes, 0x40)[0])
+        except TypeError:
+            pass
+        playerstate.controller_state.raw_main_stick = (raw_main_x, raw_main_y)
 
-        buttonbits = int.from_bytes(event_bytes[0x31:0x33], "big")
-        btn = ps.controller_state.button
-        btn[enums.Button.BUTTON_A] = bool(buttonbits & 0x0100)
-        btn[enums.Button.BUTTON_B] = bool(buttonbits & 0x0200)
-        btn[enums.Button.BUTTON_X] = bool(buttonbits & 0x0400)
-        btn[enums.Button.BUTTON_Y] = bool(buttonbits & 0x0800)
-        btn[enums.Button.BUTTON_START] = bool(buttonbits & 0x1000)
-        btn[enums.Button.BUTTON_Z] = bool(buttonbits & 0x0010)
-        btn[enums.Button.BUTTON_R] = bool(buttonbits & 0x0020)
-        btn[enums.Button.BUTTON_L] = bool(buttonbits & 0x0040)
+        # The game interprets both shoulders together, so the processed value will always be the same
+        trigger = (np.ndarray((1,), ">f", event_bytes, 0x29)[0])
+        playerstate.controller_state.l_shoulder = trigger
+        playerstate.controller_state.r_shoulder = trigger
 
+        buttonbits = np.ndarray((1,), ">H", event_bytes, 0x31)[0]
+        playerstate.controller_state.button[enums.Button.BUTTON_A] = bool(int(buttonbits) & 0x0100)
+        playerstate.controller_state.button[enums.Button.BUTTON_B] = bool(int(buttonbits) & 0x0200)
+        playerstate.controller_state.button[enums.Button.BUTTON_X] = bool(int(buttonbits) & 0x0400)
+        playerstate.controller_state.button[enums.Button.BUTTON_Y] = bool(int(buttonbits) & 0x0800)
+        playerstate.controller_state.button[enums.Button.BUTTON_START] = bool(int(buttonbits) & 0x1000)
+        playerstate.controller_state.button[enums.Button.BUTTON_Z] = bool(int(buttonbits) & 0x0010)
+        playerstate.controller_state.button[enums.Button.BUTTON_R] = bool(int(buttonbits) & 0x0020)
+        playerstate.controller_state.button[enums.Button.BUTTON_L] = bool(int(buttonbits) & 0x0040)
         if self._use_manual_bookends:
             self._frame = gamestate.frame
 
-    def __post_frame(self, gamestate: GameState, event_bytes: bytes) -> None:
-        mv = memoryview(event_bytes)
-        gs = gamestate
-        gs.stage = self._current_stage
-        gs.is_teams = self._is_teams
-        gs.frame = _S_I.unpack_from(event_bytes, 0x1)[0]
-        controller_port = mv[0x5] + 1
+    def __post_frame(self, gamestate: GameState, event_bytes):
+        gamestate.stage = self._current_stage
+        gamestate.is_teams = self._is_teams
+        gamestate.frame = np.ndarray((1,), ">i", event_bytes, 0x1)[0]
+        controller_port = np.ndarray((1,), ">B", event_bytes, 0x5)[0] + 1
 
-        if controller_port not in gs.players:
-            gs.players[controller_port] = PlayerState()
-        ps = gs.players[controller_port]
+        if controller_port not in gamestate.players:
+            gamestate.players[controller_port] = PlayerState()
+        playerstate = gamestate.players[controller_port]
 
-        # Nana?
-        if mv[0x6] == 1:
-            ps.nana = PlayerState()
-            ps = ps.nana
+        # Is this Nana?
+        if np.ndarray((1,), ">B", event_bytes, 0x6)[0] == 1:
+            playerstate.nana = PlayerState()
+            playerstate = playerstate.nana
 
-        # Position
-        pos_x, pos_y = _S_2F.unpack_from(event_bytes, 0x0A)
-        ps.position.x = pos_x
-        ps.position.y = pos_y
+        playerstate.position.x = np.ndarray((1,), ">f", event_bytes, 0xa)[0]
+        playerstate.position.y = np.ndarray((1,), ">f", event_bytes, 0xe)[0]
 
-        # Enums via value map (avoid ValueError)
-        ch_val = mv[0x7]
-        ps.character = enums.Character._value2member_map_.get(ch_val,
-                                                              enums.Character.UNKNOWN_CHARACTER)  # type: ignore[attr-defined]
+        playerstate.character = enums.Character(np.ndarray((1,), ">B", event_bytes, 0x7)[0])
+        try:
+            playerstate.action = enums.Action(np.ndarray((1,), ">H", event_bytes, 0x8)[0])
+        except ValueError:
+            playerstate.action = enums.Action.UNKNOWN_ANIMATION
 
-        act_val = _S_H.unpack_from(event_bytes, 0x8)[0]
-        ps.action = enums.Action._value2member_map_.get(act_val,
-                                                        enums.Action.UNKNOWN_ANIMATION)  # type: ignore[attr-defined]
+        # Melee stores this in a float for no good reason. So we have to convert
+        playerstate.facing = np.ndarray((1,), ">f", event_bytes, 0x12)[0] > 0
 
-        # Facing from float sign
-        ps.facing = (_S_F.unpack_from(event_bytes, 0x12)[0] > 0.0)
+        playerstate.percent = int(np.ndarray((1,), ">f", event_bytes, 0x16)[0])
+        playerstate.shield_strength = np.ndarray((1,), ">f", event_bytes, 0x1A)[0]
+        playerstate.stock = np.ndarray((1,), ">B", event_bytes, 0x21)[0]
+        playerstate.action_frame = int(np.ndarray((1,), ">f", event_bytes, 0x22)[0])
+        try:
+            sb1 = int(np.ndarray((1,), ">B", event_bytes, 0x26)[0])
+        except TypeError:
+            sb1 = 0
+        playerstate.is_reflect_active = (sb1 & 0x10) == 0x10
 
-        percent_val, shield_strength = _S_2F.unpack_from(event_bytes, 0x16)
-        ps.percent = int(percent_val)
-        ps.shield_strength = shield_strength
-        ps.stock = mv[0x21]
-        ps.action_frame = int(_S_F.unpack_from(event_bytes, 0x22)[0])
+        try:
+            sb2 = int(np.ndarray((1,), ">B", event_bytes, 0x27)[0])
+        except TypeError:
+            sb2 = 0
+        playerstate.is_subaction_invulnerable = (sb2 & 0x04) == 0x04
+        playerstate.is_fastfalling = (sb2 & 0x08) == 0x08
+        playerstate.is_defender_in_hitlag = (sb2 & 0x10) == 0x10
+        playerstate.is_in_hitlag = (sb2 & 0x20) == 0x20
 
-        # Status bytes (read once)
-        if len(mv) > 0x2A:
-            sb1, sb2, sb3, sb4, sb5 = event_bytes[0x26:0x2B]
-        else:
-            sb1 = sb2 = sb3 = sb4 = sb5 = 0
+        try:
+            sb3 = int(np.ndarray((1,), ">B", event_bytes, 0x28)[0])
+        except TypeError:
+            sb3 = 0
+        playerstate.is_holding_character = (sb3 & 0x04) == 0x04
+        playerstate.is_shield_active = (sb3 & 0x80) == 0x80
 
-        ps.is_reflect_active = (sb1 & 0x10) != 0
-        ps.is_subaction_invulnerable = (sb2 & 0x04) != 0
-        ps.is_fastfalling = (sb2 & 0x08) != 0
-        ps.is_defender_in_hitlag = (sb2 & 0x10) != 0
-        ps.is_in_hitlag = (sb2 & 0x20) != 0
-        ps.is_holding_character = (sb3 & 0x04) != 0
-        ps.is_shield_active = (sb3 & 0x80) != 0
-        ps.is_in_hitstun = (sb4 & 0x02) != 0
-        ps.is_powershield = (sb4 & 0x20) != 0
-        ps.is_dead = (sb5 & 0x40) != 0
-        ps.is_offscreen = (sb5 & 0x80) != 0
+        try:
+            sb4 = int(np.ndarray((1,), ">B", event_bytes, 0x29)[0])
+        except TypeError:
+            sb4 = 0
+        playerstate.is_in_hitstun = (sb4 & 0x02) == 0x02
+        playerstate.is_powershield = (sb4 & 0x20) == 0x20
 
-        # Scalars with length guards (avoid try/except in hot path)
-        blen = len(mv)
-        ps.hitstun_frames_left = int(_S_F.unpack_from(event_bytes, 0x2B)[0]) if blen > 0x2E else 0
-        ps.on_ground = (mv[0x2F] == 0) if blen > 0x2F else True
-        if blen > 0x32:
-            ps.jumps_left = mv[0x32]
-        else:
-            ps.jumps_left = 1
-        if blen > 0x33:
-            ps.l_cancel_status = mv[0x33]
-        else:
-            ps.l_cancel_status = 0
-        if blen > 0x34:
-            ps.invulnerable = mv[0x34] != 0
-        else:
-            ps.invulnerable = False
+        try:
+            sb5 = int(np.ndarray((1,), ">B", event_bytes, 0x2A)[0])
+        except TypeError:
+            sb5 = 0
+        playerstate.is_dead = (sb5 & 0x40) == 0x40
+        playerstate.is_offscreen = (sb5 & 0x80) == 0x80
 
-        if blen > 0x4C:
-            air_x, y_self, x_attack, y_attack, ground_x, hitlag = _S_6F.unpack_from(event_bytes, 0x35)
-            ps.speed_air_x_self = air_x
-            ps.speed_y_self = y_self
-            ps.speed_x_attack = x_attack
-            ps.speed_y_attack = y_attack
-            ps.speed_ground_x_self = ground_x
-            ps.hitlag_left = int(hitlag)
-        else:
-            ps.speed_air_x_self = _S_F.unpack_from(event_bytes, 0x35)[0] if blen > 0x38 else 0.0
-            ps.speed_y_self = _S_F.unpack_from(event_bytes, 0x39)[0] if blen > 0x3C else 0.0
-            ps.speed_x_attack = _S_F.unpack_from(event_bytes, 0x3D)[0] if blen > 0x40 else 0.0
-            ps.speed_y_attack = _S_F.unpack_from(event_bytes, 0x41)[0] if blen > 0x44 else 0.0
-            ps.speed_ground_x_self = _S_F.unpack_from(event_bytes, 0x45)[0] if blen > 0x48 else 0.0
-            ps.hitlag_left = int(_S_F.unpack_from(event_bytes, 0x49)[0]) if blen > 0x4C else 0
+        try:
+            playerstate.hitstun_frames_left = int(np.ndarray((1,), ">f", event_bytes, 0x2B)[0])
+        except TypeError:
+            playerstate.hitstun_frames_left = 0
+        except ValueError:
+            playerstate.hitstun_frames_left = 0
+        try:
+            playerstate.on_ground = not bool(np.ndarray((1,), ">B", event_bytes, 0x2F)[0])
+        except TypeError:
+            playerstate.on_ground = True
+        try:
+            playerstate.jumps_left = np.ndarray((1,), ">B", event_bytes, 0x32)[0]
+        except TypeError:
+            playerstate.jumps_left = 1
 
-        # Off-stage helper
-        edge = stages.EDGE_GROUND_POSITION.get(gs.stage)
-        if edge is not None and (abs(ps.position.x) > edge or ps.position.y < -6) and not ps.on_ground:
-            ps.off_stage = True
-        else:
-            ps.off_stage = False
+        try:
+            playerstate.l_cancel_status = np.ndarray((1,), ">B", event_bytes, 0x33)[0]
+        except TypeError:
+            playerstate.l_cancel_status = 0
 
-        # ECB (8 floats: top/bottom/left/right x,y) 0x4D..0x6C
-        if blen >= 0x6D:
-            dt = np.dtype(">f4")
-            ecb = np.frombuffer(mv, dtype=dt, count=8, offset=0x4D)
-            tx, ty, bx, by, lx, ly, rx, ry = map(float, ecb)
-        else:
-            tx = ty = bx = by = lx = ly = rx = ry = 0.0
+        try:
+            playerstate.invulnerable = int(np.ndarray((1,), ">B", event_bytes, 0x34)[0]) != 0
+        except TypeError:
+            playerstate.invulnerable = False
 
-        ps.ecb.top.x = tx
-        ps.ecb.top.y = ty
-        ps.ecb_top = (tx, ty)
-        ps.ecb.bottom.x = bx
-        ps.ecb.bottom.y = by
-        ps.ecb_bottom = (bx, by)
-        ps.ecb.left.x = lx
-        ps.ecb.left.y = ly
-        ps.ecb_left = (lx, ly)
-        ps.ecb.right.x = rx
-        ps.ecb.right.y = ry
-        ps.ecb_right = (rx, ry)
+        try:
+            playerstate.speed_air_x_self = np.ndarray((1,), ">f", event_bytes, 0x35)[0]
+        except TypeError:
+            playerstate.speed_air_x_self = 0
 
+        try:
+            playerstate.speed_y_self = np.ndarray((1,), ">f", event_bytes, 0x39)[0]
+        except TypeError:
+            playerstate.speed_y_self = 0
+
+        try:
+            playerstate.speed_x_attack = np.ndarray((1,), ">f", event_bytes, 0x3D)[0]
+        except TypeError:
+            playerstate.speed_x_attack = 0
+
+        try:
+            playerstate.speed_y_attack = np.ndarray((1,), ">f", event_bytes, 0x41)[0]
+        except TypeError:
+            playerstate.speed_y_attack = 0
+
+        try:
+            playerstate.speed_ground_x_self = np.ndarray((1,), ">f", event_bytes, 0x45)[0]
+        except TypeError:
+            playerstate.speed_ground_x_self = 0
+
+        try:
+            playerstate.hitlag_left = int(np.ndarray((1,), ">f", event_bytes, 0x49)[0])
+        except TypeError:
+            playerstate.hitlag_left = 0
+
+        # "off_stage" helper
+        try:
+            if (abs(playerstate.position.x) > stages.EDGE_GROUND_POSITION[gamestate.stage] or
+                playerstate.position.y < -6) and not playerstate.on_ground:
+                playerstate.off_stage = True
+            else:
+                playerstate.off_stage = False
+        except KeyError:
+            playerstate.off_stage = False
+
+        # ECB top edge, x
+        try:
+            ecb_top_x = np.ndarray((1,), ">f", event_bytes, 0x4D)[0]
+        except TypeError:
+            ecb_top_x = 0
+        # ECB Top edge, y
+        try:
+            ecb_top_y = np.ndarray((1,), ">f", event_bytes, 0x51)[0]
+        except TypeError:
+            ecb_top_y = 0
+        playerstate.ecb.top.x = ecb_top_x
+        playerstate.ecb.top.y = ecb_top_y
+        playerstate.ecb_top = (ecb_top_x, ecb_top_y)
+
+        # ECB bottom edge, x coord
+        try:
+            ecb_bot_x = np.ndarray((1,), ">f", event_bytes, 0x55)[0]
+        except TypeError:
+            ecb_bot_x = 0
+        # ECB Bottom edge, y coord
+        try:
+            ecb_bot_y = np.ndarray((1,), ">f", event_bytes, 0x59)[0]
+        except TypeError:
+            ecb_bot_y = 0
+        playerstate.ecb.bottom.x = ecb_bot_x
+        playerstate.ecb.bottom.y = ecb_bot_y
+        playerstate.ecb_bottom = (ecb_bot_x, ecb_bot_y)
+
+        # ECB left edge, x coord
+        try:
+            ecb_left_x = np.ndarray((1,), ">f", event_bytes, 0x5D)[0]
+        except TypeError:
+            ecb_left_x = 0
+        # ECB left edge, y coord
+        try:
+            ecb_left_y = np.ndarray((1,), ">f", event_bytes, 0x61)[0]
+        except TypeError:
+            ecb_left_y = 0
+        playerstate.ecb.left.x = ecb_left_x
+        playerstate.ecb.left.y = ecb_left_y
+        playerstate.ecb_left = (ecb_left_x, ecb_left_y)
+
+        # ECB right edge, x coord
+        try:
+            ecb_right_x = np.ndarray((1,), ">f", event_bytes, 0x65)[0]
+        except TypeError:
+            ecb_right_x = 0
+        # ECB right edge, y coord
+        try:
+            ecb_right_y = np.ndarray((1,), ">f", event_bytes, 0x69)[0]
+        except TypeError:
+            ecb_right_y = 0
+        playerstate.ecb.right.x = ecb_right_x
+        playerstate.ecb.right.y = ecb_right_y
+        playerstate.ecb_right = (ecb_right_x, ecb_right_y)
         if self._use_manual_bookends:
-            self._frame = gs.frame
+            self._frame = gamestate.frame
 
     def __frame_bookend(self, gamestate, event_bytes):
         self._prev_gamestate = gamestate
@@ -1111,7 +1145,7 @@ class Console:
             i += 1
         xdist = player_one_x - player_two_x
         ydist = player_one_y - player_two_y
-        gamestate.distance = math.sqrt((xdist ** 2) + (ydist ** 2))
+        gamestate.distance = math.sqrt((xdist**2) + (ydist**2))
 
     def __item_update(self, gamestate, event_bytes):
         projectile = Projectile()
@@ -1154,12 +1188,15 @@ class Console:
         # Add the projectile to the gamestate list
         gamestate.projectiles.append(projectile)
 
-    def __handle_slippstream_menu_event(self, event_bytes: bytes, gamestate: GameState) -> None:
-        mv = memoryview(event_bytes)
-        scene = _u16(mv, 0x1)
+    def __handle_slippstream_menu_event(self, event_bytes, gamestate: GameState):
+        """ Internal handler for slippstream menu events
+
+        Modifies specified gamestate based on the event bytes
+         """
+        scene = np.ndarray((1,), ">H", event_bytes, 0x1)[0]
         if scene == 0x02:
             gamestate.menu_state = enums.Menu.CHARACTER_SELECT
-            # All ports active
+            # All the controller ports are active on this screen
             gamestate.players[1] = PlayerState()
             gamestate.players[2] = PlayerState()
             gamestate.players[3] = PlayerState()
@@ -1170,6 +1207,7 @@ class Console:
             gamestate.players[2] = PlayerState()
             gamestate.players[3] = PlayerState()
             gamestate.players[4] = PlayerState()
+
         elif scene == 0x0202:
             gamestate.menu_state = enums.Menu.IN_GAME
         elif scene == 0x0001:
@@ -1187,10 +1225,10 @@ class Console:
 
         # controller port statuses at CSS
         if gamestate.menu_state in [enums.Menu.CHARACTER_SELECT, enums.Menu.SLIPPI_ONLINE_CSS]:
-            gamestate.players[1].controller_status = enums.ControllerStatus(_u8(mv, 0x25))
-            gamestate.players[2].controller_status = enums.ControllerStatus(_u8(mv, 0x26))
-            gamestate.players[3].controller_status = enums.ControllerStatus(_u8(mv, 0x27))
-            gamestate.players[4].controller_status = enums.ControllerStatus(_u8(mv, 0x28))
+            gamestate.players[1].controller_status = enums.ControllerStatus(np.ndarray((1,), ">B", event_bytes, 0x25)[0])
+            gamestate.players[2].controller_status = enums.ControllerStatus(np.ndarray((1,), ">B", event_bytes, 0x26)[0])
+            gamestate.players[3].controller_status = enums.ControllerStatus(np.ndarray((1,), ">B", event_bytes, 0x27)[0])
+            gamestate.players[4].controller_status = enums.ControllerStatus(np.ndarray((1,), ">B", event_bytes, 0x28)[0])
 
             # CSS Cursors
             gamestate.players[1].cursor_x = np.ndarray((1,), ">f", event_bytes, 0x3)[0]
@@ -1202,7 +1240,35 @@ class Console:
             gamestate.players[4].cursor_x = np.ndarray((1,), ">f", event_bytes, 0x1B)[0]
             gamestate.players[4].cursor_y = np.ndarray((1,), ">f", event_bytes, 0x1F)[0]
 
-            gamestate.ready_to_start = _u8(mv, 0x23)
+            # Ready to fight banner
+            gamestate.ready_to_start = np.ndarray((1,), ">B", event_bytes, 0x23)[0]
+
+            # Character selected
+            try:
+                gamestate.players[1].character = enums.to_internal(np.ndarray((1,), ">B", event_bytes, 0x29)[0])
+                gamestate.players[1].character_selected = gamestate.players[1].character
+            except TypeError:
+                gamestate.players[1].character = enums.Character.UNKNOWN_CHARACTER
+                gamestate.players[1].character_selected = enums.Character.UNKNOWN_CHARACTER
+            try:
+                gamestate.players[2].character = enums.to_internal(np.ndarray((1,), ">B", event_bytes, 0x2A)[0])
+                gamestate.players[2].character_selected = gamestate.players[2].character
+            except TypeError:
+                gamestate.players[2].character = enums.Character.UNKNOWN_CHARACTER
+                gamestate.players[2].character_selected = enums.Character.UNKNOWN_CHARACTER
+            try:
+                gamestate.players[3].character = enums.to_internal(np.ndarray((1,), ">B", event_bytes, 0x2B)[0])
+                gamestate.players[3].character_selected = gamestate.players[3].character
+
+            except TypeError:
+                gamestate.players[3].character = enums.Character.UNKNOWN_CHARACTER
+                gamestate.players[3].character_selected = enums.Character.UNKNOWN_CHARACTER
+            try:
+                gamestate.players[4].character = enums.to_internal(np.ndarray((1,), ">B", event_bytes, 0x2C)[0])
+                gamestate.players[4].character_selected = gamestate.players[4].character
+            except TypeError:
+                gamestate.players[4].character = enums.Character.UNKNOWN_CHARACTER
+                gamestate.players[4].character_selected = enums.Character.UNKNOWN_CHARACTER
 
             # Coin down
             try:
@@ -1222,35 +1288,10 @@ class Console:
             except TypeError:
                 gamestate.players[4].coin_down = False
 
-            # Character selected
-            try:
-                gamestate.players[1].character = enums.to_internal(_u8(mv, 0x29))
-                gamestate.players[1].character_selected = gamestate.players[1].character
-            except TypeError:
-                gamestate.players[1].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[1].character_selected = enums.Character.UNKNOWN_CHARACTER
-            try:
-                gamestate.players[2].character = enums.to_internal(_u8(mv, 0x2A))
-                gamestate.players[2].character_selected = gamestate.players[2].character
-            except TypeError:
-                gamestate.players[2].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[2].character_selected = enums.Character.UNKNOWN_CHARACTER
-            try:
-                gamestate.players[3].character = enums.to_internal(_u8(mv, 0x2B))
-                gamestate.players[3].character_selected = gamestate.players[3].character
-            except TypeError:
-                gamestate.players[3].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[3].character_selected = enums.Character.UNKNOWN_CHARACTER
-            try:
-                gamestate.players[4].character = enums.to_internal(_u8(mv, 0x2C))
-                gamestate.players[4].character_selected = gamestate.players[4].character
-            except TypeError:
-                gamestate.players[4].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[4].character_selected = enums.Character.UNKNOWN_CHARACTER
-
         if gamestate.menu_state == enums.Menu.STAGE_SELECT:
+            # Stage
             try:
-                gamestate.stage = enums.Stage(_u8(mv, 0x24))
+                gamestate.stage = enums.Stage(np.ndarray((1,), ">B", event_bytes, 0x24)[0])
             except ValueError:
                 gamestate.stage = enums.Stage.NO_STAGE
 
@@ -1262,28 +1303,49 @@ class Console:
                 gamestate.stage_select_cursor_y = player.cursor.y
 
         # Frame count
-        gamestate.frame = _i32(mv, 0x39)
+        gamestate.frame = np.ndarray((1,), ">i", event_bytes, 0x39)[0]
 
         # Sub-menu
-        if len(mv) > 0x3D:
-            try:
-                gamestate.submenu = enums.SubMenu(_u8(mv, 0x3D))
-            except (TypeError, ValueError, struct.error):
-                gamestate.submenu = enums.SubMenu.UNKNOWN_SUBMENU
-        else:
+        try:
+            gamestate.submenu = enums.SubMenu(np.ndarray((1,), ">B", event_bytes, 0x3D)[0])
+        except TypeError:
+            gamestate.submenu = enums.SubMenu.UNKNOWN_SUBMENU
+        except ValueError:
             gamestate.submenu = enums.SubMenu.UNKNOWN_SUBMENU
 
         # Selected menu
-        gamestate.menu_selection = _u8(mv, 0x3E) if len(mv) > 0x3E else 0
+        try:
+            gamestate.menu_selection = np.ndarray((1,), ">B", event_bytes, 0x3E)[0]
+        except TypeError:
+            gamestate.menu_selection = 0
 
-        # Nametag / submenu switching
-        if gamestate.menu_state == enums.Menu.SLIPPI_ONLINE_CSS and len(mv) > 0x40:
-            nametag = _u8(mv, 0x40)
-            if nametag == 0x05:
-                gamestate.submenu = enums.SubMenu.NAME_ENTRY_SUBMENU
-            elif nametag == 0x00:
-                gamestate.submenu = enums.SubMenu.ONLINE_CSS
+        # Online costume chosen
+        try:
+            if gamestate.menu_state == enums.Menu.SLIPPI_ONLINE_CSS:
+                for i in range(4):
+                    gamestate.players[i+1].costume = np.ndarray((1,), ">B", event_bytes, 0x3F)[0]
+        except TypeError:
+            pass
 
+        # This value is 0x05 in the nametag entry
+        try:
+            if gamestate.menu_state == enums.Menu.SLIPPI_ONLINE_CSS:
+                nametag = np.ndarray((1,), ">B", event_bytes, 0x40)[0]
+                if nametag == 0x05:
+                    gamestate.submenu = enums.SubMenu.NAME_ENTRY_SUBMENU
+                elif nametag == 0x00:
+                    gamestate.submenu = enums.SubMenu.ONLINE_CSS
+        except TypeError:
+            pass
+
+        # CPU Level
+        try:
+            for i in range(4):
+                gamestate.players[i+1].cpu_level = np.ndarray((1,), ">B", event_bytes, 0x41 + i)[0]
+        except TypeError:
+            pass
+        except KeyError:
+            pass
 
         # Is Holding CPU Slider
         try:
@@ -1293,6 +1355,11 @@ class Console:
             pass
         except KeyError:
             pass
+
+        # Set CPU level to 0 if we're not a CPU
+        for port in gamestate.players:
+            if gamestate.players[port].controller_status != enums.ControllerStatus.CONTROLLER_CPU:
+                gamestate.players[port].cpu_level = 0
 
     def __fixframeindexing(self, gamestate: GameState):
         """ Melee's indexing of action frames is wildly inconsistent.

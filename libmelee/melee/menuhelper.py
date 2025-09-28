@@ -6,11 +6,12 @@ concentrate on playing the game, not futzing with menus.
 import math
 from typing import Optional
 
-from melee.controller import Controller
-from melee.gamestate import GameState
-from melee import enums
+from libmelee.melee import enums
+from libmelee.melee.controller import Controller
+from libmelee.melee.gamestate import GameState
 
-class MenuHelper():
+
+class MenuHelper:
 
     def __init__(self) -> None:
         # State for entering a direct code.
@@ -93,7 +94,6 @@ class MenuHelper():
             gamestate (gamestate.GameState): The current GameState for this frame
             controller (controller.Controller): A Controller object to press buttons on
             connect_code (str): The connect code to direct match with. Leave blank for VS mode.
-            index (int): Current name tag index
 
         Returns:
             new index (incremented if we entered a new character)
@@ -372,7 +372,7 @@ class MenuHelper():
             abs(cursor_y - target_y) < wiggleroom
 
         #Don't hold down on B, since we'll quit the menu if we do
-        if controller.prev.button[enums.Button.BUTTON_B] == True:
+        if controller.prev.button[enums.Button.BUTTON_B]:
             controller.release_button(enums.Button.BUTTON_B)
             return
 
@@ -416,7 +416,7 @@ class MenuHelper():
                 return
             #Press A to select our character
             else:
-                if controller.prev.button[enums.Button.BUTTON_A] == False:
+                if not controller.prev.button[enums.Button.BUTTON_A]:
                     controller.press_button(enums.Button.BUTTON_A)
                     return
                 else:
@@ -519,10 +519,11 @@ class MenuHelper():
         controller.press_button(enums.Button.BUTTON_A)
         self.stage_selected = True
 
-    def skip_postgame(self, controller: Controller):
+    @staticmethod
+    def skip_postgame(controller: Controller):
         """ Spam the start button """
         #Alternate pressing start and letting go
-        if controller.prev.button[enums.Button.BUTTON_START] == False:
+        if not controller.prev.button[enums.Button.BUTTON_START]:
             controller.press_button(enums.Button.BUTTON_START)
         else:
             controller.release_button(enums.Button.BUTTON_START)

@@ -6,11 +6,13 @@ and state information that would be difficult to discover on your own.
 """
 
 import csv
-import os
 import math
+import os
 from collections import defaultdict
-from melee.enums import Action, Character, AttackState
-from melee import stages
+
+from libmelee.melee import stages
+from libmelee.melee.enums import Action, Character, AttackState
+
 
 class FrameData:
     """Set of helper functions and data structures for knowing Melee frame data
@@ -19,6 +21,7 @@ class FrameData:
         The frame data in libmelee is written to be useful to bots, and behave in a sane way,
         not necessarily be binary-compatible with in-game structures or values.
     """
+
     def __init__(self, write=False):
         if write:
             self.csvfile = open('framedata.csv', 'a')
@@ -41,7 +44,7 @@ class FrameData:
             self.prevfacing = {}
             self.prevprojectilecount = {}
 
-        #Read the existing framedata
+        # Read the existing framedata
         path = os.path.dirname(os.path.realpath(__file__))
         self.framedata = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
         with open(path + "/framedata.csv") as csvfile:
@@ -54,41 +57,42 @@ class FrameData:
                 action = Action(int(frame["action"]))
                 action_frame = int(frame["frame"])
                 self.framedata[character][action][action_frame] = \
-                    {"hitbox_1_status": frame["hitbox_1_status"] == "True", \
-                    "hitbox_1_size": float(frame["hitbox_1_size"]), \
-                    "hitbox_1_x": float(frame["hitbox_1_x"]), \
-                    "hitbox_1_y": float(frame["hitbox_1_y"]), \
-                    "hitbox_2_status": frame["hitbox_2_status"] == "True", \
-                    "hitbox_2_size": float(frame["hitbox_2_size"]), \
-                    "hitbox_2_x": float(frame["hitbox_2_x"]), \
-                    "hitbox_2_y": float(frame["hitbox_2_y"]), \
-                    "hitbox_3_status": frame["hitbox_3_status"] == "True", \
-                    "hitbox_3_size": float(frame["hitbox_3_size"]), \
-                    "hitbox_3_x": float(frame["hitbox_3_x"]), \
-                    "hitbox_3_y": float(frame["hitbox_3_y"]), \
-                    "hitbox_4_status": frame["hitbox_4_status"] == "True", \
-                    "hitbox_4_size": float(frame["hitbox_4_size"]), \
-                    "hitbox_4_x": float(frame["hitbox_4_x"]), \
-                    "hitbox_4_y": float(frame["hitbox_4_y"]), \
-                    "locomotion_x": float(frame["locomotion_x"]), \
-                    "locomotion_y": float(frame["locomotion_y"]), \
-                    "iasa": frame["iasa"] == "True", \
-                    "facing_changed": frame["facing_changed"] == "True", \
-                    "projectile": frame["projectile"] == "True"}
+                    {"hitbox_1_status": frame["hitbox_1_status"] == "True",
+                     "hitbox_1_size": float(frame["hitbox_1_size"]),
+                     "hitbox_1_x": float(frame["hitbox_1_x"]),
+                     "hitbox_1_y": float(frame["hitbox_1_y"]),
+                     "hitbox_2_status": frame["hitbox_2_status"] == "True",
+                     "hitbox_2_size": float(frame["hitbox_2_size"]),
+                     "hitbox_2_x": float(frame["hitbox_2_x"]),
+                     "hitbox_2_y": float(frame["hitbox_2_y"]),
+                     "hitbox_3_status": frame["hitbox_3_status"] == "True",
+                     "hitbox_3_size": float(frame["hitbox_3_size"]),
+                     "hitbox_3_x": float(frame["hitbox_3_x"]),
+                     "hitbox_3_y": float(frame["hitbox_3_y"]),
+                     "hitbox_4_status": frame["hitbox_4_status"] == "True",
+                     "hitbox_4_size": float(frame["hitbox_4_size"]),
+                     "hitbox_4_x": float(frame["hitbox_4_x"]),
+                     "hitbox_4_y": float(frame["hitbox_4_y"]),
+                     "locomotion_x": float(frame["locomotion_x"]),
+                     "locomotion_y": float(frame["locomotion_y"]),
+                     "iasa": frame["iasa"] == "True",
+                     "facing_changed": frame["facing_changed"] == "True",
+                     "projectile": frame["projectile"] == "True"}
 
-        #read the character data csv
+        # read the character data csv
         self.characterdata = dict()
         path = os.path.dirname(os.path.realpath(__file__))
         with open(path + "/characterdata.csv") as csvfile:
             reader = csv.DictReader(csvfile)
             for line in reader:
                 del line["Character"]
-                #Convert all fields to numbers
+                # Convert all fields to numbers
                 for key, value in line.items():
                     line[key] = float(value)
                 self.characterdata[Character(line["CharacterIndex"])] = line
 
-    def is_grab(self, character, action):
+    @staticmethod
+    def is_grab(character, action):
         """For the given character, is the supplied action a grab?
 
         Args:
@@ -118,7 +122,8 @@ class FrameData:
 
         return False
 
-    def is_roll(self, character, action):
+    @staticmethod
+    def is_roll(character, action):
         """For a given character, is the supplied action a roll?
 
         libmelee has a liberal definition of 'roll'. A roll is essentially a move that:
@@ -139,17 +144,19 @@ class FrameData:
 
         # Turns out that the actions we'd call a "roll" are fairly few. Let's just
         # hardcode them since it's just more cumbersome to do otherwise
-        rolls = [Action.SPOTDODGE, Action.ROLL_FORWARD, Action.ROLL_BACKWARD, \
-            Action.NEUTRAL_TECH, Action.FORWARD_TECH, Action.BACKWARD_TECH, \
-            Action.GROUND_GETUP, Action.TECH_MISS_UP, Action.TECH_MISS_DOWN, \
-            Action.EDGE_GETUP_SLOW, Action.EDGE_GETUP_QUICK, Action.EDGE_ROLL_SLOW, \
-            Action.EDGE_ROLL_QUICK, Action.GROUND_ROLL_FORWARD_UP, Action.GROUND_ROLL_BACKWARD_UP, \
-            Action.GROUND_ROLL_FORWARD_DOWN, Action.GROUND_ROLL_BACKWARD_DOWN, Action.SHIELD_BREAK_FLY, \
-            Action.SHIELD_BREAK_FALL, Action.SHIELD_BREAK_DOWN_U, Action.SHIELD_BREAK_DOWN_D, \
-            Action.SHIELD_BREAK_STAND_U, Action.SHIELD_BREAK_STAND_D, Action.TAUNT_RIGHT, Action.TAUNT_LEFT, Action.SHIELD_BREAK_TEETER]
+        rolls = [Action.SPOTDODGE, Action.ROLL_FORWARD, Action.ROLL_BACKWARD,
+                 Action.NEUTRAL_TECH, Action.FORWARD_TECH, Action.BACKWARD_TECH,
+                 Action.GROUND_GETUP, Action.TECH_MISS_UP, Action.TECH_MISS_DOWN,
+                 Action.EDGE_GETUP_SLOW, Action.EDGE_GETUP_QUICK, Action.EDGE_ROLL_SLOW,
+                 Action.EDGE_ROLL_QUICK, Action.GROUND_ROLL_FORWARD_UP, Action.GROUND_ROLL_BACKWARD_UP,
+                 Action.GROUND_ROLL_FORWARD_DOWN, Action.GROUND_ROLL_BACKWARD_DOWN, Action.SHIELD_BREAK_FLY,
+                 Action.SHIELD_BREAK_FALL, Action.SHIELD_BREAK_DOWN_U, Action.SHIELD_BREAK_DOWN_D,
+                 Action.SHIELD_BREAK_STAND_U, Action.SHIELD_BREAK_STAND_D, Action.TAUNT_RIGHT, Action.TAUNT_LEFT,
+                 Action.SHIELD_BREAK_TEETER]
         return action in rolls
 
-    def is_bmove(self, character, action):
+    @staticmethod
+    def is_bmove(character, action):
         """For a given character, is the supplied action a 'B-Move'
 
         B-Moves tend to be weird, so it's useful to know if this is a thing that warrants a special case
@@ -164,12 +171,12 @@ class FrameData:
 
         # Don't consider peach float to be a B move
         #   But the rest of her float aerials ARE
-        if character == Character.PEACH and action in [Action.LASER_GUN_PULL, \
-                Action.NEUTRAL_B_CHARGING, Action.NEUTRAL_B_ATTACKING]:
+        if character == Character.PEACH and action in [Action.LASER_GUN_PULL,
+                                                       Action.NEUTRAL_B_CHARGING, Action.NEUTRAL_B_ATTACKING]:
             return False
         # Peach smashes also shouldn't be B moves
-        if character == Character.PEACH and action in [Action.SWORD_DANCE_2_MID, Action.SWORD_DANCE_1, \
-                Action.SWORD_DANCE_2_HIGH]:
+        if character == Character.PEACH and action in [Action.SWORD_DANCE_2_MID, Action.SWORD_DANCE_1,
+                                                       Action.SWORD_DANCE_2_HIGH]:
             return False
 
         if Action.LASER_GUN_PULL.value <= action.value:
@@ -177,7 +184,7 @@ class FrameData:
 
         return False
 
-    #Returns boolean on if the given action is an attack (contains a hitbox)
+    # Returns boolean on if the given action is an attack (contains a hitbox)
     def is_attack(self, character, action):
         """For a given character, is the supplied action an attack?
 
@@ -195,15 +202,18 @@ class FrameData:
                     return True
         return False
 
-    def is_shield(self, action):
+    @staticmethod
+    def is_shield(action):
         """Is the given action a Shielding action?
 
         Args:
             action (enums.Action): The action we're interested in
         """
-        return action in [Action.SHIELD, Action.SHIELD_START, Action.SHIELD_REFLECT, Action.SHIELD_STUN, Action.SHIELD_RELEASE]
+        return action in [Action.SHIELD, Action.SHIELD_START, Action.SHIELD_REFLECT, Action.SHIELD_STUN,
+                          Action.SHIELD_RELEASE]
 
-    def max_jumps(self, character):
+    @staticmethod
+    def max_jumps(character):
         """ Returns the number of double-jumps the given character has.
 
         Args:
@@ -242,7 +252,6 @@ class FrameData:
 
         return AttackState.ATTACKING
 
-
     def range_forward(self, character, action, action_frame):
         """Returns the maximum remaining range of the given attack, in the forward direction
             (relative to how the character starts facing)
@@ -256,7 +265,7 @@ class FrameData:
         """
         attackrange = 0
         lastframe = self.last_hitbox_frame(character, action)
-        for i in range(action_frame+1, lastframe+1):
+        for i in range(action_frame + 1, lastframe + 1):
             attackingframe = self._getframe(character, action, i)
             if attackingframe is None:
                 continue
@@ -284,7 +293,7 @@ class FrameData:
         """
         attackrange = 0
         lastframe = self.last_hitbox_frame(character, action)
-        for i in range(action_frame+1, lastframe+1):
+        for i in range(action_frame + 1, lastframe + 1):
             attackingframe = self._getframe(character, action, i)
             if attackingframe is None:
                 continue
@@ -298,7 +307,6 @@ class FrameData:
             if attackingframe['hitbox_4_status']:
                 attackrange = min(-attackingframe["hitbox_4_size"] + attackingframe["hitbox_4_x"], attackrange)
         return abs(attackrange)
-
 
     def in_range(self, attacker, defender, stage):
         """Calculates if an attack is in range of a given defender
@@ -330,7 +338,6 @@ class FrameData:
 
         onground = attacker.on_ground
 
-        attacker_speed_x = 0
         if onground:
             attacker_speed_x = attacker.speed_ground_x_self
         else:
@@ -341,7 +348,7 @@ class FrameData:
         gravity = self.characterdata[attacker.character]["Gravity"]
         termvelocity = self.characterdata[attacker.character]["TerminalVelocity"]
 
-        for i in range(attacker.action_frame+1, lastframe+1):
+        for i in range(attacker.action_frame + 1, lastframe + 1):
             attackingframe = self._getframe(attacker.character, attacker.action, i)
             if attackingframe is None:
                 continue
@@ -406,10 +413,10 @@ class FrameData:
                 hitbox_4_x += attacker_x
 
                 # Now see if any of the hitboxes are in range
-                distance1 = math.sqrt((hitbox_1_x - defender.position.x)**2 + (hitbox_1_y - defender_y)**2)
-                distance2 = math.sqrt((hitbox_2_x - defender.position.x)**2 + (hitbox_2_y - defender_y)**2)
-                distance3 = math.sqrt((hitbox_3_x - defender.position.x)**2 + (hitbox_3_y - defender_y)**2)
-                distance4 = math.sqrt((hitbox_4_x - defender.position.x)**2 + (hitbox_4_y - defender_y)**2)
+                distance1 = math.sqrt((hitbox_1_x - defender.position.x) ** 2 + (hitbox_1_y - defender_y) ** 2)
+                distance2 = math.sqrt((hitbox_2_x - defender.position.x) ** 2 + (hitbox_2_y - defender_y) ** 2)
+                distance3 = math.sqrt((hitbox_3_x - defender.position.x) ** 2 + (hitbox_3_y - defender_y) ** 2)
+                distance4 = math.sqrt((hitbox_4_x - defender.position.x) ** 2 + (hitbox_4_y - defender_y) ** 2)
 
                 if distance1 < defender_size + float(attackingframe["hitbox_1_size"]):
                     return i
@@ -509,7 +516,7 @@ class FrameData:
          -1 if not a roll
 
         Args:
-            character_state (gamestate.PlayerState): The player we're calculating for
+            character (gamestate.PlayerState): The player we're calculating for
             action (enums.Action): The action the character is in
          """
         if not self.is_roll(character, action):
@@ -530,20 +537,23 @@ class FrameData:
         """
         distance = 0
         try:
-            #TODO: Take current momentum into account
+            # TODO: Take current momentum into account
             # Loop through each frame in the attack
             for action_frame in self.framedata[character_state.character][character_state.action]:
                 # Only care about frames that haven't happened yet
                 if action_frame > character_state.action_frame:
-                    distance += self.framedata[character_state.character][character_state.action][action_frame]["locomotion_x"]
+                    distance += self.framedata[character_state.character][character_state.action][action_frame][
+                        "locomotion_x"]
 
             # We can derive the direction we're supposed to be moving by xor'ing a few things together...
             #   1) Current facing
             #   2) Facing changed in the frame data
             #   3) Is backwards roll
-            facingchanged = self.framedata[character_state.character][character_state.action][character_state.action_frame]["facing_changed"]
-            backroll = character_state.action in [Action.ROLL_BACKWARD, Action.GROUND_ROLL_BACKWARD_UP, \
-                Action.GROUND_ROLL_BACKWARD_DOWN, Action.BACKWARD_TECH]
+            facingchanged = \
+                self.framedata[character_state.character][character_state.action][character_state.action_frame][
+                    "facing_changed"]
+            backroll = character_state.action in [Action.ROLL_BACKWARD, Action.GROUND_ROLL_BACKWARD_UP,
+                                                  Action.GROUND_ROLL_BACKWARD_DOWN, Action.BACKWARD_TECH]
             if not (character_state.facing ^ facingchanged ^ backroll):
                 distance = -distance
 
@@ -551,7 +561,8 @@ class FrameData:
 
             if character_state.action not in [Action.TECH_MISS_UP, Action.TECH_MISS_DOWN]:
                 # Adjust the position to account for the fact that we can't roll off the platform
-                side_platform_height, side_platform_left, side_platform_right = stages.side_platform_position(character_state.position.x > 0, stage)
+                side_platform_height, side_platform_left, side_platform_right = stages.side_platform_position(
+                    character_state.position.x > 0, stage)
                 top_platform_height, top_platform_left, top_platform_right = stages.top_platform_position(stage)
                 if character_state.position.y < 5:
                     position = min(position, stages.EDGE_GROUND_POSITION[stage])
@@ -579,9 +590,9 @@ class FrameData:
         hitboxes = []
         for action_frame, frame in self.framedata[character][action].items():
             if frame:
-                #Does this frame have a hitbox?
+                # Does this frame have a hitbox?
                 if frame['hitbox_1_status'] or frame['hitbox_2_status'] \
-                    or frame['hitbox_3_status'] or frame['hitbox_4_status'] or \
+                        or frame['hitbox_3_status'] or frame['hitbox_4_status'] or \
                         frame['projectile']:
                     hitboxes.append(action_frame)
         if not hitboxes:
@@ -611,9 +622,9 @@ class FrameData:
         hitboxes = []
         for action_frame, frame in self.framedata[character][action].items():
             if frame:
-                #Does this frame have a hitbox?
+                # Does this frame have a hitbox?
                 if frame['hitbox_1_status'] or frame['hitbox_2_status'] \
-                    or frame['hitbox_3_status'] or frame['hitbox_4_status'] or \
+                        or frame['hitbox_3_status'] or frame['hitbox_4_status'] or \
                         frame['projectile']:
                     hitboxes.append(action_frame)
         if not hitboxes:
@@ -621,7 +632,7 @@ class FrameData:
         hashitbox = False
         count = 0
         # Every time we go from NOT having a hit box to having one, up the count
-        for i in range(1, max(hitboxes)+1):
+        for i in range(1, max(hitboxes) + 1):
             hashitbox_new = i in hitboxes
             if hashitbox_new and not hashitbox:
                 count += 1
@@ -643,7 +654,7 @@ class FrameData:
         allframes = []
         for action_frame, frame in self.framedata[character][action].items():
             if frame:
-                #Does this frame have a hitbox?
+                # Does this frame have a hitbox?
                 allframes.append(action_frame)
                 if frame["iasa"]:
                     iasaframes.append(action_frame)
@@ -665,9 +676,9 @@ class FrameData:
         hitboxes = []
         for action_frame, frame in self.framedata[character][action].items():
             if frame:
-                #Does this frame have a hitbox?
+                # Does this frame have a hitbox?
                 if frame['hitbox_1_status'] or frame['hitbox_2_status'] \
-                    or frame['hitbox_3_status'] or frame['hitbox_4_status'] or \
+                        or frame['hitbox_3_status'] or frame['hitbox_4_status'] or \
                         frame['projectile']:
                     hitboxes.append(action_frame)
         if not hitboxes:
@@ -690,16 +701,16 @@ class FrameData:
 
     def _cleanupcsv(self):
         """ Helper function to remove all the non-attacking, non-rolling, non-B move actions """
-        #Make a list of all the attacking action names
+        # Make a list of all the attacking action names
         attacks = []
         for row in self.rows:
             if row['hitbox_1_status'] or row['hitbox_2_status'] or \
                     row['hitbox_3_status'] or row['hitbox_4_status'] or \
                     row['projectile']:
                 attacks.append(row['action'])
-        #remove duplicates
+        # remove duplicates
         attacks = list(set(attacks))
-        #Make a second pass, removing anything not in the list
+        # Make a second pass, removing anything not in the list
         for row in list(self.rows):
             if row['action'] not in attacks and not self.is_roll(Character(row['character']), Action(row['action'])) \
                     and not self.is_bmove(Character(row['character']), Action(row['action'])):
@@ -709,9 +720,9 @@ class FrameData:
         """ Record the frame in the given gamestate"""
 
         # First, adjust and record zero-indexing
-        actionrow = {'character': gamestate.opponent_state.character.value, \
-            'action': gamestate.opponent_state.action.value, \
-            'zeroindex': False}
+        actionrow = {'character': gamestate.opponent_state.character.value,
+                     'action': gamestate.opponent_state.action.value,
+                     'zeroindex': False}
 
         if gamestate.opponent_state.action_frame == 0:
             actionrow["zeroindex"] = True
@@ -731,9 +742,12 @@ class FrameData:
         #   all air moves. Except a few. So let's just enumerate those. It's ugly,
         #   but whatever, you're not my boss
         xspeed = 0
-        airmoves = gamestate.opponent_state.action in [Action.EDGE_ROLL_SLOW, Action.EDGE_ROLL_QUICK, Action.EDGE_GETUP_SLOW, \
-            Action.EDGE_GETUP_QUICK, Action. EDGE_ATTACK_SLOW, Action.EDGE_ATTACK_QUICK, \
-            Action.EDGE_JUMP_1_SLOW, Action.EDGE_JUMP_1_QUICK, Action.EDGE_JUMP_2_SLOW, Action.EDGE_JUMP_2_QUICK]
+        airmoves = gamestate.opponent_state.action in [Action.EDGE_ROLL_SLOW, Action.EDGE_ROLL_QUICK,
+                                                       Action.EDGE_GETUP_SLOW,
+                                                       Action.EDGE_GETUP_QUICK, Action.EDGE_ATTACK_SLOW,
+                                                       Action.EDGE_ATTACK_QUICK,
+                                                       Action.EDGE_JUMP_1_SLOW, Action.EDGE_JUMP_1_QUICK,
+                                                       Action.EDGE_JUMP_2_SLOW, Action.EDGE_JUMP_2_QUICK]
 
         if gamestate.opponent_state.on_ground or airmoves:
             xspeed = gamestate.opponent_state.position.x - gamestate.opponent_state.__prev_x
@@ -751,35 +765,35 @@ class FrameData:
             xspeed = 0
             yspeed = 0
 
-        row = { 'character': gamestate.opponent_state.character.value,
-                'action': gamestate.opponent_state.action.value,
-                'frame': gamestate.opponent_state.action_frame,
-                'hitbox_1_status': gamestate.opponent_state.hitbox_1_status,
-                'hitbox_1_x': (gamestate.opponent_state.hitbox_1_x - gamestate.opponent_state.position.x),
-                'hitbox_1_y': (gamestate.opponent_state.hitbox_1_y - gamestate.opponent_state.position.y),
-                'hitbox_1_size' : gamestate.opponent_state.hitbox_1_size,
-                'hitbox_2_status': gamestate.opponent_state.hitbox_2_status,
-                'hitbox_2_x': (gamestate.opponent_state.hitbox_2_x - gamestate.opponent_state.position.x),
-                'hitbox_2_y': (gamestate.opponent_state.hitbox_2_y - gamestate.opponent_state.position.y),
-                'hitbox_2_size' : gamestate.opponent_state.hitbox_2_size,
-                'hitbox_3_status': gamestate.opponent_state.hitbox_3_status,
-                'hitbox_3_x': (gamestate.opponent_state.hitbox_3_x - gamestate.opponent_state.position.x),
-                'hitbox_3_y': (gamestate.opponent_state.hitbox_3_y - gamestate.opponent_state.position.y),
-                'hitbox_3_size' : gamestate.opponent_state.hitbox_3_size,
-                'hitbox_4_status': gamestate.opponent_state.hitbox_4_status,
-                'hitbox_4_x': (gamestate.opponent_state.hitbox_4_x - gamestate.opponent_state.position.x),
-                'hitbox_4_y': (gamestate.opponent_state.hitbox_4_y - gamestate.opponent_state.position.y),
-                'hitbox_4_size' : gamestate.opponent_state.hitbox_4_size,
-                'locomotion_x' : xspeed,
-                'locomotion_y' : yspeed,
-                'iasa' : gamestate.opponent_state.iasa,
-                'facing_changed' : False,
-                'projectile' : False
-              }
+        row = {'character': gamestate.opponent_state.character.value,
+               'action': gamestate.opponent_state.action.value,
+               'frame': gamestate.opponent_state.action_frame,
+               'hitbox_1_status': gamestate.opponent_state.hitbox_1_status,
+               'hitbox_1_x': (gamestate.opponent_state.hitbox_1_x - gamestate.opponent_state.position.x),
+               'hitbox_1_y': (gamestate.opponent_state.hitbox_1_y - gamestate.opponent_state.position.y),
+               'hitbox_1_size': gamestate.opponent_state.hitbox_1_size,
+               'hitbox_2_status': gamestate.opponent_state.hitbox_2_status,
+               'hitbox_2_x': (gamestate.opponent_state.hitbox_2_x - gamestate.opponent_state.position.x),
+               'hitbox_2_y': (gamestate.opponent_state.hitbox_2_y - gamestate.opponent_state.position.y),
+               'hitbox_2_size': gamestate.opponent_state.hitbox_2_size,
+               'hitbox_3_status': gamestate.opponent_state.hitbox_3_status,
+               'hitbox_3_x': (gamestate.opponent_state.hitbox_3_x - gamestate.opponent_state.position.x),
+               'hitbox_3_y': (gamestate.opponent_state.hitbox_3_y - gamestate.opponent_state.position.y),
+               'hitbox_3_size': gamestate.opponent_state.hitbox_3_size,
+               'hitbox_4_status': gamestate.opponent_state.hitbox_4_status,
+               'hitbox_4_x': (gamestate.opponent_state.hitbox_4_x - gamestate.opponent_state.position.x),
+               'hitbox_4_y': (gamestate.opponent_state.hitbox_4_y - gamestate.opponent_state.position.y),
+               'hitbox_4_size': gamestate.opponent_state.hitbox_4_size,
+               'locomotion_x': xspeed,
+               'locomotion_y': yspeed,
+               'iasa': gamestate.opponent_state.iasa,
+               'facing_changed': False,
+               'projectile': False
+               }
 
         # Do we already have the previous frame recorded?
         for i in self.rows:
-            if i['character'] == row['character'] and i['action'] == row['action'] and i['frame'] == row['frame']-1:
+            if i['character'] == row['character'] and i['action'] == row['action'] and i['frame'] == row['frame'] - 1:
                 # If the facing changed once, always have it changed
                 if i["facing_changed"]:
                     row["facing_changed"] = True
@@ -791,8 +805,8 @@ class FrameData:
         if gamestate.opponent_state.facing == row["facing_changed"]:
             row["locomotion_x"] = -row["locomotion_x"]
         # If this is a backwards roll, flip it again
-        if gamestate.opponent_state.action in [Action.ROLL_BACKWARD, Action.GROUND_ROLL_BACKWARD_UP, \
-                Action.GROUND_ROLL_BACKWARD_DOWN, Action.BACKWARD_TECH]:
+        if gamestate.opponent_state.action in [Action.ROLL_BACKWARD, Action.GROUND_ROLL_BACKWARD_UP,
+                                               Action.GROUND_ROLL_BACKWARD_DOWN, Action.BACKWARD_TECH]:
             row["locomotion_x"] = -row["locomotion_x"]
 
         if not gamestate.opponent_state.hitbox_1_status:
@@ -894,12 +908,12 @@ class FrameData:
 
         return totaldistance
 
-    def _ccw(A,B,C):
-        return (C[1]-A[1]) * (B[0]-A[0]) > (B[1]-A[1]) * (C[0]-A[0])
+    def _ccw(self, A, B, C):
+        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
 
-    def _intersect(A,B,C,D):
+    def _intersect(self, A, B, C, D):
         """Return true if line segments AB and CD intersect"""
-        return FrameData._ccw(A,C,D) != FrameData._ccw(B,C,D) and FrameData._ccw(A,B,C) != FrameData._ccw(A,B,D)
+        return FrameData._ccw(self, A, C, D) != FrameData._ccw(self, B, C, D) and FrameData._ccw(self, A, B, C) != FrameData._ccw(self, A, B, D)
 
     def project_hit_location(self, character_state, stage, frames=-1):
         """How far does the given character fly, assuming they've been hit?
@@ -935,8 +949,8 @@ class FrameData:
             platforms.append(right_plat)
 
         angle = math.atan2(speed_x, speed_y_attack)
-        horizontal_decay = abs(0.051 * math.cos(-angle + (math.pi/2)))
-        vertical_decay = abs(0.051 * math.sin(-angle + (math.pi/2)))
+        horizontal_decay = abs(0.051 * math.cos(-angle + (math.pi / 2)))
+        vertical_decay = abs(0.051 * math.sin(-angle + (math.pi / 2)))
 
         frames_left = frames
         if frames_left == -1:
@@ -953,10 +967,10 @@ class FrameData:
                 A = (platform[1], platform[0])
                 B = (platform[2], platform[0])
                 C = (position_x, position_y + character_state.ecb.bottom.y)
-                D = (position_x+speed_x, position_y + character_state.ecb.bottom.y + speed_y_attack + speed_y_self)
+                D = (position_x + speed_x, position_y + character_state.ecb.bottom.y + speed_y_attack + speed_y_self)
                 if FrameData._intersect(A, B, C, D):
-                    # speed_x/2 to just assume we intersect half way through. This will be wrong, but close enough
-                    return (position_x+(speed_x/2), platform[0], 181-failsafe)
+                    # speed_x/2 to just assume we intersect halfway through. This will be wrong, but close enough
+                    return position_x + (speed_x / 2), platform[0], 181 - failsafe
 
             position_x += speed_x
             position_y += speed_y_attack

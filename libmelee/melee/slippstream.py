@@ -5,15 +5,16 @@ This can be used to talk to some server implementing the Slippstream protocol
 (i.e. the Project Slippi fork of Nintendont or Slippi Ishiiruka).
 """
 
-from enum import Enum
 import logging
+from enum import Enum
+from typing import Optional, Tuple
 import enet
 import json
 import multiprocessing as mp
 from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event
 
-from melee.enums import Stage
+from libmelee.melee.enums import Stage
 
 # pylint: disable=too-few-public-methods
 class EventType(Enum):
@@ -37,6 +38,13 @@ class EventType(Enum):
     # This is not used in-game. All menu events have this type.
     # Due to a bug, dolphin sometimes sends these before the game has ended.
     MENU_EVENT = 0x3e
+
+_event_type_lookup = [None] * 0x100
+for _evt in EventType:
+    if 0 <= _evt.value < len(_event_type_lookup):
+        _event_type_lookup[_evt.value] = _evt
+
+EVENT_TYPE_BY_BYTE: Tuple[Optional[EventType], ...] = tuple(_event_type_lookup)
 
 EVENT_TO_STAGE = {
     EventType.FOD_INFO: Stage.FOUNTAIN_OF_DREAMS,
@@ -98,7 +106,7 @@ class SlippstreamWorker:
                 'Could not receive CONNECT event at address '
                 f'{self.address}:{self.port}.')
             return False
-        except OSError:
+        except OSError as e:
             logging.error(e)
             return False
 

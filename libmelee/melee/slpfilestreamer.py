@@ -6,7 +6,7 @@ Reads Slippi game events from SLP file rather than over network
 import ubjson
 import numpy as np
 
-from melee.slippstream import EventType
+from libmelee.melee.slippstream import EventType, EVENT_TYPE_BY_BYTE
 
 class SLPFileStreamer:
     def __init__(self, path):
@@ -28,7 +28,8 @@ class SLPFileStreamer:
 
         This is for supporting older SLP files that don't have frame bookends
         """
-        if EventType(event_bytes[0]) in [EventType.POST_FRAME, EventType.PRE_FRAME]:
+        event_type = EVENT_TYPE_BY_BYTE[event_bytes[0]]
+        if event_type in (EventType.POST_FRAME, EventType.PRE_FRAME):
             frame = np.ndarray((1,), ">i", event_bytes, 0x1)[0]
             if frame > self._frame:
                 self._frame = frame
@@ -44,7 +45,8 @@ class SLPFileStreamer:
         if self._index >= len(self._contents):
             return None
 
-        if EventType(self._contents[self._index]) == EventType.PAYLOADS:
+        event_type = EVENT_TYPE_BY_BYTE[self._contents[self._index]]
+        if event_type is EventType.PAYLOADS:
             cursor = 0x2
             payload_size = self._contents[self._index+1]
             num_commands = (payload_size - 1) // 3
@@ -64,7 +66,7 @@ class SLPFileStreamer:
         event_size = self.eventsize[self._contents[self._index]]
 
         # Check to see if a new frame has happened for an old file type
-        if self._is_new_frame(self._contents[self._index : self._index+event_size]):
+        if event_type and self._is_new_frame(self._contents[self._index : self._index+event_size]):
             wrapper = dict()
             wrapper["type"] = "frame_end"
             wrapper["payload"] = b""

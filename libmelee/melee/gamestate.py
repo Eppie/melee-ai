@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-import melee
-from melee import enums
+from libmelee.melee import enums
+
 
 @dataclass
 class Position:
@@ -27,9 +27,9 @@ class ECB:
 
 class GameState(object):
     """Represents the state of a running game of Melee at a given moment in time"""
-    __slots__ = ('frame', 'stage', 'menu_state', 'submenu', 'player', 'players', 'projectiles', 'stage_select_cursor_x',
-                 'stage_select_cursor_y', 'ready_to_start', 'distance', 'menu_selection', '_newframe', 'playedOn', 'startAt',
-                 'consoleNick', 'is_teams', 'custom')
+    __slots__ = ('frame', 'stage', 'menu_state', 'submenu', 'player', 'players', 'projectiles',
+                 'ready_to_start', 'distance', 'menu_selection', '_newframe', 'playedOn', 'startAt',
+                 'consoleNick', 'is_teams', 'custom', 'stage_select_cursor_x', 'stage_select_cursor_y')
     def __init__(self):
         self.frame = -10000
         """int: The current frame number. Monotonically increases. Can be negative."""
@@ -46,10 +46,6 @@ class GameState(object):
                 Dict of PlayerState objects. Key is controller port"""
         self.projectiles = []
         """(list of Projectile): All projectiles (items) currently existing"""
-        self.stage_select_cursor_x = 0.0
-        """(float): DEPRECATED. Use `players[X].cursor` instead. Will be removed in 1.0.0. Stage select cursor's X coordinate. Ranges from -27 to 27"""
-        self.stage_select_cursor_y = 0.0
-        """(float): DEPRECATED. Use `players[X].cursor` instead. Will be removed in 1.0.0. Stage select cursor's Y coordinate. Ranges from -19 to 19"""
         self.ready_to_start = False
         """(bool): Is the 'ready to start' banner showing at the character select screen?"""
         self.is_teams = False
@@ -58,28 +54,26 @@ class GameState(object):
         """(float): Euclidian distance between the two players. (or just Popo for climbers)"""
         self.menu_selection = 0
         """(int): The index of the selected menu item for when in menus."""
-        self.startAt = ""
-        """(string): Timestamp string of when the game started. Such as '2018-06-22T07:52:59Z'"""
-        self.playedOn = ""
-        """(string): Platform the game was played on (values include dolphin, console, and network). Might be blank."""
-        self.consoleNick = ""
-        """(string): The name of the console the replay was created on. Might be blank."""
         self._newframe = True
         self.custom = dict()
         """(dict): Custom fields to be added by the user"""
 
+        self.stage_select_cursor_x = 0.0
+        self.stage_select_cursor_y = 0.0
+
 class PlayerState(object):
     """ Represents the state of a single player """
-    __slots__ = ('character', 'character_selected', 'x', 'y', 'percent', 'shield_strength', 'stock', 'facing',
+    __slots__ = ('character', 'character_selected', 'percent', 'shield_strength', 'stock', 'facing',
                  'action', 'action_frame', 'invulnerable', 'invulnerability_left', 'hitlag_left', 'hitstun_frames_left',
                  'jumps_left', 'on_ground', 'speed_air_x_self', 'speed_y_self', 'speed_x_attack', 'speed_y_attack',
-                 'speed_ground_x_self', 'cursor_x', 'cursor_y', 'coin_down', 'controller_status', 'off_stage', 'iasa',
-                 'moonwalkwarning', 'controller_state', 'ecb_bottom', 'ecb_top', 'ecb_left', 'ecb_right',
-                 'costume', 'cpu_level', 'is_holding_cpu_slider', 'nana', 'position', 'cursor', 'ecb', 'nickName', 'connectCode',
-                 'displayName', 'team_id', 'is_powershield', 'is_absorbing', 'reflect_owner_doesnt_change',
+                 'speed_ground_x_self', 'controller_status', 'off_stage', 'iasa',
+                 'controller_state', 'ecb_bottom', 'ecb_top', 'ecb_left', 'ecb_right',
+                'nana', 'position', 'ecb', 'nickName', 'connectCode',
+                 'displayName', 'team_id', 'is_powershield',
                  'is_reflect_active', 'is_subaction_invulnerable', 'is_fastfalling', 'is_defender_in_hitlag',
                  'is_in_hitlag', 'is_holding_character', 'is_shield_active', 'is_in_hitstun',
-                 'is_touching_shield', 'is_cloaked', 'is_follower', 'is_inactive', 'is_dead', 'is_offscreen')
+                 'is_touching_shield', 'is_cloaked', 'is_follower', 'is_inactive', 'is_dead', 'is_offscreen',
+                 'l_cancel_status', 'cursor_x', 'cursor_y', 'cursor', 'coin_down', 'is_holding_cpu_slider')
     def __init__(self):
         # This value is what the character currently is IN GAME
         #   So this will have no meaning while in menus
@@ -92,10 +86,6 @@ class PlayerState(object):
         self.character_selected = enums.Character.UNKNOWN_CHARACTER
         self.position = Position()
         """(Position): x, y character position"""
-        self.x = 0
-        """(float): DEPRECATED. Use `position` instead. Will be removed in 1.0.0. The character's X position"""
-        self.y = 0
-        """(float): DEPRECATED. Use `position` instead. Will be removed in 1.0.0. The character's Y position"""
         self.percent = 0
         """(int): The player's damage"""
         self.shield_strength = 60.
@@ -137,22 +127,13 @@ class PlayerState(object):
                 If the character is not Ice Climbers, Nana will be None.
                 Will also be None if this player state is Nana itself.
                 Lastly, the secondary climber is called 'Nana' here, regardless of the costume used."""
-        self.cursor = Cursor()
-        """(Position): x, y cursor position"""
-        self.cursor_x = 0
-        """(float): DEPRECATED. Use `cursor` instead. Will be removed in 1.0.0. Cursor X value"""
-        self.cursor_y = 0
-        """(float): DEPRECATED. Use `position` instead. Will be removed in 1.0.0. Cursor Y value"""
-        self.coin_down = False
-        """(bool): Is the player's character selection coin placed down? (Does not work in Slippi selection screen)"""
         self.controller_status = enums.ControllerStatus.CONTROLLER_UNPLUGGED
         """(enums.ControllerStatus): Status of the player's controller."""
         self.off_stage = False
         """(bool): Helper variable to say if the character is 'off stage'. """
         self.iasa = 0
-        self.moonwalkwarning = False
-        """(bool): Helper variable to tell you that if you dash back right now, it'll moon walk"""
-        self.controller_state = melee.ControllerState()
+        from libmelee.melee.controller import ControllerState
+        self.controller_state = ControllerState()
         """(controller.ControllerState): What buttons were pressed for this character"""
         self.ecb = ECB()
         self.ecb_right = (0, 0)
@@ -163,25 +144,6 @@ class PlayerState(object):
         """(float, float): Top edge of the ECB. (x, y) offset from player's center."""
         self.ecb_bottom = (0, 0)
         """(float, float): Bottom edge of the ECB. (x, y) offset from player's center."""
-        self.costume = 0
-        """(int): Index for which costume the player is wearing"""
-        self.cpu_level = False
-        """(bool): CPU level of player. 0 for a libmelee-controller bot or human player."""
-        self.is_holding_cpu_slider = False
-        """(bool): Is the player holding the CPU slider in the character select screen?"""
-        self.nickName = ""
-        """(string): The in-game nickname for the player. Might be blank."""
-        self.connectCode = ""
-        """(string): The rollback connect code for the player. Might be blank."""
-        self.displayName = ""
-        """(string): The Slippi Online display name for the play. Might be blank"""
-        self.team_id = 0
-        """(int): The team ID of the player. This is different than costume, and only relevant during teams."""
-
-        self.is_absorbing = False
-        """(bool): Is absorber active (e.g. G&W bucket)"""
-        self.reflect_owner_doesnt_change = False
-        """(bool): Reflect active without changing projectile ownership"""
         self.is_reflect_active = False
         """(bool): Is reflect active"""
         self.is_subaction_invulnerable = False
@@ -198,18 +160,23 @@ class PlayerState(object):
         """(bool): Is shield active"""
         self.is_in_hitstun = False
         """(bool): Is in hitstun"""
-        self.is_touching_shield = False
-        """(bool): Owner's detection hitbox is touching shield bubble"""
-        self.is_cloaked = False
-        """(bool): Is cloaking device active"""
-        self.is_follower = False
-        """(bool): Is follower (e.g. Nana)"""
-        self.is_inactive = False
-        """(bool): Is inactive"""
         self.is_dead = False
         """(bool): Is dead"""
         self.is_offscreen = False
         """(bool): Is offscreen"""
+        self.l_cancel_status: int = 0
+        """(int): 0 = none, 1 = successful, 2 = unsuccessful"""
+
+        self.cursor = Cursor()
+        """(Position): x, y cursor position"""
+        self.cursor_x = 0
+        """(float): DEPRECATED. Use `cursor` instead. Will be removed in 1.0.0. Cursor X value"""
+        self.cursor_y = 0
+        """(float): DEPRECATED. Use `position` instead. Will be removed in 1.0.0. Cursor Y value"""
+        self.coin_down = False
+        """(bool): Is the player's character selection coin placed down? (Does not work in Slippi selection screen)"""
+        self.is_holding_cpu_slider = False
+        """(bool): Is the player holding the CPU slider in the character select screen?"""
 
 class Projectile:
     """ Represents the state of a projectile (items, lasers, etc...) """

@@ -1,5 +1,6 @@
 """Helper functions for with some techskill examples"""
-from melee import enums
+from libmelee.melee import enums
+
 
 def multishine(ai_state, controller):
     """ Frame-perfect Multishines as Fox """

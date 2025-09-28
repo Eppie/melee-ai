@@ -1,820 +1,513 @@
 from __future__ import annotations
 
+import enum as py_enum
 import math
+import multiprocessing as mp
 import random
-from dataclasses import dataclass
-from typing import Dict, Tuple, List
+from collections import Counter, defaultdict
+from dataclasses import fields as dc_fields, is_dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Sequence, Tuple
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch import Tensor
-from torch.utils.data import Dataset, DataLoader
+import numpy as np
+from loguru import logger
+from tdigest import TDigest
+from tqdm import tqdm
 
-# ===========================
-# ==== CONFIG CONSTANTS =====
-# ===========================
-# TODO: Tasks 3, 5, 9 don't learn properly
-# TODO: Task 7 has 0 loss but incorrect
-# TODO: Task 8 doesn't learn properly and also throws an exception
+from process_replays import process_one_replay
 
-TASK_ID: int = 5  # 1..10
-SEED: int = 42
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
-L: int = 12
-BATCH_SIZE: int = 128
-EPOCHS: int = 40
-LR: float = 2e-3
+def _is_bool(v: Any) -> bool:
+    return isinstance(v, (bool, np.bool_))
 
-D_MODEL: int = 128
-NHEAD: int = 4
-N_LAYERS: int = 2
-FFN_DIM: int = 4 * D_MODEL
-DROPOUT: float = 0.1
 
-# Per-task params (defaults; some used conditionally)
-DELAY: int = 3  # tasks 1, 6
-MOD_BASE: int = 3  # task 2
-COOLDOWN_E: int = 4  # task 3
-JUMP_SQUAT_FRAMES: int = 3  # task 4
-CANCEL_K: int = 3  # task 5
+def _is_enum(v: Any) -> bool:
+    return isinstance(v, py_enum.Enum)
 
-# Task-5 generation and loss config
-TASK5_HIT_P: float = 0.25
-TASK5_MISS_P: float = 0.15
-TASK5_FIRE_POLICY: str = "first"  # one of {"first", "last", "random"}
-TASK5_USE_WINDOW_LOSS: bool = True
-TASK5_WINDOW_LOSS_W: float = 0.25
-DI_M_FRAMES: int = 3  # task 6
-STAGE_RANGE: int = 6  # task 7 1-D line [-6, +6]
-OFFSTAGE_THRESH: int = 5  # task 7 |x|>5 is offstage
-FEINT_PROB: float = 0.35  # task 9
-HISTORY_N: int = 8  # task 9
 
-PLAN_HORIZON: int = 16  # task 10 (internal, output still length L)
+def _is_number(v: Any) -> bool:
+    if _is_bool(v):
+        return False
+    return isinstance(v, (int, float, np.number))
 
-# Task-3 loss config (does not affect other tasks)
-TASK3_USE_WEIGHTED_CE: bool = True
-TASK3_MIN_POS_WEIGHT: float = 1.0  # lower bound on class-1 weight
-# Task-3 loss variant and focal parameters
-TASK3_LOSS_MODE: str = (
-    "hazard"  # one of {"balanced_ce", "weighted_ce", "focal", "hazard"}
-)
-TASK3_FOCAL_GAMMA: float = 2.0
-TASK3_FOCAL_ALPHA_POS: float = 0.75  # alpha for positive class in focal loss
 
-# Demo prints
-DEMO_SAMPLES: int = 3
+def _as_float(v: Any) -> float:
+    return float(v)
 
-# Task-specific vocab declarations (will be overridden by task registry)
-IN_VOCAB: int = 16
-DEC_VOCAB: int = 8
-USE_DEC_CE: bool = True
-BOS_ID: int = 6
-EOS_ID: int = 7
 
-# Extra heads per task will be provided by registry:
-#   EXTRA_CE: Dict[str, int]   (per-timestep class id)
-#   EXTRA_BCE: Dict[str, int]  (per-timestep multi-label)
-#   LOSS_WEIGHTS: Dict[str, float] including 'dec_ce' and head names
+def _near(a: float, b: float, tol: float = 1e-6) -> bool:
+    return abs(a - b) <= tol
 
-# =================================
-# ==== UTILS / COMMON COMPONENTS ===
-# =================================
-g = torch.Generator().manual_seed(SEED)
-random.seed(SEED)
-torch.manual_seed(SEED)
-if torch.backends.mps.is_available():
+
+def _is_shoulder(fname: str) -> bool:
+    return "shoulder" in fname
+
+
+def _is_stick(fname: str) -> bool:
+    return "stick" in fname
+
+
+def _process_replay_batch(replay_paths: List[str]) -> List[Tuple[str, List[Any]]]:
+    """
+    Process a batch of replays and return (replay_path, rows) tuples.
+    This function runs in a separate process.
+    """
+    results = []
+    for replay_path in replay_paths:
+        try:
+            rows = process_one_replay(replay_path)
+            if rows:
+                results.append((replay_path, rows))
+        except Exception as e:
+            logger.warning(f"Failed to process {replay_path}: {e}")
+    return results
+
+
+def _stats_shard_for_replay(replay_path: str, *, tdigest_delta: float = 0.01) -> dict:
+    """
+    Return a compact, picklable shard of stats for one replay:
+      - For numeric fields: running moments, min/max, neg/zero/pos, shoulder/stick tallies,
+        and a t-digest serialized via TDigest.to_dict() (merged later with update_from_dict()).
+      - For bool/enum/str: counts (and up to top-10 items for enum/str)
+    """
     try:
-        torch.mps.manual_seed(SEED)  # type: ignore[attr-defined]
-    except Exception:
-        pass
+        rows = process_one_replay(replay_path)
+    except Exception as e:
+        return {"__error__": f"read_failed:{e!r}", "__file__": replay_path}
 
+    if not rows:
+        return {"__empty__": True, "__file__": replay_path}
 
-def posenc(d_model: int, max_len: int) -> Tensor:
-    pe = torch.zeros(max_len, d_model)
-    pos = torch.arange(0, max_len, dtype=torch.float32).unsqueeze(1)
-    div = torch.exp(
-        torch.arange(0, d_model, 2, dtype=torch.float32)
-        * -(math.log(10000.0) / d_model)
-    )
-    pe[:, 0::2] = torch.sin(pos * div)
-    pe[:, 1::2] = torch.cos(pos * div)
-    return pe.unsqueeze(0)  # (1, max_len, D)
+    first = rows[0]
+    if not is_dataclass(first):
+        return {"__error__": f"not_dataclass:{type(first)!r}", "__file__": replay_path}
 
+    field_names: List[str] = [f.name for f in dc_fields(first)]
 
-def causal_mask(T: int, device: torch.device) -> Tensor:
-    return torch.triu(torch.ones(T, T, dtype=torch.bool, device=device), 1)
+    # Structures
+    num: Dict[str, Dict[str, Any]] = {}
+    boo: Dict[str, Dict[str, int]] = {}
+    enu: Dict[str, Counter[str]] = {}
+    stg: Dict[str, Dict[str, Any]] = {}  # strings (counts + len stats)
+    oth: Dict[str, Counter[str]] = {}
 
+    # We lazily classify a field on the first non-None value we see
+    classified: Dict[str, str] = {}  # fname -> kind: "num" | "bool" | "enum" | "str" | "other"
 
-# =================================
-# ==== MODEL ======================
-# =================================
-class Model(nn.Module):
-    def __init__(
-        self,
-        in_vocab: int,
-        dec_vocab: int,
-        extra_ce: Dict[str, int],
-        extra_bce: Dict[str, int],
-    ):
-        super().__init__()
-        self.src_emb = nn.Embedding(in_vocab, D_MODEL)
-        self.tgt_emb = nn.Embedding(max(dec_vocab, 1), D_MODEL)  # allow dec_vocab=1
-        self.pe = nn.Parameter(posenc(D_MODEL, 2048), requires_grad=False)
-
-        enc = nn.TransformerEncoderLayer(
-            D_MODEL, NHEAD, FFN_DIM, DROPOUT, batch_first=True, activation="gelu"
-        )
-        dec = nn.TransformerDecoderLayer(
-            D_MODEL, NHEAD, FFN_DIM, DROPOUT, batch_first=True, activation="gelu"
-        )
-        self.encoder = nn.TransformerEncoder(enc, num_layers=N_LAYERS)
-        self.decoder = nn.TransformerDecoder(dec, num_layers=N_LAYERS)
-
-        self.dec_head = nn.Linear(D_MODEL, dec_vocab) if dec_vocab > 1 else None
-        self.ce_heads = nn.ModuleDict(
-            {k: nn.Linear(D_MODEL, v) for k, v in extra_ce.items()}
-        )
-        self.bce_heads = nn.ModuleDict(
-            {k: nn.Linear(D_MODEL, v) for k, v in extra_bce.items()}
-        )
-
-    def forward(self, src: Tensor, tgt_in: Tensor) -> Dict[str, Tensor]:
-        # src: (B, L) ints; tgt_in: (B, T=L or L+1) ints in [0..dec_vocab-1]
-        B, L_ = src.shape
-        T = tgt_in.shape[1]
-        src_h = self.encoder(self.src_emb(src) + self.pe[:, :L_, :])
-        tgt_mask = causal_mask(T, src.device)
-        dec_h = self.decoder(
-            self.tgt_emb(tgt_in) + self.pe[:, :T, :], src_h, tgt_mask=tgt_mask
-        )
-
-        out: Dict[str, Tensor] = {}
-        if self.dec_head is not None:
-            out["dec_ce"] = self.dec_head(dec_h)  # (B, T, dec_vocab)
-        for k, head in self.ce_heads.items():
-            out[k] = head(dec_h)  # (B, T, C_k)
-        for k, head in self.bce_heads.items():
-            out[k] = head(dec_h)  # (B, T, K_k) logits
-        return out
-
-
-# =================================
-# ==== TASK REGISTRY ==============
-# =================================
-@dataclass(frozen=True)
-class TaskSpec:
-    in_vocab: int
-    dec_vocab: int
-    use_dec_ce: bool
-    extra_ce: Dict[str, int]
-    extra_bce: Dict[str, int]
-    loss_weights: Dict[str, float]
-
-
-class ToyTasks:
-    @staticmethod
-    def _bos_cat(y: Tensor, dec_vocab: int) -> Tuple[Tensor, Tensor]:
-        if dec_vocab <= 1:
-            tgt_in = torch.zeros(
-                (y.size(0), y.size(1)), dtype=torch.long
-            )  # dummy zeros
-            return tgt_in, y
-        bos_id = BOS_ID if dec_vocab > BOS_ID else dec_vocab - 1
-        bos = torch.full((y.size(0), 1), bos_id, dtype=torch.long)
-        return torch.cat([bos, y[:, :-1]], 1), y
-
-    @staticmethod
-    def task1_shifted_copy(L: int, delay: int) -> Tuple[TaskSpec, Dataset]:
-        Vx = 5
-        Vy = 6
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, idx):
-                x = torch.randint(0, Vx, (L,), generator=g)
-                y = torch.empty(L, dtype=torch.long)
-                y[:delay] = 0
-                y[delay:] = x[:-delay]
-                y[-1] = 4 if delay <= L - 1 else 0
-                y = torch.where(
-                    torch.arange(L) == L - 1, torch.tensor(Vy - 1), y
-                )  # EOS=5
-                return x, y, {}, {}, {}
-
-        spec = TaskSpec(Vx, Vy, True, {}, {}, {"dec_ce": 1.0})
-        return spec, DS()
-
-    @staticmethod
-    def task2_running_mod(L: int, base: int) -> Tuple[TaskSpec, Dataset]:
-        Vx = 5
-        Vy = base + 1  # +EOS
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, idx):
-                x = torch.randint(0, Vx, (L,), generator=g)
-                s = 0
-                y_list: List[int] = []
-                for t in range(L - 1):
-                    s = (s + int(x[t])) % base
-                    y_list.append(s)
-                s = (s + int(x[L - 1])) % base
-                y_list.append(s)
-                y = torch.tensor(y_list, dtype=torch.long)
-                y[-1] = Vy - 1
-                return x, y, {}, {}, {}
-
-        spec = TaskSpec(Vx, Vy, True, {}, {}, {"dec_ce": 1.0})
-        return spec, DS()
-
-    @staticmethod
-    def task3_cooldown(L: int, E: int) -> Tuple[TaskSpec, Dataset]:
-        Vx = 2
-        Vy = 1  # no dec ce; extra ce 'press' with 2 classes
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, idx):
-                req = torch.bernoulli(
-                    torch.full((L,), 0.3, dtype=torch.float32), generator=g
-                ).long()
-                press = torch.zeros(L, dtype=torch.long)
-                cd = 0
-                for t in range(L):
-                    if cd == 0 and req[t] == 1:
-                        press[t] = 1
-                        cd = E
-                    else:
-                        press[t] = 0
-                    cd = max(0, cd - 1)
-                x = req
-                return x, torch.zeros(L, dtype=torch.long), {"press": press}, {}, {}
-
-        spec = TaskSpec(Vx, Vy, False, {"press": 2}, {}, {"press": 1.0})
-        return spec, DS()
-
-    @staticmethod
-    def task4_jump_squat(L: int, k: int) -> Tuple[TaskSpec, Dataset]:
-        Vx = 2
-        Vy = 1
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, idx):
-                airborne_goal = torch.zeros(L, dtype=torch.long)
-                for t in range(k, L, 5):
-                    airborne_goal[t] = 1
-                jump = torch.zeros(L, dtype=torch.long)
-                for t in range(L):
-                    if airborne_goal[t] == 1:
-                        for j in range(t - k, t + 1):
-                            if 0 <= j < L:
-                                jump[j] = 1
-                return (
-                    airborne_goal,
-                    torch.zeros(L, dtype=torch.long),
-                    {"jump": jump, "airborne": airborne_goal},
-                    {},
-                    {},
-                )
-
-        spec = TaskSpec(
-            Vx,
-            Vy,
-            False,
-            {"jump": 2, "airborne": 2},
-            {},
-            {"jump": 0.7, "airborne": 0.3},
-        )
-        return spec, DS()
-
-    @staticmethod
-    def task5_cancel_window(L: int, K: int) -> Tuple[TaskSpec, Dataset]:
-        Vx = 3
-        Vy = 1
-        N, H, M = 0, 1, 2
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, idx):
-                ev = torch.full((L,), N, dtype=torch.long)
-                cancel = torch.zeros(L, dtype=torch.long)
-                t = 0
-                while t < L:
-                    if random.random() < TASK5_HIT_P:
-                        ev[t] = H
-                        if TASK5_FIRE_POLICY == "first":
-                            fire = t + 1
-                        elif TASK5_FIRE_POLICY == "last":
-                            fire = t + max(1, K - 1)
-                        else:  # "random"
-                            fire = t + (0 if K <= 1 else random.randint(0, K - 1))
-                        fire = min(L - 1, fire)
-                        cancel[fire] = 1
-                        t += K
-                    else:
-                        if random.random() < TASK5_MISS_P:
-                            ev[t] = M
-                        t += 1
-                return ev, torch.zeros(L, dtype=torch.long), {"cancel": cancel}, {}, {}
-
-        spec = TaskSpec(Vx, Vy, False, {"cancel": 2}, {}, {"cancel": 1.0})
-        return spec, DS()
-
-    @staticmethod
-    def task6_di_response(L: int, delay: int, M: int) -> Tuple[TaskSpec, Dataset]:
-        dirs = ["C", "L", "R", "U", "D"]
-        Vx = len(dirs)
-        Vy = len(dirs)  # use dec_ce to predict stick bins
-        idx = {s: i for i, s in enumerate(dirs)}
-        opp = {
-            idx["L"]: idx["R"],
-            idx["R"]: idx["L"],
-            idx["U"]: idx["D"],
-            idx["D"]: idx["U"],
-            idx["C"]: idx["C"],
+    # Initialize a numeric field entry
+    def _ensure_num(fname: str) -> Dict[str, Any]:
+        if fname in num:
+            return num[fname]
+        num[fname] = {
+            "n": 0,
+            "missing": 0,
+            "non_finite": 0,
+            "min": math.inf,
+            "max": -math.inf,
+            "sum": 0.0,
+            "sumsq": 0.0,
+            "neg": 0,
+            "zero": 0,
+            "pos": 0,
+            "shoulder_zero": 0,
+            "shoulder_partial": 0,
+            "shoulder_full": 0,
+            "stick_neutral": 0,
+            # serialized t-digest will be stored under 'td_digest' at shard end
         }
+        # create a local tdigest with explicit K=25 (CamDavidsonPilon default)
+        num[fname]["td"] = TDigest(delta=tdigest_delta, K=25)
+        return num[fname]
 
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, _):
-                impact = torch.full((L,), idx["C"], dtype=torch.long)
-                for t in range(2, L, 7):
-                    impact[t] = random.choice([idx["L"], idx["R"], idx["U"], idx["D"]])
-                y = torch.full((L,), idx["C"], dtype=torch.long)
-                for t in range(L):
-                    dir_t = int(impact[t])
-                    if dir_t != idx["C"]:
-                        t0 = t + delay
-                        for j in range(t0, min(L, t0 + M)):
-                            y[j] = opp[dir_t]
-                return impact, y, {}, {}, {}
-
-        spec = TaskSpec(Vx, Vy, True, {}, {}, {"dec_ce": 1.0})
-        return spec, DS()
-
-    @staticmethod
-    def task7_stage_positioning(L: int, rng: int, off: int) -> Tuple[TaskSpec, Dataset]:
-        pos_vals = list(range(-rng, rng + 1))  # map to tokens by offset
-        Vx = len(pos_vals)
-        Vy = 5  # action bins {-2,-1,0,+1,+2}
-        offset = rng
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, _):
-                x0 = random.randint(-rng, rng)
-                pos = [x0]
-                for _ in range(L - 1):
-                    pos.append(max(-rng, min(rng, pos[-1] + random.choice([-1, 0, 1]))))
-                actions = torch.zeros(L, dtype=torch.long)
-                for t in range(L):
-                    x = pos[t]
-                    if abs(x) > off:
-                        actions[t] = 2 + (
-                            -1 if x > 0 else 1
-                        )  # push strongly toward inside
-                    else:
-                        actions[t] = 2 + (-1 if x > 0 else (1 if x < 0 else 0))
-                    actions[t] = actions[t] + 2  # map {-2,-1,0,+1,+2} -> {0..4}
-                src = torch.tensor([p + offset for p in pos], dtype=torch.long)
-                y = actions
-                return src, y, {}, {}, {}
-
-        spec = TaskSpec(Vx, Vy, True, {}, {}, {"dec_ce": 1.0})
-        return spec, DS()
-
-    @staticmethod
-    def task8_multi_head_coherence(L: int) -> Tuple[TaskSpec, Dataset]:
-        states = {"GROUND": 0, "AIR": 1}
-        hitst = {0, 1}
-        facing = {"L": 0, "R": 1}
-        Vx = 4  # coarse state token (GROUND/AIR x FACING)
-        stick_bins = 5
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, _):
-                ground = random.choice([0, 1])
-                face = random.choice([0, 1])
-                hit = random.choice([0, 1])
-                src = []
-                y_stick = torch.zeros(L, dtype=torch.long)
-                y_btn = torch.zeros(L, 3, dtype=torch.float32)  # [JUMP, SHIELD, ATTACK]
-                for t in range(L):
-                    ground = random.choice([0, 1])
-                    face = random.choice([0, 1])
-                    hit = random.choice([0, 1])
-                    src.append(ground * 2 + face)
-                    if hit == 1:
-                        y_btn[t] = torch.tensor([0, 0, 0])
-                        y_stick[t] = 0
-                    else:
-                        # simple rule: if ATTACK=1, stick forward; AIR forbids SHIELD
-                        if random.random() < 0.5:
-                            y_btn[t] = torch.tensor([0, int(ground == 1 and 0), 1])
-                            y_stick[t] = 2 + (
-                                1 if face == 1 else -1
-                            )  # map forward to 3 or 1
-                        else:
-                            y_btn[t] = torch.tensor([1, 0 if ground == 0 else 1, 0])
-                            y_stick[t] = 0
-                src = torch.tensor(src, dtype=torch.long)
-                return (
-                    src,
-                    torch.zeros(L, dtype=torch.long),
-                    {"stick": y_stick},
-                    {"buttons": y_btn},
-                    {},
-                )
-
-        spec = TaskSpec(
-            Vx,
-            1,
-            False,
-            {"stick": stick_bins},
-            {"buttons": 3},
-            {"stick": 0.6, "buttons": 0.4},
-        )
-        return spec, DS()
-
-    @staticmethod
-    def task9_opponent_feints(
-        L: int, p_feint: float, hist_n: int
-    ) -> Tuple[TaskSpec, Dataset]:
-        Vx = 4  # tokens: W_A, W_B, RES_A, RES_B
-        Vy = 2  # counters C_A, C_B (predict before resolve)
-        WA, WB, RA, RB = 0, 1, 2, 3
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, _):
-                x = torch.full((L,), WA, dtype=torch.long)
-                y = torch.zeros(L, dtype=torch.long)
-                prob_A_feints = 0.3
-                prob_B_feints = p_feint
-                recent_A, recent_B = 0, 0
-                for t in range(L):
-                    if random.random() < 0.5:
-                        wind = WA
-                        feint = random.random() < prob_A_feints
-                        res = RB if feint else RA
-                        x[t] = wind
-                        # pick counter using last hist_n: if B feints often, counter opposite
-                        pB = prob_B_feints
-                        y[t] = (
-                            0 if res == RB else 1
-                        )  # ideally counter move; we supervise the oracle
-                    else:
-                        wind = WB
-                        feint = random.random() < prob_B_feints
-                        res = RA if feint else RB
-                        x[t] = wind
-                        y[t] = 0 if res == RB else 1
-                return x, y, {}, {}, {}
-
-        spec = TaskSpec(Vx, Vy, True, {}, {}, {"dec_ce": 1.0})
-        return spec, DS()
-
-    @staticmethod
-    def task10_micro_plan(L: int, horizon: int) -> Tuple[TaskSpec, Dataset]:
-        actions = 6  # idle, dashL, dashR, jump, attack, cancel
-        Vx = 8  # coarse world token
-
-        class DS(Dataset):
-            def __len__(self):
-                return 8000
-
-            def __getitem__(self, _):
-                world = torch.randint(0, Vx, (L,), generator=g)
-                y = torch.zeros(L, dtype=torch.long)
-                # simple plan: first get to edge (use dash), then attack, then cancel, then return center
-                phase = 0
-                for t in range(L):
-                    if phase == 0:
-                        y[t] = random.choice([1, 2])
-                        if t > 3:
-                            phase = 1
-                    elif phase == 1:
-                        y[t] = 4
-                        phase = 2
-                    elif phase == 2:
-                        y[t] = 5
-                        phase = 3
-                    else:
-                        y[t] = random.choice([1, 2, 0])
-                return world, y, {}, {}, {}
-
-        spec = TaskSpec(Vx, actions, True, {}, {}, {"dec_ce": 1.0})
-        return spec, DS()
-
-
-# map TASK_ID-> factory
-TASK_FACTORIES = {
-    1: lambda: ToyTasks.task1_shifted_copy(L, DELAY),
-    2: lambda: ToyTasks.task2_running_mod(L, MOD_BASE),
-    3: lambda: ToyTasks.task3_cooldown(L, COOLDOWN_E),
-    4: lambda: ToyTasks.task4_jump_squat(L, JUMP_SQUAT_FRAMES),
-    5: lambda: ToyTasks.task5_cancel_window(L, CANCEL_K),
-    6: lambda: ToyTasks.task6_di_response(L, DELAY, DI_M_FRAMES),
-    7: lambda: ToyTasks.task7_stage_positioning(L, STAGE_RANGE, OFFSTAGE_THRESH),
-    8: lambda: ToyTasks.task8_multi_head_coherence(L),
-    9: lambda: ToyTasks.task9_opponent_feints(L, FEINT_PROB, HISTORY_N),
-    10: lambda: ToyTasks.task10_micro_plan(L, PLAN_HORIZON),
-}
-
-
-# =================================
-# ==== DATA WRANGLING =============
-# =================================
-class UnifiedDataset(Dataset):
-    def __init__(self, base: Dataset, spec: TaskSpec):
-        self.base = base
-        self.spec = spec
-
-    def __len__(self):
-        return len(self.base)
-
-    def __getitem__(self, idx: int):
-        x, dec_y, ce_targets, bce_targets, masks = self.base[idx]
-        tgt_in, tgt_out = ToyTasks._bos_cat(dec_y.unsqueeze(0), self.spec.dec_vocab)
-        return (
-            x.long(),
-            tgt_in.squeeze(0).long(),
-            tgt_out.long(),
-            {k: v.long() for k, v in ce_targets.items()},
-            {k: v.float() for k, v in bce_targets.items()},
-            {k: v for k, v in (masks or {}).items()},
-        )
-
-
-# =================================
-# ==== HAZARD LOSS FOR TASK 3 =====
-# =================================
-def task3_hazard_loss(logits: Tensor, y: Tensor, cooldown_E: int) -> Tensor:
-    # logits: (B, T, 2), y: (B, T) in {0,1}
-    # Converts class-1 probability into a per-frame hazard and uses a renewal-process NLL
-    # with refractory period `cooldown_E`. This penalizes early/late fires and multiple fires.
-    probs = logits.softmax(dim=-1)[..., 1].clamp(1e-6, 1.0 - 1e-6)  # (B, T)
-    B, T = y.shape
-    total = probs.new_zeros(())
-    for b in range(B):
-        cd = 0
-        for t in range(T):
-            p = probs[b, t]
-            yi = int(y[b, t].item())
-            if cd > 0:
-                total = total + (-torch.log(1.0 - p))  # survival during cooldown
-                cd -= 1
+    for row in rows:
+        for fname in field_names:
+            try:
+                v = getattr(row, fname)
+            except Exception:
                 continue
-            if yi == 1:
-                total = total + (-torch.log(p))  # event at t
-                cd = cooldown_E
+
+            # classify
+            kind = classified.get(fname)
+            if kind is None and v is not None:
+                if _is_enum(v):
+                    classified[fname] = "enum"
+                elif _is_bool(v):
+                    classified[fname] = "bool"
+                elif _is_number(v):
+                    classified[fname] = "num"
+                elif isinstance(v, str):
+                    classified[fname] = "str"
+                else:
+                    classified[fname] = "other"
+                kind = classified[fname]
+            elif kind is None:
+                # Defer classification until we see a non-None; we'll count the missing once classified.
+                continue
+
+            # If now classified, but value is None, count as missing for classified fields
+
+            if kind == "num":
+                stats = _ensure_num(fname)
+                if v is None:
+                    stats["missing"] += 1
+                    continue
+                x = _as_float(v)
+                if math.isnan(x):
+                    stats["missing"] += 1
+                    continue
+                if not math.isfinite(x):
+                    stats["non_finite"] += 1
+                    continue
+
+                # update moments
+                stats["n"] += 1
+                if x < stats["min"]:
+                    stats["min"] = x
+                if x > stats["max"]:
+                    stats["max"] = x
+                stats["sum"] += x
+                stats["sumsq"] += x * x
+                if x < 0:
+                    stats["neg"] += 1
+                elif x == 0:
+                    stats["zero"] += 1
+                else:
+                    stats["pos"] += 1
+
+                # special buckets
+                if _is_shoulder(fname):
+                    if _near(x, 0.0):
+                        stats["shoulder_zero"] += 1
+                    elif _near(x, 1.0):
+                        stats["shoulder_full"] += 1
+                    elif 0.0 < x < 1.0:
+                        stats["shoulder_partial"] += 1
+                if _is_stick(fname) and _near(x, 0.5):
+                    stats["stick_neutral"] += 1
+
+                # tdigest
+                stats["td"].update(x, 1.0)
+
+            elif kind == "bool":
+                d = boo.setdefault(fname, {"n": 0, "missing": 0, "true": 0, "false": 0})
+                if v is None:
+                    d["missing"] += 1
+                else:
+                    d["n"] += 1
+                    if bool(v):
+                        d["true"] += 1
+                    else:
+                        d["false"] += 1
+
+            elif kind == "enum":
+                c = enu.setdefault(fname, Counter())
+                if v is None:
+                    c["<None>"] += 1
+                else:
+                    if _is_enum(v):
+                        key = f"{type(v).__name__}.{getattr(v, 'name', str(v))}"
+                    else:
+                        key = str(v)
+                    c[key] += 1
+
+            elif kind == "str":
+                s = stg.setdefault(fname, {"n": 0, "missing": 0, "sum_len": 0, "min_len": math.inf, "max_len": 0,
+                                           "counts": Counter()})
+                if v is None:
+                    s["missing"] += 1
+                else:
+                    vv = str(v)
+                    L = len(vv)
+                    s["n"] += 1
+                    s["sum_len"] += L
+                    if L < s["min_len"]:
+                        s["min_len"] = L
+                    if L > s["max_len"]:
+                        s["max_len"] = L
+                    s["counts"][vv] += 1
+
             else:
-                total = total + (-torch.log(1.0 - p))  # survival before next event
-    return total / (B * T)
+                c = oth.setdefault(fname, Counter())
+                if v is None:
+                    c["<None>"] += 1
+                else:
+                    try:
+                        c[repr(v)] += 1
+                    except Exception:
+                        c["<unrepr>"] += 1
 
+    # serialize digests
+    for fname, stats in num.items():
+        td: TDigest = stats.pop("td")
+        # Use tdigest's built-in (stable) dict serialization to avoid accessing internals
+        stats["td_digest"] = td.to_dict()
 
-# Task-5 window-level coverage loss
-def task5_window_coverage_loss(logits: Tensor, src: Tensor, K: int, eps: float = 1e-6) -> Tensor:
-    # logits: (B, T, 2), src: (B, T) with HIT encoded as 1
-    # Vectorized: use cumulative sums to get window sums p[t: t+K) for all t at once.
-    p = logits.softmax(dim=-1)[..., 1]  # (B, T)
-    B, T = p.shape
-    if K <= 0:
-        return p.new_zeros(())
+    # shrink enum/str to top10
+    enum_shard: Dict[str, Dict[str, Any]] = {}
+    for k, c in enu.items():
+        total = sum(c.values())
+        top10 = c.most_common(10)
+        enum_shard[k] = {"count": total, "unique": len(c), "top10": top10}
 
-    # Identify window starts (HIT positions). Task 5 generator ensures non-overlapping windows.
-    starts = (src == 1)  # (B, T)
-    nwin = int(starts.sum().item())
-    if nwin == 0:
-        return p.sum() * 0.0
-
-    # Cumulative sum with leading zero so sums over [t, t+K) are c[:, t+K] - c[:, t]
-    c = F.pad(p, (1, 0), value=0.0).cumsum(dim=1)  # (B, T+1)
-    idx = torch.arange(T, device=p.device)
-    end_idx = torch.clamp(idx + K, max=T)
-    window_sum = c[:, end_idx] - c[:, idx]  # (B, T)
-
-    # Gather sums only at window starts and enforce total mass ~ 1 per window
-    sums_at_starts = window_sum[starts]  # (nwin,)
-    loss = (sums_at_starts - 1.0).pow(2).mean()
-    return loss
-
-
-# =================================
-# ==== TRAIN / EVAL ===============
-# =================================
-def train_eval_loop() -> None:
-    spec, base_ds = TASK_FACTORIES[TASK_ID]()
-    ds = UnifiedDataset(base_ds, spec)
-    val_len = max(1000, len(ds) // 8)
-    train_len = len(ds) - val_len
-    train_ds, val_ds = torch.utils.data.random_split(
-        ds, [train_len, val_len], generator=g
-    )
-
-    model = Model(spec.in_vocab, spec.dec_vocab, spec.extra_ce, spec.extra_bce).to(
-        DEVICE
-    )
-    opt = torch.optim.AdamW(model.parameters(), lr=LR)
-    ce_loss = nn.CrossEntropyLoss()
-    bce_loss = nn.BCEWithLogitsLoss()
-
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
-
-    def step(loader, train: bool):
-        if train:
-            model.train()
-        else:
-            model.eval()
-        tot_loss = 0.0
-        n_tok = 0
-        accs: Dict[str, float] = {}
-        with torch.set_grad_enabled(train):
-            for x, tgt_in, tgt_out, ce_tgts, bce_tgts, masks in loader:
-                x = x.to(DEVICE)
-                tgt_in = tgt_in.to(DEVICE)
-                tgt_out = tgt_out.to(DEVICE)
-                ce_tgts = {k: v.to(DEVICE) for k, v in ce_tgts.items()}
-                bce_tgts = {k: v.to(DEVICE) for k, v in bce_tgts.items()}
-
-                out = model(x, tgt_in)
-                loss = 0.0
-                T = tgt_in.size(1)
-
-                if spec.use_dec_ce and "dec_ce" in out:
-                    B, T_, V = out["dec_ce"].shape
-                    loss += spec.loss_weights.get("dec_ce", 1.0) * ce_loss(
-                        out["dec_ce"].reshape(B * T_, V), tgt_out.reshape(B * T_)
-                    )
-                    pred = out["dec_ce"].argmax(-1)
-                    accs["dec_ce"] = accs.get("dec_ce", 0.0) + (
-                        pred.eq(tgt_out).float().sum().item()
-                    )
-                    n_tok += B * T_
-
-                for k, logits in out.items():
-                    if k == "dec_ce":
-                        continue
-                    if k in spec.extra_ce:
-                        B, T_, C = logits.shape
-                        y = ce_tgts[k]
-                        # Task-3 selectable loss for 'press' head
-                        if TASK_ID == 3 and k == "press" and TASK3_USE_WEIGHTED_CE:
-                            y_flat = y.reshape(B * T_)
-                            logits_flat = logits.reshape(B * T_, C)
-                            with torch.no_grad():
-                                counts = torch.bincount(y_flat, minlength=C).to(
-                                    logits.device
-                                )
-                                neg = counts[0].clamp(min=1).float()
-                                pos = counts[1].clamp(min=1).float()
-                                total = neg + pos
-                            if TASK3_LOSS_MODE == "hazard":
-                                loss_k = task3_hazard_loss(logits, y, COOLDOWN_E)
-                            elif TASK3_LOSS_MODE == "balanced_ce":
-                                w0 = (total / (2.0 * neg)).item()
-                                w1 = (total / (2.0 * pos)).item()
-                                class_weight = torch.tensor(
-                                    [w0, w1], device=logits.device, dtype=torch.float32
-                                )
-                                loss_k = F.cross_entropy(
-                                    logits_flat, y_flat, weight=class_weight
-                                )
-                            elif TASK3_LOSS_MODE == "focal":
-                                probs = F.softmax(logits_flat, dim=-1)
-                                p_t = probs.gather(1, y_flat.unsqueeze(1)).squeeze(1)
-                                alpha = torch.where(
-                                    y_flat == 1,
-                                    torch.full_like(p_t, TASK3_FOCAL_ALPHA_POS),
-                                    torch.full_like(p_t, 1.0 - TASK3_FOCAL_ALPHA_POS),
-                                )
-                                focal_factor = (
-                                    (1.0 - p_t).clamp(min=1e-6).pow(TASK3_FOCAL_GAMMA)
-                                )
-                                loss_k = -(
-                                    alpha * focal_factor * p_t.clamp(min=1e-6).log()
-                                ).mean()
-                            else:  # "weighted_ce"
-                                w1 = (neg / pos).clamp(min=TASK3_MIN_POS_WEIGHT)
-                                class_weight = torch.tensor(
-                                    [1.0, float(w1.item())],
-                                    device=logits.device,
-                                    dtype=torch.float32,
-                                )
-                                loss_k = F.cross_entropy(
-                                    logits_flat, y_flat, weight=class_weight
-                                )
-                        else:
-                            loss_k = ce_loss(
-                                logits.reshape(B * T_, C), y.reshape(B * T_)
-                            )
-                        loss += spec.loss_weights.get(k, 1.0) * loss_k
-                        # Task-5: add window coverage loss for cancel head
-                        if TASK_ID == 5 and k == "cancel" and TASK5_USE_WINDOW_LOSS:
-                            loss += spec.loss_weights.get(k, 1.0) * TASK5_WINDOW_LOSS_W * task5_window_coverage_loss(
-                                logits, x, CANCEL_K
-                            )
-                        pred = logits.argmax(-1)
-                        accs[k] = accs.get(k, 0.0) + (pred.eq(y).float().sum().item())
-                        n_tok += B * T_
-                    elif k in spec.extra_bce:
-                        y = bce_tgts[k]
-                        loss += spec.loss_weights.get(k, 1.0) * bce_loss(logits, y)
-                        # simple per-bit accuracy:
-                        accs[k] = accs.get(k, 0.0) + (
-                            (logits.sigmoid() > 0.5)
-                            .eq(y > 0.5)
-                            .float()
-                            .mean(dim=(1, 2))
-                            .sum()
-                            .item()
-                        )
-                        n_tok += logits.size(0)  # per-sequence score
-
-                if train:
-                    opt.zero_grad(set_to_none=True)
-                    loss.backward()
-                    opt.step()
-                tot_loss += float(loss.detach())
-
-        # normalize metrics
-        metrics = {
-            k: (v / (len(loader) if k in spec.extra_bce else n_tok))
-            for k, v in accs.items()
+    str_shard: Dict[str, Dict[str, Any]] = {}
+    for k, s in stg.items():
+        mean_len = (s["sum_len"] / s["n"]) if s["n"] else 0.0
+        top10 = s["counts"].most_common(10)
+        str_shard[k] = {
+            "count": s["n"],
+            "missing": s["missing"],
+            "unique": len(s["counts"]),
+            "min_len": None if s["n"] == 0 else int(s["min_len"]),
+            "mean_len": float(mean_len),
+            "max_len": None if s["n"] == 0 else int(s["max_len"]),
+            "top10": top10,
         }
-        return tot_loss / len(loader), metrics
 
-    print(
-        f"Task {TASK_ID} | in_vocab={spec.in_vocab} dec_vocab={spec.dec_vocab} headsCE={spec.extra_ce} headsBCE={spec.extra_bce}"
-    )
-    for e in range(1, EPOCHS + 1):
-        tr_loss, tr_m = step(train_loader, True)
-        va_loss, va_m = step(val_loader, False)
-        if e == 1 or e % 5 == 0:
-
-            def fmt(m):
-                return " ".join([f"{k}:{(v*100):.1f}%" for k, v in m.items()])
-
-            print(
-                f"Epoch {e:03d} | train {tr_loss:.4f} [{fmt(tr_m)}] | val {va_loss:.4f} [{fmt(va_m)}]"
-            )
-
-    # demos
-    model.eval()
-    print("\n=== Demo ===")
-    demo_loader = DataLoader(val_ds, batch_size=1, shuffle=True)
-    for i, batch in enumerate(demo_loader):
-        if i >= DEMO_SAMPLES:
-            break
-        x, tgt_in, tgt_out, ce_tgts, bce_tgts, _ = batch
-        x = x.to(DEVICE)
-        tgt_in = tgt_in.to(DEVICE)
-        tgt_out = tgt_out.to(DEVICE)
-        out = model(x, tgt_in)
-        print(f"src: {x.squeeze(0).cpu().tolist()}")
-        if spec.use_dec_ce and "dec_ce" in out:
-            pred = out["dec_ce"].argmax(-1).squeeze(0).cpu().tolist()
-            print(f"y_true(dec): {tgt_out.squeeze(0).cpu().tolist()}")
-            print(f"y_pred(dec): {pred}")
-        for k in spec.extra_ce:
-            y = ce_tgts[k].squeeze(0).cpu().tolist()
-            p = out[k].argmax(-1).squeeze(0).cpu().tolist()
-            print(f"{k}_true: {y}")
-            print(f"{k}_pred: {p}")
-        for k in spec.extra_bce:
-            y = (bce_tgts[k].squeeze(0).cpu().numpy() > 0.5).astype(int).tolist()
-            p = (out[k].sigmoid().squeeze(0).cpu().numpy() > 0.5).astype(int).tolist()
-            print(f"{k}_true: {y}")
-            print(f"{k}_pred: {p}")
-        print("---")
+    return {
+        "__file__": replay_path,
+        "numeric": num,
+        "bool": boo,
+        "enum": enum_shard,
+        "str": str_shard,
+        "other": {k: dict(v) for k, v in oth.items()},
+    }
 
 
-# =================================
-# ==== RUN ========================
-# =================================
+def _merge_numeric_into(
+        dst: Dict[str, Dict[str, Any]],
+        src: Dict[str, Dict[str, Any]],
+        *,
+        tdigest_delta: float = 0.01,
+) -> None:
+    """Merge numeric shards, including t-digests."""
+    for fname, s in src.items():
+        d = dst.get(fname)
+        if d is None:
+            # clone
+            d = {
+                "n": 0, "missing": 0, "non_finite": 0,
+                "min": math.inf, "max": -math.inf,
+                "sum": 0.0, "sumsq": 0.0,
+                "neg": 0, "zero": 0, "pos": 0,
+                "shoulder_zero": 0, "shoulder_partial": 0, "shoulder_full": 0,
+                "stick_neutral": 0,
+                "td": TDigest(delta=tdigest_delta) if TDigest is not None else None,
+            }
+            dst[fname] = d
+
+        # moments, counts
+        d["n"] += s["n"]
+        d["missing"] += s["missing"]
+        d["non_finite"] += s["non_finite"]
+        d["min"] = min(d["min"], s["min"])
+        d["max"] = max(d["max"], s["max"])
+        d["sum"] += s["sum"]
+        d["sumsq"] += s["sumsq"]
+        d["neg"] += s["neg"]
+        d["zero"] += s["zero"]
+        d["pos"] += s["pos"]
+        d["shoulder_zero"] += s["shoulder_zero"]
+        d["shoulder_partial"] += s["shoulder_partial"]
+        d["shoulder_full"] += s["shoulder_full"]
+        d["stick_neutral"] += s["stick_neutral"]
+
+        # merge t-digest (CamDavidsonPilon API: use update_from_dict)
+        if TDigest is not None:
+            td: TDigest = d["td"]
+            td_dict = s.get("td_digest")
+            if td_dict:
+                td.update_from_dict(td_dict)
+
+
+def _quantiles_from_digest(td: "TDigest", percentiles: Sequence[float]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for p in percentiles:
+        val = td.percentile(p)  # CamDavidsonPilon API expects 0..100
+        key = f"p{int(p)}" if float(int(p)) == float(p) else f"p{str(p).rstrip('0').rstrip('.')}"
+        out[key] = float(val)
+    return out
+
+
+def process_replays_with_stats() -> None:
+    """
+    Parallel, bounded-memory stats using mergeable t-digests for numeric quantiles.
+    """
+    base_dir = Path("/Users/eppie/Downloads/replays_sorted")
+    if not base_dir.exists() or not base_dir.is_dir():
+        logger.error(f"Base directory not found or not a directory: {base_dir}")
+        return
+    if TDigest is None:
+        logger.error("tdigest is not installed. Please `pip install tdigest` to enable parallel mergeable quantiles.")
+        return
+
+    # Select up to 10 random .slp per subfolder
+    rng = random.Random(12345)
+    selected_replays: list[Path] = []
+    subfolders = [p for p in base_dir.iterdir() if p.is_dir()]
+    for sub in sorted(subfolders):
+        slp_files = [p for p in sub.iterdir() if p.is_file() and p.suffix.lower() == ".slp"]
+        if not slp_files:
+            continue
+        k = min(1, len(slp_files))
+        selected_replays.extend(rng.sample(slp_files, k=k))
+
+    if not selected_replays:
+        logger.warning(f"No .slp files found under {base_dir}")
+        return
+
+    logger.info(f"Selected {len(selected_replays)} replays from {len(subfolders)} subfolders")
+
+    # Map in parallel to build shards
+    shards: List[dict] = []
+    procs = min(16, mp.cpu_count())
+    with mp.Pool(processes=procs, maxtasksperchild=25) as pool:
+        for shard in tqdm(
+                pool.imap_unordered(_stats_shard_for_replay, map(str, selected_replays)),
+                total=len(selected_replays),
+                desc="Computing stats (parallel)",
+                unit="replay",
+        ):
+            if "__error__" in shard or "__empty__" in shard:
+                # Optionally log debug and skip
+                continue
+            shards.append(shard)
+
+    if not shards:
+        logger.warning("No stats shards produced.")
+        return
+
+    # Merge shards
+    numeric: Dict[str, Dict[str, Any]] = {}
+    bools: Dict[str, Dict[str, int]] = defaultdict(lambda: {"n": 0, "missing": 0, "true": 0, "false": 0})
+    enums_acc: Dict[str, Counter[str]] = defaultdict(Counter)
+    strs_acc: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "missing": 0, "unique": 0, "min_len": None, "mean_len": 0.0, "max_len": None, "top10": []})
+    others_acc: Dict[str, Counter[str]] = defaultdict(Counter)
+
+    for sh in shards:
+        _merge_numeric_into(numeric, sh.get("numeric", {}))
+        # bools
+        for k, v in sh.get("bool", {}).items():
+            b = bools[k]
+            b["n"] += v.get("n", 0)
+            b["missing"] += v.get("missing", 0)
+            b["true"] += v.get("true", 0)
+            b["false"] += v.get("false", 0)
+        # enums (re-expand from top10 if you want full; here we just add counts we have)
+        for k, v in sh.get("enum", {}).items():
+            for val, cnt in v.get("top10", []):
+                enums_acc[k][val] += cnt
+        # strings
+        for k, v in sh.get("str", {}).items():
+            d = strs_acc[k]
+            d["count"] += v.get("count", 0)
+            d["missing"] += v.get("missing", 0)
+            d["unique"] += v.get("unique", 0)  # note: this overcounts unique across shards; we still show top10
+            d["min_len"] = v["min_len"] if d["min_len"] is None else (
+                min(d["min_len"], v["min_len"]) if v["min_len"] is not None else d["min_len"])
+            d["max_len"] = v["max_len"] if d["max_len"] is None else (
+                max(d["max_len"], v["max_len"]) if v["max_len"] is not None else d["max_len"])
+            # Weighted running mean for mean_len is messy without sum_len; we’ll recompute below from top10 only (approx).
+            # If you want exact, return sum_len from shard. (Simple to add.)
+            for val, cnt in v.get("top10", []):
+                others_acc[f"__str_values__::{k}"][val] += cnt
+        # others
+        for k, v in sh.get("other", {}).items():
+            others_acc[k].update(v)
+
+    # Compute total rows from a robust numeric field (frame if present)
+    total_rows = 0
+    if "frame" in numeric:
+        total_rows = numeric["frame"]["n"] + numeric["frame"]["missing"]
+
+    # Emit
+    lines: List[str] = ["=== Global Dataset Summary ===", f"rows: {total_rows:,d}"]
+
+    # Need the field order; grab from any shard’s enum/num/bool keys union
+    field_names = sorted(
+        set(list(numeric.keys()) + list(bools.keys()) + list(enums_acc.keys()) + [k.split("::", 1)[-1] for k in
+                                                                                  others_acc.keys() if k.startswith(
+                "__str_values__::")] + list(others_acc.keys())))
+
+    # Numeric
+    for fname in sorted(numeric.keys()):
+        d = numeric[fname]
+        n = d["n"]
+        mean = (d["sum"] / n) if n else float("nan")
+        var = max(0.0, (d["sumsq"] / n) - mean * mean) if n else float("nan")
+        std = math.sqrt(var) if n else float("nan")
+        td: TDigest = d["td"]
+
+        q = _quantiles_from_digest(td, [0.5, 1, 5, 25, 50, 75, 95, 99, 99.5])
+
+        lines.append(f"- {fname}:")
+        lines.append(
+            f"    numeric | count={n:,d}, missing={d['missing']:,d}, non_finite={d['non_finite']:,d}, "
+            f"min={None if n == 0 else float(d['min'])}, p50={q.get('p50')}, max={None if n == 0 else float(d['max'])}, "
+            f"mean={None if n == 0 else float(mean)}, std={None if n == 0 else float(std)}, "
+            f"neg/zero/pos={d['neg']}/{d['zero']}/{d['pos']}"
+        )
+        q_str = ", ".join(f"{k}={v}" for k, v in q.items())
+        lines.append(f"    quantiles | {q_str}")
+
+        if _is_shoulder(fname):
+            total = max(1, n)
+            z, p, f = d["shoulder_zero"], d["shoulder_partial"], d["shoulder_full"]
+            lines.append(
+                f"    shoulder | zero={z} ({z / total:.3%}), partial={p} ({p / total:.3%}), full={f} ({f / total:.3%})")
+        if _is_stick(fname):
+            total = max(1, n)
+            lines.append(f"    neutral  | count={d['stick_neutral']} ({d['stick_neutral'] / total:.3%})")
+
+    # Enums
+    for fname in sorted(enums_acc.keys()):
+        c = enums_acc[fname]
+        total = sum(c.values())
+        lines.append(f"- {fname}:")
+        lines.append(f"    enum    | count={total:,d}, missing=0, unique≈{len(c):,d}")
+        for val, cnt in c.most_common(10):
+            lines.append(f"      - {val}: {cnt:,d}")
+
+    # Bools
+    for fname in sorted(bools.keys()):
+        b = bools[fname]
+        total = max(1, b["n"])
+        lines.append(f"- {fname}:")
+        lines.append(
+            f"    bool    | count={b['n']:,d}, missing={b['missing']:,d}, true={b['true']:,d}, false={b['false']:,d}"
+        )
+        lines.append(f"    rates   | true={b['true'] / total:.3%}, false={b['false'] / total:.3%}")
+        vc = Counter()
+        if b["true"]:
+            vc[True] = b["true"]
+        if b["false"]:
+            vc[False] = b["false"]
+        if vc:
+            lines.append(f"    values  | {vc}")
+
+    # Strings (approx: top10 across shards)
+    for tag, counts in others_acc.items():
+        if not tag.startswith("__str_values__::"):
+            continue
+        fname = tag.split("::", 1)[-1]
+        total = sum(counts.values())
+        lines.append(f"- {fname}:")
+        lines.append(f"    str     | count≈{total:,d}, missing=~, unique≈{len(counts):,d}, len[min/mean/max]=~")
+        for val, cnt in counts.most_common(10):
+            lines.append(f"      - {val!r}: {cnt:,d}")
+
+    # Other
+    for fname, counts in others_acc.items():
+        if fname.startswith("__str_values__::"):
+            continue
+        total = sum(counts.values())
+        lines.append(f"- {fname}:")
+        lines.append(f"    other   | count≈{total:,d}, missing=~, unique≈{len(counts):,d}")
+        for val, cnt in counts.most_common(10):
+            lines.append(f"      - {val}: {cnt:,d}")
+
+    logger.info("\n".join(lines))
+
+
 if __name__ == "__main__":
-    train_eval_loop()
+    process_replays_with_stats()

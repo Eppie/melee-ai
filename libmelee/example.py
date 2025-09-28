@@ -2,11 +2,18 @@
 import argparse
 import signal
 import sys
+from pathlib import Path
 
-import numpy as np
-
-import melee
-from inference import CHECKPOINT_PATH, InferenceEngine, gamestate_to_input, apply_model_output, debug_dump_model_inputs
+from libmelee.melee.console import Console
+from libmelee.melee.controller import Controller
+from libmelee.melee.enums import Character, Stage, Menu, ControllerType
+from libmelee.melee.menuhelper import MenuHelper
+from model_interface import (
+    GPTInferenceEngine,
+    apply_model_outputs_to_game,
+    collect_raw_inputs_from_gamestate,
+    set_active_engine,
+)
 
 if __name__ == "__main__":
 
@@ -19,9 +26,28 @@ if __name__ == "__main__":
                         help='The directory where dolphin is')
     parser.add_argument('--iso', default=None, type=str,
                         help='Path to melee iso.')
+    parser.add_argument('--checkpoint', '-c', type=Path,
+                        default=Path('/Users/eppie/PycharmProjects/new-melee-ai/checkpoints_gptv7_epseq/model_ep007.pt'),
+                        help='Path to trained model checkpoint (.pt)')
+    parser.add_argument('--device', default='mps',
+                        help='Torch device to run on (auto/cpu/cuda/mps)')
+    parser.add_argument('--button-threshold', default=0.45, type=float,
+                        help='Sigmoid threshold for button activation')
+    parser.add_argument('--warmup-frames', default=256, type=int,
+                        help='Number of frames to buffer before using the model output')
+    parser.add_argument('--data-root', default=None, type=str,
+                        help='Dataset directory with meta.json; defaults to checkpoint config value')
 
     args = parser.parse_args()
-    console = melee.Console(
+    engine = GPTInferenceEngine(
+        checkpoint_path=args.checkpoint,
+        device=args.device,
+        button_threshold=args.button_threshold,
+        warmup_frames=args.warmup_frames,
+        data_root=args.data_root,
+    )
+    set_active_engine(engine)
+    console = Console(
         path=args.dolphin_executable_path,
         slippi_address=args.address,
         save_replays=args.debug,
@@ -31,15 +57,15 @@ if __name__ == "__main__":
     ports = [1, 2]
 
     controllers = {
-        1: melee.Controller(
+        1: Controller(
             console=console,
             port=1,
-            type=melee.ControllerType.STANDARD,
+            type=ControllerType.STANDARD,
         ),
-        2: melee.Controller(
+        2: Controller(
             console=console,
             port=2,
-            type=melee.ControllerType.STANDARD)
+            type=ControllerType.STANDARD)
     }
 
 
@@ -52,7 +78,6 @@ if __name__ == "__main__":
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Run the console
     console.run(iso_path=args.iso)
 
     # Connect to the console
@@ -67,11 +92,12 @@ if __name__ == "__main__":
             sys.exit(-1)
     print("Controller connected")
 
-    menu_helper = melee.MenuHelper()
-    engine = InferenceEngine(CHECKPOINT_PATH, threshold=0.5)
+    menu_helper = MenuHelper()
+
     BOT_PORT = 1
     OPP_PORT = 2
     # Main loop
+    previous_gamestate = None
     while True:
         # "step" to the next frame
         gamestate = console.step()
@@ -84,26 +110,19 @@ if __name__ == "__main__":
             print("WARNING: Last frame took " + str(console.processingtime * 1000) + "ms to process.")
 
         # What menu are we in?
-        if gamestate.menu_state in [melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH]:
-            feat: np.ndarray = gamestate_to_input(gamestate, p1_port=BOT_PORT, p2_port=OPP_PORT)
-
-            engine.push_frame(feat)
-
-            if engine.ready():
-                outputs: np.ndarray = engine.infer()  # (C,), aligned with TARGET_COLUMNS
-                # Send to bot controller
-                apply_model_output(controllers[BOT_PORT], outputs.tolist())
-                window = np.stack(list(engine.buffer), axis=0)  # (T=60, F)
-                # debug_dump_model_inputs(window, show_window_stats=True, which_frame="last")
-            # melee.techskill.multishine(ai_state=gamestate.players[port], controller=controller)
+        if gamestate.menu_state in [Menu.IN_GAME, Menu.SUDDEN_DEATH]:
+            raw_model_inputs = collect_raw_inputs_from_gamestate(gamestate, BOT_PORT, OPP_PORT)
+            controller_state = engine.predict_from_raw(raw_model_inputs)
+            apply_model_outputs_to_game(controllers[BOT_PORT], controller_state)
+            previous_gamestate = gamestate
 
         else:
             for port, controller in controllers.items():
                 menu_helper.menu_helper_simple(
                     gamestate,
                     controller,
-                    melee.Character.FOX,
-                    melee.Stage.YOSHIS_STORY,
+                    Character.FOX,
+                    Stage.FINAL_DESTINATION,
                     costume=port,
                     autostart=port == 1,
                     swag=False)

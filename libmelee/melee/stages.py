@@ -1,7 +1,7 @@
 """ Stages is a collection of helper data for information regarding stages
 """
 
-from melee import enums
+from libmelee.melee import enums
 
 """Get the 4 blast zone boundaries for a given stage.  Values are tuples in
 order of (left x boundary, right x boundary, upper y boundary, lower y boundary).
@@ -50,18 +50,18 @@ def top_platform_position(stage):
         (float, float, float): Tuple of height, left edge, right edge. (None, None, None) if no platform
     """
     if stage == enums.Stage.FINAL_DESTINATION:
-        return (None, None, None)
+        return None, None, None
     if stage == enums.Stage.POKEMON_STADIUM:
-        return (None, None, None)
+        return None, None, None
     if stage == enums.Stage.BATTLEFIELD:
-        return (54.40010070800781, -18.80000114440918, 18.80000114440918)
+        return 54.40010070800781, -18.80000114440918, 18.80000114440918
     if stage == enums.Stage.DREAMLAND:
-        return (51.42539978027344, -19.01810073852539, 19.017099380493164)
+        return 51.42539978027344, -19.01810073852539, 19.017099380493164
     if stage == enums.Stage.FOUNTAIN_OF_DREAMS:
-        return (42.750099182128906, -14.25, 14.25)
+        return 42.750099182128906, -14.25, 14.25
     if stage == enums.Stage.YOSHIS_STORY:
-        return (42.000099182128906, -15.75, 15.75)
-    return (None, None, None)
+        return 42.000099182128906, -15.75, 15.75
+    return None, None, None
 
 def side_platform_position(right_platform, stage):
     """Gets the position of the specified side platform
@@ -88,18 +88,18 @@ def left_platform_position(stage):
         (float, float, float): Tuple of height, left edge, right edge
     """
     if stage == enums.Stage.FINAL_DESTINATION:
-        return (None, None, None)
+        return None, None, None
     if stage == enums.Stage.POKEMON_STADIUM:
-        return (25.000099182128906, -55, -25)
+        return 25.000099182128906, -55, -25
     if stage == enums.Stage.BATTLEFIELD:
-        return (27.20009994506836, -57.60000228881836, -20)
+        return 27.20009994506836, -57.60000228881836, -20
     if stage == enums.Stage.DREAMLAND:
-        return (30.14219856262207, -61.39289855957031, -31.725400924682617)
+        return 30.14219856262207, -61.39289855957031, -31.725400924682617
     if stage == enums.Stage.FOUNTAIN_OF_DREAMS:
-        return (None, None, None) #TODO
+        return None, None, None  #TODO
     if stage == enums.Stage.YOSHIS_STORY:
-        return (23.450098037719727, -59.5, -28.0)
-    return (None, None, None)
+        return 23.450098037719727, -59.5, -28.0
+    return None, None, None
 
 def right_platform_position(stage):
     """Gets the position of the right platform
@@ -111,18 +111,18 @@ def right_platform_position(stage):
         (float, float, float): Tuple of height, left edge, right edge
     """
     if stage == enums.Stage.FINAL_DESTINATION:
-        return (None, None, None)
+        return None, None, None
     if stage == enums.Stage.POKEMON_STADIUM:
-        return (25.000099182128906, 25, 55)
+        return 25.000099182128906, 25, 55
     if stage == enums.Stage.BATTLEFIELD:
-        return (27.20009994506836, 20, 57.60000228881836)
+        return 27.20009994506836, 20, 57.60000228881836
     if stage == enums.Stage.DREAMLAND:
-        return (30.242599487304688, 31.70359992980957, 63.074501037597656)
+        return 30.242599487304688, 31.70359992980957, 63.074501037597656
     if stage == enums.Stage.FOUNTAIN_OF_DREAMS:
-        return (None, None, None) #TODO
+        return None, None, None  #TODO
     if stage == enums.Stage.YOSHIS_STORY:
-        return (23.450098037719727, 28.0, 59.5)
-    return (None, None, None)
+        return 23.450098037719727, 28.0, 59.5
+    return None, None, None
 
 _RANDALL_CORNER_POSITIONS = {
     416: (-33.184478759765625, 89.75263977050781),
@@ -166,7 +166,7 @@ def randall_position(frame):
     Note:
         The values returned here are not EXACT. But they're at most off by .001 in practice
         The reason is that Randall's location is not easily read from in-game memory. So we
-        have to exprapolate it on our own. But unfortunately, it doesn't move very regularly.
+        have to extrapolate it on our own. But unfortunately, it doesn't move very regularly.
 
     Returns:
         (float, float, float): (height, x_left, x_right)
@@ -179,13 +179,13 @@ def randall_position(frame):
         start = 101.235443115234
         speed = -0.35484
         frames_in = frame_count - 477
-        return (-13.64989, start - randall_width + (speed*frames_in), start + (speed*frames_in))
+        return -13.64989, start - randall_width + (speed * frames_in), start + (speed * frames_in)
     # Left section
     if 1022 < frame_count < 1069:
         start = -15.2778692245483
         speed = -0.354839325
         frames_in = frame_count - 1023
-        return (start + (speed*frames_in), -103.6, -91.7)
+        return start + (speed * frames_in), -103.6, -91.7
     # Bottom section
     if (frame_count > 1075) or (frame_count < 416):
         start = -101.850006103516
@@ -193,15 +193,15 @@ def randall_position(frame):
         frames_in = frame_count - 1076
         if frame_count < 416:
             frames_in = 125 + frame_count
-        return (-33.2489, start + (speed*frames_in), start + randall_width + (speed*frames_in))
+        return -33.2489, start + (speed * frames_in), start + randall_width + (speed * frames_in)
     # Right section
     if 423 < frame_count < 469:
         start = -31.160232543945312
         speed = 0.354839325
         frames_in = frame_count - 424
-        return (start + (speed*frames_in), 91.35, 103.25)
+        return start + (speed * frames_in), 91.35, 103.25
 
     # Here's an ugly section. But I don't know a better way to do it
     # It just hardcodes the rounded corners of Randall's location
     position = _RANDALL_CORNER_POSITIONS[frame_count]
-    return (position[0], position[1], position[1]+randall_width)
+    return position[0], position[1], position[1] + randall_width

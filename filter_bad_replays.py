@@ -7,14 +7,15 @@ from enum import Enum
 from pathlib import Path
 
 import peppi_py
-import pyarrow as pa
 from peppi_py import Game
 from peppi_py.game import EndMethod, PlayerType
+from tqdm import tqdm
 
-REPLAYS_DIR = Path("/Users/eppie/Downloads/replays")
-GOOD_DIR = Path("/Users/eppie/Downloads/replays_sorted")
-FAILED_DIR = Path("/Users/eppie/Downloads/replays_failed")
+REPLAYS_DIR = Path("/Users/eppie/Downloads/ALL_REPLAYS/extracted_master_files/")
+GOOD_DIR = Path("/Users/eppie/Downloads/ALL_REPLAYS/ranked_sorted")
+FAILED_DIR = Path("/Users/eppie/Downloads/ALL_REPLAYS/replays_failed")
 FAILED_DIR.mkdir(exist_ok=True)
+GOOD_DIR.mkdir(exist_ok=True)
 ALLOWED_STAGES = {0x03, 0x08, 0x02, 0x1F, 0x20, 0x1C}
 
 
@@ -100,7 +101,7 @@ def sanity_reason(game: Game) -> str | None:
     return None
 
 
-def process_file(path: Path) -> pa.Table | None:
+def process_file(path: Path) -> None:
     """
     Parse one .slp, move it to an appropriate 'failed' folder if it flunks,
     and return a flattened pyarrow.Table (or None).  *All* exceptions are
@@ -112,7 +113,7 @@ def process_file(path: Path) -> pa.Table | None:
         reason = sanity_reason(game)
         if reason is not None:
             _move_to_failed(path, reason)
-            return None
+            return
 
         # print(game)
         p1_char = game.start.players[0].character
@@ -137,12 +138,12 @@ def process_file(path: Path) -> pa.Table | None:
         if dest_path.exists():  # avoid clobbering duplicate names
             dest_path = dest_dir / f"{path.stem}_{int(time.time() * 1000)}{path.suffix}"
         shutil.move(str(path), dest_path)
-        return None
+        return
 
     except BaseException as exc:  # catch *everything*, even non‑Exception errors
         print(f"❌ {path.name}: {exc!r} – moving to 'corrupt'")
         _move_to_failed(path, "corrupt")
-        return None
+        return
 
 
 def main() -> None:
@@ -150,7 +151,7 @@ def main() -> None:
 
     with ProcessPoolExecutor(max_workers=16) as pool:
         try:
-            for _ in pool.map(process_file, files, chunksize=20):
+            for _ in tqdm(pool.map(process_file, files, chunksize=20)):
                 pass
         except BaseException as exc:
             print(f"Uncaught exception from worker threads: {exc!r}")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 from enum import IntEnum, auto
+from pathlib import Path
 from typing import Dict, Mapping
 
 import numpy as np
@@ -398,10 +400,10 @@ for cat in ActionCategory:
         _dense_counter += 1
 
 NUM_USED_ACTIONS: int = _dense_counter
-print(NUM_USED_ACTIONS)
 
 # Build inverse map: dense id -> original Action enum
 _DENSE_TO_ACTION: Dict[int, Action] = {v: k for k, v in _ACTION_TO_DENSE.items()}
+
 
 def dense_to_action(dense_id: int) -> Action:
     """
@@ -414,7 +416,7 @@ def dense_to_action(dense_id: int) -> Action:
     try:
         return _DENSE_TO_ACTION[int(dense_id)]
     except (KeyError, ValueError):
-        raise ValueError(f"dense_id {int(dense_id)} is not a valid dense Action id (0..{NUM_USED_ACTIONS-1})")
+        raise ValueError(f"dense_id {int(dense_id)} is not a valid dense Action id (0..{NUM_USED_ACTIONS - 1})")
 
 
 def dense_to_action_name(dense_id: int) -> str:
@@ -446,21 +448,24 @@ def _preprocess_character(character: enums.Character) -> np.int32:
     return np.int32(character.value)
 
 
-def _preprocess_action(action: Action) -> tuple[np.int32, np.int32]:
-    """
-    Map a (used) Action to:
-      1) a dense np.int32 id in [0, NUM_USED_ACTIONS)
-      2) a category id as np.int32 (ActionCategory value)
+# def _preprocess_action(action: Action) -> tuple[np.int32, np.int32]:
+#     """
+#     Map a (used) Action to:
+#       1) a dense np.int32 id in [0, NUM_USED_ACTIONS)
+#       2) a category id as np.int32 (ActionCategory value)
+#
+#     Raises:
+#         ValueError: if the action is not in the 'used' set above.
+#     """
+#     try:
+#         dense = _ACTION_TO_DENSE[action]
+#         cat = _ACTION_TO_CATEGORY[action]
+#     except KeyError:
+#         raise ValueError(f"Action {action.name} (0x{action.value:02x}) is not in the used-action set")
+#     return np.int32(dense), np.int32(int(cat))
 
-    Raises:
-        ValueError: if the action is not in the 'used' set above.
-    """
-    try:
-        dense = _ACTION_TO_DENSE[action]
-        cat = _ACTION_TO_CATEGORY[action]
-    except KeyError:
-        raise ValueError(f"Action {action.name} (0x{action.value:02x}) is not in the used-action set")
-    return np.int32(dense), np.int32(int(cat))
+def _preprocess_action(action: Action) -> np.int32:
+    return np.int32(action.value)
 
 
 def _preprocess_x_y_buttons(button_x: bool, button_y: bool) -> np.float32:
@@ -478,6 +483,19 @@ def winsor_signed_sqrt(x: np.ndarray, p_lo: float = 1.0, p_hi: float = 99.0) -> 
     return np.sign(xw) * np.sqrt(np.abs(xw).astype(np.float32) + 1e-8)
 
 
+def write_action_map_csv(path: Path | str = "action_map.csv") -> None:
+    mapping: Dict[int, Action] = _DENSE_TO_ACTION
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["dense_id", "action", "action_value"])  # headers
+        for dense_id in sorted(mapping.keys()):
+            act = mapping[dense_id]
+            w.writerow([dense_id, act.name, int(act.value)])
+
+
+if __name__ == "__main__":
+    write_action_map_csv("action_map.csv")
+
 # def category_of(action: Action) -> ActionCategory:
 #     if action not in _ACTION_TO_CATEGORY:
 #         raise ValueError(f"Action {action.name} (0x{action.value:02x}) is not in the used-action set")
@@ -490,3 +508,176 @@ def winsor_signed_sqrt(x: np.ndarray, p_lo: float = 1.0, p_hi: float = 99.0) -> 
 #
 # def dense_size() -> int:
 #     return NUM_USED_ACTIONS
+
+
+from typing import Tuple
+import numpy as np
+
+
+def snap_replay_to_palette(
+        raw_xy01: np.ndarray,
+        palette11: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    xy = np.asarray(raw_xy01, dtype=np.float32)
+    if xy.shape[-1] != 2:
+        raise ValueError("raw_xy01 must have last dimension size 2")
+    P = np.asarray(palette11, dtype=np.float32)
+    if P.ndim != 2 or P.shape[1] != 2:
+        raise ValueError("palette11 must have shape (K, 2)")
+
+    orig_shape = xy.shape
+    V01 = xy.reshape(-1, 2)
+
+    # Map [0,1] -> [-1,1], clip to unit circle (rarely necessary but safe).
+    V11 = np.clip(V01 * 2.0 - 1.0, -1.0, 1.0)
+    r2 = np.einsum("ij,ij->i", V11, V11)
+    over = r2 > 1.0
+    if np.any(over):
+        V11[over] /= np.sqrt(r2[over])[..., None]
+
+    # Precompute palette norms; vectorized nearest neighbor search.
+    P_norm2 = np.einsum("ij,ij->i", P, P)  # (K,)
+    V_norm2 = np.einsum("ij,ij->i", V11, V11)  # (N,)
+    V_dot_PT = V11 @ P.T  # (N, K)
+    d2 = V_norm2[:, None] + P_norm2[None, :] - 2.0 * V_dot_PT
+
+    idx = np.argmin(d2, axis=1).astype(np.int32)
+    snapped = P[idx]
+
+    return snapped.reshape(orig_shape), idx.reshape(orig_shape[:-1])
+
+
+def model_to_dolphin01(
+        model_out: np.ndarray,
+        palette11: np.ndarray | None = None,
+) -> np.ndarray:
+    arr = np.asarray(model_out)
+
+    if np.issubdtype(arr.dtype, np.integer):
+        if palette11 is None:
+            raise ValueError("palette11 must be provided when converting indices")
+        P = np.asarray(palette11, dtype=np.float32)
+        coords11 = P[arr]
+    else:
+        coords11 = np.asarray(model_out, dtype=np.float32)
+        if coords11.shape[-1] != 2:
+            raise ValueError("model_out must have last dimension size 2")
+
+    # Clamp to unit circle to be safe.
+    r2 = np.einsum("...i,...i->...", coords11, coords11)
+    over = r2 > 1.0
+    if np.any(over):
+        coords11 = coords11.copy()
+        coords11[over] /= np.sqrt(r2[over])[..., None]
+
+    # Map [-1,1] -> [0,1]
+    xy01 = np.clip(coords11 * 0.5 + 0.5, 0.0, 1.0).astype(np.float32)
+    return xy01
+
+
+FOX_STICK_64: list[tuple[float, float]] = [
+    # --- Essentials ---
+    (0.0, -1.0),  # 01 Hard down – ASDI-down, CC, fast-fall
+    (-1.0, 0.0),  # 02 Hard left – max drift, horiz DI
+    (0.0, 1.0),  # 03 Hard up – survival vs horizontals, Firefox charge positioning
+    (1.0, 0.0),  # 04 Hard right – max drift, horiz DI
+    (0.0, 0.0),  # 05 Neutral – buffering, re-center
+
+    # --- Shield-drop (engine accepts -0.6875..-0.6625; one precise value suffices) ---
+    (0.0, -0.6750),  # 06 Shield-drop Y (canonical pick in the allowed band)
+
+    # --- Wavedash / waveland / ledgedash (down-toward). Keep both shallow (distance) and ~45° (Fox ledgedash) ---
+    (0.9500, -0.2875),  # 07 16.84° down-right – shallowest legal; max slide if grounded
+    (0.9300, -0.3500),  # 08 ~21° down-right – shallow WD
+    (0.8625, -0.5000),  # 09 30° down-right – standard long WD
+    (0.8125, -0.5750),  # 10 ~35° down-right – distance/consistency trade
+    (0.7625, -0.6375),  # 11 ~40° down-right – reliable ground contact
+    (0.7000, -0.7000),  # 12 45° down-right – Fox ledgedash (~45° best GALINT)
+    (0.6375, -0.7625),  # 13 50° down-right – safer vs slants
+    (-0.9500, -0.2875),  # 14 16.84° down-left – mirror
+    (-0.9300, -0.3500),  # 15 ~21° down-left – mirror
+    (-0.8625, -0.5000),  # 16 30° down-left – mirror
+    (-0.8125, -0.5750),  # 17 ~35° down-left – mirror
+    (-0.7625, -0.6375),  # 18 ~40° down-left – mirror
+    (-0.7000, -0.7000),  # 19 45° down-left – Fox ledgedash mirror
+    (-0.6375, -0.7625),  # 20 50° down-left – mirror
+
+    # --- Firefox (Up+B) right/up – dense angles for unfair recoveries ---
+    (0.9000, 0.4125),  # 21 ~24.5° – shallow Firefox
+    (0.8625, 0.5000),  # 22 30°
+    (0.8125, 0.5750),  # 23 35°
+    (0.7625, 0.6375),  # 24 40°
+    (0.7000, 0.7000),  # 25 45° – baseline diagonal
+    (0.6375, 0.7625),  # 26 50°
+    (0.5750, 0.8125),  # 27 55°
+    (0.5000, 0.8625),  # 28 60°
+    (0.4125, 0.9000),  # 29 65°
+    (0.3500, 0.9300),  # 30 70°
+    (0.2875, 0.9500),  # 31 75° – steep threader
+
+    # --- Firefox (Up+B) left/up – mirrors ---
+    (-0.9000, 0.4125),  # 32 ~24.5° left
+    (-0.8625, 0.5000),  # 33 30° left
+    (-0.8125, 0.5750),  # 34 35° left
+    (-0.7625, 0.6375),  # 35 40° left
+    (-0.7000, 0.7000),  # 36 45° left
+    (-0.6375, 0.7625),  # 37 50° left
+    (-0.5750, 0.8125),  # 38 55° left
+    (-0.5000, 0.8625),  # 39 60° left
+    (-0.4125, 0.9000),  # 40 65° left
+    (-0.3500, 0.9300),  # 41 70° left
+    (-0.2875, 0.9500),  # 42 75° left
+
+    # --- Ultra-steep Firefox angles (beyond rectangle-legal; superhuman recoveries) ---
+    (0.1750, 0.9750),  # 43 ~80° right/up – high thread under/over guards
+    (0.0875, 0.9875),  # 44 ~85° right/up – near-vertical sweetspot
+    (-0.1750, 0.9750),  # 45 ~80° left/up – mirror
+    (-0.0875, 0.9875),  # 46 ~85° left/up – mirror
+
+    # --- Universal 45° diagonals (DI/ASDI, drift, recoveries) ---
+    (0.7071, 0.7071),  # 47 45° up-right – survival DI corner (approx; <=1 magnitude)
+    (-0.7071, 0.7071),  # 48 135° up-left – mirror
+    (-0.7071, -0.7071),  # 49 225° down-left – combo DI down-away
+    (0.7071, -0.7071),  # 50 315° down-right – combo DI down-away
+
+    # --- DI ring (8-point, ~22.5° steps; grid-aligned to 0.925/0.375 for unit radius) ---
+    (0.9250, 0.3750),  # 51 ~22.5° – shallow-KB survival DI
+    (0.3750, 0.9250),  # 52 ~67.5°
+    (-0.3750, 0.9250),  # 53 ~112.5°
+    (-0.9250, 0.3750),  # 54 ~157.5°
+    (-0.9250, -0.3750),  # 55 ~202.5°
+    (-0.3750, -0.9250),  # 56 ~247.5°
+    (0.3750, -0.9250),  # 57 ~292.5°
+    (0.9250, -0.3750),  # 58 ~337.5°
+
+    # --- Steep ASDI/slide-off helpers (mirroring rectangle C-stick diagonals) ---
+    (0.5250, 0.8500),  # 59 Up-right steep ASDI / platform slide-off
+    (-0.5250, 0.8500),  # 60 Up-left steep ASDI / platform slide-off
+
+    # --- Exact thresholds of axis activation (tilts, walk, ambiguous DI, pivot control) ---
+    (0.6625, 0.0),  # 61 X=+0.6625 – tilt/walk cutoff; avoids X-smash
+    (-0.6625, 0.0),  # 62 X=-0.6625 – mirror
+    (0.2875, 0.0),  # 63 X=+0.2875 – minimal axis activation; dash/turn micro-timing
+    (-0.2875, 0.0),  # 64 X=-0.2875 – mirror
+]
+
+# (Optional) quick sanity checks for your pipeline:
+assert len(FOX_STICK_64) == 64
+assert (
+        max(x * x + y * y for x, y in FOX_STICK_64) <= 1.0 + 1e-9
+)
+# all inside unit circle
+
+C_STICK_XY_CLUSTER_CENTERS_V0_1: np.ndarray = np.array(
+    np.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [-1.0, 0.0],
+        [0.0, -1.0],
+        [0.0, 1.0],
+        [-0.7, -0.7],
+        [0.7, -0.7],
+        [0.7, 0.7],
+        [-0.7, 0.7],
+    ])
+)

@@ -15,6 +15,7 @@ from preprocess import _preprocess_frame, _preprocess_stage, _preprocess_charact
     _preprocess_x_y_buttons, _preprocess_l_r_buttons
 from schema import Row
 from stats import log_all_stats
+# from to_parquet import write_rows_to_parquet
 
 
 def file_hash(path: str | Path, algo: str = "md5") -> np.uint32:
@@ -33,7 +34,7 @@ def file_hash(path: str | Path, algo: str = "md5") -> np.uint32:
     return np.uint32(val)
 
 
-def extract(game_state: GameState, replay_hash: Optional[np.uint32]) -> Row:
+def extract(game_state: GameState, replay_hash: Optional[np.uint32], replay_filename: Optional[str]) -> Row:
     # Common
     frame: np.int32 = _preprocess_frame(game_state.frame)
     stage: np.int32 = _preprocess_stage(game_state.stage)
@@ -49,12 +50,12 @@ def extract(game_state: GameState, replay_hash: Optional[np.uint32]) -> Row:
         # Buttons (strict access)
         b = cs.button
 
-        action_state, action_state_category = _preprocess_action(pl.action)
+        # action_state, action_state_category = _preprocess_action(pl.action)
 
         return {
             # Core state
-            f"{prefix}_action": action_state,
-            f"{prefix}_action_category": action_state_category,
+            f"{prefix}_action": _preprocess_action(pl.action),
+            # f"{prefix}_action_category": action_state_category,
             f"{prefix}_character": _preprocess_character(pl.character),
             f"{prefix}_pos_x": np.float32(pl.position.x),
             f"{prefix}_pos_y": np.float32(pl.position.y),
@@ -83,6 +84,18 @@ def extract(game_state: GameState, replay_hash: Optional[np.uint32]) -> Row:
             f"{prefix}_shield_strength": np.float32(pl.shield_strength),
             f"{prefix}_is_powershield": np.float32(bool(pl.is_powershield)),
             f"{prefix}_action_frame": np.int32(pl.action_frame),
+
+            # New flags from PlayerState (sb1–sb5-derived)
+            f"{prefix}_is_reflect_active": np.float32(bool(pl.is_reflect_active)),
+            f"{prefix}_is_subaction_invulnerable": np.float32(bool(pl.is_subaction_invulnerable)),
+            f"{prefix}_is_fastfalling": np.float32(bool(pl.is_fastfalling)),
+            f"{prefix}_is_defender_in_hitlag": np.float32(bool(pl.is_defender_in_hitlag)),
+            f"{prefix}_is_in_hitlag": np.float32(bool(pl.is_in_hitlag)),
+            f"{prefix}_is_holding_character": np.float32(bool(pl.is_holding_character)),
+            f"{prefix}_is_shield_active": np.float32(bool(pl.is_shield_active)),
+            f"{prefix}_is_in_hitstun": np.float32(bool(pl.is_in_hitstun)),
+            f"{prefix}_is_dead": np.float32(bool(pl.is_dead)),
+            f"{prefix}_is_offscreen": np.float32(bool(pl.is_offscreen)),
             f"{prefix}_invulnerable": np.float32(bool(pl.invulnerable)),
             f"{prefix}_hitlag_left": np.int32(pl.hitlag_left),
             f"{prefix}_hitstun_frames_left": np.int32(pl.hitstun_frames_left),
@@ -93,10 +106,12 @@ def extract(game_state: GameState, replay_hash: Optional[np.uint32]) -> Row:
             f"{prefix}_speed_y_attack": np.float32(pl.speed_y_attack),
             f"{prefix}_speed_ground_x_self": np.float32(pl.speed_ground_x_self),
             f"{prefix}_off_stage": np.float32(bool(pl.off_stage)),
+            f"{prefix}_l_cancel_status": np.int32(pl.l_cancel_status),
         }
 
     fields = {
         "replay_hash": replay_hash,
+        "replay_filename": replay_filename,
         "frame": frame,
         "stage": stage,
         "distance": distance,
@@ -117,9 +132,10 @@ def process_one_replay(replay_path: str) -> Optional[list[Row]]:
     rows: list[Row] = []
     try:
         replay_hash = file_hash(replay_path)
+        replay_filename = Path(replay_path).name
         current_game_state: GameState = console.step()
         while current_game_state is not None:
-            row = extract(current_game_state, replay_hash)
+            row = extract(current_game_state, replay_hash, replay_filename)
             rows.append(row)
             current_game_state: GameState = console.step()
 
@@ -142,6 +158,7 @@ def main() -> None:
     logger.info(f"Row 101: {rows[101]}")
     logger.info(f"Row 110: {rows[110]}")
     log_all_stats(rows)
+    # write_rows_to_parquet(rows, "melee_rows.parquet", row_cls=Row)
 
 
 if __name__ == "__main__":

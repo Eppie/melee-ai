@@ -7,15 +7,12 @@ import random
 from collections import Counter, defaultdict
 from dataclasses import fields as dc_fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 from loguru import logger
 from tdigest import TDigest
 from tqdm import tqdm
-
-import zarr
-from numcodecs import Blosc, VLenUTF8
 
 from process_replays import process_one_replay
 
@@ -49,241 +46,21 @@ def _is_shoulder(fname: str) -> bool:
 def _is_stick(fname: str) -> bool:
     return "stick" in fname
 
-# -------------------------
-# Zarr helpers
-# -------------------------
 
-def _infer_zarr_dtype(name: str, sample: Any) -> tuple[np.dtype, dict[str, Any]]:
-    """Return (dtype, create_kwargs) for a column based on a sample value.
-    create_kwargs may include object_codec for variable-length strings.
+def _process_replay_batch(replay_paths: List[str]) -> List[Tuple[str, List[Any]]]:
     """
-    # Numeric types
-    if isinstance(sample, (np.floating, float)):
-        return np.dtype("<f4"), {}
-    if isinstance(sample, (np.integer, int)):
-        return np.dtype("<i4"), {}
-    # Enums -> int32
-    if _is_enum(sample):
-        return np.dtype("<i4"), {}
-    # Bools -> bool
-    if _is_bool(sample):
-        return np.dtype("?"), {}
-    # Strings -> variable-length UTF-8 with VLenUTF8 codec
-    if isinstance(sample, str):
-        return np.dtype(object), {"object_codec": VLenUTF8()}
-    # Fallback to JSON-encoded object strings if truly unknown
-    return np.dtype(object), {"object_codec": VLenUTF8()}
-
-
-def _row_to_primitive(row_obj: Any, field_names: list[str]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for fname in field_names:
-        try:
-            v = getattr(row_obj, fname)
-        except Exception:
-            v = None
-        if v is None:
-            out[fname] = None
-            continue
-        if _is_enum(v):
-            # store the underlying numeric value if present, else hash of name
-            val = getattr(v, "value", None)
-            out[fname] = int(val) if isinstance(val, (int, np.integer)) else int(hash(getattr(v, "name", str(v))) & 0x7FFFFFFF)
-        elif _is_bool(v):
-            out[fname] = bool(v)
-        elif _is_number(v):
-            out[fname] = _as_float(v) if isinstance(v, (float, np.floating)) else int(v)
-        elif isinstance(v, str):
-            out[fname] = v
-        else:
-            # last resort string representation
-            out[fname] = repr(v)
-    return out
-
-
-def _batch_to_columnar(rows: list[Any], field_names: list[str]) -> dict[str, np.ndarray]:
-    """Convert a list of row objects into columnar numpy arrays with best-effort dtypes."""
-    if not rows:
-        return {fn: np.empty((0,), dtype="<f4") for fn in field_names}
-    # First pass: gather primitives for all rows
-    primals: list[dict[str, Any]] = [_row_to_primitive(r, field_names) for r in rows]
-    # Infer dtype per field from first non-None value
-    dtypes: dict[str, tuple[np.dtype, dict[str, Any]]] = {}
-    for fn in field_names:
-        sample = next((p[fn] for p in primals if p[fn] is not None), None)
-        if sample is None:
-            # default to float32 with NaN for missing-only columns
-            dtypes[fn] = (np.dtype("<f4"), {})
-        else:
-            dtypes[fn] = _infer_zarr_dtype(fn, sample)
-    # Build arrays
-    cols: dict[str, np.ndarray] = {}
-    for fn in field_names:
-        dt, _kwargs = dtypes[fn]
-        if dt == np.dtype("?"):
-            arr = np.zeros(len(primals), dtype=dt)
-            for i, p in enumerate(primals):
-                arr[i] = bool(p[fn]) if p[fn] is not None else False
-            cols[fn] = arr
-        elif dt.kind in ("i",):
-            arr = np.zeros(len(primals), dtype=dt)
-            for i, p in enumerate(primals):
-                val = p[fn]
-                arr[i] = 0 if val is None else int(val)
-            cols[fn] = arr
-        elif dt.kind in ("f",):
-            arr = np.empty(len(primals), dtype=dt)
-            for i, p in enumerate(primals):
-                val = p[fn]
-                arr[i] = np.nan if val is None else float(val)
-            cols[fn] = arr
-        else:
-            # object (strings)
-            arr = np.empty(len(primals), dtype=object)
-            for i, p in enumerate(primals):
-                arr[i] = "" if p[fn] is None else p[fn]
-            cols[fn] = arr
-    return cols
-
-
-def _ensure_zarr_columns(root: zarr.Group, field_names: list[str], sample_row: Any, *,
-                         chunks: int, compressor: Any, zarr_version: int) -> dict[str, zarr.Array]:
-    """Create or open resizable 1D arrays for each field under root['columns'].
-    Returns a mapping name -> Array.
+    Process a batch of replays and return (replay_path, rows) tuples.
+    This function runs in a separate process.
     """
-    cols_grp = root.require_group("columns")
-    arrays: dict[str, zarr.Array] = {}
-
-    # Infer dtype settings from a sample
-    sample_map = _row_to_primitive(sample_row, field_names)
-    for fn in field_names:
-        dt, extra = _infer_zarr_dtype(fn, sample_map[fn])
-        if fn in cols_grp:
-            arrays[fn] = cols_grp[fn]
-            continue
-        create_kwargs: dict[str, Any] = dict(shape=(0,), maxshape=(None,), chunks=(chunks,), dtype=dt, compressor=compressor)
-        create_kwargs.update(extra)
-        arr = cols_grp.create_array(fn, **create_kwargs)
-        # Mark the single dimension name for xarray-compatibility
+    results = []
+    for replay_path in replay_paths:
         try:
-            arr.attrs["_ARRAY_DIMENSIONS"] = ["row"]
-        except Exception:
-            pass
-        arrays[fn] = arr
-    return arrays
-
-
-def _append_to_zarr_columns(arrays: dict[str, zarr.Array], batch: dict[str, np.ndarray]) -> tuple[int, int]:
-    """Append batch columns to the Zarr arrays. Returns (start, stop) row indices written."""
-    # Determine current length from any array
-    any_arr = next(iter(arrays.values()))
-    cur = int(any_arr.shape[0])
-    new = cur + int(next(iter(batch.values())).shape[0])
-    for name, arr in arrays.items():
-        arr.resize(new)
-        arr[cur:new] = batch[name]
-    return cur, new
-def save_processed_replays_to_zarr(
-    out_path: str | Path,
-    *,
-    base_dir: str | Path = "/Users/eppie/Downloads/replays_sorted",
-    replays_per_subdir: int = 1,
-    chunks: int = 65536,
-    zarr_version: int = 2,
-    compressor: Any | None = None,
-    consolidate: bool = True,
-) -> None:
-    """
-    Process .slp replays and save the resulting rows in a **columnar Zarr** store.
-
-    Each field in the Row dataclass becomes a resizable 1D array under `columns/`.
-    Also records a `replay_index` table with [start_row, stop_row] for each replay.
-
-    Notes:
-      - Uses a single writer (this process) to avoid concurrent-write issues to Zarr.
-      - Sets `_ARRAY_DIMENSIONS=['row']` on each array for xarray compatibility.
-      - Optionally consolidates metadata for faster future reads.
-    """
-    base = Path(base_dir)
-    if not base.exists() or not base.is_dir():
-        logger.error(f"Base directory not found or not a directory: {base}")
-        return
-
-    out_path = Path(out_path)
-
-    if compressor is None:
-        compressor = Blosc(cname="zstd", clevel=5, shuffle=Blosc.SHUFFLE)
-
-    # Build selected replay list (deterministic sampling)
-    rng = random.Random(12345)
-    selected: list[Path] = []
-    for sub in sorted([p for p in base.iterdir() if p.is_dir()]):
-        slp_files = [p for p in sub.iterdir() if p.is_file() and p.suffix.lower() == ".slp"]
-        if not slp_files:
-            continue
-        k = min(replays_per_subdir, len(slp_files))
-        selected.extend(rng.sample(slp_files, k=k))
-
-    if not selected:
-        logger.warning(f"No .slp files found under {base}")
-        return
-
-    # Open/create the root Zarr group
-    root = zarr.open_group(str(out_path), mode="a", zarr_version=zarr_version, use_consolidated=False)
-    root.attrs.setdefault("schema", "row_columnar_v1")
-    root.attrs["source_dir"] = str(base)
-
-    # Create replay_index dataset (2 columns: start, stop) if absent
-    if "replay_index" not in root:
-        root.create_array(
-            "replay_index",
-            shape=(0, 2),
-            maxshape=(None, 2),
-            chunks=(max(1, chunks // 32), 2),
-            dtype="<i8",
-            compressor=compressor,
-        )
-        try:
-            root["replay_index"].attrs["_ARRAY_DIMENSIONS"] = ["replay", "bound"]
-        except Exception:
-            pass
-
-    arrays: dict[str, zarr.Array] | None = None
-
-    written = 0
-    for rp in tqdm(selected, desc="Saving to Zarr", unit="replay"):
-        try:
-            rows = process_one_replay(str(rp))
+            rows = process_one_replay(replay_path)
+            if rows:
+                results.append((replay_path, rows))
         except Exception as e:
-            logger.warning(f"Skipping {rp.name}: {e!r}")
-            continue
-        if not rows:
-            continue
-
-        # Lazily create arrays after first replay when we know the schema
-        if arrays is None:
-            field_names = [f.name for f in dc_fields(rows[0])]
-            arrays = _ensure_zarr_columns(root, field_names, rows[0], chunks=chunks, compressor=compressor, zarr_version=zarr_version)
-        assert arrays is not None
-        field_names = list(arrays.keys())
-
-        batch_cols = _batch_to_columnar(rows, field_names)
-        start, stop = _append_to_zarr_columns(arrays, batch_cols)
-        # Append to replay_index
-        ri = root["replay_index"]
-        ri.resize(ri.shape[0] + 1, 2)
-        ri[-1, 0] = start
-        ri[-1, 1] = stop
-        written += (stop - start)
-
-    # Optionally consolidate metadata for faster readers
-    try:
-        if consolidate:
-            zarr.consolidate_metadata(str(out_path))
-    except Exception as e:
-        logger.warning(f"Consolidation skipped/failed: {e!r}")
-
-    logger.info(f"Saved {written:,d} rows to Zarr store at {out_path}")
+            logger.warning(f"Failed to process {replay_path}: {e}")
+    return results
 
 
 def _stats_shard_for_replay(replay_path: str, *, tdigest_delta: float = 0.01) -> dict:
@@ -733,13 +510,4 @@ def process_replays_with_stats() -> None:
 
 
 if __name__ == "__main__":
-    # Example: write processed rows to a Zarr store (uncomment to run)
-    save_processed_replays_to_zarr(
-        out_path="/Users/eppie/Downloads/processed_replays.zarr",
-        base_dir="/Users/eppie/Downloads/replays_sorted",
-        replays_per_subdir=1,
-        chunks=65536,
-        zarr_version=2,
-        consolidate=True,
-    )
     process_replays_with_stats()

@@ -5,20 +5,17 @@ import numpy as np
 
 # Base specs
 COMMON_SPEC = [
-    ("frame", np.int32),  # normalized frame index
     ("stage", np.int32),  # Stage enum
-    ("distance", np.float32),  # Euclidean distance
 ]
 
 PLAYER_SPEC = [
     # Core categorical/ids (stored as ints post-preprocessing)
     ("action", np.int32),
-    ("action_category", np.int32),
     ("character", np.int32),
 
     # Geometry
-    ("pos_x", np.float32),
-    ("pos_y", np.float32),
+    ("position_x", np.float32),
+    ("position_y", np.float32),
 
     # Damage/stock & state bits
     ("percent", np.int32),
@@ -44,18 +41,29 @@ PLAYER_SPEC = [
 
     # Additional state
     ("shield_strength", np.float32),
-    ("is_powershield", np.float32),
-    ("action_frame", np.int32),
-    ("invulnerable", np.float32),
-    ("hitlag_left", np.int32),
-    ("hitstun_frames_left", np.int32),
+    # ("is_powershield", np.float32),
+    # ("action_frame", np.int32),
+    # ("is_reflect_active", np.float32),
+    # ("is_subaction_invulnerable", np.float32),
+    # ("is_fastfalling", np.float32),
+    # ("is_defender_in_hitlag", np.float32),
+    # ("is_in_hitlag", np.float32),
+    # ("is_holding_character", np.float32),
+    # ("is_shield_active", np.float32),
+    # ("is_in_hitstun", np.float32),
+    # ("is_dead", np.float32),
+    # ("is_offscreen", np.float32),
+    ("is_invulnerable", np.float32),
+    # ("hitlag_left", np.int32),
+    # ("hitstun_frames_left", np.int32),
     ("jumps_left", np.int32),
-    ("speed_air_x_self", np.float32),
-    ("speed_y_self", np.float32),
-    ("speed_x_attack", np.float32),
-    ("speed_y_attack", np.float32),
-    ("speed_ground_x_self", np.float32),
-    ("off_stage", np.float32),
+    # ("speed_air_x_self", np.float32),
+    # ("speed_y_self", np.float32),
+    # ("speed_x_attack", np.float32),
+    # ("speed_y_attack", np.float32),
+    # ("speed_ground_x_self", np.float32),
+    # ("off_stage", np.float32),
+    # ("l_cancel_status", np.int32),
 ]
 
 
@@ -78,6 +86,8 @@ _ROW_FIELDS = (
         + _prefixed(PLAYER_SPEC, "p1_")
         + _prefixed(PLAYER_SPEC, "p2_")
         + [("replay_hash", Optional[np.uint32], dataclasses.field(default=None))]
+        + [("replay_filename", Optional[str], dataclasses.field(default=None))]
+
 )
 
 # Build the dataclass dynamically (flattened attributes), with slots for memory/perf
@@ -90,6 +100,67 @@ assert [n[3:] for n in _p1_names] == [n[3:] for n in _p2_names], "p1/p2 spec mis
 
 # Convenience: export the authoritative specs, useful elsewhere (e.g., for dtype building)
 __all__ = ["Row", "COMMON_SPEC", "PLAYER_SPEC"]
+
+BUTTON_LABELS: tuple[str, ...] = ("A", "B", "Z", "JUMP", "SHIELD")
+STICK_XY_CLUSTER_CENTERS_V2 = (
+        np.array(
+            [  # neutral
+                [0.0, 0.0],
+                # partial tilt
+                [0.35, 0.0],
+                [-0.35, 0.0],
+                [0.0, 0.35],
+                [0.0, -0.35],
+                # tilt
+                [0.675, 0.0],
+                [-0.675, 0.0],
+                [0.0, 0.675],
+                [0.0, -0.675],
+                # full press (dash / smash attack)
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [-1.0, 0.0],
+                [0.0, -1.0],
+                # 17º / perfect wave/ledgedash
+                [0.95, -0.3],
+                [-0.95, -0.3],
+                # 17º
+                [0.95, 0.3],
+                [-0.95, 0.3],
+                # 30º / downward/up-angled f-smash
+                [0.85, -0.5],
+                [0.85, 0.5],
+                [-0.85, -0.5],
+                [-0.85, 0.5],
+                # 45º + shield drops
+                [0.7, -0.7],
+                [-0.7, -0.7],
+                [0.7, 0.7],
+                [-0.7, 0.7],
+                # [0.675, -0.675],
+                # [-0.675, -0.675],
+                # [0.675, 0.675],
+                # [-0.675, 0.675],
+                # up-/down-angled f-tilts
+                [0.5, 0.5],
+                [-0.5, 0.5],
+                [0.5, -0.5],
+                [-0.5, -0.5],
+                # 60º
+                [0.5, 0.85],
+                [-0.5, 0.85],
+                [0.5, -0.85],
+                [-0.5, -0.85],
+                # 72.5º
+                [0.3, -0.95],
+                [0.3, 0.95],
+                [-0.3, -0.95],
+                [-0.3, 0.95],
+            ]
+        )
+        / 2
+        + 0.5
+)
 
 """
 Ideas for normalization:
@@ -139,10 +210,7 @@ CHARACTER (categorical; constant per episode, 26 possible)
 ========================================================================================================================
 POS_X, POS_Y (continuous; long tails, stage-dependent)
 
-Pipeline (do these in order):
-	1.	Ego/forward frame: multiply by +1/-1 using p1_facing so “forward” is +x.
-	    (This bakes in left/right symmetry and reduces spurious bimodality.)
-	    Egocentric frames are a standard way to build invariances.  ￼ ￼
+Pipeline (do these in order):￼
 	2.	Stage-normalize: divide both axes by a stage scale (e.g., half-width and platform/base height)
 	    so units are comparable across stages.
 	3.	Light winsorization (train-fit): ~1% per tail per axis
@@ -181,8 +249,6 @@ BUTTON_[ABZXYLR])
 
 Representation
 	•	Keep each as a float32 0/1 channel (already boolean → numeric).
-	    If you ever threshold an analog value to “pressed,” that’s literally binarization;
-	    the scikit-learn Binarizer docs describe the convention (≤thr→0, >thr→1).  ￼
 
 Derived event features (cheap wins for sequence models)
 	•	Rising / falling edges: pressed_t & ~pressed_{t-1}, ~pressed_t & pressed_{t-1}.
@@ -229,20 +295,10 @@ Choosing δ from data
 Your main_stick_x has median 0.5 and wide spread (p25≈0.244, p75≈0.856).
 Start with δ=0.08, then check what % of frames are neutral after dead-zoning
 (target ~40–60% neutral on idle states like STANDING).
-Adjust per train split; serialize δ per stick. SDL explicitly notes dead zones vary by device—tune, don’t hardcode.  ￼
 ========================================================================================================================
 SHOULDERS (l_shoulder, r_shoulder, in [0,1])
 	•	Keep analog channels as-is (already bounded).
-	•	Also add digital shoulder bits with a threshold. A common practice (from XInput)
-	    is a fixed trigger threshold (the constant XINPUT_GAMEPAD_TRIGGER_THRESHOLD ≈ 30/255 ≈ 0.12)
-	    to decide “pressed.” Calibrate on your train distribution if you prefer (e.g., pick a percentile).  ￼
 	•	As with buttons: edges + holds for the digital bit; robust-scale the hold counter.  ￼
-========================================================================================================================
-RAW STICK INTEGERS (p1_raw_main_stick_[xy], about [-105,105])
-	•	If you keep them, map to [-1,1] by /105 and apply the same radial deadzone
-	    as above to stay consistent with processed sticks.
-	•	In practice you don’t need both raw and processed:
-	    pick one canonical representation to avoid leakage and redundancy.
 ========================================================================================================================
 Quick checklist (train-time fit, inference-time apply)
 	•	Buttons → float32 0/1 + edges + holds (+ jump/shield ORs).  ￼

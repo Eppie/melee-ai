@@ -15,11 +15,10 @@ from torch.utils.data import Dataset, DataLoader
 # ==== CONFIG CONSTANTS =====
 # ===========================
 # TODO: Tasks 3, 5, 9 don't learn properly
-# TODO: Task 6 throws an exception
 # TODO: Task 7 has 0 loss but incorrect
 # TODO: Task 8 doesn't learn properly and also throws an exception
 
-TASK_ID: int = 10  # 1..10
+TASK_ID: int = 5  # 1..10
 SEED: int = 42
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
@@ -40,6 +39,13 @@ MOD_BASE: int = 3  # task 2
 COOLDOWN_E: int = 4  # task 3
 JUMP_SQUAT_FRAMES: int = 3  # task 4
 CANCEL_K: int = 3  # task 5
+
+# Task-5 generation and loss config
+TASK5_HIT_P: float = 0.25
+TASK5_MISS_P: float = 0.15
+TASK5_FIRE_POLICY: str = "first"  # one of {"first", "last", "random"}
+TASK5_USE_WINDOW_LOSS: bool = True
+TASK5_WINDOW_LOSS_W: float = 0.25
 DI_M_FRAMES: int = 3  # task 6
 STAGE_RANGE: int = 6  # task 7 1-D line [-6, +6]
 OFFSTAGE_THRESH: int = 5  # task 7 |x|>5 is offstage
@@ -305,18 +311,23 @@ class ToyTasks:
 
             def __getitem__(self, idx):
                 ev = torch.full((L,), N, dtype=torch.long)
-                for t in range(2, L, 6):
-                    ev[t] = H
-                for t in range(5, L, 11):
-                    ev[t] = M
                 cancel = torch.zeros(L, dtype=torch.long)
                 t = 0
                 while t < L:
-                    if ev[t] == H:
-                        fire = min(L - 1, t + 1)
+                    if random.random() < TASK5_HIT_P:
+                        ev[t] = H
+                        if TASK5_FIRE_POLICY == "first":
+                            fire = t + 1
+                        elif TASK5_FIRE_POLICY == "last":
+                            fire = t + max(1, K - 1)
+                        else:  # "random"
+                            fire = t + (0 if K <= 1 else random.randint(0, K - 1))
+                        fire = min(L - 1, fire)
                         cancel[fire] = 1
-                        t = t + K
+                        t += K
                     else:
+                        if random.random() < TASK5_MISS_P:
+                            ev[t] = M
                         t += 1
                 return ev, torch.zeros(L, dtype=torch.long), {"cancel": cancel}, {}, {}
 
@@ -585,6 +596,33 @@ def task3_hazard_loss(logits: Tensor, y: Tensor, cooldown_E: int) -> Tensor:
     return total / (B * T)
 
 
+# Task-5 window-level coverage loss
+def task5_window_coverage_loss(logits: Tensor, src: Tensor, K: int, eps: float = 1e-6) -> Tensor:
+    # logits: (B, T, 2), src: (B, T) with HIT encoded as 1
+    # Vectorized: use cumulative sums to get window sums p[t: t+K) for all t at once.
+    p = logits.softmax(dim=-1)[..., 1]  # (B, T)
+    B, T = p.shape
+    if K <= 0:
+        return p.new_zeros(())
+
+    # Identify window starts (HIT positions). Task 5 generator ensures non-overlapping windows.
+    starts = (src == 1)  # (B, T)
+    nwin = int(starts.sum().item())
+    if nwin == 0:
+        return p.sum() * 0.0
+
+    # Cumulative sum with leading zero so sums over [t, t+K) are c[:, t+K] - c[:, t]
+    c = F.pad(p, (1, 0), value=0.0).cumsum(dim=1)  # (B, T+1)
+    idx = torch.arange(T, device=p.device)
+    end_idx = torch.clamp(idx + K, max=T)
+    window_sum = c[:, end_idx] - c[:, idx]  # (B, T)
+
+    # Gather sums only at window starts and enforce total mass ~ 1 per window
+    sums_at_starts = window_sum[starts]  # (nwin,)
+    loss = (sums_at_starts - 1.0).pow(2).mean()
+    return loss
+
+
 # =================================
 # ==== TRAIN / EVAL ===============
 # =================================
@@ -695,6 +733,11 @@ def train_eval_loop() -> None:
                                 logits.reshape(B * T_, C), y.reshape(B * T_)
                             )
                         loss += spec.loss_weights.get(k, 1.0) * loss_k
+                        # Task-5: add window coverage loss for cancel head
+                        if TASK_ID == 5 and k == "cancel" and TASK5_USE_WINDOW_LOSS:
+                            loss += spec.loss_weights.get(k, 1.0) * TASK5_WINDOW_LOSS_W * task5_window_coverage_loss(
+                                logits, x, CANCEL_K
+                            )
                         pred = logits.argmax(-1)
                         accs[k] = accs.get(k, 0.0) + (pred.eq(y).float().sum().item())
                         n_tok += B * T_

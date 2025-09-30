@@ -17,9 +17,10 @@ from torch.nn.utils import clip_grad_norm_
 
 from controller_quantization import quantize_targets
 from gpt import GPTv7, GPTConfig
-from preprocess import (
+from melee_ai.config import (
     FOX_STICK_64,
     C_STICK_XY_CLUSTER_CENTERS_V0_1,
+    Settings,
 )
 from window_dataset import WindowDataset, make_dataloader
 
@@ -645,51 +646,205 @@ def _multilabel_prf(true: torch.Tensor, pred: torch.Tensor) -> Tuple[float, floa
     return em, float(prec), float(rec), float(f1), f1_macro
 
 
+def print_model_architecture(model: GPTv7, config: GPTConfig) -> None:
+    """
+    Print detailed model architecture with parameter counts.
+    """
+    print("\n" + "="*80)
+    print("MODEL ARCHITECTURE SUMMARY")
+    print("="*80)
+
+    total_params = 0
+    sections = []
+
+    # Input Embeddings
+    embedding_params = 0
+
+    # Stage embeddings
+    stage_params = model.stage_emb.weight.numel()
+    embedding_params += stage_params
+    sections.append(f"Stage Embeddings: {stage_params:,}")
+
+    # Character embeddings (shared weights for both players)
+    char_params = model.character_emb.weight.numel()
+    embedding_params += char_params
+    sections.append(f"Character Embeddings: {char_params:,}")
+
+    # Action embeddings (shared weights for both players)
+    action_params = model.action_emb.weight.numel()
+    embedding_params += action_params
+    sections.append(f"Action Embeddings: {action_params:,}")
+
+    # Positional embeddings
+    pos_params = model.wpe.numel()
+    embedding_params += pos_params
+    sections.append(f"Positional Embeddings: {pos_params:,}")
+
+    print(f"Input Embeddings: {embedding_params:,}")
+    for section in sections:
+        print(f"  {section}")
+    total_params += embedding_params
+
+    # Transformer Blocks
+    transformer_params = 0
+    print(f"\nTransformer Backbone:")
+
+    # Projection down layer
+    proj_params = sum(p.numel() for p in model.transformer.proj_down.parameters())
+    transformer_params += proj_params
+    print(f"  Input Projection: {proj_params:,}")
+
+    # Transformer blocks
+    block_params = 0
+    for i, block in enumerate(model.transformer.h):
+        block_p = 0
+        # Attention
+        attn_params = sum(p.numel() for p in block.attn.parameters())
+        block_p += attn_params
+        print(f"  Block {i} Attention: {attn_params:,}")
+        for name, param in block.attn.named_parameters():
+            print(f"    {name}: {param.numel():,}")
+
+        # MLP
+        mlp_params = sum(p.numel() for p in block.mlp.parameters())
+        block_p += mlp_params
+        print(f"  Block {i} MLP: {mlp_params:,}")
+        for name, param in block.mlp.named_parameters():
+            print(f"    {name}: {param.numel():,}")
+
+        # Layer norms
+        ln_params = sum(p.numel() for p in [block.ln_1.weight, block.ln_1.bias, block.ln_2.weight, block.ln_2.bias])
+        block_p += ln_params
+        print(f"  Block {i} LayerNorms: {ln_params:,}")
+
+        block_params += block_p
+        print(f"  Block {i} Total: {block_p:,}")
+
+    transformer_params += block_params
+    print(f"  All Blocks Total: {block_params:,}")
+
+    # Final layer norm
+    final_ln_params = sum(p.numel() for p in model.transformer.ln_f.parameters())
+    transformer_params += final_ln_params
+    print(f"  Final LayerNorm: {final_ln_params:,}")
+
+    # Dropout
+    dropout_params = sum(p.numel() for p in model.transformer.drop.parameters())
+    transformer_params += dropout_params
+    print(f"  Dropout: {dropout_params:,}")
+
+    print(f"Transformer Backbone Total: {transformer_params:,}")
+    total_params += transformer_params
+
+    # Output Heads
+    head_params = 0
+    print(f"\nOutput Heads:")
+
+    # Shoulder head
+    shoulder_params = sum(p.numel() for p in model.shoulder_head.parameters())
+    head_params += shoulder_params
+    print(f"  Shoulder Head: {shoulder_params:,}")
+    for name, param in model.shoulder_head.named_parameters():
+        print(f"    {name}: {param.numel():,}")
+
+    # C-stick head
+    c_stick_params = sum(p.numel() for p in model.c_stick_head.parameters())
+    head_params += c_stick_params
+    print(f"  C-Stick Head: {c_stick_params:,}")
+    for name, param in model.c_stick_head.named_parameters():
+        print(f"    {name}: {param.numel():,}")
+
+    # Main stick head
+    main_stick_params = sum(p.numel() for p in model.main_stick_head.parameters())
+    head_params += main_stick_params
+    print(f"  Main Stick Head: {main_stick_params:,}")
+    for name, param in model.main_stick_head.named_parameters():
+        print(f"    {name}: {param.numel():,}")
+
+    # Button head
+    button_params = sum(p.numel() for p in model.button_head.parameters())
+    head_params += button_params
+    print(f"  Button Head: {button_params:,}")
+    for name, param in model.button_head.named_parameters():
+        print(f"    {name}: {param.numel():,}")
+
+    print(f"Output Heads Total: {head_params:,}")
+    total_params += head_params
+
+    # Configuration summary
+    print(f"\nModel Configuration:")
+    print(f"  Block Size: {config.block_size}")
+    print(f"  Embedding Dimensions: {config.n_embd}")
+    print(f"  Number of Layers: {config.n_layer}")
+    print(f"  Number of Attention Heads: {config.n_head}")
+    print(f"  Dropout: {config.dropout}")
+    print(f"  Bias: {config.bias}")
+
+    print(f"\nTarget Output Shapes:")
+    for head, shape in config.target_shapes_by_head.items():
+        print(f"  {head}: {shape}")
+
+    print(f"\nTOTAL PARAMETERS: {total_params:,}")
+    print(f"Trainable Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Non-trainable Parameters: {sum(p.numel() for p in model.parameters(recurse=False)):,}")
+
+    # Memory usage estimate
+    param_size = sum(p.numel() * p.element_size() for p in model.parameters())
+    buffer_size = sum(b.numel() * b.element_size() for b in model.buffers())
+    total_size = param_size + buffer_size
+    print(f"\nApproximate Memory Usage:")
+    print(f"  Parameters: {_bytes(param_size)}")
+    print(f"  Buffers: {_bytes(buffer_size)}")
+    print(f"  Total: {_bytes(total_size)}")
+
+    print("="*80)
+
+
 # -----------------------------
 # Training step / loop
 # -----------------------------
 
 def train_loop(
-        cfg: TrainConfig,
+        settings: Settings,
         model: GPTv7,
 ) -> None:
     device = torch.device("mps")
     model = model.to(device)
     # Build loader + sampler
     loader, ds, sampler = make_dataloader(
-        cfg.data_root,
-        mode=cfg.mode,
-        batch_size=cfg.batch_size,
-        num_workers=cfg.num_workers,
-        pin_memory=cfg.pin_memory,
-        prefetch_factor=cfg.prefetch_factor,
-        persistent_workers=cfg.persistent_workers,
-        feature_keep=cfg.feature_keep,
-        target_keep=cfg.target_keep,
-        with_replacement_episodes=cfg.with_replacement_episodes,
-        num_episodes=cfg.episodes_per_epoch,
-        replacement=cfg.replacement,
-        num_samples=cfg.num_samples,
-        windows_per_epoch=cfg.windows_per_epoch,
-        steps_per_epoch=cfg.steps_per_epoch,
+        settings.data.data_root,
+        mode=settings.training.mode,
+        batch_size=settings.training.batch_size,
+        num_workers=settings.training.num_workers,
+        pin_memory=settings.training.pin_memory,
+        prefetch_factor=settings.training.prefetch_factor,
+        persistent_workers=settings.training.persistent_workers,
+        feature_keep=settings.data.feature_keep,
+        target_keep=settings.data.target_keep,
+        with_replacement_episodes=settings.training.with_replacement_episodes,
+        num_episodes=settings.training.episodes_per_epoch,
+        replacement=settings.training.replacement,
+        num_samples=settings.training.num_samples,
+        windows_per_epoch=settings.training.windows_per_epoch,
+        steps_per_epoch=settings.training.steps_per_epoch,
     )
 
     # Column map built from dataset metadata (only once)
     colmap = ColumnMap(ds)
 
     # Optimizer & (optional) simple cosine LR
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, betas=cfg.betas, weight_decay=cfg.weight_decay)
+    opt = torch.optim.AdamW(model.parameters(), lr=settings.training.lr, betas=settings.training.betas, weight_decay=settings.training.weight_decay)
     scaler = GradScaler()
 
-    steps_per_epoch = cfg.steps_per_epoch or math.ceil(len(loader))
-    total_steps = cfg.max_steps or (cfg.epochs * steps_per_epoch)
+    steps_per_epoch = settings.training.steps_per_epoch or math.ceil(len(loader))
+    total_steps = settings.training.max_steps or (settings.training.epochs * steps_per_epoch)
     global_step = 0
 
-    out_dir = Path(cfg.out_dir)
+    out_dir = Path(settings.logging.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Main epochs
-    for epoch in range(cfg.epochs):
+    for epoch in range(settings.training.epochs):
         # Important for samplers in distributed setups
         if hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)  # ensures different shuffles per epoch in DDP
@@ -699,18 +854,18 @@ def train_loop(
             K_main=len(FOX_STICK_64),
             K_c=len(C_STICK_XY_CLUSTER_CENTERS_V0_1),
             K_buttons=len(_CONTROLLER_KEYS["buttons"]),
-            K_shoulder=(len(cfg.shoulder_centers) if cfg.shoulder_centers else 0),
+            K_shoulder=(len(settings.training.shoulder_centers) if settings.training.shoulder_centers else 0),
             device=device,
         )
 
         epoch_loss = 0.0
         t0 = time.time()
 
-        max_iters = cfg.steps_per_epoch
+        max_iters = settings.training.steps_per_epoch
         for it, batch in enumerate(loader):
             if max_iters is not None and it >= max_iters:
                 break
-            if cfg.max_steps and global_step >= cfg.max_steps:
+            if settings.training.max_steps and global_step >= settings.training.max_steps:
                 break
 
             # Move to device
@@ -719,7 +874,7 @@ def train_loop(
 
             # Build model inputs & target labels
             inputs_td = build_inputs_for_gptv7(X, colmap)
-            target_info = quantize_targets(Y, colmap, cfg.shoulder_centers)
+            target_info = quantize_targets(Y, colmap, settings.training.shoulder_centers)
 
             pred: TensorDict = model(inputs_td)  # keys: buttons, main_stick, c_stick, (shoulder)
             B, L, _ = pred["main_stick"].shape
@@ -740,7 +895,7 @@ def train_loop(
                 logits_main,
                 target_main,
                 reduction="mean",
-                label_smoothing=cfg.label_smoothing,
+                label_smoothing=settings.training.label_smoothing,
                 weight=main_weights,
             )
             loss = loss + loss_main
@@ -753,7 +908,7 @@ def train_loop(
                 logits_c,
                 target_c,
                 reduction="mean",
-                label_smoothing=cfg.label_smoothing,
+                label_smoothing=settings.training.label_smoothing,
                 weight=c_weights,
             )
             loss = loss + loss_c
@@ -775,20 +930,20 @@ def train_loop(
             if "shoulder" in pred.keys() and target_info["shoulder_K"] > 0 and target_info["shoulder_idx"] is not None:
                 logits_s = pred["shoulder"].reshape(B * L, -1)
                 target_s = target_info["shoulder_idx"].reshape(B * L)
-                loss_s = F.cross_entropy(logits_s, target_s, reduction="mean", label_smoothing=cfg.label_smoothing)
+                loss_s = F.cross_entropy(logits_s, target_s, reduction="mean", label_smoothing=settings.training.label_smoothing)
                 loss = loss_s + loss
 
             # LR schedule
-            lr = cosine_lr_schedule(global_step, total_steps, cfg.lr, cfg.warmup_steps)
+            lr = cosine_lr_schedule(global_step, total_steps, settings.training.lr, settings.training.warmup_steps)
             for pg in opt.param_groups:
                 pg["lr"] = lr
 
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
 
-            if cfg.grad_clip is not None and cfg.grad_clip > 0:
+            if settings.training.grad_clip is not None and settings.training.grad_clip > 0:
                 scaler.unscale_(opt)
-                clip_grad_norm_(model.parameters(), cfg.grad_clip)
+                clip_grad_norm_(model.parameters(), settings.training.grad_clip)
 
             scaler.step(opt)
             scaler.update()
@@ -866,7 +1021,7 @@ def train_loop(
                                                                   torch.nn.parallel.DistributedDataParallel) else model.module.state_dict(),
                     "optimizer": opt.state_dict(),
                     "scaler": scaler.state_dict(),
-                    "config": cfg.__dict__,
+                    "config": settings.__dict__,
                     "epoch": epoch + 1,
                     "global_step": global_step,
                 }
@@ -957,7 +1112,7 @@ def train_loop(
 
                 # ---------- Compose log ----------
                 header = (
-                    f"ep {epoch + 1}/{cfg.epochs} it {it + 1}/{len(loader)}\n"
+                    f"ep {epoch + 1}/{settings.training.epochs} it {it + 1}/{len(loader)}\n"
                     f"  loss {epoch_loss / (it + 1):.4f} | lr {lr:.2e} | items/s {ips:,.0f} | {this_loss}"
                 )
                 main_line = (
@@ -1001,17 +1156,17 @@ def train_loop(
         # End-of-epoch: save confusion matrices and print summary
         np.save(out_dir / f"confusion_main_ep{epoch + 1:03d}.npy", metrics.main_confusion.cpu().numpy())
         np.save(out_dir / f"confusion_c_ep{epoch + 1:03d}.npy", metrics.c_confusion.cpu().numpy())
-        if (epoch + 1) % cfg.save_every_epochs == 0:
+        if (epoch + 1) % settings.logging.save_every_epochs == 0:
             print(f"[epoch {epoch + 1}] summary: {metrics.short_str()}")
 
         # Save checkpoint (rank 0)
-        if (epoch + 1) % cfg.save_every_epochs == 0:
+        if (epoch + 1) % settings.logging.save_every_epochs == 0:
             ckpt = {
                 "model": model.state_dict() if not isinstance(model,
                                                               torch.nn.parallel.DistributedDataParallel) else model.module.state_dict(),
                 "optimizer": opt.state_dict(),
                 "scaler": scaler.state_dict(),
-                "config": cfg.__dict__,
+                "config": gcfg.__dict__,
                 "epoch": epoch + 1,
                 "global_step": global_step,
             }
@@ -1019,24 +1174,30 @@ def train_loop(
 
 
 if __name__ == "__main__":
+    # Load unified configuration
+    settings = Settings()
+
+    # Override specific settings for this training run
+    settings.data.data_root = "dataset_FOX_vs_FOX"
+    settings.training.mode = "random_windows"
+    settings.training.batch_size = 128
+    settings.training.epochs = 10
+    settings.training.episodes_per_epoch = 150
+    settings.training.shoulder_centers = [0.0, 0.7, 1.0]
+    settings.logging.output_dir = "checkpoints_gptv7_linear1"
+
     gcfg = GPTConfig(
-        block_size=256,
-        n_embd=512,
-        n_layer=8,
-        n_head=8,
-        dropout=0.1,
-        bias=True,
+        block_size=settings.model.block_size,
+        n_embd=settings.model.n_embd,
+        n_layer=settings.model.n_layer,
+        n_head=settings.model.n_head,
+        dropout=settings.model.dropout,
+        bias=settings.model.bias,
     )
     model = GPTv7(gcfg)
 
-    cfg = TrainConfig(
-        data_root="dataset_FOX_vs_FOX",
-        mode="episode_linear",
-        batch_size=128,
-        epochs=10,
-        episodes_per_epoch=150,  # per-rank
-        shoulder_centers=[0.0, 0.7, 1.0],  # coarse bins; set None to skip shoulder loss
-        out_dir="checkpoints_gptv7_linear1",
-    )
+    # Print model architecture summary before training
+    print_model_architecture(model, gcfg)
 
-    train_loop(cfg, model)
+    # For testing purposes, just print the model summary without training
+    train_loop(settings, model)

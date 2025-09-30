@@ -15,6 +15,9 @@ from preprocess import _preprocess_frame, _preprocess_stage, _preprocess_charact
     _preprocess_x_y_buttons, _preprocess_l_r_buttons
 from schema import Row
 from stats import log_all_stats
+from melee_ai.config import Settings
+from melee_ai.utils import Result, guard_clause
+from melee_ai.utils.logging import get_logger
 # from to_parquet import write_rows_to_parquet
 
 
@@ -122,43 +125,59 @@ def extract(game_state: GameState, replay_hash: Optional[np.uint32], replay_file
     return Row(**fields)
 
 
-def process_one_replay(replay_path: str) -> Optional[list[Row]]:
-    try:
-        console = Console(path=str(replay_path), is_dolphin=False, allow_old_version=True)
-        console.connect()
-    except Exception as e:
-        logger.debug(f"Error connecting to console for {replay_path}: {e}")
-        return None
-    rows: list[Row] = []
-    try:
-        replay_hash = file_hash(replay_path)
-        replay_filename = Path(replay_path).name
-        current_game_state: GameState = console.step()
-        while current_game_state is not None:
-            row = extract(current_game_state, replay_hash, replay_filename)
+def process_one_replay(replay_path: str) -> Result[list[Row], str]:
+    """Process a single replay file using the new architecture."""
+    settings = Settings()
+    logger = get_logger("process_replays", settings)
+
+    # Use the new ReplayExtractor
+    extractor = ReplayExtractor(settings)
+    frame_result = extractor.extract_replay(replay_path)
+
+    if frame_result.is_err():
+        return frame_result.map(lambda x: [])  # Convert error to empty result
+
+    frames = frame_result.unwrap()
+    rows = []
+
+    for frame_data in frames:
+        try:
+            # Convert frame data to Row object
+            row = Row.from_dict(frame_data)
             rows.append(row)
-            current_game_state: GameState = console.step()
+        except Exception as e:
+            logger.warning(f"Failed to convert frame to Row: {e}")
+            continue
 
-    except Exception as e:
-        logger.error(f"Error processing replay {replay_path}: {e}")
-        return None
-    finally:
-        console.stop()
-
-    return rows
+    return Ok(rows)
 
 
 def main() -> None:
-    rows = process_one_replay("/Users/eppie/PycharmProjects/new-melee-ai/test/test.slp")
-    logger.info(f"Processed {len(rows)} rows")
-    logger.info(f"First row: {rows[0]}")
-    logger.info(f"Last row: {rows[-1]}")
-    logger.info(f"Row 64: {rows[64]}")
-    logger.info(f"Row 100: {rows[100]}")
-    logger.info(f"Row 101: {rows[101]}")
-    logger.info(f"Row 110: {rows[110]}")
-    log_all_stats(rows)
-    # write_rows_to_parquet(rows, "melee_rows.parquet", row_cls=Row)
+    # Load unified configuration
+    settings = Settings()
+    logger = get_logger("process_replays", settings)
+
+    # Use configured test replay path or default
+    test_replay = settings.data.data_root / "test" / "test.slp"
+    if not test_replay.exists():
+        test_replay = Path("/Users/eppie/PycharmProjects/new-melee-ai/test/test.slp")
+
+    # Process the replay
+    result = process_one_replay(str(test_replay))
+    if result.is_ok():
+        rows = result.unwrap()
+        logger.info(f"Processed {len(rows)} rows")
+        logger.info(f"First row: {rows[0]}")
+        logger.info(f"Last row: {rows[-1]}")
+        logger.info(f"Row 64: {rows[64]}")
+        logger.info(f"Row 100: {rows[100]}")
+        logger.info(f"Row 101: {rows[101]}")
+        logger.info(f"Row 110: {rows[110]}")
+        log_all_stats(rows)
+        # write_rows_to_parquet(rows, "melee_rows.parquet", row_cls=Row)
+    else:
+        logger.error(f"Failed to process replay: {result.unwrap_or('Unknown error')}")
+        return
 
 
 if __name__ == "__main__":

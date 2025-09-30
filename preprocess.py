@@ -9,8 +9,7 @@ import numpy as np
 
 from libmelee.melee import enums
 from libmelee.melee.enums import Action
-
-MAX_FRAMES: int = (60 * 60 * 8) + 123  # Full 8 minute replay
+from melee_ai.config import MAX_FRAMES
 
 
 class ActionCategory(IntEnum):

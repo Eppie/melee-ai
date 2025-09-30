@@ -14,7 +14,8 @@ from gpt import GPTConfig, GPTv7
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
-from preprocess import C_STICK_XY_CLUSTER_CENTERS_V0_1, FOX_STICK_64, model_to_dolphin01
+from preprocess import model_to_dolphin01
+from melee_ai.config import C_STICK_XY_CLUSTER_CENTERS_V0_1, FOX_STICK_64
 from train import build_inputs_for_gptv7
 
 # Keep the feature ordering in-sync with training.

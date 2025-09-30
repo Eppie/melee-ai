@@ -5,7 +5,7 @@ from typing import Dict, Optional, Sequence
 import numpy as np
 import torch
 
-from preprocess import FOX_STICK_64, C_STICK_XY_CLUSTER_CENTERS_V0_1
+from melee_ai.config import FOX_STICK_64, C_STICK_XY_CLUSTER_CENTERS_V0_1
 
 
 def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:

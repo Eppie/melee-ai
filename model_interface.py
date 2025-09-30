@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
-from gpt import GPTConfig, GPTv7
+from gpt import GPTv7
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
@@ -86,8 +86,8 @@ _DEFAULT_TARGET_NAMES = _BUTTON_TARGETS + [
     "p1_shoulder_analog",
 ]
 
-_DEFAULT_BUTTON_THRESHOLD = 0.45
-_DEFAULT_SHOULDER_CENTERS = (0.0, 0.7, 1.0)
+_DEFAULT_BUTTON_THRESHOLD = 0.5
+_DEFAULT_SHOULDER_CENTERS = (0.0, 0.7, 0.85)
 
 
 @dataclasses.dataclass
@@ -279,7 +279,7 @@ class GPTInferenceEngine:
             history: Optional[int] = None,
             warmup_frames: int = 128,
     ) -> None:
-        ckpt = torch.load(checkpoint_path, map_location="cpu")
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})
 
         data_root = Path(data_root or train_cfg.get("data_root", "dataset_FOX_vs_FOX"))
@@ -301,16 +301,7 @@ class GPTInferenceEngine:
         )
         self.warmup_frames = warmup_frames
 
-        # Build model config (matches training defaults).
-        gcfg = GPTConfig(
-            block_size=self.seq_len,
-            n_embd=512,
-            n_layer=8,
-            n_head=8,
-            dropout=0.0,
-            bias=True,
-        )
-        self.model = GPTv7(gcfg).to(self.device)
+        self.model = GPTv7().to(self.device)
         self.model.load_state_dict(ckpt["model"])
         self.model.eval()
 
@@ -451,6 +442,7 @@ def transform_raw_outputs_for_game(raw_model_outputs: TensorDict) -> ControllerS
 
 
 def apply_model_outputs_to_game(controller: Controller, model_outputs: ControllerState) -> None:
+    controller.release_all()
     if model_outputs.button_a:
         controller.press_button(enums.Button.BUTTON_A)
     else:
@@ -479,4 +471,5 @@ def apply_model_outputs_to_game(controller: Controller, model_outputs: Controlle
     controller.tilt_analog(enums.Button.BUTTON_MAIN, model_outputs.main_stick_x, model_outputs.main_stick_y)
     controller.tilt_analog(enums.Button.BUTTON_C, model_outputs.c_stick_x, model_outputs.c_stick_y)
 
+    controller.press_shoulder(enums.Button.BUTTON_R, 0.0)
     controller.press_shoulder(enums.Button.BUTTON_L, model_outputs.shoulder_analog)

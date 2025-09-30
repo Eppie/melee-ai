@@ -8,7 +8,46 @@ import torch.nn as nn
 from tensordict import TensorDict
 from torch.nn import functional as F
 
+from config import get_config
 from preprocess import C_STICK_XY_CLUSTER_CENTERS_V0_1, FOX_STICK_64
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, d: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(d))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.scale
+
+
+def apply_rope(q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    d = q.size(-1)
+    device = q.device
+    pos = torch.arange(q.size(-2), device=device)
+    theta = 10000 ** (-2 * torch.arange(d // 2, device=device) / d)
+    freqs = torch.einsum("l,d->l d", pos, theta)
+    cos = freqs.cos()[None, None, :, :]
+    sin = freqs.sin()[None, None, :, :]
+
+    def rope(x: torch.Tensor) -> torch.Tensor:
+        x1, x2 = x[..., ::2], x[..., 1::2]
+        return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
+
+    return rope(q), rope(k)
+
+
+class SwiGLU(nn.Module):
+    def __init__(self, d: int, mult: float = 8 / 3) -> None:
+        super().__init__()
+        inner = int(mult * d)
+        self.w1 = nn.Linear(d, inner, bias=False)
+        self.v1 = nn.Linear(d, inner, bias=False)
+        self.w2 = nn.Linear(inner, d, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.w2(torch.nn.functional.silu(self.w1(x)) * self.v1(x))
 
 
 # DataConfig(data_dir='/Users/eppie/hal_original/mds', streams='', stream_stats='', seq_len=256,
@@ -29,8 +68,8 @@ class GPTConfig:
 
     # the below are new
     input_size: int = 130  # TODO: how is this calculated?
-    num_stages: int = 6
-    num_characters: int = 27
+    num_stages: int = 7
+    num_characters: int = 26
     num_actions: int = 396
     stage_embedding_dim: int = 4
     character_embedding_dim: int = 12
@@ -49,12 +88,12 @@ class MultiLabelButtonHead(nn.Module):
 
     def __init__(self, input_size: int, output_size: int, *, bias: bool) -> None:
         super().__init__()
-        hidden = max(input_size // 2, output_size * 2)
+        hidden = max(1, max(input_size // 2, output_size * 2))
+        mult = hidden / input_size if input_size > 0 else 1.0
         self.net = nn.Sequential(
-            nn.LayerNorm(input_size, bias=bias),
-            nn.Linear(input_size, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, output_size),
+            RMSNorm(input_size),
+            SwiGLU(input_size, mult=mult),
+            nn.Linear(input_size, output_size, bias=bias),
         )
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -64,18 +103,19 @@ class MultiLabelButtonHead(nn.Module):
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, config: GPTConfig) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        assert config.n_embd % config.n_head == 0
-        self.config = config
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        self.dropout = config.dropout
+        config = get_config()
+        assert config.model.n_embd % config.model.n_head == 0
+        config = config
+        self.n_head = config.model.n_head
+        self.n_embd = config.model.n_embd
+        self.dropout = config.model.dropout
 
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(self.n_embd, 3 * self.n_embd, bias=config.bias)
+        self.c_attn = nn.Linear(self.n_embd, 3 * self.n_embd, bias=config.model.bias)
         # output projection
-        self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=config.model.bias)
         # regularization
         self.attn_dropout = nn.Dropout(self.dropout)
         self.resid_dropout = nn.Dropout(self.dropout)
@@ -101,6 +141,8 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, L, self.n_head, D // self.n_head).transpose(1, 2)  # (B, nh, L, hs)
         v = v.view(B, L, self.n_head, D // self.n_head).transpose(1, 2)  # (B, nh, L, hs)
 
+        q, k = apply_rope(q, k)
+
         # causal self-attention; Self-attend: (B, nh, L, hs) x (B, nh, hs, L) -> (B, nh, L, L)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
@@ -122,28 +164,24 @@ class CausalSelfAttention(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, config: GPTConfig) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.gelu = nn.GELU()
-        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
-        self.dropout = nn.Dropout(config.dropout)
+        config = get_config()
+        self.swiglu = SwiGLU(config.model.n_embd, mult=8 / 3)
+        self.dropout = nn.Dropout(config.model.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.c_fc(x)
-        x = self.gelu(x)
-        x = self.c_proj(x)
-        x = self.dropout(x)
-        return x
+        return self.dropout(self.swiglu(x))
 
 
 class Block(nn.Module):
-    def __init__(self, config: GPTConfig) -> None:
+    def __init__(self, ) -> None:
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
+        config = get_config()
+        self.ln_1 = RMSNorm(config.model.n_embd)
+        self.attn = CausalSelfAttention()
+        self.ln_2 = RMSNorm(config.model.n_embd)
+        self.mlp = MLP()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln_1(x))
@@ -152,21 +190,14 @@ class Block(nn.Module):
 
 
 class BaseGPT(nn.Module):
-    def __init__(self, gpt_config: GPTConfig) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.gpt_config = gpt_config
-        self.block_size = self.gpt_config.block_size
+        config = get_config()
+        self.block_size = config.model.block_size
 
     def get_num_params(self, non_embedding=True):
-        """
-        Return the number of parameters in the model.
-        For non-embedding count (default), the position embeddings get subtracted.
-        The token embeddings would too, except due to the parameter sharing these
-        params are actually used as weights in the final layer, so we include them.
-        """
+        """Return the number of parameters in the model."""
         n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
-            n_params -= self.wpe.weight.numel()
         return n_params
 
     def _init_weights(self, module) -> None:
@@ -181,45 +212,29 @@ class BaseGPT(nn.Module):
         raise NotImplementedError
 
 
-def sinusoidal_positional_encoding_1d(seq_len: int, d_model: int, device: torch.device | None = None) -> torch.Tensor:
-    """
-    :param d_model: dimension of the model
-    :param seq_len: length of positions
-    :return: seq_len*d_model position matrix
-    """
-    if d_model % 2 != 0:
-        raise ValueError("Cannot use sin/cos positional encoding with " "odd dim (got dim={:d})".format(d_model))
-    pe = torch.zeros(seq_len, d_model, device=device)
-    position = torch.arange(0, seq_len).unsqueeze(1)
-    div_term = torch.exp((torch.arange(0, d_model, 2, dtype=torch.float) * -(torch.tensor(10000.0).log() / d_model)))
-    pe[:, 0::2] = torch.sin(position.float() * div_term)
-    pe[:, 1::2] = torch.cos(position.float() * div_term)
-    return pe
-
-
 class GPTv7(BaseGPT):
-    def __init__(self, gpt_config: GPTConfig) -> None:
-        super().__init__(gpt_config)
-        self.input_size = self.gpt_config.input_size  # G
-        self.n_embd = gpt_config.n_embd  # D
+    def __init__(self) -> None:
+        super().__init__()
+        config = get_config()
+        self.input_size = config.model.input_size  # G
+        self.n_embd = config.model.n_embd  # D
 
         # Categorical input embeddings
-        self.stage_emb = nn.Embedding(self.gpt_config.num_stages, self.gpt_config.stage_embedding_dim)
-        self.character_emb = nn.Embedding(self.gpt_config.num_characters, self.gpt_config.character_embedding_dim)
-        self.action_emb = nn.Embedding(self.gpt_config.num_actions, self.gpt_config.action_embedding_dim)
+        self.stage_emb = nn.Embedding(config.model.num_stages, config.model.stage_embedding_dim)
+        self.character_emb = nn.Embedding(config.model.num_characters, config.model.character_embedding_dim)
+        self.action_emb = nn.Embedding(config.model.num_actions, config.model.action_embedding_dim)
 
-        self.wpe = nn.Parameter(sinusoidal_positional_encoding_1d(self.block_size, gpt_config.n_embd))
         self.transformer = nn.ModuleDict(
             dict(
-                proj_down=nn.Linear(self.input_size, gpt_config.n_embd),  # G -> D
-                drop=nn.Dropout(gpt_config.dropout),
-                h=nn.ModuleList([Block(gpt_config) for _ in range(gpt_config.n_layer)]),
-                ln_f=nn.LayerNorm(self.n_embd, bias=gpt_config.bias),
+                proj_down=nn.Linear(self.input_size, config.model.n_embd),  # G -> D
+                drop=nn.Dropout(config.model.dropout),
+                h=nn.ModuleList([Block() for _ in range(config.model.n_layer)]),
+                ln_f=RMSNorm(self.n_embd),
             )
         )
 
         # Output heads
-        self.target_shapes_by_head = self.gpt_config.target_shapes_by_head
+        self.target_shapes_by_head = config.model.target_shapes_by_head
         shoulder_output_size = self.target_shapes_by_head["shoulder"][0]
 
         c_stick_input_size = self.n_embd + shoulder_output_size
@@ -232,31 +247,31 @@ class GPTv7(BaseGPT):
         button_output_size = self.target_shapes_by_head["buttons"][0]
 
         # Put shoulder and c-stick first because they are less complex and they modify/override other inputs
+        shoulder_hidden = max(1, self.n_embd // 2)
         self.shoulder_head = nn.Sequential(
-            nn.LayerNorm(self.n_embd, bias=gpt_config.bias),
-            nn.Linear(self.n_embd, self.n_embd // 2),
-            nn.GELU(),
-            nn.Linear(self.n_embd // 2, shoulder_output_size),
+            RMSNorm(self.n_embd),
+            SwiGLU(self.n_embd, mult=shoulder_hidden / self.n_embd),
+            nn.Linear(self.n_embd, shoulder_output_size, bias=config.model.bias),
         )
 
+        c_stick_hidden = max(1, c_stick_input_size // 2)
         self.c_stick_head = nn.Sequential(
-            nn.LayerNorm(c_stick_input_size, bias=gpt_config.bias),
-            nn.Linear(c_stick_input_size, c_stick_input_size // 2),
-            nn.GELU(),
-            nn.Linear(c_stick_input_size // 2, c_stick_output_size),
+            RMSNorm(c_stick_input_size),
+            SwiGLU(c_stick_input_size, mult=c_stick_hidden / c_stick_input_size),
+            nn.Linear(c_stick_input_size, c_stick_output_size, bias=config.model.bias),
         )
 
+        main_stick_hidden = max(1, main_stick_input_size // 2)
         self.main_stick_head = nn.Sequential(
-            nn.LayerNorm(main_stick_input_size, bias=gpt_config.bias),
-            nn.Linear(main_stick_input_size, main_stick_input_size // 2),
-            nn.GELU(),
-            nn.Linear(main_stick_input_size // 2, main_stick_output_size),
+            RMSNorm(main_stick_input_size),
+            SwiGLU(main_stick_input_size, mult=main_stick_hidden / main_stick_input_size),
+            nn.Linear(main_stick_input_size, main_stick_output_size, bias=config.model.bias),
         )
 
         self.button_head = MultiLabelButtonHead(
             button_input_size,
             button_output_size,
-            bias=gpt_config.bias,
+            bias=config.model.bias,
         )
 
         # init all weights
@@ -264,7 +279,7 @@ class GPTv7(BaseGPT):
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
             if pn.endswith("c_proj.weight"):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * gpt_config.n_layer))
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.model.n_layer))
 
     def _embed_inputs(self, inputs: TensorDict) -> torch.Tensor:
         return torch.cat(
@@ -290,9 +305,6 @@ class GPTv7(BaseGPT):
         # Concatenate embeddings and numerical inputs -> project down
         combined_inputs_BLG = self._embed_inputs(inputs)
         proj_inputs_BLD = self.transformer.proj_down(combined_inputs_BLG)
-
-        wpe_BLD = self.wpe[:L, :]
-        proj_inputs_BLD = proj_inputs_BLD + wpe_BLD
 
         x_BLD = self.transformer.drop(proj_inputs_BLD)
         for block in self.transformer.h:

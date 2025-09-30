@@ -15,8 +15,9 @@ from torch import GradScaler
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 
+from config import get_config, init_config
 from controller_quantization import quantize_targets
-from gpt import GPTv7, GPTConfig
+from gpt import GPTv7
 from preprocess import (
     FOX_STICK_64,
     C_STICK_XY_CLUSTER_CENTERS_V0_1,
@@ -34,7 +35,6 @@ def _bytes(n: int) -> str:
 @dataclass
 class TrainConfig:
     data_root: str
-    mode: str = "random_windows"  # "episode_linear" or "random_windows"
     batch_size: int = 64
     epochs: int = 5
     lr: float = 3e-4
@@ -458,7 +458,7 @@ class RunningMetrics:
 
     # ------- summaries -------
 
-    def _btn_prf(self, tp: torch.Tensor, fp: torch.Tensor, fn: torch.Tensor) -> Tuple[float, float, float]:
+    def _btn_prf(self, tp: torch.Tensor, fp: torch.Tensor, fn: torch.Tensor) -> Tuple[float, float, float, float]:
         # micro
         TP = tp.sum().item()
         FP = fp.sum().item()
@@ -650,46 +650,31 @@ def _multilabel_prf(true: torch.Tensor, pred: torch.Tensor) -> Tuple[float, floa
 # -----------------------------
 
 def train_loop(
-        cfg: TrainConfig,
         model: GPTv7,
 ) -> None:
     device = torch.device("mps")
     model = model.to(device)
+    config = get_config()
     # Build loader + sampler
-    loader, ds, sampler = make_dataloader(
-        cfg.data_root,
-        mode=cfg.mode,
-        batch_size=cfg.batch_size,
-        num_workers=cfg.num_workers,
-        pin_memory=cfg.pin_memory,
-        prefetch_factor=cfg.prefetch_factor,
-        persistent_workers=cfg.persistent_workers,
-        feature_keep=cfg.feature_keep,
-        target_keep=cfg.target_keep,
-        with_replacement_episodes=cfg.with_replacement_episodes,
-        num_episodes=cfg.episodes_per_epoch,
-        replacement=cfg.replacement,
-        num_samples=cfg.num_samples,
-        windows_per_epoch=cfg.windows_per_epoch,
-        steps_per_epoch=cfg.steps_per_epoch,
-    )
+    loader, ds, sampler = make_dataloader()
 
     # Column map built from dataset metadata (only once)
     colmap = ColumnMap(ds)
 
     # Optimizer & (optional) simple cosine LR
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, betas=cfg.betas, weight_decay=cfg.weight_decay)
+    opt = torch.optim.AdamW(model.parameters(), lr=config.train.lr, betas=config.train.betas,
+                            weight_decay=config.train.weight_decay)
     scaler = GradScaler()
 
-    steps_per_epoch = cfg.steps_per_epoch or math.ceil(len(loader))
-    total_steps = cfg.max_steps or (cfg.epochs * steps_per_epoch)
+    steps_per_epoch = config.train.steps_per_epoch or math.ceil(len(loader))
+    total_steps = config.train.max_steps or (config.train.epochs * steps_per_epoch)
     global_step = 0
 
-    out_dir = Path(cfg.out_dir)
+    out_dir = Path(config.train.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Main epochs
-    for epoch in range(cfg.epochs):
+    for epoch in range(config.train.epochs):
         # Important for samplers in distributed setups
         if hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)  # ensures different shuffles per epoch in DDP
@@ -699,18 +684,18 @@ def train_loop(
             K_main=len(FOX_STICK_64),
             K_c=len(C_STICK_XY_CLUSTER_CENTERS_V0_1),
             K_buttons=len(_CONTROLLER_KEYS["buttons"]),
-            K_shoulder=(len(cfg.shoulder_centers) if cfg.shoulder_centers else 0),
+            K_shoulder=(len(config.train.shoulder_centers) if config.train.shoulder_centers else 0),
             device=device,
         )
 
         epoch_loss = 0.0
         t0 = time.time()
 
-        max_iters = cfg.steps_per_epoch
+        max_iters = config.train.steps_per_epoch
         for it, batch in enumerate(loader):
             if max_iters is not None and it >= max_iters:
                 break
-            if cfg.max_steps and global_step >= cfg.max_steps:
+            if config.train.max_steps and global_step >= config.train.max_steps:
                 break
 
             # Move to device
@@ -719,7 +704,7 @@ def train_loop(
 
             # Build model inputs & target labels
             inputs_td = build_inputs_for_gptv7(X, colmap)
-            target_info = quantize_targets(Y, colmap, cfg.shoulder_centers)
+            target_info = quantize_targets(Y, colmap, config.train.shoulder_centers)
 
             pred: TensorDict = model(inputs_td)  # keys: buttons, main_stick, c_stick, (shoulder)
             B, L, _ = pred["main_stick"].shape
@@ -740,7 +725,7 @@ def train_loop(
                 logits_main,
                 target_main,
                 reduction="mean",
-                label_smoothing=cfg.label_smoothing,
+                label_smoothing=config.train.label_smoothing,
                 weight=main_weights,
             )
             loss = loss + loss_main
@@ -753,7 +738,7 @@ def train_loop(
                 logits_c,
                 target_c,
                 reduction="mean",
-                label_smoothing=cfg.label_smoothing,
+                label_smoothing=config.train.label_smoothing,
                 weight=c_weights,
             )
             loss = loss + loss_c
@@ -775,20 +760,21 @@ def train_loop(
             if "shoulder" in pred.keys() and target_info["shoulder_K"] > 0 and target_info["shoulder_idx"] is not None:
                 logits_s = pred["shoulder"].reshape(B * L, -1)
                 target_s = target_info["shoulder_idx"].reshape(B * L)
-                loss_s = F.cross_entropy(logits_s, target_s, reduction="mean", label_smoothing=cfg.label_smoothing)
+                loss_s = F.cross_entropy(logits_s, target_s, reduction="mean",
+                                         label_smoothing=config.train.label_smoothing)
                 loss = loss_s + loss
 
             # LR schedule
-            lr = cosine_lr_schedule(global_step, total_steps, cfg.lr, cfg.warmup_steps)
+            lr = cosine_lr_schedule(global_step, total_steps, config.train.lr, config.train.warmup_steps)
             for pg in opt.param_groups:
                 pg["lr"] = lr
 
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
 
-            if cfg.grad_clip is not None and cfg.grad_clip > 0:
+            if config.train.grad_clip is not None and config.train.grad_clip > 0:
                 scaler.unscale_(opt)
-                clip_grad_norm_(model.parameters(), cfg.grad_clip)
+                clip_grad_norm_(model.parameters(), config.train.grad_clip)
 
             scaler.step(opt)
             scaler.update()
@@ -866,7 +852,7 @@ def train_loop(
                                                                   torch.nn.parallel.DistributedDataParallel) else model.module.state_dict(),
                     "optimizer": opt.state_dict(),
                     "scaler": scaler.state_dict(),
-                    "config": cfg.__dict__,
+                    "config": config.train.__dict__,
                     "epoch": epoch + 1,
                     "global_step": global_step,
                 }
@@ -957,7 +943,7 @@ def train_loop(
 
                 # ---------- Compose log ----------
                 header = (
-                    f"ep {epoch + 1}/{cfg.epochs} it {it + 1}/{len(loader)}\n"
+                    f"ep {epoch + 1}/{config.train.epochs} it {it + 1}/{len(loader)}\n"
                     f"  loss {epoch_loss / (it + 1):.4f} | lr {lr:.2e} | items/s {ips:,.0f} | {this_loss}"
                 )
                 main_line = (
@@ -1001,17 +987,17 @@ def train_loop(
         # End-of-epoch: save confusion matrices and print summary
         np.save(out_dir / f"confusion_main_ep{epoch + 1:03d}.npy", metrics.main_confusion.cpu().numpy())
         np.save(out_dir / f"confusion_c_ep{epoch + 1:03d}.npy", metrics.c_confusion.cpu().numpy())
-        if (epoch + 1) % cfg.save_every_epochs == 0:
+        if (epoch + 1) % config.train.save_every_epochs == 0:
             print(f"[epoch {epoch + 1}] summary: {metrics.short_str()}")
 
         # Save checkpoint (rank 0)
-        if (epoch + 1) % cfg.save_every_epochs == 0:
+        if (epoch + 1) % config.train.save_every_epochs == 0:
             ckpt = {
                 "model": model.state_dict() if not isinstance(model,
                                                               torch.nn.parallel.DistributedDataParallel) else model.module.state_dict(),
                 "optimizer": opt.state_dict(),
                 "scaler": scaler.state_dict(),
-                "config": cfg.__dict__,
+                "config": config.train.__dict__,
                 "epoch": epoch + 1,
                 "global_step": global_step,
             }
@@ -1019,24 +1005,6 @@ def train_loop(
 
 
 if __name__ == "__main__":
-    gcfg = GPTConfig(
-        block_size=256,
-        n_embd=512,
-        n_layer=8,
-        n_head=8,
-        dropout=0.1,
-        bias=True,
-    )
-    model = GPTv7(gcfg)
-
-    cfg = TrainConfig(
-        data_root="dataset_FOX_vs_FOX",
-        mode="episode_linear",
-        batch_size=128,
-        epochs=10,
-        episodes_per_epoch=150,  # per-rank
-        shoulder_centers=[0.0, 0.7, 1.0],  # coarse bins; set None to skip shoulder loss
-        out_dir="checkpoints_gptv7_linear1",
-    )
-
-    train_loop(cfg, model)
+    init_config()
+    model = GPTv7()
+    train_loop(model)

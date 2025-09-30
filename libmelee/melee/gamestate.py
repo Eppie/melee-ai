@@ -73,7 +73,7 @@ class PlayerState(object):
                  'is_reflect_active', 'is_subaction_invulnerable', 'is_fastfalling', 'is_defender_in_hitlag',
                  'is_in_hitlag', 'is_holding_character', 'is_shield_active', 'is_in_hitstun',
                  'is_touching_shield', 'is_cloaked', 'is_follower', 'is_inactive', 'is_dead', 'is_offscreen',
-                 'l_cancel_status', 'cursor_x', 'cursor_y', 'cursor', 'coin_down', 'is_holding_cpu_slider')
+                 'l_cancel_status', 'cursor_x', 'cursor_y', 'cursor', 'coin_down', 'is_holding_cpu_slider', 'cpu_level')
     def __init__(self):
         # This value is what the character currently is IN GAME
         #   So this will have no meaning while in menus
@@ -177,6 +177,7 @@ class PlayerState(object):
         """(bool): Is the player's character selection coin placed down? (Does not work in Slippi selection screen)"""
         self.is_holding_cpu_slider = False
         """(bool): Is the player holding the CPU slider in the character select screen?"""
+        self.cpu_level = 0
 
 class Projectile:
     """ Represents the state of a projectile (items, lasers, etc...) """

@@ -2,8 +2,10 @@
 import argparse
 import signal
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
+from config import init_config
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
 from libmelee.melee.enums import Character, Stage, Menu, ControllerType
@@ -15,8 +17,14 @@ from model_interface import (
     set_active_engine,
 )
 
-if __name__ == "__main__":
 
+@dataclass
+class ProfilerConfig:
+    a: int = 0
+
+
+if __name__ == "__main__":
+    init_config(cli_overrides={"model.num_stages": 7, "model.num_characters": 26})
     parser = argparse.ArgumentParser(description='Example of libmelee in action')
     parser.add_argument('--debug', '-d', action='store_true',
                         help='Debug mode. Creates a CSV of all game states')
@@ -27,7 +35,7 @@ if __name__ == "__main__":
     parser.add_argument('--iso', default=None, type=str,
                         help='Path to melee iso.')
     parser.add_argument('--checkpoint', '-c', type=Path,
-                        default=Path('/Users/eppie/PycharmProjects/new-melee-ai/checkpoints_gptv7_epseq/model_ep007.pt'),
+                        default=Path('/Users/eppie/PycharmProjects/new-melee-ai/model_ep009.pt'),
                         help='Path to trained model checkpoint (.pt)')
     parser.add_argument('--device', default='mps',
                         help='Torch device to run on (auto/cpu/cuda/mps)')
@@ -52,7 +60,8 @@ if __name__ == "__main__":
         slippi_address=args.address,
         save_replays=args.debug,
         copy_home_directory=False,
-        tmp_home_directory=False
+        tmp_home_directory=False,
+        blocking_input=True,
     )
     ports = [1, 2]
 
@@ -117,12 +126,22 @@ if __name__ == "__main__":
             previous_gamestate = gamestate
 
         else:
-            for port, controller in controllers.items():
-                menu_helper.menu_helper_simple(
-                    gamestate,
-                    controller,
-                    Character.FOX,
-                    Stage.FINAL_DESTINATION,
-                    costume=port,
-                    autostart=port == 1,
-                    swag=False)
+
+            menu_helper.menu_helper_simple(
+                gamestate,
+                controllers[1],
+                Character.FOX,
+                Stage.BATTLEFIELD,
+                costume=1,
+                autostart=False,
+                swag=False,
+            )
+            # menu_helper.choose_character(
+            #     character=Character.FOX,
+            #     gamestate=gamestate,
+            #     controller=controllers[2],
+            #     cpu_level=9,
+            #     costume=1,
+            #     swag=False,
+            #     start=True,
+            # )

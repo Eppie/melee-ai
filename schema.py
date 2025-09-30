@@ -90,6 +90,28 @@ _ROW_FIELDS = (
 
 )
 
+
+def get_feature_names() -> list[str]:
+    """Canonical feature ordering for model input."""
+    names = []
+    for field_name, *_ in COMMON_SPEC:
+        names.append(field_name)
+    for prefix in ["p1_", "p2_"]:
+        for field_name, *_ in PLAYER_SPEC:
+            names.append(f"{prefix}{field_name}")
+    return names
+
+
+def get_target_names() -> list[str]:
+    """Canonical target ordering for model output (P1 controller only)."""
+    controller_fields = {
+        "main_stick_x", "main_stick_y", "c_stick_x", "c_stick_y",
+        "shoulder_analog", "button_a", "button_b", "button_xy",
+        "button_z", "button_lr"
+    }
+    return [f"p1_{field}" for field, *_ in PLAYER_SPEC if field in controller_fields]
+
+
 # Build the dataclass dynamically (flattened attributes), with slots for memory/perf
 Row = dataclasses.make_dataclass("Row", _ROW_FIELDS, slots=True)
 
@@ -100,67 +122,6 @@ assert [n[3:] for n in _p1_names] == [n[3:] for n in _p2_names], "p1/p2 spec mis
 
 # Convenience: export the authoritative specs, useful elsewhere (e.g., for dtype building)
 __all__ = ["Row", "COMMON_SPEC", "PLAYER_SPEC"]
-
-BUTTON_LABELS: tuple[str, ...] = ("A", "B", "Z", "JUMP", "SHIELD")
-STICK_XY_CLUSTER_CENTERS_V2 = (
-        np.array(
-            [  # neutral
-                [0.0, 0.0],
-                # partial tilt
-                [0.35, 0.0],
-                [-0.35, 0.0],
-                [0.0, 0.35],
-                [0.0, -0.35],
-                # tilt
-                [0.675, 0.0],
-                [-0.675, 0.0],
-                [0.0, 0.675],
-                [0.0, -0.675],
-                # full press (dash / smash attack)
-                [1.0, 0.0],
-                [0.0, 1.0],
-                [-1.0, 0.0],
-                [0.0, -1.0],
-                # 17º / perfect wave/ledgedash
-                [0.95, -0.3],
-                [-0.95, -0.3],
-                # 17º
-                [0.95, 0.3],
-                [-0.95, 0.3],
-                # 30º / downward/up-angled f-smash
-                [0.85, -0.5],
-                [0.85, 0.5],
-                [-0.85, -0.5],
-                [-0.85, 0.5],
-                # 45º + shield drops
-                [0.7, -0.7],
-                [-0.7, -0.7],
-                [0.7, 0.7],
-                [-0.7, 0.7],
-                # [0.675, -0.675],
-                # [-0.675, -0.675],
-                # [0.675, 0.675],
-                # [-0.675, 0.675],
-                # up-/down-angled f-tilts
-                [0.5, 0.5],
-                [-0.5, 0.5],
-                [0.5, -0.5],
-                [-0.5, -0.5],
-                # 60º
-                [0.5, 0.85],
-                [-0.5, 0.85],
-                [0.5, -0.85],
-                [-0.5, -0.85],
-                # 72.5º
-                [0.3, -0.95],
-                [0.3, 0.95],
-                [-0.3, -0.95],
-                [-0.3, 0.95],
-            ]
-        )
-        / 2
-        + 0.5
-)
 
 """
 Ideas for normalization:

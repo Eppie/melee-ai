@@ -1294,6 +1294,14 @@ class Console:
         except KeyError:
             pass
 
+        try:
+            for i in range(4):
+                gamestate.players[i+1].cpu_level = np.ndarray((1,), ">B", event_bytes, 0x41 + i)[0]
+        except TypeError:
+            pass
+        except KeyError:
+            pass
+
     def __fixframeindexing(self, gamestate: GameState):
         """ Melee's indexing of action frames is wildly inconsistent.
             Here we adjust all of the frames to be indexed at 1 (so math is easier)"""

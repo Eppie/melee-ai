@@ -3,14 +3,14 @@ import math
 import os
 import shutil
 import time
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
 import numpy as np
 import zarr
-from zarr.codecs import BloscCodec, BloscShuffle
 
+from config import init_config, get_config
 from libmelee.melee import enums
 from libmelee.melee.console import Console
 from libmelee.melee.controller import ControllerState
@@ -90,18 +90,6 @@ def extract(game_state: GameState) -> Row:
 
 
 @dataclass(frozen=True)
-class BuildConfig:
-    out_root: str
-    seq_len: int = 256
-    shard_size: int = 1000
-    target_chunk_mb: float = 4.0
-    compressor: BloscCodec = field(
-        default_factory=lambda: BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle))
-    seed: int = 42
-    use_consolidated_metadata: bool = False
-
-
-@dataclass(frozen=True)
 class Schema:
     features: List[str]
     targets: List[str]
@@ -145,18 +133,18 @@ def process_one_episode(raw_path: str) -> List[Row]:
     return rows
 
 
-def _choose_chunk_t(F: int, elem_bytes: int, target_chunk_mb: float, min_t: int, align_to: int) -> int:
-    approx_t = int((target_chunk_mb * (1024 ** 2)) / (F * elem_bytes))
-    approx_t = max(min_t, approx_t)
+def _choose_chunk_t(F: int, elem_bytes: int) -> int:
+    config = get_config()
+    approx_t = int((config.zarr.target_chunk_mb * (1024 ** 2)) / (F * elem_bytes))
+    approx_t = max(config.seq_len, approx_t)
     # align to a multiple of seq len to minimize boundary splits
-    if align_to > 0:
-        approx_t = (approx_t // align_to) * align_to or align_to
+    if config.seq_len > 0:
+        approx_t = (approx_t // config.seq_len) * config.seq_len or config.seq_len
     return approx_t
 
 
 class EpisodeWriter:
-    def __init__(self, cfg: BuildConfig, schema: Schema, shard_path: str) -> None:
-        self.cfg = cfg
+    def __init__(self, schema: Schema, shard_path: str) -> None:
         self.schema = schema
         self.shard_path = Path(shard_path)
         # write rows to a temporary dir then rename atomically on finalize
@@ -172,14 +160,12 @@ class EpisodeWriter:
             ct = _choose_chunk_t(
                 F=F,
                 elem_bytes=elem_bytes,
-                target_chunk_mb=self.cfg.target_chunk_mb,
-                min_t=self.cfg.seq_len,
-                align_to=self.cfg.seq_len,
             )
             self._chunk_t_cache[F] = ct
         return self._chunk_t_cache[F]
 
     def write_episode(self, episode_id: int, X: np.ndarray, Y: np.ndarray) -> str:
+        config = get_config()
         assert X.dtype == np.float32 and (Y.size == 0 or Y.dtype == np.float32)
         ep_name = f"ep_{episode_id:06d}"
         epg = self.root.require_group(ep_name)
@@ -191,7 +177,7 @@ class EpisodeWriter:
             "X",
             shape=X.shape,
             chunks=(min(chunk_t, X.shape[0]), X.shape[1]),
-            compressors=[self.cfg.compressor],
+            compressors=[config.zarr.compressor],
             dtype="float32",
             overwrite=True,
         )
@@ -201,7 +187,7 @@ class EpisodeWriter:
                 "Y",
                 shape=Y.shape,
                 chunks=(min(chunk_t, Y.shape[0]), Y.shape[1]),
-                compressors=[self.cfg.compressor],
+                compressors=[config.zarr.compressor],
                 dtype="float32",
                 overwrite=True,
             )
@@ -210,8 +196,6 @@ class EpisodeWriter:
 
     def finalize(self) -> None:
         self.tmp_path.flush() if hasattr(self.tmp_path, "flush") else None
-        if self.cfg.use_consolidated_metadata:
-            zarr.consolidate_metadata(str(self.tmp_path))
         if self.shard_path.exists():
             shutil.rmtree(self.shard_path)
         os.replace(self.tmp_path, self.shard_path)
@@ -260,11 +244,11 @@ def _rows_to_dense(rows: Sequence[object], schema: Schema) -> \
 def _process_shard(
         shard_id: int,
         raw_paths: Sequence[str],
-        cfg: BuildConfig,
         schema: Schema,
 ) -> ShardResult:
-    shard_path = Path(cfg.out_root) / f"shard_{shard_id:05d}.zarr"
-    writer = EpisodeWriter(cfg, schema, str(shard_path))
+    config = get_config()
+    shard_path = Path(config.zarr.out_root) / f"shard_{shard_id:05d}.zarr"
+    writer = EpisodeWriter(schema, str(shard_path))
 
     feat_dtypes_first: List[str] | None = None
     targ_dtypes_first: List[str] | None = None
@@ -273,7 +257,7 @@ def _process_shard(
     frames: List[int] = []
 
     for local_idx, raw_path in enumerate(raw_paths):
-        episode_id = shard_id * cfg.shard_size + local_idx
+        episode_id = shard_id * config.zarr.shard_size + local_idx
         rows = process_one_episode(raw_path)
         X, Y, feat_dtypes, targ_dtypes = _rows_to_dense(rows, schema)
 
@@ -299,10 +283,10 @@ def _process_shard(
 
 def _merge_and_write_metadata(
         results: List[ShardResult],
-        cfg: BuildConfig,
         schema: Schema,
 ) -> None:
-    out_dir = Path(cfg.out_root)
+    config = get_config()
+    out_dir = Path(config.zarr.out_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Index
@@ -321,7 +305,7 @@ def _merge_and_write_metadata(
     all_eps.sort(key=lambda x: x[0])
 
     lengths = np.array([T for _, T in all_eps], dtype=np.int64)
-    wins_per_ep = np.clip(lengths - cfg.seq_len + 1, a_min=0, a_max=None).astype(np.int64)
+    wins_per_ep = np.clip(lengths - config.seq_len + 1, a_min=0, a_max=None).astype(np.int64)
     np.save(out_dir / "lengths.npy", lengths)
     np.save(out_dir / "wins_per_ep.npy", wins_per_ep)
 
@@ -332,37 +316,37 @@ def _merge_and_write_metadata(
     meta = {
         "version": 1,
         "created_at_unix": int(time.time()),
-        "build_config": {**asdict(cfg), "compressor": str(cfg.compressor)},
+        "build_config": config.to_dict(),
         "schema": {"features": schema.features, "targets": schema.targets},
         "feat_dtypes": feat_dtypes,
         "targ_dtypes": targ_dtypes,
-        "seq_len": int(cfg.seq_len),
     }
 
     with (out_dir / "meta.json").open("w") as f:
         json.dump(meta, f, indent=2)
 
 
-def build_dataset(raw_episode_paths: Sequence[str], cfg: BuildConfig, schema: Schema) -> None:
+def build_dataset(raw_episode_paths: Sequence[str], schema: Schema) -> None:
+    config = get_config()
     N = len(raw_episode_paths)
     if N == 0:
         raise ValueError("No raw episodes provided.")
 
-    num_shards = math.ceil(N / cfg.shard_size)
+    num_shards = math.ceil(N / config.zarr.shard_size)
     shards: List[List[str]] = []
     for s in range(num_shards):
-        start = s * cfg.shard_size
-        end = min((s + 1) * cfg.shard_size, N)
+        start = s * config.zarr.shard_size
+        end = min((s + 1) * config.zarr.shard_size, N)
         shards.append(list(raw_episode_paths[start:end]))
 
     results: List[ShardResult] = []
-    Path(cfg.out_root).mkdir(parents=True, exist_ok=True)
+    Path(config.zarr.out_root).mkdir(parents=True, exist_ok=True)
     for s in range(num_shards):
-        result = _process_shard(s, shards[s], cfg, schema)
+        result = _process_shard(s, shards[s], schema)
         results.append(result)
 
     results.sort(key=lambda r: r.shard_id)
-    _merge_and_write_metadata(results, cfg, schema)
+    _merge_and_write_metadata(results, schema)
 
 
 def create_melee_schema() -> Schema:
@@ -396,46 +380,29 @@ def create_melee_schema() -> Schema:
 
 
 def main():
-    import sys
     import glob
+    init_config()
+    config = get_config()
 
-    if len(sys.argv) > 1:
-        input_path = sys.argv[1]
-    else:
-        input_path = "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX"
-
-    slp_files = sorted(glob.glob(os.path.join(input_path, "master-master*.slp")))[:1]
+    slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp")))[:1]
 
     if not slp_files:
-        print(f"No .slp files found in {input_path}")
+        print(f"No .slp files found in {config.zarr.input_root}")
         return
 
-    print(f"Found {len(slp_files)} .slp files in {input_path}")
-
-    input_name = os.path.basename(input_path.rstrip(os.sep))
-    output_path = f"dataset_{input_name}"
-
-    config = BuildConfig(
-        out_root=output_path,
-        seq_len=256,  # 256 frames ~ 4.3 seconds at 60fps
-        shard_size=100,  # 100 episodes per shard
-        target_chunk_mb=8.0,  # 8MB chunks
-        seed=42,
-        use_consolidated_metadata=True,
-    )
-
+    print(f"Found {len(slp_files)} .slp files in {config.zarr.input_root}")
     schema = create_melee_schema()
 
     print(f"Schema: {len(schema.features)} features, {len(schema.targets)} targets")
-    print(f"Output directory: {output_path}")
-    print(f"Configuration: seq_len={config.seq_len}, shard_size={config.shard_size}")
+    print(f"Output directory: {config.zarr.out_root}")
+    print(f"Configuration: seq_len={config.seq_len}, shard_size={config.zarr.shard_size}")
 
     try:
-        build_dataset(slp_files, config, schema)
-        print(f"Dataset built successfully in {output_path}")
+        build_dataset(slp_files, schema)
+        print(f"Dataset built successfully in {config.zarr.out_root}")
 
         # Print some statistics
-        lengths = np.load(os.path.join(output_path, "lengths.npy"))
+        lengths = np.load(os.path.join(config.zarr.out_root, "lengths.npy"))
         print(f"Total episodes: {len(lengths)}")
         print(f"Total frames: {lengths.sum()}")
         print(f"Average frames per episode: {lengths.mean():.1f}")

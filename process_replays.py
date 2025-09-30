@@ -14,8 +14,6 @@ from libmelee.melee.gamestate import GameState, PlayerState
 from preprocess import _preprocess_frame, _preprocess_stage, _preprocess_character, _preprocess_action, \
     _preprocess_x_y_buttons, _preprocess_l_r_buttons
 from schema import Row
-from stats import log_all_stats
-# from to_parquet import write_rows_to_parquet
 
 
 def file_hash(path: str | Path, algo: str = "md5") -> np.uint32:
@@ -157,7 +155,6 @@ def main() -> None:
     logger.info(f"Row 100: {rows[100]}")
     logger.info(f"Row 101: {rows[101]}")
     logger.info(f"Row 110: {rows[110]}")
-    log_all_stats(rows)
     # write_rows_to_parquet(rows, "melee_rows.parquet", row_cls=Row)
 
 

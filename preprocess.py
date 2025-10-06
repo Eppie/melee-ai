@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Tuple
-
 import numpy as np
 
 from libmelee.melee import enums
@@ -19,12 +17,12 @@ def _preprocess_frame(frame: int) -> np.int32:
 def _preprocess_stage(stage: enums.Stage) -> np.int32:
     return np.int32(
         {
-            enums.Stage.FINAL_DESTINATION: 1,
-            enums.Stage.BATTLEFIELD: 2,
-            enums.Stage.POKEMON_STADIUM: 3,
-            enums.Stage.DREAMLAND: 4,
-            enums.Stage.FOUNTAIN_OF_DREAMS: 5,
-            enums.Stage.YOSHIS_STORY: 6,
+            enums.Stage.FINAL_DESTINATION: 0,
+            enums.Stage.BATTLEFIELD: 1,
+            enums.Stage.POKEMON_STADIUM: 2,
+            enums.Stage.DREAMLAND: 3,
+            enums.Stage.FOUNTAIN_OF_DREAMS: 4,
+            enums.Stage.YOSHIS_STORY: 5,
         }[stage]
     )
 
@@ -35,76 +33,19 @@ def _preprocess_character(character: enums.Character) -> np.int32:
 
 
 def _preprocess_action(action: Action) -> np.int32:
+    assert 0 <= action.value <= 397  # 0x18d
     return np.int32(action.value)
 
 
 def _preprocess_x_y_buttons(button_x: bool, button_y: bool) -> np.float32:
+    """The X and Y buttons both indicate "jump", so we only need one of them"""
     return np.float32(np.logical_or(button_x, button_y))
 
 
 def _preprocess_l_r_buttons(button_l: bool, button_r: bool) -> np.float32:
+    """The L and R buttons both indicate "shield", so we only need one of them"""
     return np.float32(np.logical_or(button_l, button_r))
 
-
-def snap_replay_to_palette(
-        raw_xy01: np.ndarray,
-        palette11: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
-    xy = np.asarray(raw_xy01, dtype=np.float32)
-    if xy.shape[-1] != 2:
-        raise ValueError("raw_xy01 must have last dimension size 2")
-    P = np.asarray(palette11, dtype=np.float32)
-    if P.ndim != 2 or P.shape[1] != 2:
-        raise ValueError("palette11 must have shape (K, 2)")
-
-    orig_shape = xy.shape
-    V01 = xy.reshape(-1, 2)
-
-    # Map [0,1] -> [-1,1], clip to unit circle (rarely necessary but safe).
-    V11 = np.clip(V01 * 2.0 - 1.0, -1.0, 1.0)
-    r2 = np.einsum("ij,ij->i", V11, V11)
-    over = r2 > 1.0
-    if np.any(over):
-        V11[over] /= np.sqrt(r2[over])[..., None]
-
-    # Precompute palette norms; vectorized nearest neighbor search.
-    P_norm2 = np.einsum("ij,ij->i", P, P)  # (K,)
-    V_norm2 = np.einsum("ij,ij->i", V11, V11)  # (N,)
-    V_dot_PT = V11 @ P.T  # (N, K)
-    d2 = V_norm2[:, None] + P_norm2[None, :] - 2.0 * V_dot_PT
-
-    idx = np.argmin(d2, axis=1).astype(np.int32)
-    snapped = P[idx]
-
-    return snapped.reshape(orig_shape), idx.reshape(orig_shape[:-1])
-
-
-def model_to_dolphin01(
-        model_out: np.ndarray,
-        palette11: np.ndarray | None = None,
-) -> np.ndarray:
-    arr = np.asarray(model_out)
-
-    if np.issubdtype(arr.dtype, np.integer):
-        if palette11 is None:
-            raise ValueError("palette11 must be provided when converting indices")
-        P = np.asarray(palette11, dtype=np.float32)
-        coords11 = P[arr]
-    else:
-        coords11 = np.asarray(model_out, dtype=np.float32)
-        if coords11.shape[-1] != 2:
-            raise ValueError("model_out must have last dimension size 2")
-
-    # Clamp to unit circle to be safe.
-    r2 = np.einsum("...i,...i->...", coords11, coords11)
-    over = r2 > 1.0
-    if np.any(over):
-        coords11 = coords11.copy()
-        coords11[over] /= np.sqrt(r2[over])[..., None]
-
-    # Map [-1,1] -> [0,1]
-    xy01 = np.clip(coords11 * 0.5 + 0.5, 0.0, 1.0).astype(np.float32)
-    return xy01
 
 """
 Note that all stick values here are in the domain [-1,1], while the game/libmelee uses [0,1],
@@ -216,3 +157,5 @@ C_STICK_XY_CLUSTER_CENTERS_V0_1: np.ndarray = np.array(
         [-0.7, 0.7],
     ])
 )
+
+SHOULDER_VALUES: list[float] = [0.0, 0.25, 0.5, 0.75, 1.0]

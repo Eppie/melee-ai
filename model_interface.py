@@ -14,8 +14,9 @@ from gpt import GPTv7
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
-from preprocess import C_STICK_XY_CLUSTER_CENTERS_V0_1, FOX_STICK_64, model_to_dolphin01
+from preprocess import C_STICK_XY_CLUSTER_CENTERS_V0_1, FOX_STICK_64
 from train import build_inputs_for_gptv7
+from utils import _resolve_device
 
 # Keep the feature ordering in-sync with training.
 _FEATURE_CONTROLLER_KEYS = {
@@ -121,11 +122,12 @@ class ControllerState:
         )
 
 
-def _safe_float(value: object, default: float = 0.0) -> float:
+def _safe_float(value: object) -> float:
     try:
         return float(value)
-    except Exception:
-        return default
+    except Exception as e:
+        print(f"Failed to convert `{value}`, of type `{type(value)}` to float: {e}")
+        raise
 
 
 def _bool_to_float(value: bool) -> float:
@@ -192,6 +194,34 @@ def _player_fields(player, prefix: str) -> Dict[str, float]:
     }
 
 
+def model_to_dolphin01(
+        model_out: np.ndarray,
+        palette11: np.ndarray | None = None,
+) -> np.ndarray:
+    arr = np.asarray(model_out)
+
+    if np.issubdtype(arr.dtype, np.integer):
+        if palette11 is None:
+            raise ValueError("palette11 must be provided when converting indices")
+        P = np.asarray(palette11, dtype=np.float32)
+        coords11 = P[arr]
+    else:
+        coords11 = np.asarray(model_out, dtype=np.float32)
+        if coords11.shape[-1] != 2:
+            raise ValueError("model_out must have last dimension size 2")
+
+    # Clamp to unit circle to be safe.
+    r2 = np.einsum("...i,...i->...", coords11, coords11)
+    over = r2 > 1.0
+    if np.any(over):
+        coords11 = coords11.copy()
+        coords11[over] /= np.sqrt(r2[over])[..., None]
+
+    # Map [-1,1] -> [0,1]
+    xy01 = np.clip(coords11 * 0.5 + 0.5, 0.0, 1.0).astype(np.float32)
+    return xy01
+
+
 def collect_raw_inputs_from_gamestate(
         gamestate: GameState,
         bot_port: int,
@@ -255,16 +285,6 @@ class InferenceColumnMap:
         self.y_shoulder = targ2idx.get("p1_shoulder_analog")
 
 
-def _resolve_device(preferred: Optional[str]) -> torch.device:
-    if preferred is None or preferred == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            return torch.device("mps")
-        return torch.device("cpu")
-    return torch.device(preferred)
-
-
 class GPTInferenceEngine:
     """Online inference helper around the GPT controller model."""
 
@@ -325,13 +345,10 @@ class GPTInferenceEngine:
         self.button_thresholds = torch.clamp(self.button_thresholds, 0.0, 1.0)
         self.button_thresholds = self.button_thresholds.to(torch.float32)
 
-    # ------------------------------------------------------------------
-    # Frame preparation utilities
-    # ------------------------------------------------------------------
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
         frame = torch.zeros(self.feature_dim, dtype=torch.float32)
         for idx, name in enumerate(self.feature_names):
-            frame[idx] = _safe_float(raw_inputs.get(name, 0.0))
+            frame[idx] = _safe_float(raw_inputs.get(name))
         return frame
 
     def _stack_frames(self) -> Optional[torch.Tensor]:
@@ -344,9 +361,6 @@ class GPTInferenceEngine:
     def _build_inputs(self, batch_X: torch.Tensor) -> TensorDict:
         return build_inputs_for_gptv7(batch_X, self.colmap)
 
-    # ------------------------------------------------------------------
-    # Decoding helpers
-    # ------------------------------------------------------------------
     def _decode_stick(self, logits: torch.Tensor, palette: np.ndarray) -> np.ndarray:
         # print(logits)
         idx = torch.argmax(logits, dim=-1).detach().cpu().numpy().astype(np.int32)
@@ -392,9 +406,6 @@ class GPTInferenceEngine:
             button_lr=bool(buttons_bool[4]),
         )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     def prepare_inputs(self, raw_inputs: Dict[str, float]) -> Optional[TensorDict]:
         frame = self._frame_to_tensor(raw_inputs)
         self.buffer.append(frame)
@@ -412,33 +423,8 @@ class GPTInferenceEngine:
             outputs = self.model(inputs_td)
         return self._decode_outputs(outputs)
 
-    def act(self, gamestate: GameState, bot_port: int, opp_port: int) -> ControllerState:
-        raw_inputs = collect_raw_inputs_from_gamestate(gamestate, bot_port, opp_port)
-        return self.predict_from_raw(raw_inputs)
-
 
 _ACTIVE_ENGINE: Optional[GPTInferenceEngine] = None
-
-
-def set_active_engine(engine: Optional[GPTInferenceEngine]) -> None:
-    global _ACTIVE_ENGINE
-    _ACTIVE_ENGINE = engine
-
-
-def get_active_engine() -> GPTInferenceEngine:
-    if _ACTIVE_ENGINE is None:
-        raise RuntimeError("Inference engine has not been initialised. Call set_active_engine().")
-    return _ACTIVE_ENGINE
-
-
-def transform_raw_inputs_for_model(raw_gamestate: Dict[str, float]) -> Optional[TensorDict]:
-    engine = get_active_engine()
-    return engine.prepare_inputs(raw_gamestate)
-
-
-def transform_raw_outputs_for_game(raw_model_outputs: TensorDict) -> ControllerState:
-    engine = get_active_engine()
-    return engine._decode_outputs(raw_model_outputs)
 
 
 def apply_model_outputs_to_game(controller: Controller, model_outputs: ControllerState) -> None:

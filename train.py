@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from textwrap import indent
 from typing import Dict
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -30,49 +29,6 @@ def _bytes(n: int) -> str:
         if n < 1024: return f"{n:.1f}{unit}"
         n /= 1024
     return f"{n:.1f}PB"
-
-
-@dataclass
-class TrainConfig:
-    data_root: str
-    batch_size: int = 64
-    epochs: int = 5
-    lr: float = 3e-4
-    weight_decay: float = 0.01
-    betas: Tuple[float, float] = (0.9, 0.95)
-    warmup_steps: int = 0
-    max_steps: Optional[int] = None  # cap total steps (useful for quick tests)
-    num_workers: int = 8
-    prefetch_factor: int = 4
-    pin_memory: bool = True
-    persistent_workers: bool = True
-
-    # losses
-    grad_clip: float = 1.0
-    label_smoothing: float = 0.0
-
-    # quantization / shoulder
-    shoulder_centers: Optional[Sequence[float]] = None  # e.g., [0.0, 0.5, 1.0]; if None, skip shoulder loss
-
-    # episode_linear sampler knobs
-    episodes_per_epoch: Optional[int] = None  # per rank
-    with_replacement_episodes: bool = False
-
-    # random_windows sampler knobs
-    replacement: bool = False
-    num_samples: Optional[int] = None  # required if replacement=True
-
-    # epoch sizing (per rank)
-    windows_per_epoch: Optional[int] = None
-    steps_per_epoch: Optional[int] = None  # if provided, overrides windows_per_epoch via steps * batch_size
-
-    # checkpointing
-    out_dir: str = "checkpoints"
-    save_every_epochs: int = 1
-
-    # column pruning (optional)
-    feature_keep: Optional[Sequence[str]] = None
-    target_keep: Optional[Sequence[str]] = None
 
 
 def cosine_lr_schedule(step: int, total_steps: int, base_lr: float, warmup: int = 0) -> float:
@@ -104,12 +60,17 @@ _CE_WEIGHT_MIN = 0.1
 _POS_WEIGHT_CLAMP = 10.0
 
 
-def _compute_ce_weights(labels: torch.Tensor, num_classes: int, device: torch.device) -> torch.Tensor:
-    counts = torch.bincount(labels, minlength=num_classes).float()
+def _compute_ce_weights(labels: torch.Tensor, num_classes: int) -> torch.Tensor:
+    device = labels.device
+    try:
+        counts = torch.bincount(labels, minlength=num_classes)
+    except RuntimeError:
+        counts = torch.bincount(labels.cpu(), minlength=num_classes).to(device)
+    counts = counts.float()
     counts = torch.clamp(counts, min=1.0)
     weights = counts.sum() / (counts * num_classes)
     weights = torch.clamp(weights, min=_CE_WEIGHT_MIN, max=_CE_WEIGHT_CLAMP)
-    return weights.to(device)
+    return weights
 
 
 def _compute_pos_weights(targets: torch.Tensor) -> torch.Tensor:
@@ -178,7 +139,7 @@ class ColumnMap:
         self.y_c = (ti("p1_c_stick_x"), ti("p1_c_stick_y"))
         # buttons (multi-label)
         self.y_buttons = [ti(f"p1_{k}") for k in _CONTROLLER_KEYS["buttons"]]
-        # shoulder (optional)
+        # shoulder
         self.y_shoulder = ti("p1_shoulder_analog") if "p1_shoulder_analog" in t2idx else None
 
 
@@ -221,13 +182,31 @@ def _safe_div(n: float, d: float) -> float:
     return float(n) / float(d) if d else 0.0
 
 
+def _safe_bincount(x: torch.Tensor, minlength: int, device: torch.device) -> torch.Tensor:
+    if x.numel() == 0:
+        return torch.zeros(minlength, device=device, dtype=torch.float32)
+    if x.dtype != torch.long:
+        x = x.to(torch.long)
+    if x.device.type == device.type:
+        try:
+            counts = torch.bincount(x, minlength=minlength)
+        except RuntimeError:
+            counts = torch.bincount(x.cpu(), minlength=minlength).to(device)
+    else:
+        try:
+            counts = torch.bincount(x.to(device), minlength=minlength)
+        except RuntimeError:
+            counts = torch.bincount(x.cpu(), minlength=minlength).to(device)
+    return counts.to(device=device, dtype=torch.float32)
+
+
 class RunningMetrics:
     """
     Tracks running metrics for:
       - main stick (classification)
       - c-stick (classification)
       - buttons (multi-label)
-      - shoulder (optional classification)
+      - shoulder (classification)
     Includes baselines:
       - random
       - majority (running)
@@ -238,68 +217,71 @@ class RunningMetrics:
     def __init__(self, K_main: int, K_c: int, K_buttons: int, K_shoulder: int = 0,
                  device: torch.device | None = None) -> None:
         self.device = device or torch.device("cpu")
+        dtype = torch.float32
 
         # Main
         self.K_main = K_main
-        self.main_correct = 0
-        self.main_total = 0
-        self.main_confusion = torch.zeros((K_main, K_main), dtype=torch.long)
-        self.main_label_counts = torch.zeros(K_main, dtype=torch.long)  # for majority baseline
-        self.main_rand_correct = 0
-        self.main_maj_correct = 0
-        self.main_rep_correct = 0
-        self.main_rep_total = 0
+        self.main_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.main_total = torch.zeros((), device=self.device, dtype=dtype)
+        self.main_confusion = torch.zeros((K_main, K_main), device=self.device, dtype=dtype)
+        self.main_label_counts = torch.zeros(K_main, device=self.device, dtype=dtype)
+        self.main_rand_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.main_maj_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.main_rep_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.main_rep_total = torch.zeros((), device=self.device, dtype=dtype)
 
         # C-stick
         self.K_c = K_c
-        self.c_correct = 0
-        self.c_total = 0
-        self.c_confusion = torch.zeros((K_c, K_c), dtype=torch.long)
-        self.c_label_counts = torch.zeros(K_c, dtype=torch.long)
-        self.c_rand_correct = 0
-        self.c_maj_correct = 0
-        self.c_rep_correct = 0
-        self.c_rep_total = 0
+        self.c_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.c_total = torch.zeros((), device=self.device, dtype=dtype)
+        self.c_confusion = torch.zeros((K_c, K_c), device=self.device, dtype=dtype)
+        self.c_label_counts = torch.zeros(K_c, device=self.device, dtype=dtype)
+        self.c_rand_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.c_maj_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.c_rep_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.c_rep_total = torch.zeros((), device=self.device, dtype=dtype)
 
         # Buttons (multi-label)
         self.K_buttons = K_buttons
-        self.btn_tp = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_fp = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_fn = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_exact_match_correct = 0
-        self.btn_total = 0
-        # baselines
-        self.btn_rand_tp = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_rand_fp = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_rand_fn = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_rand_exact = 0
+        self.btn_tp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_fp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_fn = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_exact_match_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.btn_total = torch.zeros((), device=self.device, dtype=dtype)
+        self.btn_rand_tp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_rand_fp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_rand_fn = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_rand_exact = torch.zeros((), device=self.device, dtype=dtype)
 
-        self.btn_maj_tp = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_maj_fp = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_maj_fn = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_maj_exact = 0
-        self.btn_pos_counts = torch.zeros(K_buttons, dtype=torch.long)  # prevalence tracker
+        self.btn_maj_tp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_maj_fp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_maj_fn = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_maj_exact = torch.zeros((), device=self.device, dtype=dtype)
+        self.btn_pos_counts = torch.zeros(K_buttons, device=self.device, dtype=dtype)
 
-        self.btn_rep_tp = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_rep_fp = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_rep_fn = torch.zeros(K_buttons, dtype=torch.long)
-        self.btn_rep_exact = 0
-        self.btn_rep_total = 0  # excludes first timestep
+        self.btn_rep_tp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_rep_fp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_rep_fn = torch.zeros(K_buttons, device=self.device, dtype=dtype)
+        self.btn_rep_exact = torch.zeros((), device=self.device, dtype=dtype)
+        self.btn_rep_total = torch.zeros((), device=self.device, dtype=dtype)
 
-        # Shoulder (optional classification)
+        # Shoulder
         self.K_shoulder = K_shoulder
-        self.shoulder_correct = 0
-        self.shoulder_total = 0
-        self.shoulder_rand_correct = 0
-        self.shoulder_maj_correct = 0
-        self.shoulder_label_counts = torch.zeros(K_shoulder, dtype=torch.long) if K_shoulder else None
+        self.shoulder_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.shoulder_total = torch.zeros((), device=self.device, dtype=dtype)
+        self.shoulder_rand_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.shoulder_maj_correct = torch.zeros((), device=self.device, dtype=dtype)
+        self.shoulder_label_counts = (
+            torch.zeros(K_shoulder, device=self.device, dtype=dtype) if K_shoulder else None
+        )
 
     # ------- helpers -------
 
     def _majority_label(self, counts: torch.Tensor) -> int:
-        if counts.sum().item() == 0:
+        total = counts.sum()
+        if total.detach().cpu().item() == 0:
             return 0
-        return int(torch.argmax(counts).item())
+        return int(torch.argmax(counts).detach().cpu().item())
 
     # ------- main stick -------
 
@@ -312,27 +294,26 @@ class RunningMetrics:
             repeat_idx: torch.Tensor,  # [N]
             repeat_mask: torch.Tensor,  # [N] bool
     ) -> None:
-        N = true_idx.numel()
-        self.main_total += int(N)
-        self.main_correct += int((pred_idx == true_idx).sum().item())
-
-        # confusion
         with torch.no_grad():
+            self.main_total.add_(float(true_idx.numel()))
+
+            self.main_correct.add_((pred_idx == true_idx).float().sum())
+
             K = self.K_main
-            cm = torch.bincount((true_idx * K + pred_idx), minlength=K * K).view(K, K)
-            self.main_confusion += cm.cpu()
+            flat = true_idx * K + pred_idx
+            cm = _safe_bincount(flat, K * K, self.device).view(K, K)
+            self.main_confusion.add_(cm)
 
-            # label histogram (for majority baseline, update AFTER computing current-baseline)
-            self.main_rand_correct += int((rand_idx == true_idx).sum().item())
-            if N:
-                self.main_maj_correct += int((true_idx == maj_before).sum().item())
-            # repeat-last baseline on masked positions
-            if repeat_mask.any():
-                self.main_rep_correct += int((repeat_idx[repeat_mask] == true_idx[repeat_mask]).sum().item())
-                self.main_rep_total += int(repeat_mask.sum().item())
+            self.main_rand_correct.add_((rand_idx == true_idx).float().sum())
 
-            # now update counts for majority to use on *future* batches
-            self.main_label_counts += torch.bincount(true_idx.cpu(), minlength=K)
+            maj_tensor = torch.full_like(true_idx, maj_before)
+            self.main_maj_correct.add_((true_idx == maj_tensor).float().sum())
+
+            rep_correct = (repeat_idx[repeat_mask] == true_idx[repeat_mask]).float().sum()
+            self.main_rep_correct.add_(rep_correct)
+            self.main_rep_total.add_(repeat_mask.float().sum())
+
+            self.main_label_counts.add_(_safe_bincount(true_idx, K, self.device))
 
     # ------- c-stick -------
 
@@ -345,23 +326,26 @@ class RunningMetrics:
             repeat_idx: torch.Tensor,
             repeat_mask: torch.Tensor,
     ) -> None:
-        N = true_idx.numel()
-        self.c_total += int(N)
-        self.c_correct += int((pred_idx == true_idx).sum().item())
-
         with torch.no_grad():
+            self.c_total.add_(float(true_idx.numel()))
+
+            self.c_correct.add_((pred_idx == true_idx).float().sum())
+
             K = self.K_c
-            cm = torch.bincount((true_idx * K + pred_idx), minlength=K * K).view(K, K)
-            self.c_confusion += cm.cpu()
+            flat = true_idx * K + pred_idx
+            cm = _safe_bincount(flat, K * K, self.device).view(K, K)
+            self.c_confusion.add_(cm)
 
-            self.c_rand_correct += int((rand_idx == true_idx).sum().item())
-            if N:
-                self.c_maj_correct += int((true_idx == maj_before).sum().item())
-            if repeat_mask.any():
-                self.c_rep_correct += int((repeat_idx[repeat_mask] == true_idx[repeat_mask]).sum().item())
-                self.c_rep_total += int(repeat_mask.sum().item())
+            self.c_rand_correct.add_((rand_idx == true_idx).float().sum())
 
-            self.c_label_counts += torch.bincount(true_idx.cpu(), minlength=K)
+            maj_tensor = torch.full_like(true_idx, maj_before)
+            self.c_maj_correct.add_((true_idx == maj_tensor).float().sum())
+
+            rep_correct = (repeat_idx[repeat_mask] == true_idx[repeat_mask]).float().sum()
+            self.c_rep_correct.add_(rep_correct)
+            self.c_rep_total.add_(repeat_mask.float().sum())
+
+            self.c_label_counts.add_(_safe_bincount(true_idx, K, self.device))
 
     # ------- buttons (multi-label) -------
 
@@ -371,69 +355,60 @@ class RunningMetrics:
             true: torch.Tensor,  # [B,L,Kb] in {0,1}
             probs: torch.Tensor | None = None,
     ) -> None:
-        B, L, Kb = true.shape
-        if probs is None:
-            probs = torch.sigmoid(logits)
-        else:
-            probs = probs.detach()
-        pred = (probs > 0.5).to(true.dtype)
+        with torch.no_grad():
+            B, L, Kb = true.shape
+            if probs is None:
+                probs = torch.sigmoid(logits)
+            else:
+                probs = probs.detach()
+            pred = (probs > 0.5).to(true.dtype)
 
-        # exact match accuracy
-        exact = (pred == true).all(dim=-1).sum().item()
-        self.btn_exact_match_correct += int(exact)
-        self.btn_total += int(B * L)
+            self.btn_exact_match_correct.add_((pred == true).all(dim=-1).float().sum())
+            self.btn_total.add_(float(B * L))
 
-        # per-class counts
-        pred_b = pred.bool()
-        true_b = true.bool()
-        tp = (pred_b & true_b).sum(dim=(0, 1))
-        fp = (pred_b & (~true_b)).sum(dim=(0, 1))
-        fn = ((~pred_b) & true_b).sum(dim=(0, 1))
+            pred_b = pred.bool()
+            true_b = true.bool()
+            tp = (pred_b & true_b).float().sum(dim=(0, 1))
+            fp = (pred_b & (~true_b)).float().sum(dim=(0, 1))
+            fn = ((~pred_b) & true_b).float().sum(dim=(0, 1))
 
-        self.btn_tp += tp.cpu()
-        self.btn_fp += fp.cpu()
-        self.btn_fn += fn.cpu()
+            self.btn_tp.add_(tp)
+            self.btn_fp.add_(fp)
+            self.btn_fn.add_(fn)
 
-        # prevalence tracker for majority baseline (update *after* using maj for current batch)
-        self.btn_pos_counts += true.to(torch.long).sum(dim=(0, 1)).cpu()
+            self.btn_pos_counts.add_(true.float().sum(dim=(0, 1)))
 
-        # ------- baselines for buttons -------
-        # random baseline (Bernoulli 0.5)
-        rand = (torch.rand_like(true) > 0.5).to(true.dtype)
-        rb = rand.bool()
-        self.btn_rand_tp += (rb & true_b).sum(dim=(0, 1)).cpu()
-        self.btn_rand_fp += (rb & (~true_b)).sum(dim=(0, 1)).cpu()
-        self.btn_rand_fn += ((~rb) & true_b).sum(dim=(0, 1)).cpu()
-        self.btn_rand_exact += int((rand == true).all(dim=-1).sum().item())
+            rand = (torch.rand_like(true) > 0.5).to(true.dtype)
+            rb = rand.bool()
+            self.btn_rand_tp.add_((rb & true_b).float().sum(dim=(0, 1)))
+            self.btn_rand_fp.add_((rb & (~true_b)).float().sum(dim=(0, 1)))
+            self.btn_rand_fn.add_(((~rb) & true_b).float().sum(dim=(0, 1)))
+            self.btn_rand_exact.add_((rand == true).all(dim=-1).float().sum())
 
-        # majority baseline (per-class)
-        totals_seen = max(1, self.btn_total - B * L)  # before adding this batch
-        prev = self.btn_pos_counts.clone()
-        maj_vec = (prev * 2 >= totals_seen).to(true.dtype)  # threshold at 0.5
-        maj = maj_vec.to(true.device).view(1, 1, Kb).expand(B, L, Kb)
+            totals_seen = torch.clamp(self.btn_total - float(B * L), min=1.0)
+            prev = self.btn_pos_counts
+            maj_vec = (prev * 2.0 >= totals_seen).to(true.dtype)
+            maj = maj_vec.view(1, 1, Kb).expand(B, L, Kb)
 
-        mb = maj.bool()
-        self.btn_maj_tp += (mb & true_b).sum(dim=(0, 1)).cpu()
-        self.btn_maj_fp += (mb & (~true_b)).sum(dim=(0, 1)).cpu()
-        self.btn_maj_fn += ((~mb) & true_b).sum(dim=(0, 1)).cpu()
-        self.btn_maj_exact += int((maj == true).all(dim=-1).sum().item())
+            mb = maj.bool()
+            self.btn_maj_tp.add_((mb & true_b).float().sum(dim=(0, 1)))
+            self.btn_maj_fp.add_((mb & (~true_b)).float().sum(dim=(0, 1)))
+            self.btn_maj_fn.add_(((~mb) & true_b).float().sum(dim=(0, 1)))
+            self.btn_maj_exact.add_((maj == true).all(dim=-1).float().sum())
 
-        # repeat-last baseline (ignore first timestep)
-        if L > 1:
-            rep = torch.zeros_like(true)
-            rep[:, 1:, :] = true[:, :-1, :]
-            rb2 = rep.bool()
-            mask = torch.zeros((B, L), dtype=torch.bool, device=true.device)
-            mask[:, 1:] = True
-            # apply mask by reshaping
-            m2 = mask.unsqueeze(-1).expand_as(true)
-            self.btn_rep_tp += (rb2 & true_b & m2).sum(dim=(0, 1)).cpu()
-            self.btn_rep_fp += (rb2 & (~true_b) & m2).sum(dim=(0, 1)).cpu()
-            self.btn_rep_fn += ((~rb2) & true_b & m2).sum(dim=(0, 1)).cpu()
-            self.btn_rep_exact += int(((rep == true) & m2).view(B, L, -1).all(dim=-1).sum().item())
-            self.btn_rep_total += int(mask.sum().item())
-
-    # ------- shoulder (optional) -------
+            if L > 1:
+                rep = torch.zeros_like(true)
+                rep[:, 1:, :] = true[:, :-1, :]
+                rb2 = rep.bool()
+                mask = torch.zeros((B, L), dtype=torch.float32, device=true.device)
+                mask[:, 1:] = 1.0
+                m2 = mask.unsqueeze(-1).expand_as(true)
+                mask_bool = m2.bool()
+                self.btn_rep_tp.add_((rb2 & true_b & mask_bool).float().sum(dim=(0, 1)))
+                self.btn_rep_fp.add_((rb2 & (~true_b) & mask_bool).float().sum(dim=(0, 1)))
+                self.btn_rep_fn.add_(((~rb2) & true_b & mask_bool).float().sum(dim=(0, 1)))
+                self.btn_rep_exact.add_(((rep == true) & mask_bool).view(B, L, -1).all(dim=-1).float().sum())
+                self.btn_rep_total.add_(mask.sum())
 
     def update_shoulder(
             self,
@@ -444,17 +419,20 @@ class RunningMetrics:
     ) -> None:
         if logits is None or true_idx is None or self.K_shoulder == 0:
             return
-        B, L, Ks = logits.shape
-        pred_idx = logits.argmax(dim=-1).reshape(-1)
-        true_flat = true_idx.reshape(-1)
-        self.shoulder_total += int(true_flat.numel())
-        self.shoulder_correct += int((pred_idx == true_flat).sum().item())
-        if rand_idx is not None:
-            self.shoulder_rand_correct += int((rand_idx.reshape(-1) == true_flat).sum().item())
-        if maj_before is not None:
-            self.shoulder_maj_correct += int((true_flat == maj_before).sum().item())
-        if self.shoulder_label_counts is not None:
-            self.shoulder_label_counts += torch.bincount(true_flat.cpu(), minlength=self.K_shoulder)
+        with torch.no_grad():
+            pred_idx = logits.argmax(dim=-1).reshape(-1)
+            true_flat = true_idx.reshape(-1)
+
+            self.shoulder_total.add_(float(true_flat.numel()))
+            self.shoulder_correct.add_((pred_idx == true_flat).float().sum())
+            if rand_idx is not None:
+                rand_flat = rand_idx.reshape(-1)
+                self.shoulder_rand_correct.add_((rand_flat == true_flat).float().sum())
+            if maj_before is not None:
+                maj_tensor = torch.full_like(true_flat, maj_before)
+                self.shoulder_maj_correct.add_((true_flat == maj_tensor).float().sum())
+            if self.shoulder_label_counts is not None:
+                self.shoulder_label_counts.add_(_safe_bincount(true_flat, self.K_shoulder, self.device))
 
     # ------- summaries -------
 
@@ -510,7 +488,7 @@ class RunningMetrics:
         out["btn_f1_micro_rep"] = f1mx
         out["btn_f1_macro_rep"] = f1mmx
 
-        # shoulder (optional)
+        # shoulder
         if self.K_shoulder:
             out["acc_shoulder"] = _safe_div(self.shoulder_correct, self.shoulder_total)
             out["acc_shoulder_rand"] = _safe_div(self.shoulder_rand_correct, self.shoulder_total)
@@ -715,12 +693,15 @@ def train_loop(
                 "c": 0.0,
                 "shoulder": 0.0,
                 "buttons": 0.0,
+                "moe_aux": 0.0,
             }
+            loss_s: Optional[torch.Tensor] = None
+            loss_aux: Optional[torch.Tensor] = None
 
             # --- main stick CE ---
             logits_main = pred["main_stick"].reshape(B * L, -1)
             target_main = target_info["main_idx"].reshape(B * L)
-            main_weights = _compute_ce_weights(target_main, target_info["main_K"], device)
+            main_weights = _compute_ce_weights(target_main, target_info["main_K"])
             loss_main = F.cross_entropy(
                 logits_main,
                 target_main,
@@ -733,7 +714,7 @@ def train_loop(
             # --- c-stick CE ---
             logits_c = pred["c_stick"].reshape(B * L, -1)
             target_c = target_info["c_idx"].reshape(B * L)
-            c_weights = _compute_ce_weights(target_c, target_info["c_K"], device)
+            c_weights = _compute_ce_weights(target_c, target_info["c_K"])
             loss_c = F.cross_entropy(
                 logits_c,
                 target_c,
@@ -760,9 +741,19 @@ def train_loop(
             if "shoulder" in pred.keys() and target_info["shoulder_K"] > 0 and target_info["shoulder_idx"] is not None:
                 logits_s = pred["shoulder"].reshape(B * L, -1)
                 target_s = target_info["shoulder_idx"].reshape(B * L)
-                loss_s = F.cross_entropy(logits_s, target_s, reduction="mean",
-                                         label_smoothing=config.train.label_smoothing)
-                loss = loss_s + loss
+                loss_s = F.cross_entropy(
+                    logits_s,
+                    target_s,
+                    reduction="mean",
+                    label_smoothing=config.train.label_smoothing,
+                )
+                loss = loss + loss_s
+
+            # --- MoE auxiliary loss (optional) ---
+            if config.model.use_moe and "moe_aux_loss" in pred.keys():
+                moe_aux_tensor = pred["moe_aux_loss"]
+                loss_aux = moe_aux_tensor.mean() * config.model.moe_aux_loss_weight
+                loss = loss + loss_aux
 
             # LR schedule
             lr = cosine_lr_schedule(global_step, total_steps, config.train.lr, config.train.warmup_steps)
@@ -839,8 +830,9 @@ def train_loop(
             this_loss = {
                 "main": float(loss_main.detach().item()),
                 "c": float(loss_c.detach().item()),
-                "shoulder": float(loss_s.detach().item()) if ('loss_s' in locals()) else 0.0,
+                "shoulder": float(loss_s.detach().item()) if (loss_s is not None) else 0.0,
                 "buttons": float(loss_btn.detach().item()),
+                "moe_aux": float(loss_aux.detach().item()) if (loss_aux is not None) else 0.0,
             }
 
             global_step += 1

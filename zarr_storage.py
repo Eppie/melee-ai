@@ -384,7 +384,7 @@ def main():
     init_config()
     config = get_config()
 
-    slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp")))[:1]
+    slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "*.slp")))[:10]
 
     if not slp_files:
         print(f"No .slp files found in {config.zarr.input_root}")

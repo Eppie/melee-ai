@@ -5,15 +5,17 @@ import argparse
 import ast
 import copy
 import json
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, Union, get_args, get_origin, Final
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, Union, get_args, get_origin, \
+    get_type_hints, Final
 
 from zarr.codecs import BloscCodec, BloscShuffle
 
-from preprocess import FOX_STICK_64, C_STICK_XY_CLUSTER_CENTERS_V0_1
+from preprocess import FOX_STICK_64, C_STICK_XY_CLUSTER_CENTERS_V0_1, SHOULDER_VALUES
 
 
 @dataclass
@@ -28,7 +30,8 @@ class _FreezeGuard:
 
 @dataclass
 class ZarrConfig(_FreezeGuard):
-    input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
+    # input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
+    input_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/test/'
     out_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/processed_data'
     shard_size: int = 100
     target_chunk_mb: float = 8.0
@@ -39,10 +42,10 @@ class ZarrConfig(_FreezeGuard):
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 128
+    batch_size: int = 256
     epochs: int = 10
     lr: float = 3e-4
-    weight_decay: float = 0.01
+    weight_decay: float = 0.005
     betas: Tuple[float, float] = (0.9, 0.95)
     warmup_steps: int = 0
     max_steps: Optional[int] = None  # cap total steps (useful for quick tests)
@@ -56,14 +59,13 @@ class TrainConfig:
     label_smoothing: float = 0.0
 
     # quantization / shoulder
-    shoulder_centers: Optional[Sequence[float]] = field(default_factory=lambda: [0.0, 0.7, 1.0])
+    shoulder_centers: Sequence[float] = field(default_factory=lambda: SHOULDER_VALUES)
 
     # episode_linear sampler knobs
     episodes_per_epoch: Optional[int] = None  # per rank
     with_replacement_episodes: bool = False
 
     # random_windows sampler knobs
-    replacement: bool = False
     num_samples: Optional[int] = None  # required if replacement=True
 
     # epoch sizing (per rank)
@@ -78,28 +80,283 @@ class TrainConfig:
     feature_keep: Optional[Sequence[str]] = None
     target_keep: Optional[Sequence[str]] = None
 
+
+@dataclass
+class ProfileConfig:
+    enable: bool = False
+    out_dir: Optional[str] = None
+    wait: int = 1
+    warmup: int = 1
+    active: int = 10
+    repeat: int = 1
+    record_shapes: bool = True
+    with_stack: bool = False
+    profile_memory: bool = False
+
+
 @dataclass
 class GPTConfig:
+    """Model hyperparameters controlling GPTv7 architecture.
+
+    Field details
+    -------------
+    block_size (int):
+        - Model size: does not change parameter count but larger contexts increase KV-cache tensors and activation memory linearly.
+        - Training speed: attention complexity grows with block_size^2; bigger windows slow training and increase FLOPs.
+        - Restrictions / requirements: must be >= `Config.seq_len` and match the window length used by `window_dataset`; cannot exceed rotary embedding support without adjusting `rope_scaling`.
+        - Interactions: keep in sync with `Config.seq_len`, dataloader window sizes, and any inference truncation logic.
+        - Reasonable range: 128-1024 for current datasets; 256 is the tuned default.
+
+    n_embd (int):
+        - Model size: primary driver of parameter count (embedding tables, attention projections, MLP layers scale with n_embd^2).
+        - Training speed: compute and memory roughly scale with n_embd^2; doubling often ~4x slower and more memory hungry.
+        - Restrictions: must be divisible by `n_head`; ensure even numbers when `ffn_mult` produces integral hidden sizes.
+        - Interactions: affects head dimension (`n_embd // n_head`), FFN width (`ffn_mult`), and MoE expert hidden sizes; adjust learning rate schedules when changing drastically.
+        - Reasonable range: 192-1024 for mid-size models; 512 works well for current hardware.
+
+    n_layer (int):
+        - Model size: linearly increases parameter count and depth; each layer adds attention + MLP weights.
+        - Training speed: slows training proportionally; also increases activation memory.
+        - Restrictions: none, but very deep stacks (>48) require gradient checkpointing; ensure `num_stages` aligns with dataset semantics if tied to gameplay chronology.
+        - Interactions: deeper models benefit from higher dropout or learning rate warmup.
+        - Reasonable range: 4-24 for most experiments; 8 layers selected for balance.
+
+    n_head (int):
+        - Model size: attention projection weights scale with n_head; total params roughly `4 * n_embd * n_embd` independent, but multi-head normalisation changes layout.
+        - Training speed: more heads slightly increase compute; head dimension (`n_embd // n_head`) must remain integer to keep kernels efficient.
+        - Restrictions: must divide `n_embd`; for `attention_type in {"gqa", "mqa"}` additional constraints apply to `n_kv_head`.
+        - Interactions: influences `attention_type`, `n_kv_head`, and rope rotations; extremely high head counts benefit from `qk_norm`.
+        - Reasonable range: 4-32; 8 suits 512 embedding.
+
+    dropout (float):
+        - Model size: no effect on parameter count.
+        - Training speed: incurs slight overhead due to random masking but mainly improves generalisation.
+        - Restrictions: set to 0.0 during inference; must be between 0 and <1.
+        - Interactions: pair with higher `n_layer`/`n_embd` to combat overfitting; raise when dataset is small.
+        - Reasonable range: 0.0-0.2 for current workloads.
+
+    bias (bool):
+        - Model size: enabling adds bias terms to every Linear/LayerNorm, increasing parameters modestly (~<1%).
+        - Training speed: negligible impact but biases can slow fused kernels slightly on GPUs.
+        - Restrictions: disable when using implementations expecting bias=False (e.g., some FlashAttention kernels).
+        - Interactions: `norm_affine` true still adds scale/shift even when biases off; for MoE, per-expert projections ignore this flag.
+        - Reasonable choice: True for GPT-2 style parity, False for leaner models.
+
+    input_size (int):
+        - Model size: scales the input projection matrix (input_size × n_embd) and embedding lookups; direct control over first layer parameters.
+        - Training speed: larger inputs marginally increase first projection FLOPs and data transfer.
+        - Restrictions: must match the concatenated feature vector size produced by dataloader; ensure alignment with `ColumnMap`/dataset schema.
+        - Interactions: changes require updating preprocessing to avoid dimension mismatches.
+        - Reasonable range: dictated by feature engineering (currently 130 for controller state encoding).
+
+    num_stages / num_characters / num_actions (ints):
+        - Model size: control categorical embedding tables; parameter count grows with `embedding_dim × vocab_size`.
+        - Training speed: negligible unless extremely large due to embedding lookups.
+        - Restrictions: must match dataset label vocabularies; modifying requires regeneration of enums.
+        - Interactions: associated embedding dims (`stage_embedding_dim`, `character_embedding_dim`, `action_embedding_dim`) should scale with log of vocab size.
+        - Reasonable range: fixed by game rules (stages≈6, characters≈26, actions≈396).
+
+    stage_embedding_dim / character_embedding_dim / action_embedding_dim (ints):
+        - Model size: linear scaling of embedding tables and input fusion width.
+        - Training speed: small impact on forward pass; impacts final concatenated input width.
+        - Restrictions: keep modest to avoid bloating input embedding; must be <= `n_embd`.
+        - Interactions: higher dims may require reducing `input_size` if embeddings are concatenated; coordinate with feature engineering.
+        - Reasonable range: 4-32 depending on vocabulary diversity.
+
+    gamma (float):
+        - Model size: no effect.
+        - Training speed: only affects loss discounting in RL-style objectives; negligible cost.
+        - Restrictions: value in (0,1]; for purely supervised training keep near 1.0.
+        - Interactions: works with sequence weighting logic in `train.py`; lower gamma emphasises recent frames.
+        - Reasonable range: 0.95-0.999 for long-horizon credit assignment.
+
+    norm_type (str):
+        - Model size: choice (layernorm, rmsnorm, etc.) sets learnable parameters; RMSNorm omits mean subtraction, reducing parameters when paired with `norm_affine=False`.
+        - Training speed: LayerNorm is slower than RMSNorm on GPU. Selecting `fused` implementations can help.
+        - Restrictions: must be supported by implementation; `qk_norm` reuses this when `qk_norm_type` is None.
+        - Interactions: `norm_eps`, `norm_affine`, `norm_placement` must be compatible; RMSNorm typically paired with `norm_affine=True`.
+        - Reasonable options: "layernorm", "rmsnorm", "fused_rmsnorm" (if kernels available).
+
+    norm_eps (float):
+        - Model size: none.
+        - Training speed: trivial cost; stabilises normalisation.
+        - Restrictions: must be positive; too small risks numerical issues.
+        - Interactions: tune alongside norm implementation; RMSNorm often prefers 1e-6 to 1e-5.
+        - Reasonable range: 1e-6 to 1e-4.
+
+    norm_affine (bool):
+        - Model size: adds scale/bias parameters per norm when True.
+        - Training speed: negligible runtime change.
+        - Restrictions: set False to fully eliminate affine terms (for weight-tied inference); ensure downstream layers can absorb scaling.
+        - Interactions: if `bias=False`, enabling `norm_affine` reintroduces per-dim scale/shift; consider lowering LR for stability when toggled.
+        - Reasonable choice: True for flexibility, False for minimal parameter regimes.
+
+    norm_placement (str):
+        - Model size: none.
+        - Training speed: `pre` yields Pre-LN transformer (stable, slightly faster); `post` can be slower; `both` doubles norm ops per block.
+        - Restrictions: `both` requires attention/MLP implementations supporting dual norms.
+        - Interactions: coordinate with residual dropout and `qk_norm`; `both` may need smaller learning rates.
+        - Reasonable options: "pre" (default), "post" for GPT-2 style, "both" for experimental setups.
+
+    qk_norm (bool) and qk_norm_type (Optional[str]):
+        - Model size: adds per-head norm parameters when affine; negligible overall.
+        - Training speed: introduces extra normalisation per attention head; slight overhead but can stabilise large head counts.
+        - Restrictions: requires kernels supporting QK-normalisation; ensure `d_head` >= 16 for benefit.
+        - Interactions: falls back to `norm_type` when `qk_norm_type` None; interacts with `attention_type` and `pe_type` (rope works best with qk_norm).
+        - Reasonable usage: enable for models with `n_head >= 8` and long contexts; keep disabled for small models.
+
+    attention_type (str):
+        - Model size: `gqa`/`mqa` share key/value projections reducing parameters compared to `mha` when `n_head` large.
+        - Training speed: grouped attention reduces memory traffic and can speed decoding; `mha` slightly heavier.
+        - Restrictions: `gqa`/`mqa` require setting `n_kv_head`; ensure FlashAttention variant supports selected mode.
+        - Interactions: influences `n_kv_head`, affects compatibility with rope scaling, and MoE gating (which may expect mha).
+        - Reasonable options: "mha" default, "gqa" for head counts >=16, "mqa" for streaming inference.
+
+    n_kv_head (Optional[int]):
+        - Model size: sets number of key/value heads when using `gqa`; reduces parameters if < n_head.
+        - Training speed: fewer KV heads reduce FLOPs and memory; must divide `n_head` cleanly.
+        - Restrictions: only used for `gqa`; ignore for `mha`/`mqa` (where it should be None or 1 respectively).
+        - Interactions: ensure `n_head % n_kv_head == 0`; interacts with caching and attention kernels.
+        - Reasonable range: 1-`n_head`; typical `gqa` config uses `n_head // 4`.
+
+    pe_type (str), rope_theta (float), rope_scaling (Optional[str]), rope_scaling_factor (float):
+        - Model size: positional encoding choices do not alter parameter count (rope) or add minimal parameters (alibi).
+        - Training speed: negligible differences; RoPE slightly more compute per token.
+        - Restrictions: rope requires even head dimension; scaling options like "ntk" or "yarn" may need external libraries.
+        - Interactions: `rope_scaling` modifies effective context window; pair with `block_size` adjustments; `rope_theta` influences frequency base.
+        - Reasonable settings: `pe_type="rope"` with theta 10000, scaling None for <=2k context; use scaling_factor 0.5-2.0 when extending context.
+
+    ffn_mult (float) and ffn_activation (str):
+        - Model size: FFN hidden width = `int(ceil(ffn_mult * n_embd))`; scaling multiplier directly affects MLP parameter count (~2× hidden × n_embd).
+        - Training speed: wider FFNs dominate compute; activations influence kernel choice (swiglu/gelu slightly slower than relu).
+        - Restrictions: ensure resulting width divisible by tensor parallel shards if used; `swiglu`/`geglu` expect width multiple of 2.
+        - Interactions: combine with `use_moe` (MoE may prefer smaller ffn_mult to offset extra experts); adjust learning rate when increasing mult.
+        - Reasonable range: 2.0-4.0 for dense FFNs; `8/3` suits swiglu gating.
+
+    head_flow (str):
+        - Model size: no impact.
+        - Training speed: `parallel` can reuse trunk outputs but increases memory; `sequential` matches current architecture.
+        - Restrictions: `parallel` variant requires target head modules supporting concatenated inputs.
+        - Interactions: influences `target_shapes_by_head` scheduling and output ordering.
+        - Reasonable options: "sequential" default; "parallel" when targets predicted simultaneously.
+
+    target_shapes_by_head (dict):
+        - Model size: determines output projection sizes for each controller head; parameters scale with sum(product(shape) × hidden width).
+        - Training speed: larger targets increase logits computation but modest compared to trunk.
+        - Restrictions: keys must align with model forward outputs and loss functions; tuple lengths define per-token class counts.
+        - Interactions: `head_flow` dictates ordering; adjusting shapes requires matching quantisation bins in `controller_quantization`.
+        - Reasonable usage: keep close to dataset quantization cardinalities (e.g., FOX sticks 64-way, buttons 5 logits).
+
+    use_moe (bool) and MoE-specific knobs:
+        - Model size: enabling MoE replaces dense FFN with mixture of experts, inflating parameters roughly `moe_num_experts × n_embd × hidden` but only activating `moe_num_active` per token.
+        - Training speed: sparse MoE introduces routing overhead; with adequate batching it can be faster per-token for large expert counts but slower if underutilised.
+        - Restrictions: requires MoE kernels/support in `GPTv7`; ensure `moe_num_active <= moe_num_experts` and capacity factor >= 1.
+        - Interactions: choose `ffn_mult` carefully (MoE hidden size derived from it), `moe_aux_loss_weight` balances load; `moe_shared_expert` adds dense expert used for fallback.
+        - Reasonable settings: start with `use_moe=False`; when True, use 16-128 experts, `moe_num_active` 2-8, auxiliary loss weight 0.01-0.1.
+
+      moe_num_experts (int):
+        - Model size: increases total expert parameters linearly.
+        - Training speed: more experts raise routing cost; ensure batch size large enough for load balancing.
+        - Restrictions: must be >0; power-of-two counts simplify sharding.
+        - Interactions: capacity factor may need raising when experts numerous.
+        - Reasonable range: 16-256 depending on hardware.
+
+      moe_num_active (int):
+        - Model size: no change (affects runtime selection only).
+        - Training speed: more active experts per token increases FLOPs proportionally; low values risk underfitting.
+        - Restrictions: <= `moe_num_experts`; gating kernels often expect small integers (1,2,4,8).
+        - Interactions: adjust `moe_expert_capacity_factor` to avoid token drops when active count high.
+        - Reasonable range: 1-8.
+
+      moe_aux_loss_weight (float):
+        - Model size: none.
+        - Training speed: adds auxiliary loss computation but trivial.
+        - Restrictions: keep non-negative; too high prevents main loss from converging.
+        - Interactions: tune with `moe_jitter_eps` and optimizer; interacts with gradient scale of gating network.
+        - Reasonable range: 0.001-0.05 (0.01 default).
+
+      moe_expert_capacity_factor (Optional[float]):
+        - Model size: none.
+        - Training speed: influences routing drops; higher capacity ensures tokens are routed but increases buffer sizes.
+        - Restrictions: must be >=1.0 when set; None defers to implementation default.
+        - Interactions: adjust with batch size and `moe_num_active`; low capacity plus high active count causes overflow/drops.
+        - Reasonable range: 1.0-2.0; 1.25 balanced.
+
+      moe_jitter_eps (float):
+        - Model size: none.
+        - Training speed: negligible; adds noise to gating logits for exploration.
+        - Restrictions: keep small (<=0.1) to avoid instability.
+        - Interactions: complements auxiliary loss weight; higher jitter may allow lower aux weight.
+        - Reasonable range: 0.0-0.05; 0.01 default.
+
+      moe_shared_expert (bool):
+        - Model size: adds one dense expert shared across tokens, increasing parameters akin to baseline FFN.
+        - Training speed: ensures fallback path; slight overhead even when use_moe True.
+        - Restrictions: requires implementation support; ensure memory fits when combined with many experts.
+        - Interactions: when True, you can reduce `moe_num_active` since shared expert provides baseline capacity.
+        - Reasonable choice: False unless routing collapse observed.
+
+      moe_normalize_expert_weights (bool):
+        - Model size: none.
+        - Training speed: applies softmax/normalisation to gating weights; minimal overhead.
+        - Restrictions: disable only if custom gating normalisation is provided.
+        - Interactions: pairs with `moe_jitter_eps`; keep enabled for stable routing.
+        - Reasonable choice: True.
+
+      moe_fine_grained (bool):
+        - Model size: none directly but may change expert partitioning affecting memory layout.
+        - Training speed: fine-grained routing can improve GPU utilisation but complicates batching.
+        - Restrictions: only meaningful with implementations supporting per-token expert sharding.
+        - Interactions: combine with high expert counts; may require tuning `moe_expert_capacity_factor`.
+        - Reasonable choice: True for detailed routing, False for simpler all-to-all.
+    """
     block_size: int = 256
-    n_embd: int = 512
-    n_layer: int = 8
-    n_head: int = 8
+    n_embd: int = 384
+    n_layer: int = 3
+    n_head: int = 16
     dropout: float = 0.0
     bias: bool = True  # TODO: remove. True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     input_size: int = 130  # TODO: how is this calculated?
-    num_stages: int = 7
+    num_stages: int = 6
     num_characters: int = 26
     num_actions: int = 396
     stage_embedding_dim: int = 4
     character_embedding_dim: int = 12
     action_embedding_dim: int = 32
     gamma: float = 0.999
+    norm_type: str = "rmsnorm"
+    norm_eps: float = 1e-6
+    norm_affine: bool = True
+    norm_placement: str = "post"  # options: pre, post, both
+    qk_norm: bool = True
+    qk_norm_type: Optional[str] = None  # defaults to norm_type when None
+    attention_type: str = "mqa"  # options: mha, gqa, mqa
+    n_kv_head: Optional[int] = 8
+    pe_type: str = "rope"  # options: rope, alibi
+    rope_theta: float = 10000.0
+    rope_scaling: Optional[str] = None  # e.g., "ntk", "yarn"
+    rope_scaling_factor: float = 1.0
+    ffn_mult: float = 8.0 / 3.0
+    ffn_activation: str = "swiglu"
+    head_flow: str = "parallel"  # options: sequential, parallel
     target_shapes_by_head: dict = field(default_factory=lambda: {
         "main_stick": (len(FOX_STICK_64),),
         "c_stick": (len(C_STICK_XY_CLUSTER_CENTERS_V0_1),),
         "buttons": (5,),
-        "shoulder": (3,),
+        "shoulder": (len(SHOULDER_VALUES),),
     })
+    enable_rl_heads: bool = False
+
+    # Mixture-of-Experts (MoE) configuration
+    use_moe: bool = False
+    moe_num_experts: int = 128
+    moe_num_active: int = 8
+    moe_aux_loss_weight: float = 0.01
+    moe_expert_capacity_factor: Optional[float] = 1.25
+    moe_jitter_eps: float = 0.01
+    moe_shared_expert: bool = False
+    moe_normalize_expert_weights: bool = True
+    moe_fine_grained: bool = True
 
 
 @dataclass
@@ -109,6 +366,7 @@ class Config(_FreezeGuard):
     zarr: ZarrConfig = field(default_factory=ZarrConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     model: GPTConfig = field(default_factory=GPTConfig)
+    profile: ProfileConfig = field(default_factory=ProfileConfig)
 
     def freeze(self) -> None:
         _freeze_dataclass(self)
@@ -222,24 +480,36 @@ def load_config_json(path: Union[str, Path], *, freeze: bool = True) -> Config:
 def _dataclass_from_dict(cls: type, data: Mapping[str, Any]) -> Any:
     """Recursively construct dataclass instance from dict, merging into defaults."""
     inst = cls()  # start from defaults
+    type_hints = _dataclass_type_hints(cls)
+    updates: Dict[str, Any] = {}
     for f in fields(cls):
         if f.name not in data:
             continue
         incoming = data[f.name]
-        ftype = f.type
+        ftype = type_hints.get(f.name, f.type)
         base = getattr(inst, f.name)
 
         dc_cls = _unwrap_dataclass_type(ftype)
         if dc_cls and isinstance(incoming, Mapping):
             # nested dataclass
             nested = _dataclass_from_dict(dc_cls, incoming)
-            setattr(inst, f.name, nested)
+            updates[f.name] = nested
         elif isinstance(base, dict) and isinstance(incoming, Mapping):
             merged = copy.deepcopy(base)
             merged.update(incoming)
-            setattr(inst, f.name, merged)
+            updates[f.name] = merged
         else:
-            setattr(inst, f.name, incoming)
+            updates[f.name] = incoming
+
+    if not updates:
+        return inst
+
+    dataclass_params = getattr(cls, "__dataclass_params__", None)
+    if dataclass_params and dataclass_params.frozen:
+        return replace(inst, **updates)
+
+    for name, value in updates.items():
+        setattr(inst, name, value)
     return inst
 
 
@@ -256,10 +526,20 @@ def _unwrap_dataclass_type(tp: Any) -> Optional[type]:
 
 
 def _dataclass_field_type(dc_type: type, name: str) -> Any:
-    for f in fields(dc_type):
-        if f.name == name:
-            return f.type
+    type_hints = _dataclass_type_hints(dc_type)
+    if name in type_hints:
+        return type_hints[name]
     raise KeyError(f"Unknown field '{name}' on {dc_type.__name__}")
+
+
+@lru_cache(maxsize=None)
+def _dataclass_type_hints(dc_type: type) -> Dict[str, Any]:
+    """Return resolved type hints for a dataclass, resilient to postponed evaluation."""
+    try:
+        return get_type_hints(dc_type, include_extras=True)
+    except Exception:
+        # Fallback to the raw annotations if get_type_hints cannot resolve them.
+        return {f.name: f.type for f in fields(dc_type)}
 
 
 def _resolve_parent_and_attr(root: Any, parts: Sequence[str]) -> Tuple[Any, str]:

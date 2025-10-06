@@ -17,8 +17,8 @@ from config import get_config
 class EpisodeInfo:
     episode_id: int
     shard_id: int
-    frames: int  # = X.shape[0] = Y.shape[0]
-    wins: int  # = max(frames - seq_len + 1, 0)
+    num_frames: int  # = X.shape[0] = Y.shape[0]
+    num_windows: int  # = max(frames - seq_len + 1, 0)
 
 
 class _LRUEpisodeCache:
@@ -74,7 +74,7 @@ class ZarrCorpusIndex:
         self.target_names: List[str] = list(self.meta["schema"]["targets"])
 
         lengths = np.load(lengths_path)  # (E,) frames per episode
-        wins = np.load(wins_path)  # (E,) windows per episode
+        windows = np.load(wins_path)  # (E,) windows per episode
         # index.jsonl: episode_id, shard_id, frames
         ep_rows: List[EpisodeInfo] = []
         with index_path.open("r") as f:
@@ -83,16 +83,16 @@ class ZarrCorpusIndex:
                 ep_rows.append(EpisodeInfo(
                     episode_id=int(row["episode_id"]),
                     shard_id=int(row["shard_id"]),
-                    frames=int(row["frames"]),
-                    wins=int(wins[len(ep_rows)]),  # aligned order
+                    num_frames=int(row["frames"]),
+                    num_windows=int(windows[len(ep_rows)]),  # aligned order
                 ))
         assert len(ep_rows) == len(lengths), "index.jsonl and lengths.npy out of sync"
         self.episodes: List[EpisodeInfo] = ep_rows
 
-        # prefix sums over wins for fast mapping
-        self._wins = wins.astype(np.int64)
-        self._cumwins = np.cumsum(self._wins, dtype=np.int64)  # length E
-        self.total_windows: int = int(self._cumwins[-1]) if len(self._cumwins) else 0
+        # prefix sums over windows for fast mapping
+        self._windows = windows.astype(np.int64)
+        self._cumulative_windows = np.cumsum(self._windows, dtype=np.int64)  # length E
+        self.total_windows: int = int(self._cumulative_windows[-1]) if len(self._cumulative_windows) else 0
 
         # shard paths
         self._shard_paths: Dict[int, Path] = {}
@@ -110,15 +110,15 @@ class ZarrCorpusIndex:
         """
         if not (0 <= global_win_idx < self.total_windows):
             raise IndexError(f"window index {global_win_idx} out of range 0..{self.total_windows - 1}")
-        ep_idx = int(np.searchsorted(self._cumwins, global_win_idx, side="right"))
-        base = 0 if ep_idx == 0 else int(self._cumwins[ep_idx - 1])
+        ep_idx = int(np.searchsorted(self._cumulative_windows, global_win_idx, side="right"))
+        base = 0 if ep_idx == 0 else int(self._cumulative_windows[ep_idx - 1])
         offset = int(global_win_idx - base)
         return ep_idx, offset
 
     def episode_start_global_index(self, ep_idx: int) -> int:
         if ep_idx == 0:
             return 0
-        return int(self._cumwins[ep_idx - 1])
+        return int(self._cumulative_windows[ep_idx - 1])
 
     # -------- zarr access --------
 
@@ -204,10 +204,6 @@ def _select_columns(
     idxs_np = np.asarray(idxs, dtype=np.int64)
     return X[:, idxs_np], idxs, [names[i] for i in idxs]
 
-
-# -----------------------
-# Core map-style Dataset
-# -----------------------
 
 class WindowDataset(Dataset):
     """
@@ -307,85 +303,92 @@ class WindowDataset(Dataset):
         }
 
 
-# -----------------------
-# Samplers (DDP-aware)
-# -----------------------
-
-def _dist_info() -> Tuple[int, int]:
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        return torch.distributed.get_world_size(), torch.distributed.get_rank()
-    return 1, 0
-
-
 class RandomWindowSampler(Sampler[int]):
     """
-    Mode A: random selection of windows across all episodes (uniform over windows).
-    - If replacement=False (default), yields a shuffled permutation per epoch.
-    - If replacement=True, draws with replacement (num_samples required).
-    DDP-aware: each rank gets a disjoint subset (by striding) for replacement=False;
-               for replacement=True, seeds are rank- & epoch-conditioned.
+    Random selection of windows honoring a global *stride* across episode-local window
+    offsets.
+
+    Stride semantics:
+      - stride=1: sample over all windows (same behavior as before).
+      - stride=s>1: in epoch `e` (0-based), include only windows whose episode-local
+        start offset `t` satisfies `t % s == (e % s)`. Over `s` epochs you will cover
+        all windows (subject to episode lengths not exactly divisible by `s`).
+
+    Note: PyTorch 2.2+ Sampler API — do not pass or rely on `data_source` in the base.
     """
 
     def __init__(
-            self,
-            data_source: Dataset,
-            *,
-            replacement: bool = False,
-            num_samples: Optional[int] = None,
-            generator: Optional[torch.Generator] = None
+        self,
+        *,
+        index: ZarrCorpusIndex,
+        num_samples: Optional[int] = None,
+        stride: int = 1,
+        generator: Optional[torch.Generator] = None,
     ) -> None:
-        super().__init__(data_source)
-        self.data_source = data_source
-        self.replacement = replacement
-        self.num_samples = num_samples
+        super().__init__()
+        if stride < 1:
+            raise ValueError("stride must be >= 1")
+        self.index = index
+        self.num_samples = int(num_samples) if num_samples is not None else None
+        self.stride = int(stride)
         self.generator = generator
         self.epoch = 0
 
-        if replacement and num_samples is None:
-            raise ValueError("num_samples must be specified when replacement=True")
-
     def set_epoch(self, epoch: int) -> None:
-        self.epoch = epoch
+        self.epoch = int(epoch)
+
+    def _count_for_epoch(self, epoch: int) -> int:
+        s = self.stride
+        m = epoch % s
+        total = 0
+        for ep in self.index.episodes:
+            w = ep.num_windows
+            if w <= m:
+                continue
+            total += ((w - 1 - m) // s) + 1
+        return total
 
     def __len__(self) -> int:
         if self.num_samples is not None:
-            return int(self.num_samples)
-        return len(self.data_source) // _dist_info()[0]
+            return self.num_samples
+        return self._count_for_epoch(self.epoch)
 
     def __iter__(self) -> Iterator[int]:
-        world_size, rank = _dist_info()
-        n = len(self.data_source)
+        s = self.stride
+        m = self.epoch % s
 
-        if self.replacement:
-            assert self.num_samples is not None
-            g = self.generator or torch.Generator()
-            seed = (self.epoch * 0x9E3779B97F4A7C15 + 1337 + rank) % (2 ** 63 - 1)
-            g.manual_seed(seed)
-            # draw with replacement, shard by rank (round-robin)
-            base_samples = torch.randint(high=n, size=(self.num_samples * world_size,), generator=g)
-            yield from map(int, base_samples[rank::world_size].tolist())
-            return
+        # Build the list of global indices that satisfy the stride condition for this epoch.
+        inds: List[int] = []
+        for epi, ep in enumerate(self.index.episodes):
+            base = self.index.episode_start_global_index(epi)
+            w = ep.num_windows
+            if m < w:
+                inds.extend(base + t for t in range(m, w, s))
 
-        # without replacement: shuffled permutation then strided by rank
+        # Deterministic per-epoch shuffle
         g = self.generator or torch.Generator()
         seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) % (2 ** 63 - 1)
         g.manual_seed(seed)
-        perm = torch.randperm(n, generator=g).tolist()
+        if len(inds) > 1:
+            perm = torch.randperm(len(inds), generator=g).tolist()
+            inds = [inds[i] for i in perm]
 
-        total_needed = None
-        if self.num_samples is not None:
-            total_needed = int(self.num_samples) * world_size
-            if total_needed <= len(perm):
-                perm = perm[:total_needed]
-            else:
-                while len(perm) < total_needed:
-                    perm.extend(torch.randperm(n, generator=g).tolist())
-                perm = perm[:total_needed]
+        if self.num_samples is None:
+            yield from inds
+            return
 
-        # drop tail to make it divisible, then stride
-        m = (len(perm) // world_size) * world_size
-        perm = perm[:m]
-        yield from (perm[i] for i in range(rank, m, world_size))
+        # If a fixed number of samples is requested, cap/extend accordingly
+        k = self.num_samples
+        if k <= len(inds):
+            yield from inds[:k]
+        else:
+            out = list(inds)
+            while len(out) < k:
+                perm = torch.randperm(len(inds), generator=g).tolist()
+                out.extend(inds[i] for i in perm)
+            yield from out[:k]
+
+
 
 
 def worker_init_fn(worker_id: int) -> None:
@@ -418,11 +421,19 @@ def make_dataloader() -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampl
     if target_windows is not None:
         effective_num_samples = target_windows
 
+    stride = getattr(config.train, "stride", 1)
     sampler = RandomWindowSampler(
-        ds,
-        replacement=config.train.replacement,
+        index=ds.index,
+        stride=stride,
         num_samples=effective_num_samples,
     )
+
+    mp_ctx = None
+    if config.train.num_workers and config.train.num_workers > 0:
+        try:
+            mp_ctx = torch.multiprocessing.get_context("spawn")
+        except RuntimeError:
+            mp_ctx = None
 
     loader = torch.utils.data.DataLoader(
         ds,
@@ -434,5 +445,6 @@ def make_dataloader() -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampl
         persistent_workers=config.train.persistent_workers if config.train.num_workers > 0 else False,
         worker_init_fn=worker_init_fn,
         drop_last=False,
+        multiprocessing_context=mp_ctx,
     )
     return loader, ds, sampler

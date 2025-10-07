@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
-from gpt import GPTv7
+from model.gpt import GPTv7
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
@@ -302,7 +302,7 @@ class GPTInferenceEngine:
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})
 
-        data_root = Path(data_root or train_cfg.get("data_root", "dataset_FOX_vs_FOX"))
+        data_root = Path(data_root or train_cfg.get("data_root"))
         meta_path = data_root / "meta.json"
         if meta_path.exists():
             with meta_path.open("r") as f:
@@ -317,7 +317,7 @@ class GPTInferenceEngine:
             self.seq_len = history or 256
         self.device = _resolve_device(device)
         self.shoulder_centers = tuple(
-            shoulder_centers or train_cfg.get("shoulder_centers", _DEFAULT_SHOULDER_CENTERS)
+            shoulder_centers or train_cfg["shoulder_centers"]
         )
         self.warmup_frames = warmup_frames
 

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import importlib
 import json
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 import zarr
 from torch.utils.data import Dataset, Sampler
 
-from config import get_config
+from config import FeatureConfig, get_config
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,160 @@ class FeatureTransformSpec:
     by_name: Dict[str, FeatureFn]
 
 
+def _transform_scale(column: np.ndarray, *, factor: float) -> np.ndarray:
+    column *= factor
+    return column
+
+
+def _transform_offset(column: np.ndarray, *, delta: float) -> np.ndarray:
+    column += delta
+    return column
+
+
+def _transform_clip(column: np.ndarray, *, lo: float, hi: float) -> np.ndarray:
+    np.clip(column, lo, hi, out=column)
+    return column
+
+
+def _transform_log1p(column: np.ndarray) -> np.ndarray:
+    np.log1p(column, out=column)
+    return column
+
+
+@dataclass
+class _ComposedTransform:
+    parts: Tuple[FeatureFn, ...]
+
+    def __call__(self, column: np.ndarray) -> np.ndarray:
+        for part in self.parts:
+            column = part(column)
+        return column
+
+
+@dataclass
+class _ImportedCallableTransform:
+    path: str
+    args: Tuple[Any, ...] = ()
+    kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_fn", _import_callable(self.path))
+
+    def __call__(self, column: np.ndarray) -> np.ndarray:
+        fn = getattr(self, "_fn", None)
+        if fn is None:
+            fn = _import_callable(self.path)
+            object.__setattr__(self, "_fn", fn)
+        result = fn(column, *self.args, **self.kwargs)
+        if result is not None and result is not column:
+            column[...] = result
+        return column
+
+    def __getstate__(self) -> Dict[str, Any]:
+        return {"path": self.path, "args": self.args, "kwargs": self.kwargs}
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        object.__setattr__(self, "path", state["path"])
+        object.__setattr__(self, "args", tuple(state.get("args", ())))
+        object.__setattr__(self, "kwargs", dict(state.get("kwargs", {})))
+        self.__post_init__()
+
+
+def _import_callable(path: str) -> Callable[[np.ndarray], Any]:
+    if ":" in path:
+        module_name, attr_path = path.split(":", 1)
+    else:
+        module_name, attr_path = path.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    target = module
+    for part in attr_path.split("."):
+        target = getattr(target, part)
+    if not callable(target):
+        raise TypeError(f"Referenced object '{path}' is not callable.")
+    return target
+
+
+def _resolve_transform_callable(spec: Any) -> FeatureFn:
+    """Resolve a transform spec into a numpy-column function."""
+
+    if callable(spec):
+        module = getattr(spec, "__module__", None)
+        qualname = getattr(spec, "__qualname__", None)
+        if module and qualname and module != "__main__":
+            return _ImportedCallableTransform(f"{module}.{qualname}")
+        raise TypeError(
+            "Callable feature transforms must be referenceable via module path; "
+            "pass a string like 'package.module:function' or ('callable', '...') instead."
+        )
+
+    if isinstance(spec, (list, tuple)) and spec:
+        tag, *params = spec
+        tag = str(tag).lower()
+        if tag == "scale":
+            factor = float(params[0]) if params else 1.0
+            return partial(_transform_scale, factor=factor)
+        if tag == "offset":
+            delta = float(params[0]) if params else 0.0
+            return partial(_transform_offset, delta=delta)
+        if tag == "clip":
+            lo = float(params[0]) if params and params[0] is not None else -np.inf
+            hi = float(params[1]) if len(params) > 1 and params[1] is not None else np.inf
+            return partial(_transform_clip, lo=lo, hi=hi)
+        if tag == "compose":
+            parts = [_resolve_transform_callable(p) for p in params]
+            return _ComposedTransform(tuple(parts))
+        if tag == "log1p":
+            return _transform_log1p
+        if tag == "callable":
+            if not params:
+                raise ValueError("'callable' spec requires a target path.")
+            target = params[0]
+            args: Tuple[Any, ...] = ()
+            kwargs: Dict[str, Any] = {}
+            if len(params) > 1:
+                second = params[1]
+                if isinstance(second, (list, tuple)):
+                    args = tuple(second)
+                    if len(params) > 2 and isinstance(params[2], Mapping):
+                        kwargs = dict(params[2])
+                elif isinstance(second, Mapping):
+                    kwargs = dict(second)
+                else:
+                    args = tuple(params[1:])
+            return _ImportedCallableTransform(str(target), args=args, kwargs=kwargs)
+        raise ValueError(f"Unknown transform spec tag '{tag}'.")
+
+    if isinstance(spec, str):
+        return _resolve_transform_callable((spec,))
+
+    if isinstance(spec, Mapping):
+        if "callable" in spec:
+            target = spec["callable"]
+            if not isinstance(target, str):
+                raise TypeError("Feature transform 'callable' must be a string path.")
+            args = tuple(spec.get("args", ()))
+            kwargs = dict(spec.get("kwargs", {}))
+            return _ImportedCallableTransform(target, args=args, kwargs=kwargs)
+        if "compose" in spec:
+            components = spec["compose"]
+            if not isinstance(components, (list, tuple)):
+                raise TypeError("'compose' value must be a sequence.")
+            parts = [_resolve_transform_callable(p) for p in components]
+            return _ComposedTransform(tuple(parts))
+
+    raise TypeError(f"Unsupported transform spec {spec!r}.")
+
+
+def _feature_spec_from_config(feature_cfg: FeatureConfig) -> Optional[FeatureTransformSpec]:
+    transforms = getattr(feature_cfg, "transforms", None)
+    if not transforms:
+        return None
+    fn_map: Dict[str, FeatureFn] = {}
+    for name, raw_spec in transforms.items():
+        fn_map[name] = _resolve_transform_callable(raw_spec)
+    return FeatureTransformSpec(fn_map)
+
+
 def _apply_feature_transforms(
         X: np.ndarray,
         feature_names: Sequence[str],
@@ -318,12 +475,12 @@ class RandomWindowSampler(Sampler[int]):
     """
 
     def __init__(
-        self,
-        *,
-        index: ZarrCorpusIndex,
-        num_samples: Optional[int] = None,
-        stride: int = 1,
-        generator: Optional[torch.Generator] = None,
+            self,
+            *,
+            index: ZarrCorpusIndex,
+            num_samples: Optional[int] = None,
+            stride: int = 1,
+            generator: Optional[torch.Generator] = None,
     ) -> None:
         super().__init__()
         if stride < 1:
@@ -389,8 +546,6 @@ class RandomWindowSampler(Sampler[int]):
             yield from out[:k]
 
 
-
-
 def worker_init_fn(worker_id: int) -> None:
     """
     Set distinct NumPy / PyTorch seeds for each worker. Avoids identical shuffles per worker.
@@ -405,11 +560,12 @@ def make_dataloader() -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampl
     Builds dataset + sampler + DataLoader with tuned defaults.
     """
     config = get_config()
+    feature_spec = _feature_spec_from_config(config.features)
     ds = WindowDataset(
         config.zarr.out_root,
         feature_keep=config.train.feature_keep,
         target_keep=config.train.target_keep,
-        feature_transforms=None,
+        feature_transforms=feature_spec,
         return_numpy=False,
     )
 

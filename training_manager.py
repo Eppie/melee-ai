@@ -23,7 +23,7 @@ import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import torch
 from torch.nn.utils import clip_grad_norm_
@@ -31,13 +31,13 @@ from tqdm.auto import tqdm
 
 from config import Config, get_config, init_config, reset_config_for_tests
 from controller_quantization import quantize_targets
-from gpt import GPTv7
+from model.gpt import GPTv7
+from loss import compute_loss_components
 from train import (
     ColumnMap,
-    _compute_ce_weights,
-    _compute_pos_weights,
     build_inputs_for_gptv7,
     cosine_lr_schedule,
+    RunningMetrics,
 )
 from window_dataset import make_dataloader
 
@@ -53,16 +53,95 @@ _FLOP_UNITS: Tuple[Tuple[float, str], ...] = (
     (1e3, "KFLOP"),
 )
 
+_MAIN_METRIC_KEYS: Tuple[str, ...] = (
+    "acc_main",
+    "acc_main_rand",
+    "acc_main_maj",
+    "acc_main_rep",
+)
+_C_METRIC_KEYS: Tuple[str, ...] = (
+    "acc_c",
+    "acc_c_rand",
+    "acc_c_maj",
+    "acc_c_rep",
+)
+_BUTTON_METRIC_KEYS: Tuple[str, ...] = (
+    "btn_em",
+    "btn_prec_micro",
+    "btn_rec_micro",
+    "btn_f1_micro",
+    "btn_f1_macro",
+    "btn_em_rand",
+    "btn_f1_micro_rand",
+    "btn_f1_macro_rand",
+    "btn_em_maj",
+    "btn_f1_micro_maj",
+    "btn_f1_macro_maj",
+    "btn_em_rep",
+    "btn_f1_micro_rep",
+    "btn_f1_macro_rep",
+)
+_SHOULDER_METRIC_KEYS: Tuple[str, ...] = (
+    "acc_shoulder",
+    "acc_shoulder_rand",
+    "acc_shoulder_maj",
+)
+_RUNNING_METRIC_KEYS = set(_MAIN_METRIC_KEYS) | set(_C_METRIC_KEYS) | set(_BUTTON_METRIC_KEYS) | set(_SHOULDER_METRIC_KEYS)
+
+_LOSS_METRIC_KEYS: Tuple[str, ...] = (
+    "loss",
+    "loss_total",
+    "loss_main",
+    "loss_c",
+    "loss_buttons",
+    "loss_shoulder",
+    "loss_aux",
+)
+_OTHER_DIRECT_METRIC_KEYS: Tuple[str, ...] = (
+    "lr",
+    "learning_rate",
+    "global_step",
+    "tokens_per_second",
+    "flops_per_second",
+)
+
+
+@dataclass(frozen=True)
+class StoppingObjective:
+    metric: str
+    operator: str
+    threshold: float
+    raw: str
+
+    def is_satisfied(self, metrics: Mapping[str, float], *, tol: float = 1e-6) -> Tuple[bool, float]:
+        if self.metric not in metrics:
+            raise KeyError(f"Objective metric '{self.metric}' not available; available metrics: {sorted(metrics.keys())}")
+        value = float(metrics[self.metric])
+        op = self.operator
+        if op == ">=":
+            satisfied = value >= self.threshold
+        elif op == "<=":
+            satisfied = value <= self.threshold
+        elif op == ">":
+            satisfied = value > self.threshold
+        elif op == "<":
+            satisfied = value < self.threshold
+        else:  # op == "=="
+            satisfied = abs(value - self.threshold) <= tol
+        return satisfied, value
+
 
 @dataclass
 class TrainingRunResult:
     run_id: str
     overrides: Dict[str, str]
     target_loss: Optional[float]
+    target_objectives: List[str]
     steps: int
     epochs_completed: int
     final_loss: float
     reached_target_loss: bool
+    reached_target_objectives: bool
     interrupted: bool
     stopped_due_to_cap: bool
     time_seconds: float
@@ -77,6 +156,7 @@ class TrainingRunResult:
     stop_reason: str
     parameter_count: int
     config_snapshot: Dict[str, Any]
+    metrics_summary: Dict[str, float]
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -101,6 +181,28 @@ def parse_key_value(text: str) -> Tuple[str, str]:
     if not key:
         raise ValueError(f"Empty key in override '{text}'.")
     return key, value
+
+
+_OBJECTIVE_OPERATORS: Tuple[str, ...] = (">=", "<=", ">", "<", "==")
+
+
+def parse_objective(expr: str) -> StoppingObjective:
+    text = expr.strip()
+    for op in _OBJECTIVE_OPERATORS:
+        if op in text:
+            metric, threshold = text.split(op, 1)
+            metric = metric.strip()
+            threshold = threshold.strip()
+            if not metric:
+                raise ValueError(f"Objective '{expr}' missing metric name before '{op}'.")
+            try:
+                value = float(threshold)
+            except ValueError as exc:
+                raise ValueError(f"Objective '{expr}' has invalid threshold '{threshold}'.") from exc
+            return StoppingObjective(metric=metric, operator=op, threshold=value, raw=text)
+    raise ValueError(
+        f"Objective '{expr}' must contain a comparison operator (one of {' '.join(_OBJECTIVE_OPERATORS)})."
+    )
 
 
 def format_flops(value: float, *, per_second: bool = False) -> str:
@@ -266,10 +368,10 @@ def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
 
     # Heads
     target_shapes = model_cfg.target_shapes_by_head
-    shoulder_out = int(target_shapes.get("shoulder", (0,))[0])
-    c_out = int(target_shapes.get("c_stick", (0,))[0])
-    main_out = int(target_shapes.get("main_stick", (0,))[0])
-    btn_out = int(target_shapes.get("buttons", (0,))[0])
+    shoulder_out = int(target_shapes.get("shoulder"))
+    c_out = int(target_shapes.get("c_stick"))
+    main_out = int(target_shapes.get("main_stick"))
+    btn_out = int(target_shapes.get("buttons"))
 
     shoulder_hidden = max(1, D // 2)
     flops += _swiglu_flops(D, shoulder_hidden, shoulder_out, tokens)
@@ -355,6 +457,7 @@ def run_training_once(
     base_initial: Optional[Mapping[str, Any]],
     overrides: Mapping[str, str],
     target_loss: Optional[float],
+    objectives: Sequence[StoppingObjective],
     device: torch.device,
     verbose: bool,
 ) -> TrainingRunResult:
@@ -377,6 +480,17 @@ def run_training_once(
 
     cfg.freeze()
 
+    objective_specs = [obj.raw for obj in objectives]
+    required_metrics = {obj.metric for obj in objectives}
+    need_main_metrics = bool(required_metrics & set(_MAIN_METRIC_KEYS))
+    need_c_metrics = bool(required_metrics & set(_C_METRIC_KEYS))
+    need_button_metrics = bool(required_metrics & set(_BUTTON_METRIC_KEYS))
+    need_shoulder_metrics = bool(required_metrics & set(_SHOULDER_METRIC_KEYS))
+    needs_running_metrics = any([need_main_metrics, need_c_metrics, need_button_metrics, need_shoulder_metrics])
+    metrics_tracker: Optional[RunningMetrics] = None
+    latest_metrics: Dict[str, float] = {}
+    objectives_met = False
+
     if cfg.model.use_moe and cfg.model.moe_num_active > cfg.model.moe_num_experts:
         if verbose:
             print(
@@ -387,10 +501,12 @@ def run_training_once(
             run_id=run_id,
             overrides=dict(overrides),
             target_loss=target_loss,
+            target_objectives=objective_specs,
             steps=0,
             epochs_completed=0,
             final_loss=float("nan"),
             reached_target_loss=False,
+            reached_target_objectives=False,
             interrupted=False,
             stopped_due_to_cap=False,
             time_seconds=0.0,
@@ -405,6 +521,7 @@ def run_training_once(
             stop_reason="invalid_config",
             parameter_count=0,
             config_snapshot=cfg.to_dict(),
+            metrics_summary={},
         )
 
     try:
@@ -416,10 +533,12 @@ def run_training_once(
             run_id=run_id,
             overrides=dict(overrides),
             target_loss=target_loss,
+            target_objectives=objective_specs,
             steps=0,
             epochs_completed=0,
             final_loss=float("nan"),
             reached_target_loss=False,
+            reached_target_objectives=False,
             interrupted=False,
             stopped_due_to_cap=False,
             time_seconds=0.0,
@@ -434,6 +553,7 @@ def run_training_once(
             stop_reason="invalid_config",
             parameter_count=0,
             config_snapshot=cfg.to_dict(),
+            metrics_summary={},
         )
     parameter_count = sum(p.numel() for p in model.parameters())
     if verbose:
@@ -464,7 +584,7 @@ def run_training_once(
     last_batch_wall = time.perf_counter()
 
     start_time = time.perf_counter()
-    reached_target = False
+    reached_target_loss = False
     interrupted = False
     stopped_due_to_cap = False
     stop_reason = "completed"
@@ -515,59 +635,28 @@ def run_training_once(
                         B, L, _ = pred["main_stick"].shape
                         total_tokens += int(B * L)
 
-                        # Loss construction mirrors train.py
+                        probs_btn = pred.get("buttons_probs")
+
+                        loss_components = compute_loss_components(
+                            pred,
+                            target_info,
+                            label_smoothing=cfg.train.label_smoothing,
+                            use_moe=cfg.model.use_moe,
+                            moe_aux_loss_weight=cfg.model.moe_aux_loss_weight,
+                        )
+                        loss = loss_components["total"]
+                        loss_main = loss_components["main"]
+                        loss_c = loss_components["c"]
+                        loss_btn = loss_components["buttons"]
+                        loss_s = loss_components["shoulder"]
+                        loss_aux = loss_components["moe_aux"]
+
                         logits_main = pred["main_stick"].reshape(B * L, -1)
                         target_main = target_info["main_idx"].reshape(B * L)
-                        main_weights = _compute_ce_weights(target_main, target_info["main_K"])
-                        loss_main = torch.nn.functional.cross_entropy(
-                            logits_main,
-                            target_main,
-                            reduction="mean",
-                            label_smoothing=cfg.train.label_smoothing,
-                            weight=main_weights,
-                        )
-
                         logits_c = pred["c_stick"].reshape(B * L, -1)
                         target_c = target_info["c_idx"].reshape(B * L)
-                        c_weights = _compute_ce_weights(target_c, target_info["c_K"])
-                        loss_c = torch.nn.functional.cross_entropy(
-                            logits_c,
-                            target_c,
-                            reduction="mean",
-                            label_smoothing=cfg.train.label_smoothing,
-                            weight=c_weights,
-                        )
-
                         logits_btn = pred["buttons"]
                         target_btn = target_info["buttons"]
-                        pos_weight = _compute_pos_weights(target_btn)
-                        loss_btn = torch.nn.functional.binary_cross_entropy_with_logits(
-                            logits_btn,
-                            target_btn,
-                            reduction="mean",
-                            pos_weight=pos_weight,
-                        )
-
-                        loss_s = torch.zeros((), device=device)
-                        if (
-                            "shoulder" in pred.keys()
-                            and target_info["shoulder_K"] > 0
-                            and target_info["shoulder_idx"] is not None
-                        ):
-                            logits_s = pred["shoulder"].reshape(B * L, -1)
-                            target_s = target_info["shoulder_idx"].reshape(B * L)
-                            loss_s = torch.nn.functional.cross_entropy(
-                                logits_s,
-                                target_s,
-                                reduction="mean",
-                                label_smoothing=cfg.train.label_smoothing,
-                            )
-
-                        loss_aux = torch.zeros((), device=device)
-                        if cfg.model.use_moe and "moe_aux_loss" in pred.keys():
-                            loss_aux = pred["moe_aux_loss"].mean() * cfg.model.moe_aux_loss_weight
-
-                        loss = loss_main + loss_c + loss_btn + loss_s + loss_aux
 
                         lr = cosine_lr_schedule(global_step, total_steps_cap, cfg.train.lr, cfg.train.warmup_steps)
                         for pg in opt.param_groups:
@@ -586,6 +675,116 @@ def run_training_once(
 
                         loss_history.append(final_loss)
 
+                        # ----- Metrics & objective tracking -----
+                        pred_main_idx = pred["main_stick"].argmax(dim=-1)
+                        true_main_idx = target_info["main_idx"].reshape(B, L)
+                        pred_c_idx = pred["c_stick"].argmax(dim=-1)
+                        true_c_idx = target_info["c_idx"].reshape(B, L)
+                        btn_logits = logits_btn
+                        btn_true = target_btn
+                        btn_probs = pred.get("buttons_probs")
+                        if btn_probs is None:
+                            btn_probs = torch.sigmoid(btn_logits)
+
+                        if metrics_tracker is None:
+                            metrics_tracker = RunningMetrics(
+                                int(target_info["main_K"]),
+                                int(target_info["c_K"]),
+                                int(target_info["buttons_K"]),
+                                int(target_info["shoulder_K"]),
+                                device=device,
+                            )
+
+                        main_major = metrics_tracker._majority_label(metrics_tracker.main_label_counts)
+                        c_major = metrics_tracker._majority_label(metrics_tracker.c_label_counts)
+                        main_rand = torch.randint(high=int(target_info["main_K"]), size=(B * L,), device=device)
+                        c_rand = torch.randint(high=int(target_info["c_K"]), size=(B * L,), device=device)
+
+                        rep_mask = torch.ones((B, L), dtype=torch.bool, device=device)
+                        rep_mask[:, 0] = False
+                        main_rep = torch.zeros_like(true_main_idx)
+                        c_rep = torch.zeros_like(true_c_idx)
+                        if L > 1:
+                            main_rep[:, 1:] = true_main_idx[:, :-1]
+                            c_rep[:, 1:] = true_c_idx[:, :-1]
+
+                        metrics_tracker.update_main(
+                            pred_main_idx.reshape(-1),
+                            true_main_idx.reshape(-1),
+                            main_rand,
+                            main_major,
+                            main_rep.reshape(-1),
+                            rep_mask.reshape(-1),
+                        )
+                        metrics_tracker.update_c(
+                            pred_c_idx.reshape(-1),
+                            true_c_idx.reshape(-1),
+                            c_rand,
+                            c_major,
+                            c_rep.reshape(-1),
+                            rep_mask.reshape(-1),
+                        )
+                        metrics_tracker.update_buttons(btn_logits, btn_true, btn_probs)
+
+                        shoulder_logits = pred.get("shoulder")
+                        shoulder_idx = target_info.get("shoulder_idx")
+                        if (
+                            shoulder_logits is not None
+                            and shoulder_idx is not None
+                            and int(target_info["shoulder_K"]) > 0
+                        ):
+                            shoulder_rand = torch.randint(
+                                high=int(target_info["shoulder_K"]), size=(B, L), device=device
+                            )
+                            sh_major = (
+                                metrics_tracker._majority_label(metrics_tracker.shoulder_label_counts)
+                                if metrics_tracker.K_shoulder
+                                else None
+                            )
+                            metrics_tracker.update_shoulder(shoulder_logits, shoulder_idx, shoulder_rand, sh_major)
+
+                        current_metrics: Dict[str, float] = {
+                            "loss": final_loss,
+                            "loss_total": final_loss,
+                            "loss_main": float(loss_main.detach().item()),
+                            "loss_c": float(loss_c.detach().item()),
+                            "loss_buttons": float(loss_btn.detach().item()),
+                            "loss_shoulder": float(loss_s.detach().item()),
+                            "loss_aux": float(loss_aux.detach().item()) if loss_aux is not None else 0.0,
+                            "lr": float(lr),
+                            "global_step": float(global_step),
+                        }
+                        if metrics_tracker is not None:
+                            try:
+                                current_metrics.update(metrics_tracker.summary())
+                            except Exception:
+                                pass
+
+                        latest_metrics = current_metrics
+
+                        if objectives:
+                            all_met = True
+                            for obj in objectives:
+                                try:
+                                    met, value = obj.is_satisfied(current_metrics)
+                                except KeyError as error:
+                                    raise ValueError(
+                                        f"[{run_id}] objective '{obj.raw}' refers to unknown metric"
+                                    ) from error
+                                if not met:
+                                    all_met = False
+                            if all_met:
+                                objectives_met = True
+                                stop_reason = "objective_met"
+                                if verbose:
+                                    print(
+                                        f"[{run_id}] objective met at step {global_step}: "
+                                        + ", ".join(obj.raw for obj in objectives)
+                                    )
+                                _shutdown_loader_iter(loader_iter)
+                                loader_iter = None
+                                break
+
                         batch_forward_flops = estimate_forward_flops(cfg, B, L)
                         forward_flops += batch_forward_flops
                         training_flops += batch_forward_flops * TRAINING_FLOP_MULTIPLIER
@@ -595,6 +794,8 @@ def run_training_once(
                         last_batch_wall = now
                         tokens_this_step = int(B * L)
                         batch_training_flops = batch_forward_flops * TRAINING_FLOP_MULTIPLIER
+                        inst_token_rate: Optional[float] = None
+                        inst_flop_rate: Optional[float] = None
                         if step_duration > 0 and tokens_this_step > 0:
                             inst_token_rate = tokens_this_step / step_duration
                             if token_rate_ema is None:
@@ -615,28 +816,197 @@ def run_training_once(
                                 )
 
                         steps_this_epoch += 1
+                        token_rate_display = (
+                            f"{token_rate_ema:7.0f}" if token_rate_ema is not None else "   n/a"
+                        )
+                        flop_rate_display = (
+                            format_flops(flop_rate_ema, per_second=True)
+                            if flop_rate_ema is not None
+                            else "n/a"
+                        )
                         if progress is not None:
                             progress.update(1)
-                            token_rate_display = (
-                                f"{token_rate_ema:7.0f}" if token_rate_ema is not None else "   n/a"
-                            )
-                            flop_rate_display = (
-                                format_flops(flop_rate_ema, per_second=True)
-                                if flop_rate_ema is not None
-                                else "n/a"
-                            )
-                            progress.set_postfix_str(
-                                f"loss={final_loss:.4f} lr={lr:.2e} tok/s={token_rate_display} flops/s={flop_rate_display}"
-                            )
+
+                        objective_status: List[Tuple[StoppingObjective, bool, float]] = []
+                        current_metrics: Dict[str, float] = {}
+
+                        if objectives:
+
+                            def _maybe_set_metric(name: str, value: float) -> None:
+                                if name in required_metrics:
+                                    current_metrics[name] = float(value)
+
+                            # Loss metrics (shared aliases)
+                            loss_main_value = float(loss_main.detach().item())
+                            loss_c_value = float(loss_c.detach().item())
+                            loss_btn_value = float(loss_btn.detach().item())
+                            loss_shoulder_value = float(loss_s.detach().item())
+                            loss_aux_value = float(loss_aux.detach().item()) if loss_aux is not None else 0.0
+
+                            for key in _LOSS_METRIC_KEYS:
+                                if key == "loss" or key == "loss_total":
+                                    _maybe_set_metric(key, final_loss)
+                                elif key == "loss_main":
+                                    _maybe_set_metric(key, loss_main_value)
+                                elif key == "loss_c":
+                                    _maybe_set_metric(key, loss_c_value)
+                                elif key == "loss_buttons":
+                                    _maybe_set_metric(key, loss_btn_value)
+                                elif key == "loss_shoulder":
+                                    _maybe_set_metric(key, loss_shoulder_value)
+                                elif key == "loss_aux":
+                                    _maybe_set_metric(key, loss_aux_value)
+
+                            for key in _OTHER_DIRECT_METRIC_KEYS:
+                                if key in required_metrics:
+                                    if key in {"lr", "learning_rate"}:
+                                        current_metrics[key] = float(lr)
+                                    elif key == "global_step":
+                                        current_metrics[key] = float(global_step)
+                                    elif key == "tokens_per_second":
+                                        if token_rate_ema is not None:
+                                            current_metrics[key] = float(token_rate_ema)
+                                        elif inst_token_rate is not None:
+                                            current_metrics[key] = float(inst_token_rate)
+                                    elif key == "flops_per_second":
+                                        if flop_rate_ema is not None:
+                                            current_metrics[key] = float(flop_rate_ema)
+                                        elif inst_flop_rate is not None:
+                                            current_metrics[key] = float(inst_flop_rate)
+
+                            if needs_running_metrics:
+                                if metrics_tracker is None:
+                                    metrics_tracker = RunningMetrics(
+                                        int(target_info["main_K"]),
+                                        int(target_info["c_K"]),
+                                        int(target_info["buttons_K"]),
+                                        int(target_info["shoulder_K"]),
+                                        device=device,
+                                    )
+
+                                if need_main_metrics:
+                                    main_major = metrics_tracker._majority_label(metrics_tracker.main_label_counts)
+                                    main_rand = torch.randint(high=int(target_info["main_K"]), size=(B * L,), device=device)
+                                    main_rep = torch.zeros_like(true_main_idx)
+                                    rep_mask_main = torch.ones((B, L), dtype=torch.bool, device=device)
+                                    rep_mask_main[:, 0] = False
+                                    if L > 1:
+                                        main_rep[:, 1:] = true_main_idx[:, :-1]
+                                    metrics_tracker.update_main(
+                                        pred_main_idx.reshape(-1),
+                                        true_main_idx.reshape(-1),
+                                        main_rand,
+                                        main_major,
+                                        main_rep.reshape(-1),
+                                        rep_mask_main.reshape(-1),
+                                    )
+
+                                if need_c_metrics:
+                                    c_major = metrics_tracker._majority_label(metrics_tracker.c_label_counts)
+                                    c_rand = torch.randint(high=int(target_info["c_K"]), size=(B * L,), device=device)
+                                    c_rep = torch.zeros_like(true_c_idx)
+                                    rep_mask_c = torch.ones((B, L), dtype=torch.bool, device=device)
+                                    rep_mask_c[:, 0] = False
+                                    if L > 1:
+                                        c_rep[:, 1:] = true_c_idx[:, :-1]
+                                    metrics_tracker.update_c(
+                                        pred_c_idx.reshape(-1),
+                                        true_c_idx.reshape(-1),
+                                        c_rand,
+                                        c_major,
+                                        c_rep.reshape(-1),
+                                        rep_mask_c.reshape(-1),
+                                    )
+
+                                if need_button_metrics:
+                                    btn_probs = pred.get("buttons_probs")
+                                    if btn_probs is None:
+                                        btn_probs = torch.sigmoid(btn_logits)
+                                    metrics_tracker.update_buttons(btn_logits, btn_true, btn_probs)
+
+                                if need_shoulder_metrics:
+                                    shoulder_logits = pred.get("shoulder")
+                                    shoulder_idx = target_info.get("shoulder_idx")
+                                    if (
+                                        shoulder_logits is not None
+                                        and shoulder_idx is not None
+                                        and int(target_info["shoulder_K"]) > 0
+                                    ):
+                                        shoulder_rand = torch.randint(
+                                            high=int(target_info["shoulder_K"]), size=(B, L), device=device
+                                        )
+                                        sh_major = (
+                                            metrics_tracker._majority_label(metrics_tracker.shoulder_label_counts)
+                                            if metrics_tracker.K_shoulder
+                                            else None
+                                        )
+                                        metrics_tracker.update_shoulder(
+                                            shoulder_logits,
+                                            shoulder_idx,
+                                            shoulder_rand,
+                                            sh_major,
+                                        )
+
+                                summary = metrics_tracker.summary()
+                                for key in (required_metrics & _RUNNING_METRIC_KEYS):
+                                    if key not in summary:
+                                        raise ValueError(
+                                            f"[{run_id}] metric '{key}' unavailable; available metrics: {sorted(summary.keys())}"
+                                        )
+                                    current_metrics[key] = float(summary[key])
+
+                            all_met = True
+                            objective_status = []
+                            for obj in objectives:
+                                if obj.metric not in current_metrics:
+                                    raise ValueError(
+                                        f"[{run_id}] objective '{obj.raw}' refers to unknown metric. "
+                                        f"Available metrics this step: {sorted(current_metrics.keys())}"
+                                    )
+                                met, value = obj.is_satisfied(current_metrics)
+                                objective_status.append((obj, met, value))
+                                if not met:
+                                    all_met = False
+
+                            latest_metrics = current_metrics.copy()
+
+                            if all_met:
+                                objectives_met = True
+                                stop_reason = "objective_met"
+                                if verbose:
+                                    objective_str = ", ".join(obj.raw for obj in objectives)
+                                    print(f"[{run_id}] objectives met at step {global_step}: {objective_str}")
+                        else:
+                            latest_metrics = {}
+
+                        if progress is not None:
+                            postfix_parts = [
+                                f"loss={final_loss:.4f}",
+                                f"lr={lr:.2e}",
+                                f"tok/s={token_rate_display}",
+                                f"flops/s={flop_rate_display}",
+                            ]
+                            if objective_status:
+                                obj_parts = []
+                                for obj, met, value in objective_status:
+                                    mark = "✓" if met else ""
+                                    obj_parts.append(f"{obj.metric}={value:.3f}{mark}")
+                                postfix_parts.append("obj:" + ",".join(obj_parts))
+                            progress.set_postfix_str(" ".join(postfix_parts))
 
                         if profiler is not None:
                             profiler.step()
 
                         if target_loss is not None and final_loss <= target_loss:
-                            reached_target = True
+                            reached_target_loss = True
                             stop_reason = "target_met"
                             if verbose:
                                 print(f"[{run_id}] target loss reached at step {global_step}: {final_loss:.4f}")
+                            _shutdown_loader_iter(loader_iter)
+                            loader_iter = None
+                            break
+
+                        if objectives_met:
                             _shutdown_loader_iter(loader_iter)
                             loader_iter = None
                             break
@@ -655,7 +1025,7 @@ def run_training_once(
                     _shutdown_loader_iter(loader_iter)
                     loader_iter = None
 
-                if reached_target or global_step >= total_steps_cap:
+                if reached_target_loss or objectives_met or global_step >= total_steps_cap:
                     break
         except KeyboardInterrupt:
             interrupted = True
@@ -672,7 +1042,9 @@ def run_training_once(
 
     if interrupted:
         stop_reason = "interrupted"
-    elif reached_target:
+    elif objectives_met:
+        stop_reason = "objective_met"
+    elif reached_target_loss:
         stop_reason = "target_met"
     elif stopped_due_to_cap:
         stop_reason = "max_steps_reached"
@@ -685,10 +1057,12 @@ def run_training_once(
         run_id=run_id,
         overrides=dict(overrides),
         target_loss=target_loss,
+        target_objectives=objective_specs,
         steps=global_step,
         epochs_completed=epochs_completed,
         final_loss=final_loss,
-        reached_target_loss=reached_target,
+        reached_target_loss=reached_target_loss,
+        reached_target_objectives=objectives_met,
         interrupted=interrupted,
         stopped_due_to_cap=stopped_due_to_cap,
         time_seconds=elapsed,
@@ -703,6 +1077,7 @@ def run_training_once(
         stop_reason=stop_reason,
         parameter_count=parameter_count,
         config_snapshot=get_config().to_dict(),
+        metrics_summary=latest_metrics,
     )
 
 
@@ -719,12 +1094,15 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
         status_bits = []
         if res.reached_target_loss:
             status_bits.append("target met")
+        if res.reached_target_objectives:
+            status_bits.append("objective met")
         if res.stopped_due_to_cap:
             status_bits.append("max steps reached")
         if res.interrupted:
             status_bits.append("interrupted")
         status = ", ".join(status_bits) if status_bits else "completed"
         target_text = f"{res.target_loss:.4f}" if res.target_loss is not None else "n/a"
+        objective_text = ", ".join(res.target_objectives) if res.target_objectives else "n/a"
         flops_rate = res.estimated_training_flops / max(res.time_seconds, 1e-9)
         mean_loss = res.average_loss
         mean_loss_text = f"{mean_loss:.4f}" if mean_loss is not None else "n/a"
@@ -733,7 +1111,7 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
         reason_text = res.stop_reason.replace("_", " ") if res.stop_reason else "unknown"
         detail_lines.append(
             (
-                f"{res.run_id}: loss {res.final_loss:.4f} (target {target_text}) | mean {mean_loss_text} | steps {res.steps} | "
+                f"{res.run_id}: loss {res.final_loss:.4f} (target {target_text}) | objective {objective_text} | mean {mean_loss_text} | steps {res.steps} | "
                 f"epochs {res.epochs_completed} | time {res.time_seconds:.1f}s | "
                 f"total {format_flops(res.estimated_training_flops)} | {format_flops(flops_rate, per_second=True)} | "
                 f"tokens/s {tokens_rate_text} | {status} | reason {reason_text} | overrides {format_overrides(res.overrides)}"
@@ -794,6 +1172,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Hyperparameter grid; repeat to define multiple axes.",
     )
     p.add_argument("--target-loss", type=float, default=None, help="Early-stop when loss <= target.")
+    p.add_argument(
+        "--target-objective",
+        action="append",
+        default=[],
+        metavar="METRIC{>=,<=,>,<,==}VALUE",
+        help=(
+            "Early-stop when the given metric objective is met. "
+            "Examples: --target-objective acc_main>=0.92 --target-objective loss<=1.5"
+        ),
+    )
     p.add_argument("--device", type=str, default=None, help="Device to use (cpu/cuda/mps).")
     p.add_argument("--report", type=Path, default=None, help="Optional path to save JSON report.")
     p.add_argument(
@@ -825,6 +1213,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     device = choose_device(args.device)
     verbose = not args.no_verbose
     results_log_path = args.results_log
+    objectives = [parse_objective(expr) for expr in args.target_objective]
 
     if results_log_path is not None:
         results_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -847,6 +1236,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             base_initial=initial_data,
             overrides=combined_overrides,
             target_loss=args.target_loss,
+            objectives=objectives,
             device=device,
             verbose=verbose,
         )
@@ -858,6 +1248,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             status_bits = []
             if result.reached_target_loss:
                 status_bits.append("target met")
+            if result.reached_target_objectives:
+                status_bits.append("objective met")
             if result.stopped_due_to_cap:
                 status_bits.append("max steps reached")
             if result.interrupted:
@@ -868,6 +1260,19 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             mean_loss = f"{result.average_loss:.4f}" if result.average_loss is not None else "n/a"
             tokens_rate_str = f"{result.tokens_per_second:,.0f}" if result.tokens_per_second is not None else "n/a"
             reason_text = result.stop_reason.replace("_", " ") if result.stop_reason else "unknown"
+            objective_parts: List[str] = []
+            for expr in result.target_objectives:
+                try:
+                    obj = parse_objective(expr)
+                except ValueError:
+                    objective_parts.append(expr)
+                    continue
+                metric_val = result.metrics_summary.get(obj.metric)
+                if metric_val is not None:
+                    objective_parts.append(f"{expr} (value {metric_val:.4f})")
+                else:
+                    objective_parts.append(expr)
+            objective_text = ", ".join(objective_parts) if objective_parts else "n/a"
             print(
                 f"Finished {run_id}:\n"
                 f"  loss {result.final_loss:.4f} (target {target_text}) | mean {mean_loss}\n"
@@ -875,6 +1280,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 f"  time {result.time_seconds:.1f}s | total {format_flops(result.estimated_training_flops)} | {format_flops(flops_rate, per_second=True)}\n"
                 f"  throughput tokens/s {tokens_rate_str}\n"
                 f"  status {status} | reason {reason_text}\n"
+                f"  objectives {objective_text}\n"
                 f"  overrides {overrides_str}"
             )
 

@@ -8,6 +8,16 @@ COMMON_SPEC = [
     ("stage", np.int32),  # Stage enum
 ]
 
+BUTTONS = [
+    ("button_a", np.float32),
+    ("button_b", np.float32),
+    # Logical OR will be applied to buttons X and Y
+    ("button_xy", np.float32),
+    ("button_z", np.float32),
+    # Logical OR will be applied to buttons L and R
+    ("button_lr", np.float32),
+]
+
 PLAYER_SPEC = [
     # Core categorical/ids (stored as ints post-preprocessing)
     ("action", np.int32),
@@ -24,13 +34,7 @@ PLAYER_SPEC = [
     ("on_ground", np.float32),
 
     # Buttons
-    ("button_a", np.float32),
-    ("button_b", np.float32),
-    # Logical OR will be applied to buttons X and Y
-    ("button_xy", np.float32),
-    ("button_z", np.float32),
-    # Logical OR will be applied to buttons L and R
-    ("button_lr", np.float32),
+    *BUTTONS,
 
     # Sticks / shoulders
     ("main_stick_x", np.float32),

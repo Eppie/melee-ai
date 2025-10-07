@@ -5,23 +5,26 @@ import time
 from pathlib import Path
 from textwrap import indent
 from typing import Dict
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 from tensordict import TensorDict
 from torch import GradScaler
-from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 
 from config import get_config, init_config
 from controller_quantization import quantize_targets
-from gpt import GPTv7
+from model.gpt import GPTv7
 from preprocess import (
     FOX_STICK_64,
-    C_STICK_XY_CLUSTER_CENTERS_V0_1,
 )
+from loss import compute_loss_components
 from window_dataset import WindowDataset, make_dataloader
+from utils import print_model_diagram
+
+
+_MAIN_STICK_LABELS: List[str] = [f"({x:.2f},{y:.2f})" for x, y in FOX_STICK_64]
 
 
 def _bytes(n: int) -> str:
@@ -55,34 +58,6 @@ _BUTTON_PRETTY = {
     "button_z": "Z",
     "button_lr": "L/R",
 }
-_CE_WEIGHT_CLAMP = 10.0
-_CE_WEIGHT_MIN = 0.1
-_POS_WEIGHT_CLAMP = 10.0
-
-
-def _compute_ce_weights(labels: torch.Tensor, num_classes: int) -> torch.Tensor:
-    device = labels.device
-    try:
-        counts = torch.bincount(labels, minlength=num_classes)
-    except RuntimeError:
-        counts = torch.bincount(labels.cpu(), minlength=num_classes).to(device)
-    counts = counts.float()
-    counts = torch.clamp(counts, min=1.0)
-    weights = counts.sum() / (counts * num_classes)
-    weights = torch.clamp(weights, min=_CE_WEIGHT_MIN, max=_CE_WEIGHT_CLAMP)
-    return weights
-
-
-def _compute_pos_weights(targets: torch.Tensor) -> torch.Tensor:
-    flat = targets.reshape(-1, targets.shape[-1])  # [N, K]
-    pos = flat.sum(dim=0)
-    total = flat.shape[0]
-    neg = total - pos
-    pos_weight = neg / torch.clamp(pos, min=1.0)
-    pos_weight = torch.clamp(pos_weight, min=1.0, max=_POS_WEIGHT_CLAMP)
-    return pos_weight.to(targets.device)
-
-
 _CATEGORICAL = ("character", "action")
 
 
@@ -140,7 +115,7 @@ class ColumnMap:
         # buttons (multi-label)
         self.y_buttons = [ti(f"p1_{k}") for k in _CONTROLLER_KEYS["buttons"]]
         # shoulder
-        self.y_shoulder = ti("p1_shoulder_analog") if "p1_shoulder_analog" in t2idx else None
+        self.y_shoulder = ti("p1_shoulder_analog")
 
 
 def build_inputs_for_gptv7(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorDict:
@@ -214,7 +189,7 @@ class RunningMetrics:
     Also accumulates confusion matrices for main and c.
     """
 
-    def __init__(self, K_main: int, K_c: int, K_buttons: int, K_shoulder: int = 0,
+    def __init__(self, K_main: int, K_c: int, K_buttons: int, K_shoulder: int,
                  device: torch.device | None = None) -> None:
         self.device = device or torch.device("cpu")
         dtype = torch.float32
@@ -271,9 +246,7 @@ class RunningMetrics:
         self.shoulder_total = torch.zeros((), device=self.device, dtype=dtype)
         self.shoulder_rand_correct = torch.zeros((), device=self.device, dtype=dtype)
         self.shoulder_maj_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.shoulder_label_counts = (
-            torch.zeros(K_shoulder, device=self.device, dtype=dtype) if K_shoulder else None
-        )
+        self.shoulder_label_counts = torch.zeros(K_shoulder, device=self.device, dtype=dtype)
 
     # ------- helpers -------
 
@@ -417,7 +390,7 @@ class RunningMetrics:
             rand_idx: Optional[torch.Tensor],  # [B,L] or None
             maj_before: Optional[int],  # int or None
     ) -> None:
-        if logits is None or true_idx is None or self.K_shoulder == 0:
+        if logits is None or true_idx is None:
             return
         with torch.no_grad():
             pred_idx = logits.argmax(dim=-1).reshape(-1)
@@ -489,10 +462,9 @@ class RunningMetrics:
         out["btn_f1_macro_rep"] = f1mmx
 
         # shoulder
-        if self.K_shoulder:
-            out["acc_shoulder"] = _safe_div(self.shoulder_correct, self.shoulder_total)
-            out["acc_shoulder_rand"] = _safe_div(self.shoulder_rand_correct, self.shoulder_total)
-            out["acc_shoulder_maj"] = _safe_div(self.shoulder_maj_correct, self.shoulder_total)
+        out["acc_shoulder"] = _safe_div(self.shoulder_correct, self.shoulder_total)
+        out["acc_shoulder_rand"] = _safe_div(self.shoulder_rand_correct, self.shoulder_total)
+        out["acc_shoulder_maj"] = _safe_div(self.shoulder_maj_correct, self.shoulder_total)
 
         return out
 
@@ -552,7 +524,12 @@ def _top_confusions(cm: torch.Tensor, k: int = 8) -> List[Tuple[int, int, int, f
     return out
 
 
-def _format_confusion_small(cm: torch.Tensor, max_size: int = 12, title: str | None = None) -> str:
+def _format_confusion_small(
+    cm: torch.Tensor,
+    max_size: int = 12,
+    title: str | None = None,
+    labels: Optional[Sequence[str]] = None,
+) -> str:
     """
     If K <= max_size, render full matrix with row sums and diagonal percentages.
     Otherwise, print top off-diagonal confusions.
@@ -560,12 +537,24 @@ def _format_confusion_small(cm: torch.Tensor, max_size: int = 12, title: str | N
     K = cm.shape[0]
     if title is None:
         title = "confusion"
+
+    label_list: Sequence[str]
+    if labels is not None:
+        if len(labels) != K:
+            raise ValueError("labels length must match confusion matrix dimensions")
+        label_list = [str(lbl) for lbl in labels]
+    else:
+        label_list = [f"{i:02d}" for i in range(K)]
+
     if K > max_size:
         tops = _top_confusions(cm, k=10)
         if not tops:
             return f"{title}: (no confusions)"
         lines = [f"{title}: top confusions (true->pred: count, %offdiag)"]
-        lines += [f"  {t:02d}->{p:02d}: {c} ({pct:.1f}%)" for t, p, c, pct in tops]
+        lines += [
+            f"  {label_list[t]}->{label_list[p]}: {c} ({pct:.1f}%)"
+            for t, p, c, pct in tops
+        ]
         return "\n".join(lines)
 
     arr = cm.numpy()
@@ -576,11 +565,13 @@ def _format_confusion_small(cm: torch.Tensor, max_size: int = 12, title: str | N
         diag_pct = np.divide(diag_vals * 100.0, row_sums_1d, out=np.zeros_like(diag_vals, dtype=float),
                              where=row_sums_1d > 0)
 
-    header = "     " + " ".join([f"{j:>4d}" for j in range(K)]) + " | sum"
+    col_width = max(len(lbl) for lbl in label_list)
+    cell_width = max(4, col_width)
+    header = " " * (cell_width + 1) + " ".join([lbl.rjust(cell_width) for lbl in label_list]) + " | sum"
     lines = [f"{title}: full {K}x{K}", header]
     for i in range(K):
-        row = " ".join([f"{int(v):>4d}" for v in arr[i]])
-        lines.append(f"{i:>3d}: {row} | {int(row_sums_1d[i]):>4d}")
+        row = " ".join([f"{int(v):>{cell_width}d}" for v in arr[i]])
+        lines.append(f"{label_list[i].rjust(cell_width)}: {row} | {int(row_sums_1d[i]):>{cell_width}d}")
     lines.append("diag% per row: " + " ".join([f"{p:>5.1f}" for p in diag_pct]))
     return "\n".join(lines)
 
@@ -630,6 +621,7 @@ def _multilabel_prf(true: torch.Tensor, pred: torch.Tensor) -> Tuple[float, floa
 def train_loop(
         model: GPTv7,
 ) -> None:
+
     device = torch.device("mps")
     model = model.to(device)
     config = get_config()
@@ -659,10 +651,10 @@ def train_loop(
         model.train()
 
         metrics = RunningMetrics(
-            K_main=len(FOX_STICK_64),
-            K_c=len(C_STICK_XY_CLUSTER_CENTERS_V0_1),
-            K_buttons=len(_CONTROLLER_KEYS["buttons"]),
-            K_shoulder=(len(config.train.shoulder_centers) if config.train.shoulder_centers else 0),
+            K_main=config.model.target_shapes_by_head["main_stick"],
+            K_c=config.model.target_shapes_by_head["c_stick"],
+            K_buttons=config.model.target_shapes_by_head["buttons"],
+            K_shoulder=config.model.target_shapes_by_head["shoulder"],
             device=device,
         )
 
@@ -687,73 +679,28 @@ def train_loop(
             pred: TensorDict = model(inputs_td)  # keys: buttons, main_stick, c_stick, (shoulder)
             B, L, _ = pred["main_stick"].shape
 
-            loss = 0.0
-            loss_dict = {
-                "main": 0.0,
-                "c": 0.0,
-                "shoulder": 0.0,
-                "buttons": 0.0,
-                "moe_aux": 0.0,
-            }
-            loss_s: Optional[torch.Tensor] = None
-            loss_aux: Optional[torch.Tensor] = None
+            probs_btn = pred.get("buttons_probs", None)
 
-            # --- main stick CE ---
+            loss_components = compute_loss_components(
+                pred,
+                target_info,
+                label_smoothing=config.train.label_smoothing,
+                use_moe=config.model.use_moe,
+                moe_aux_loss_weight=config.model.moe_aux_loss_weight,
+            )
+            loss = loss_components["total"]
+            loss_main = loss_components["main"]
+            loss_c = loss_components["c"]
+            loss_btn = loss_components["buttons"]
+            loss_s = loss_components["shoulder"]
+            loss_aux = loss_components["moe_aux"]
+
             logits_main = pred["main_stick"].reshape(B * L, -1)
             target_main = target_info["main_idx"].reshape(B * L)
-            main_weights = _compute_ce_weights(target_main, target_info["main_K"])
-            loss_main = F.cross_entropy(
-                logits_main,
-                target_main,
-                reduction="mean",
-                label_smoothing=config.train.label_smoothing,
-                weight=main_weights,
-            )
-            loss = loss + loss_main
-
-            # --- c-stick CE ---
             logits_c = pred["c_stick"].reshape(B * L, -1)
             target_c = target_info["c_idx"].reshape(B * L)
-            c_weights = _compute_ce_weights(target_c, target_info["c_K"])
-            loss_c = F.cross_entropy(
-                logits_c,
-                target_c,
-                reduction="mean",
-                label_smoothing=config.train.label_smoothing,
-                weight=c_weights,
-            )
-            loss = loss + loss_c
-
-            # --- buttons (multi-label BCE-with-logits) ---
             logits_btn = pred["buttons"]  # [B,L,Kb]
-            probs_btn = pred.get("buttons_probs", None)
             target_btn = target_info["buttons"]
-            pos_weight = _compute_pos_weights(target_btn)
-            loss_btn = F.binary_cross_entropy_with_logits(
-                logits_btn,
-                target_btn,
-                reduction="mean",
-                pos_weight=pos_weight,
-            )
-            loss = loss + loss_btn
-
-            # --- shoulder (optional CE) ---
-            if "shoulder" in pred.keys() and target_info["shoulder_K"] > 0 and target_info["shoulder_idx"] is not None:
-                logits_s = pred["shoulder"].reshape(B * L, -1)
-                target_s = target_info["shoulder_idx"].reshape(B * L)
-                loss_s = F.cross_entropy(
-                    logits_s,
-                    target_s,
-                    reduction="mean",
-                    label_smoothing=config.train.label_smoothing,
-                )
-                loss = loss + loss_s
-
-            # --- MoE auxiliary loss (optional) ---
-            if config.model.use_moe and "moe_aux_loss" in pred.keys():
-                moe_aux_tensor = pred["moe_aux_loss"]
-                loss_aux = moe_aux_tensor.mean() * config.model.moe_aux_loss_weight
-                loss = loss + loss_aux
 
             # LR schedule
             lr = cosine_lr_schedule(global_step, total_steps, config.train.lr, config.train.warmup_steps)
@@ -819,18 +766,17 @@ def train_loop(
             )
             metrics.update_buttons(btn_logits, btn_true, btn_probs)
 
-            # Optional shoulder metrics
-            if "shoulder" in pred.keys() and target_info["shoulder_K"] > 0 and target_info["shoulder_idx"] is not None:
-                B_, L_, _Ks = pred["shoulder"].shape
-                shoulder_rand = torch.randint(high=target_info["shoulder_K"], size=(B_, L_), device=device)
-                sh_major = metrics._majority_label(metrics.shoulder_label_counts) if metrics.K_shoulder else None
-                metrics.update_shoulder(pred["shoulder"], target_info["shoulder_idx"], shoulder_rand, sh_major)
+            # shoulder metrics
+            B_, L_, _Ks = pred["shoulder"].shape
+            shoulder_rand = torch.randint(high=target_info["shoulder_K"], size=(B_, L_), device=device)
+            sh_major = metrics._majority_label(metrics.shoulder_label_counts) if metrics.K_shoulder else None
+            metrics.update_shoulder(pred["shoulder"], target_info["shoulder_idx"], shoulder_rand, sh_major)
 
             # Prepare loss dict safely
             this_loss = {
                 "main": float(loss_main.detach().item()),
                 "c": float(loss_c.detach().item()),
-                "shoulder": float(loss_s.detach().item()) if (loss_s is not None) else 0.0,
+                "shoulder": float(loss_s.detach().item()),
                 "buttons": float(loss_btn.detach().item()),
                 "moe_aux": float(loss_aux.detach().item()) if (loss_aux is not None) else 0.0,
             }
@@ -867,7 +813,12 @@ def train_loop(
                 acc_main_maj_b = float((main_true_flat == main_major_lbl).float().mean().item())
                 acc_main_rep_b = float((main_rep.reshape(-1)[rep_mask.reshape(-1)] == main_true_flat[
                     rep_mask.reshape(-1)]).float().mean().item()) if rep_mask.any() else 0.0
-                main_conf_str = _format_confusion_small(cm_main_b, max_size=10, title="MAIN confusion")
+                main_conf_str = _format_confusion_small(
+                    cm_main_b,
+                    max_size=10,
+                    title="MAIN confusion",
+                    labels=_MAIN_STICK_LABELS[:K_main],
+                )
 
                 # C-STICK
                 c_true_flat = true_c_idx.reshape(-1)
@@ -914,24 +865,21 @@ def train_loop(
                 else:
                     em_rep = p_rep = r_rep = f1_rep = f1_macro_rep = 0.0
 
-                # SHOULDER (optional)
-                shoulder_present = ("shoulder" in pred.keys()) and (target_info["shoulder_K"] > 0) and (
-                        target_info["shoulder_idx"] is not None)
-                if shoulder_present:
-                    sh_logits = pred["shoulder"]
-                    sh_pred_idx = sh_logits.argmax(dim=-1)  # [B,L]
-                    sh_true_idx = target_info["shoulder_idx"]
-                    acc_sh = float((sh_pred_idx == sh_true_idx).float().mean().item())
-                    sh_rand = torch.randint(high=target_info["shoulder_K"], size=(B, L), device=device)
-                    acc_sh_rand = float((sh_rand == sh_true_idx).float().mean().item())
-                    sh_major_lbl = _majority_flat(sh_true_idx.reshape(-1))
-                    acc_sh_maj = float((sh_true_idx == sh_major_lbl).float().mean().item())
-                    if L > 1:
-                        sh_rep = torch.zeros_like(sh_true_idx)
-                        sh_rep[:, 1:] = sh_true_idx[:, :-1]
-                        acc_sh_rep = float((sh_rep[rep_mask] == sh_true_idx[rep_mask]).float().mean().item())
-                    else:
-                        acc_sh_rep = 0.0
+                # SHOULDER
+                sh_logits = pred["shoulder"]
+                sh_pred_idx = sh_logits.argmax(dim=-1)  # [B,L]
+                sh_true_idx = target_info["shoulder_idx"]
+                acc_sh = float((sh_pred_idx == sh_true_idx).float().mean().item())
+                sh_rand = torch.randint(high=target_info["shoulder_K"], size=(B, L), device=device)
+                acc_sh_rand = float((sh_rand == sh_true_idx).float().mean().item())
+                sh_major_lbl = _majority_flat(sh_true_idx.reshape(-1))
+                acc_sh_maj = float((sh_true_idx == sh_major_lbl).float().mean().item())
+                if L > 1:
+                    sh_rep = torch.zeros_like(sh_true_idx)
+                    sh_rep[:, 1:] = sh_true_idx[:, :-1]
+                    acc_sh_rep = float((sh_rep[rep_mask] == sh_true_idx[rep_mask]).float().mean().item())
+                else:
+                    acc_sh_rep = 0.0
 
                 # ---------- Compose log ----------
                 header = (
@@ -969,10 +917,9 @@ def train_loop(
                     btn_line2,
                     btn_line3,
                 ]
-                if shoulder_present:
-                    log_lines.append(
-                        f"  SHOULDER: acc {acc_sh:.3f} | rand {acc_sh_rand:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
-                    )
+                log_lines.append(
+                    f"  SHOULDER: acc {acc_sh:.3f} | rand {acc_sh_rand:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
+                )
 
                 print("\n".join(log_lines))
 
@@ -999,4 +946,5 @@ def train_loop(
 if __name__ == "__main__":
     init_config()
     model = GPTv7()
+    print_model_diagram(model)
     train_loop(model)

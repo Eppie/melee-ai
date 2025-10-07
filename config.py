@@ -16,6 +16,7 @@ from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 from zarr.codecs import BloscCodec, BloscShuffle
 
 from preprocess import FOX_STICK_64, C_STICK_XY_CLUSTER_CENTERS_V0_1, SHOULDER_VALUES
+from schema import BUTTONS
 
 
 @dataclass
@@ -42,7 +43,7 @@ class ZarrConfig(_FreezeGuard):
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 256
+    batch_size: int = 32
     epochs: int = 10
     lr: float = 3e-4
     weight_decay: float = 0.005
@@ -330,7 +331,7 @@ class GPTConfig:
     norm_placement: str = "post"  # options: pre, post, both
     qk_norm: bool = True
     qk_norm_type: Optional[str] = None  # defaults to norm_type when None
-    attention_type: str = "mqa"  # options: mha, gqa, mqa
+    attention_type: str = "mha"  # options: mha, gqa, mqa
     n_kv_head: Optional[int] = 8
     pe_type: str = "rope"  # options: rope, alibi
     rope_theta: float = 10000.0
@@ -339,11 +340,11 @@ class GPTConfig:
     ffn_mult: float = 8.0 / 3.0
     ffn_activation: str = "swiglu"
     head_flow: str = "parallel"  # options: sequential, parallel
-    target_shapes_by_head: dict = field(default_factory=lambda: {
-        "main_stick": (len(FOX_STICK_64),),
-        "c_stick": (len(C_STICK_XY_CLUSTER_CENTERS_V0_1),),
-        "buttons": (5,),
-        "shoulder": (len(SHOULDER_VALUES),),
+    target_shapes_by_head: dict[str, int] = field(default_factory=lambda: {
+        "main_stick": len(FOX_STICK_64),
+        "c_stick": len(C_STICK_XY_CLUSTER_CENTERS_V0_1),
+        "buttons": len(BUTTONS),
+        "shoulder": len(SHOULDER_VALUES),
     })
     enable_rl_heads: bool = False
 
@@ -360,6 +361,17 @@ class GPTConfig:
 
 
 @dataclass
+class FeatureConfig(_FreezeGuard):
+    """Feature preprocessing configuration."""
+
+    transforms: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "percent": ("scale", 0.01),
+        }
+    )
+
+
+@dataclass
 class Config(_FreezeGuard):
     seq_len: int = 256
 
@@ -367,6 +379,7 @@ class Config(_FreezeGuard):
     train: TrainConfig = field(default_factory=TrainConfig)
     model: GPTConfig = field(default_factory=GPTConfig)
     profile: ProfileConfig = field(default_factory=ProfileConfig)
+    features: FeatureConfig = field(default_factory=FeatureConfig)
 
     def freeze(self) -> None:
         _freeze_dataclass(self)

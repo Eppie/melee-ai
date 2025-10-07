@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import signal
 import time
 from collections import deque
@@ -17,7 +16,7 @@ from torch.distributions import Bernoulli, Categorical
 from torch.nn.utils import clip_grad_norm_
 
 from config import get_config, init_config
-from gpt import GPTv7
+from model.gpt import GPTv7
 from libmelee.reward import compute_reward
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller

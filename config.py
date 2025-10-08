@@ -11,12 +11,12 @@ from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, Union, get_args, get_origin, \
-    get_type_hints, Final
+    get_type_hints, Final, List
 
 from zarr.codecs import BloscCodec, BloscShuffle
 
 from preprocess import FOX_STICK_64, C_STICK_XY_CLUSTER_CENTERS_V0_1, SHOULDER_VALUES
-from schema import BUTTONS
+from schema import BUTTONS, get_feature_names, get_target_names
 
 
 @dataclass
@@ -31,8 +31,8 @@ class _FreezeGuard:
 
 @dataclass
 class ZarrConfig(_FreezeGuard):
-    # input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
-    input_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/test/'
+    input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
+    # input_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/test/'
     out_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/processed_data'
     shard_size: int = 100
     target_chunk_mb: float = 8.0
@@ -317,7 +317,7 @@ class GPTConfig:
     n_head: int = 16
     dropout: float = 0.0
     bias: bool = True  # TODO: remove. True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    input_size: int = 130  # TODO: how is this calculated?
+    input_size: int = 0  # populated dynamically based on dataset schema
     num_stages: int = 6
     num_characters: int = 26
     num_actions: int = 396
@@ -400,6 +400,94 @@ class Config(_FreezeGuard):
         return cls.from_dict(json.loads(s))
 
 
+def _resolve_feature_names_for_input(cfg: "Config") -> List[str]:
+    base_names = get_feature_names()
+    feature_keep = cfg.train.feature_keep or []
+    if not feature_keep:
+        return base_names
+
+    unknown = [name for name in feature_keep if name not in base_names]
+    if unknown:
+        raise ValueError(f"train.feature_keep references unknown features: {unknown}")
+    # Preserve requested ordering to reflect downstream column selection
+    return list(feature_keep)
+
+
+def _player_prefixes(feature_names: Sequence[str]) -> List[str]:
+    prefixes: set[str] = set()
+    for name in feature_names:
+        if len(name) < 3 or name[0] != "p" or name[1] not in "0123456789":
+            continue
+        head, _, tail = name.partition("_")
+        if not tail:
+            continue
+        prefixes.add(head)
+    if not prefixes:
+        raise ValueError("No player-prefixed feature columns found (expected p1_/p2_ entries).")
+    return sorted(prefixes)
+
+
+def _controller_field_bases() -> List[str]:
+    bases: set[str] = set()
+    for name in get_target_names():
+        prefix, _, base = name.partition("_")
+        if not base or not prefix.startswith("p"):
+            continue
+        bases.add(base)
+    if not bases:
+        raise ValueError("Unable to infer controller field names from schema targets.")
+    return sorted(bases)
+
+
+def _compute_model_input_size(cfg: "Config") -> int:
+    feature_names = _resolve_feature_names_for_input(cfg)
+
+    if "stage" not in feature_names:
+        raise ValueError("Required feature 'stage' missing; cannot derive model input size.")
+
+    prefixes = _player_prefixes(feature_names)
+
+    categorical_bases = ("character", "action")
+    categorical_names: List[str] = []
+    for prefix in prefixes:
+        for base in categorical_bases:
+            name = f"{prefix}_{base}"
+            if name not in feature_names:
+                raise ValueError(
+                    f"Required categorical feature '{name}' missing; ensure feature selection keeps it."
+                )
+            categorical_names.append(name)
+
+    controller_bases = _controller_field_bases()
+    controller_names: List[str] = []
+    for prefix in prefixes:
+        for base in controller_bases:
+            name = f"{prefix}_{base}"
+            if name not in feature_names:
+                raise ValueError(
+                    f"Controller feature '{name}' missing; update schema targets or feature selection."
+                )
+            controller_names.append(name)
+
+    reserved = 1 + len(categorical_names) + len(controller_names)
+    if reserved > len(feature_names):
+        raise ValueError("Feature accounting failed; reserved columns exceed available features.")
+
+    gamestate_count = len(feature_names) - reserved
+
+    embedding_dims = (
+        cfg.model.stage_embedding_dim
+        + len(prefixes) * cfg.model.character_embedding_dim
+        + len(prefixes) * cfg.model.action_embedding_dim
+    )
+
+    return embedding_dims + gamestate_count + len(controller_names)
+
+
+def _apply_derived_fields(cfg: "Config") -> None:
+    cfg.model.input_size = _compute_model_input_size(cfg)
+
+
 _GLOBAL_CFG: Optional[Config] = None
 _GLOBAL_CFG_NAME: Final[str] = "GLOBAL_CONFIG"
 
@@ -414,6 +502,7 @@ def init_config(
     cfg = Config.from_dict(initial or {})
     if cli_overrides:
         apply_overrides(cfg, cli_overrides)
+    _apply_derived_fields(cfg)
     if freeze:
         cfg.freeze()
     _GLOBAL_CFG = cfg
@@ -446,6 +535,8 @@ def apply_overrides(cfg: Config, overrides: Mapping[str, str]) -> None:
             parent[attr] = _coerce_best_effort(raw)
         else:
             raise TypeError(f"Cannot set '{dotted_key}'; parent is neither dataclass nor mapping.")
+
+    _apply_derived_fields(cfg)
 
 
 def parse_cli_overrides(argv: Sequence[str]) -> Tuple[Dict[str, Any], Dict[str, str]]:

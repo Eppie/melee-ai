@@ -31,8 +31,8 @@ from tqdm.auto import tqdm
 
 from config import Config, get_config, init_config, reset_config_for_tests
 from controller_quantization import quantize_targets
+from loss import _compute_ce_weights, _compute_pos_weights
 from model.gpt import GPTv7
-from loss import compute_loss_components
 from train import (
     ColumnMap,
     build_inputs_for_gptv7,
@@ -40,7 +40,6 @@ from train import (
     RunningMetrics,
 )
 from window_dataset import make_dataloader
-
 
 TRAINING_FLOP_MULTIPLIER = 3.0  # forward + backward (approximation)
 TOKEN_RATE_EMA_DECAY = 0.9
@@ -86,7 +85,8 @@ _SHOULDER_METRIC_KEYS: Tuple[str, ...] = (
     "acc_shoulder_rand",
     "acc_shoulder_maj",
 )
-_RUNNING_METRIC_KEYS = set(_MAIN_METRIC_KEYS) | set(_C_METRIC_KEYS) | set(_BUTTON_METRIC_KEYS) | set(_SHOULDER_METRIC_KEYS)
+_RUNNING_METRIC_KEYS = set(_MAIN_METRIC_KEYS) | set(_C_METRIC_KEYS) | set(_BUTTON_METRIC_KEYS) | set(
+    _SHOULDER_METRIC_KEYS)
 
 _LOSS_METRIC_KEYS: Tuple[str, ...] = (
     "loss",
@@ -115,7 +115,8 @@ class StoppingObjective:
 
     def is_satisfied(self, metrics: Mapping[str, float], *, tol: float = 1e-6) -> Tuple[bool, float]:
         if self.metric not in metrics:
-            raise KeyError(f"Objective metric '{self.metric}' not available; available metrics: {sorted(metrics.keys())}")
+            raise KeyError(
+                f"Objective metric '{self.metric}' not available; available metrics: {sorted(metrics.keys())}")
         value = float(metrics[self.metric])
         op = self.operator
         if op == ">=":
@@ -266,11 +267,11 @@ def _swiglu_flops(input_dim: int, inner_dim: int, output_dim: int, tokens: int) 
 
 
 def _activation_ffn_flops(
-    activation: str,
-    input_dim: int,
-    inner_dim: int,
-    output_dim: int,
-    tokens: int,
+        activation: str,
+        input_dim: int,
+        inner_dim: int,
+        output_dim: int,
+        tokens: int,
 ) -> float:
     if tokens <= 0:
         return 0.0
@@ -280,20 +281,20 @@ def _activation_ffn_flops(
     if act == "geglu":
         gelu_cost = 6.0 * tokens * inner_dim
         return (
-            2.0 * tokens * input_dim * inner_dim * 2
-            + 2.0 * tokens * inner_dim * output_dim
-            + gelu_cost
+                2.0 * tokens * input_dim * inner_dim * 2
+                + 2.0 * tokens * inner_dim * output_dim
+                + gelu_cost
         )
     if act == "gelu":
         gelu_cost = 6.0 * tokens * inner_dim
         return (
-            2.0 * tokens * input_dim * inner_dim
-            + gelu_cost
-            + 2.0 * tokens * inner_dim * output_dim
+                2.0 * tokens * input_dim * inner_dim
+                + gelu_cost
+                + 2.0 * tokens * inner_dim * output_dim
         )
     return (
-        2.0 * tokens * input_dim * inner_dim
-        + 2.0 * tokens * inner_dim * output_dim
+            2.0 * tokens * input_dim * inner_dim
+            + 2.0 * tokens * inner_dim * output_dim
     )
 
 
@@ -452,14 +453,14 @@ def _build_profiler_context(cfg: Config, run_id: str, *, verbose: bool) -> Tuple
 
 
 def run_training_once(
-    run_id: str,
-    *,
-    base_initial: Optional[Mapping[str, Any]],
-    overrides: Mapping[str, str],
-    target_loss: Optional[float],
-    objectives: Sequence[StoppingObjective],
-    device: torch.device,
-    verbose: bool,
+        run_id: str,
+        *,
+        base_initial: Optional[Mapping[str, Any]],
+        overrides: Mapping[str, str],
+        target_loss: Optional[float],
+        objectives: Sequence[StoppingObjective],
+        device: torch.device,
+        verbose: bool,
 ) -> TrainingRunResult:
     reset_config_for_tests()
     cfg = init_config(initial=base_initial, cli_overrides=overrides, freeze=False)
@@ -635,28 +636,58 @@ def run_training_once(
                         B, L, _ = pred["main_stick"].shape
                         total_tokens += int(B * L)
 
-                        probs_btn = pred.get("buttons_probs")
-
-                        loss_components = compute_loss_components(
-                            pred,
-                            target_info,
-                            label_smoothing=cfg.train.label_smoothing,
-                            use_moe=cfg.model.use_moe,
-                            moe_aux_loss_weight=cfg.model.moe_aux_loss_weight,
-                        )
-                        loss = loss_components["total"]
-                        loss_main = loss_components["main"]
-                        loss_c = loss_components["c"]
-                        loss_btn = loss_components["buttons"]
-                        loss_s = loss_components["shoulder"]
-                        loss_aux = loss_components["moe_aux"]
-
                         logits_main = pred["main_stick"].reshape(B * L, -1)
                         target_main = target_info["main_idx"].reshape(B * L)
+                        main_weights = _compute_ce_weights(target_main, target_info["main_K"])
+                        loss_main = torch.nn.functional.cross_entropy(
+                            logits_main,
+                            target_main,
+                            reduction="mean",
+                            label_smoothing=cfg.train.label_smoothing,
+                            weight=main_weights,
+                        )
+
                         logits_c = pred["c_stick"].reshape(B * L, -1)
                         target_c = target_info["c_idx"].reshape(B * L)
+                        c_weights = _compute_ce_weights(target_c, target_info["c_K"])
+                        loss_c = torch.nn.functional.cross_entropy(
+                            logits_c,
+                            target_c,
+                            reduction="mean",
+                            label_smoothing=cfg.train.label_smoothing,
+                            weight=c_weights,
+                        )
+
                         logits_btn = pred["buttons"]
                         target_btn = target_info["buttons"]
+                        pos_weight = _compute_pos_weights(target_btn)
+                        loss_btn = torch.nn.functional.binary_cross_entropy_with_logits(
+                            logits_btn,
+                            target_btn,
+                            reduction="mean",
+                            pos_weight=pos_weight,
+                        )
+
+                        loss_s = torch.zeros((), device=device)
+                        if (
+                                "shoulder" in pred.keys()
+                                and target_info["shoulder_K"] > 0
+                                and target_info["shoulder_idx"] is not None
+                        ):
+                            logits_s = pred["shoulder"].reshape(B * L, -1)
+                            target_s = target_info["shoulder_idx"].reshape(B * L)
+                            loss_s = torch.nn.functional.cross_entropy(
+                                logits_s,
+                                target_s,
+                                reduction="mean",
+                                label_smoothing=cfg.train.label_smoothing,
+                            )
+
+                        loss_aux = torch.zeros((), device=device)
+                        if cfg.model.use_moe and "moe_aux_loss" in pred.keys():
+                            loss_aux = pred["moe_aux_loss"].mean() * cfg.model.moe_aux_loss_weight
+
+                        loss = loss_main + loss_c + loss_btn + loss_s + loss_aux
 
                         lr = cosine_lr_schedule(global_step, total_steps_cap, cfg.train.lr, cfg.train.warmup_steps)
                         for pg in opt.param_groups:
@@ -675,115 +706,7 @@ def run_training_once(
 
                         loss_history.append(final_loss)
 
-                        # ----- Metrics & objective tracking -----
-                        pred_main_idx = pred["main_stick"].argmax(dim=-1)
-                        true_main_idx = target_info["main_idx"].reshape(B, L)
-                        pred_c_idx = pred["c_stick"].argmax(dim=-1)
-                        true_c_idx = target_info["c_idx"].reshape(B, L)
-                        btn_logits = logits_btn
-                        btn_true = target_btn
-                        btn_probs = pred.get("buttons_probs")
-                        if btn_probs is None:
-                            btn_probs = torch.sigmoid(btn_logits)
-
-                        if metrics_tracker is None:
-                            metrics_tracker = RunningMetrics(
-                                int(target_info["main_K"]),
-                                int(target_info["c_K"]),
-                                int(target_info["buttons_K"]),
-                                int(target_info["shoulder_K"]),
-                                device=device,
-                            )
-
-                        main_major = metrics_tracker._majority_label(metrics_tracker.main_label_counts)
-                        c_major = metrics_tracker._majority_label(metrics_tracker.c_label_counts)
-                        main_rand = torch.randint(high=int(target_info["main_K"]), size=(B * L,), device=device)
-                        c_rand = torch.randint(high=int(target_info["c_K"]), size=(B * L,), device=device)
-
-                        rep_mask = torch.ones((B, L), dtype=torch.bool, device=device)
-                        rep_mask[:, 0] = False
-                        main_rep = torch.zeros_like(true_main_idx)
-                        c_rep = torch.zeros_like(true_c_idx)
-                        if L > 1:
-                            main_rep[:, 1:] = true_main_idx[:, :-1]
-                            c_rep[:, 1:] = true_c_idx[:, :-1]
-
-                        metrics_tracker.update_main(
-                            pred_main_idx.reshape(-1),
-                            true_main_idx.reshape(-1),
-                            main_rand,
-                            main_major,
-                            main_rep.reshape(-1),
-                            rep_mask.reshape(-1),
-                        )
-                        metrics_tracker.update_c(
-                            pred_c_idx.reshape(-1),
-                            true_c_idx.reshape(-1),
-                            c_rand,
-                            c_major,
-                            c_rep.reshape(-1),
-                            rep_mask.reshape(-1),
-                        )
-                        metrics_tracker.update_buttons(btn_logits, btn_true, btn_probs)
-
-                        shoulder_logits = pred.get("shoulder")
-                        shoulder_idx = target_info.get("shoulder_idx")
-                        if (
-                            shoulder_logits is not None
-                            and shoulder_idx is not None
-                            and int(target_info["shoulder_K"]) > 0
-                        ):
-                            shoulder_rand = torch.randint(
-                                high=int(target_info["shoulder_K"]), size=(B, L), device=device
-                            )
-                            sh_major = (
-                                metrics_tracker._majority_label(metrics_tracker.shoulder_label_counts)
-                                if metrics_tracker.K_shoulder
-                                else None
-                            )
-                            metrics_tracker.update_shoulder(shoulder_logits, shoulder_idx, shoulder_rand, sh_major)
-
-                        current_metrics: Dict[str, float] = {
-                            "loss": final_loss,
-                            "loss_total": final_loss,
-                            "loss_main": float(loss_main.detach().item()),
-                            "loss_c": float(loss_c.detach().item()),
-                            "loss_buttons": float(loss_btn.detach().item()),
-                            "loss_shoulder": float(loss_s.detach().item()),
-                            "loss_aux": float(loss_aux.detach().item()) if loss_aux is not None else 0.0,
-                            "lr": float(lr),
-                            "global_step": float(global_step),
-                        }
-                        if metrics_tracker is not None:
-                            try:
-                                current_metrics.update(metrics_tracker.summary())
-                            except Exception:
-                                pass
-
-                        latest_metrics = current_metrics
-
-                        if objectives:
-                            all_met = True
-                            for obj in objectives:
-                                try:
-                                    met, value = obj.is_satisfied(current_metrics)
-                                except KeyError as error:
-                                    raise ValueError(
-                                        f"[{run_id}] objective '{obj.raw}' refers to unknown metric"
-                                    ) from error
-                                if not met:
-                                    all_met = False
-                            if all_met:
-                                objectives_met = True
-                                stop_reason = "objective_met"
-                                if verbose:
-                                    print(
-                                        f"[{run_id}] objective met at step {global_step}: "
-                                        + ", ".join(obj.raw for obj in objectives)
-                                    )
-                                _shutdown_loader_iter(loader_iter)
-                                loader_iter = None
-                                break
+                        # ----- Metrics will be computed lazily only when needed for objectives -----
 
                         batch_forward_flops = estimate_forward_flops(cfg, B, L)
                         forward_flops += batch_forward_flops
@@ -802,8 +725,8 @@ def run_training_once(
                                 token_rate_ema = inst_token_rate
                             else:
                                 token_rate_ema = (
-                                    TOKEN_RATE_EMA_DECAY * token_rate_ema
-                                    + (1.0 - TOKEN_RATE_EMA_DECAY) * inst_token_rate
+                                        TOKEN_RATE_EMA_DECAY * token_rate_ema
+                                        + (1.0 - TOKEN_RATE_EMA_DECAY) * inst_token_rate
                                 )
                         if step_duration > 0 and batch_training_flops > 0:
                             inst_flop_rate = batch_training_flops / step_duration
@@ -811,8 +734,8 @@ def run_training_once(
                                 flop_rate_ema = inst_flop_rate
                             else:
                                 flop_rate_ema = (
-                                    TOKEN_RATE_EMA_DECAY * flop_rate_ema
-                                    + (1.0 - TOKEN_RATE_EMA_DECAY) * inst_flop_rate
+                                        TOKEN_RATE_EMA_DECAY * flop_rate_ema
+                                        + (1.0 - TOKEN_RATE_EMA_DECAY) * inst_flop_rate
                                 )
 
                         steps_this_epoch += 1
@@ -885,8 +808,11 @@ def run_training_once(
                                     )
 
                                 if need_main_metrics:
+                                    pred_main_idx = pred["main_stick"].argmax(dim=-1)
+                                    true_main_idx = target_info["main_idx"].reshape(B, L)
                                     main_major = metrics_tracker._majority_label(metrics_tracker.main_label_counts)
-                                    main_rand = torch.randint(high=int(target_info["main_K"]), size=(B * L,), device=device)
+                                    main_rand = torch.randint(high=int(target_info["main_K"]), size=(B * L,),
+                                                              device=device)
                                     main_rep = torch.zeros_like(true_main_idx)
                                     rep_mask_main = torch.ones((B, L), dtype=torch.bool, device=device)
                                     rep_mask_main[:, 0] = False
@@ -902,6 +828,8 @@ def run_training_once(
                                     )
 
                                 if need_c_metrics:
+                                    pred_c_idx = pred["c_stick"].argmax(dim=-1)
+                                    true_c_idx = target_info["c_idx"].reshape(B, L)
                                     c_major = metrics_tracker._majority_label(metrics_tracker.c_label_counts)
                                     c_rand = torch.randint(high=int(target_info["c_K"]), size=(B * L,), device=device)
                                     c_rep = torch.zeros_like(true_c_idx)
@@ -919,6 +847,8 @@ def run_training_once(
                                     )
 
                                 if need_button_metrics:
+                                    btn_logits = pred["buttons"]
+                                    btn_true = target_info["buttons"]
                                     btn_probs = pred.get("buttons_probs")
                                     if btn_probs is None:
                                         btn_probs = torch.sigmoid(btn_logits)
@@ -928,9 +858,9 @@ def run_training_once(
                                     shoulder_logits = pred.get("shoulder")
                                     shoulder_idx = target_info.get("shoulder_idx")
                                     if (
-                                        shoulder_logits is not None
-                                        and shoulder_idx is not None
-                                        and int(target_info["shoulder_K"]) > 0
+                                            shoulder_logits is not None
+                                            and shoulder_idx is not None
+                                            and int(target_info["shoulder_K"]) > 0
                                     ):
                                         shoulder_rand = torch.randint(
                                             high=int(target_info["shoulder_K"]), size=(B, L), device=device
@@ -977,7 +907,7 @@ def run_training_once(
                                     objective_str = ", ".join(obj.raw for obj in objectives)
                                     print(f"[{run_id}] objectives met at step {global_step}: {objective_str}")
                         else:
-                            latest_metrics = {}
+                            latest_metrics = {"loss": final_loss}
 
                         if progress is not None:
                             postfix_parts = [

@@ -3,7 +3,7 @@ import math
 import os
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
@@ -11,82 +11,53 @@ import numpy as np
 import zarr
 
 from config import init_config, get_config
-from libmelee.melee import enums
 from libmelee.melee.console import Console
-from libmelee.melee.controller import ControllerState
-from libmelee.melee.gamestate import GameState, PlayerState
-from preprocess import _preprocess_stage, _preprocess_character, _preprocess_action, _preprocess_x_y_buttons, \
-    _preprocess_l_r_buttons
-from schema import Row
+from libmelee.melee.gamestate import GameState
+from schema import Row, extract_row, get_feature_names, get_target_names
+
+
+ROW_FIELDS = tuple(fields(Row))
 
 
 def extract(game_state: GameState) -> Row:
-    # Common fields
-    stage: np.int32 = _preprocess_stage(game_state.stage)
+    return extract_row(game_state)
 
-    # Get player ports (assume first two players)
-    players: list[int] = sorted(game_state.players.keys())
-    if len(players) < 2:
-        raise ValueError(f"Need at least 2 players, got {len(players)}")
 
-    p1_port: int = players[0]
-    p2_port: int = players[1]
+def _row_to_winner_first(rows: List[Row]) -> List[Row]:
+    """Ensure the winner is consistently treated as player 1."""
+    if not rows:
+        return rows
 
-    def _extract_player_data(port: int) -> dict[str, np.int32 | np.float32 | bool]:
-        """Extract all player data according to PLAYER_SPEC."""
-        pl: PlayerState = game_state.players[port]
-        cs: ControllerState = pl.controller_state
+    final_row = rows[-1]
+    p1_stock = final_row.p1_stock
+    p2_stock = final_row.p2_stock
 
-        # Buttons (strict access)
-        b = cs.button
+    if p1_stock > p2_stock:
+        return rows
 
-        return {
-            "character": _preprocess_character(pl.character),
-            "position_x": pl.position.x,
-            "position_y": pl.position.y,
-            "shield_strength": pl.shield_strength,
-            "percent": np.int32(pl.percent),
-            "action": _preprocess_action(pl.action),
-            "stock": np.int32(pl.stock),
-            "jumps_left": np.int32(pl.jumps_left),
-            "facing": bool(pl.facing),
-            "on_ground": np.float32(bool(pl.on_ground)),
-            "is_invulnerable": np.float32(bool(pl.invulnerable)),
-            "main_stick_x": cs.main_stick[0],
-            "main_stick_y": cs.main_stick[1],
-            "c_stick_x": cs.c_stick[0],
-            "c_stick_y": cs.c_stick[1],
-            "shoulder_analog": cs.l_shoulder,
-            "button_a": np.float32(bool(b[enums.Button.BUTTON_A])),
-            "button_b": np.float32(bool(b[enums.Button.BUTTON_B])),
-            "button_xy": _preprocess_x_y_buttons(
-                bool(b[enums.Button.BUTTON_X]),
-                bool(b[enums.Button.BUTTON_Y])
-            ),
-            "button_z": np.float32(bool(b[enums.Button.BUTTON_Z])),
-            "button_lr": _preprocess_l_r_buttons(
-                bool(b[enums.Button.BUTTON_L]),
-                bool(b[enums.Button.BUTTON_R])
-            ),
-        }
+    if p2_stock > p1_stock:
+        return [_swap_row_players(row) for row in rows]
 
-    # Extract data for both players
-    p1_data = _extract_player_data(p1_port)
-    p2_data = _extract_player_data(p2_port)
+    # Stocks tied (likely timeout) – fall back to percent comparison.
+    p1_percent = final_row.p1_percent
+    p2_percent = final_row.p2_percent
+    if p1_percent <= p2_percent:
+        return rows
 
-    # Build the complete field dictionary matching Row schema
-    row_fields = {
-        # Common fields
-        "stage": stage,
+    return [_swap_row_players(row) for row in rows]
 
-        # Player 1 fields (prefixed with "p1_")
-        **{f"p1_{key}": value for key, value in p1_data.items()},
 
-        # Player 2 fields (prefixed with "p2_")
-        **{f"p2_{key}": value for key, value in p2_data.items()},
-    }
-
-    return Row(**row_fields)
+def _swap_row_players(row: Row) -> Row:
+    swap_values: dict[str, object] = {}
+    for field in ROW_FIELDS:
+        name = field.name
+        if name.startswith("p1_"):
+            swap_values[name] = getattr(row, f"p2_{name[3:]}")
+        elif name.startswith("p2_"):
+            swap_values[name] = getattr(row, f"p1_{name[3:]}")
+        else:
+            swap_values[name] = getattr(row, name)
+    return Row(**swap_values)
 
 
 @dataclass(frozen=True)
@@ -130,7 +101,7 @@ def process_one_episode(raw_path: str) -> List[Row]:
     if not rows:
         raise ValueError(f"No valid frames found in {raw_path}")
 
-    return rows
+    return _row_to_winner_first(rows)
 
 
 def _choose_chunk_t(F: int, elem_bytes: int) -> int:
@@ -350,33 +321,10 @@ def build_dataset(raw_episode_paths: Sequence[str], schema: Schema) -> None:
 
 
 def create_melee_schema() -> Schema:
-    from schema import COMMON_SPEC, PLAYER_SPEC
-
-    features = []
-    targets = []
-
-    controller_fields = {
-        "main_stick_x", "main_stick_y", "c_stick_x", "c_stick_y",
-        "shoulder_analog", "button_a", "button_b", "button_xy",
-        "button_z", "button_lr"
-    }
-
-    for field_name, _ in COMMON_SPEC:
-        features.append(field_name)
-
-    for player_prefix in ["p1_", "p2_"]:
-        for field_name, _ in PLAYER_SPEC:
-            full_name = f"{player_prefix}{field_name}"
-
-            # All gamestate fields go to features
-            # Controller inputs also go to features (current frame inputs)
-            features.append(full_name)
-
-            # Only P1 (ego) controller inputs go to targets (next frame prediction)
-            if player_prefix == "p1_" and field_name in controller_fields:
-                targets.append(full_name)
-
-    return Schema(features=features, targets=targets)
+    return Schema(
+        features=get_feature_names(),
+        targets=get_target_names(),
+    )
 
 
 def main():

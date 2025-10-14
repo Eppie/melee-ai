@@ -11,11 +11,11 @@ from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, Union, get_args, get_origin, \
-    get_type_hints, Final, List
+    get_type_hints, List
 
 from zarr.codecs import BloscCodec, BloscShuffle
 
-from preprocess import FOX_STICK_64, C_STICK_XY_CLUSTER_CENTERS_V0_1, SHOULDER_VALUES
+from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
 from schema import BUTTONS, get_feature_names, get_target_names
 
 
@@ -33,7 +33,10 @@ class _FreezeGuard:
 class ZarrConfig(_FreezeGuard):
     input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
     # input_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/test/'
-    out_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/processed_data'
+    out_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/processed_data_1000'
+    validation_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/validation_set'
+    episode_count: int = 1000
+    validation_count: int = 20
     shard_size: int = 100
     target_chunk_mb: float = 8.0
     compressor: BloscCodec = field(
@@ -43,28 +46,26 @@ class ZarrConfig(_FreezeGuard):
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 32
-    epochs: int = 10
+    batch_size: int = 64
+    epochs: int = 100
     lr: float = 3e-4
     weight_decay: float = 0.005
     betas: Tuple[float, float] = (0.9, 0.95)
-    warmup_steps: int = 0
+    warmup_steps: int = 10
     max_steps: Optional[int] = None  # cap total steps (useful for quick tests)
     num_workers: int = 8
     prefetch_factor: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
+    stride = 1
 
     # losses
     grad_clip: float = 1.0
     label_smoothing: float = 0.0
 
-    # quantization / shoulder
-    shoulder_centers: Sequence[float] = field(default_factory=lambda: SHOULDER_VALUES)
-
-    # episode_linear sampler knobs
-    episodes_per_epoch: Optional[int] = None  # per rank
-    with_replacement_episodes: bool = False
+    # Automatic Mixed Precision (AMP)
+    use_amp: bool = True
+    amp_dtype: str = "float16"  # "float16" or "bfloat16" (when MPS supports it)
 
     # random_windows sampler knobs
     num_samples: Optional[int] = None  # required if replacement=True
@@ -77,9 +78,6 @@ class TrainConfig:
     out_dir: str = "checkpoints"
     save_every_epochs: int = 1
 
-    # column pruning (optional)
-    feature_keep: Optional[Sequence[str]] = None
-    target_keep: Optional[Sequence[str]] = None
 
 
 @dataclass
@@ -311,13 +309,13 @@ class GPTConfig:
         - Interactions: combine with high expert counts; may require tuning `moe_expert_capacity_factor`.
         - Reasonable choice: True for detailed routing, False for simpler all-to-all.
     """
-    block_size: int = 256
+    block_size: int = 512
     n_embd: int = 384
     n_layer: int = 3
-    n_head: int = 16
-    dropout: float = 0.0
+    n_head: int = 4
+    dropout: float = 0.1
     bias: bool = True  # TODO: remove. True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    input_size: int = 0  # populated dynamically based on dataset schema
+    input_size: int = -1  # populated dynamically based on dataset schema
     num_stages: int = 6
     num_characters: int = 26
     num_actions: int = 396
@@ -331,8 +329,8 @@ class GPTConfig:
     norm_placement: str = "post"  # options: pre, post, both
     qk_norm: bool = True
     qk_norm_type: Optional[str] = None  # defaults to norm_type when None
-    attention_type: str = "mha"  # options: mha, gqa, mqa
-    n_kv_head: Optional[int] = 8
+    attention_type: str = "gqa"  # options: mha, gqa, mqa
+    n_kv_head: Optional[int] = 2
     pe_type: str = "rope"  # options: rope, alibi
     rope_theta: float = 10000.0
     rope_scaling: Optional[str] = None  # e.g., "ntk", "yarn"
@@ -341,12 +339,14 @@ class GPTConfig:
     ffn_activation: str = "swiglu"
     head_flow: str = "parallel"  # options: sequential, parallel
     target_shapes_by_head: dict[str, int] = field(default_factory=lambda: {
-        "main_stick": len(FOX_STICK_64),
-        "c_stick": len(C_STICK_XY_CLUSTER_CENTERS_V0_1),
+        "main_stick": len(CONTROL_STICK_QUANTIZED),
+        "c_stick": len(C_STICK_QUANTIZED),
         "buttons": len(BUTTONS),
-        "shoulder": len(SHOULDER_VALUES),
+        "shoulder": len(SHOULDER_QUANTIZED),
     })
-    enable_rl_heads: bool = False
+
+    # Value head for RL (outputs state value estimates)
+    use_value_head: bool = True  # enable value head for PPO/A2C
 
     # Mixture-of-Experts (MoE) configuration
     use_moe: bool = False
@@ -364,11 +364,119 @@ class GPTConfig:
 class FeatureConfig(_FreezeGuard):
     """Feature preprocessing configuration."""
 
-    transforms: Dict[str, Any] = field(
-        default_factory=lambda: {
-            "percent": ("scale", 0.01),
-        }
+    transforms: List[Dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "transform": "stick_palette",
+                "features": ["main_stick_x", "main_stick_y"],
+                "palette": "fox_main",
+            },
+            {
+                "transform": "stick_palette",
+                "features": ["c_stick_x", "c_stick_y"],
+                "palette": "c_stick",
+            },
+            {
+                "transform": "scale",
+                "features": ["percent"],
+                "factor": 1 / 100.0,
+            },
+            {
+                "transform": "scale",
+                "features": ["shield_strength"],
+                "factor": 1.0 / 60.0,
+            },
+            {
+                "transform": "scale",
+                "features": ["stock"],
+                "factor": 1 / 4.0,
+            },
+            {
+                "transform": "scale",
+                "features": ["position_x", "position_y"],
+                "factor": 1 / 20.0,
+            },
+            {
+                "transform": "scale",
+                "features": ["jumps_left"],
+                "factor": 1 / 6.0,
+            },
+        ]
     )
+
+
+@dataclass
+class RLConfig(_FreezeGuard):
+    """Reinforcement learning configuration."""
+    
+    # Algorithm selection
+    algorithm: str = "ppo"  # ppo, a2c, reinforce
+    
+    # PPO hyperparameters
+    ppo_epsilon: float = 0.2  # clip range for policy loss
+    ppo_epochs: int = 4  # optimization epochs per rollout batch
+    gae_lambda: float = 0.95  # GAE lambda for advantage estimation
+    gamma: float = 0.99  # discount factor for rewards
+    
+    # Training parameters
+    rollout_length: int = 512  # number of steps to collect per rollout
+    batch_size: int = 64  # minibatch size for updates
+    learning_rate: float = 3e-4  # learning rate for both policy and value
+    value_loss_coef: float = 0.5  # coefficient for value loss in total loss
+    entropy_coef: float = 0.01  # coefficient for entropy bonus
+    max_grad_norm: float = 0.5  # max gradient norm for clipping
+    
+    # Mixed training (imitation + RL)
+    use_mixed_training: bool = True  # combine expert demos with RL rollouts
+    expert_ratio: float = 0.5  # fraction of batch from expert demos (0=pure RL, 1=pure imitation)
+    expert_ratio_decay: float = 0.995  # multiply expert_ratio by this each epoch
+    min_expert_ratio: float = 0.1  # minimum expert ratio (stops decay)
+    
+    # Reward weights (customize reward function)
+    reward_win: float = 1.0
+    reward_loss: float = -1.0
+    reward_timeout: float = 0.0  # when game times out
+    reward_damage_dealt: float = 0.01  # per % damage
+    reward_damage_taken: float = -0.01  # per % damage
+    reward_stock_lost: float = -0.3  # when losing a stock
+    reward_stock_taken: float = 0.3  # when taking opponent's stock
+    reward_stage_control: float = 0.001  # reward for center stage control
+    reward_l_cancel: float = 0.02  # reward for successful L-cancel
+    reward_combo_hit: float = 0.05  # reward for extending combo
+    reward_hitlag_opponent: float = 0.02  # reward when opponent is in hitlag (attacking)
+    reward_hitlag_self: float = -0.02  # penalty when we are in hitlag (being hit)
+    reward_low_shield: float = -0.1  # penalty for low shield strength (magnified as shield -> 0)
+    reward_per_frame: float = -0.001  # small constant penalty per frame to discourage stalling
+    
+    # Self-play configuration
+    self_play_enabled: bool = True
+    opponent_update_freq: int = 10  # update opponent checkpoint every N epochs
+    evaluation_games: int = 20  # number of games for win rate evaluation
+    use_opponent_pool: bool = False  # maintain pool of past checkpoints
+    opponent_pool_size: int = 5  # size of opponent pool if enabled
+    
+    # Environment settings
+    dolphin_path: str = "/Applications/Dolphin.app/Contents/MacOS/Dolphin"  # path to Dolphin executable
+    iso_path: str = "/path/to/melee.iso"  # path to Melee ISO
+    slippi_port: int = 51441  # port for Slippi communication
+    
+    # Replay buffer settings
+    buffer_size: int = 100000  # maximum number of transitions to store
+    prioritized_replay: bool = False  # use prioritized experience replay (future)
+    alpha: float = 0.6  # prioritization exponent (if prioritized_replay=True)
+    beta: float = 0.4  # importance sampling exponent (if prioritized_replay=True)
+    
+    # Logging and checkpointing
+    log_interval: int = 10  # log metrics every N rollouts
+    eval_interval: int = 50  # evaluate policy every N rollouts
+    save_interval: int = 100  # save checkpoint every N rollouts
+    use_wandb: bool = False  # log to Weights & Biases
+    wandb_project: str = "melee-rl"  # W&B project name
+    
+    # Advanced RL techniques (future use)
+    use_curiosity: bool = False  # curiosity-driven exploration
+    use_her: bool = False  # hindsight experience replay
+    use_auxiliary_tasks: bool = False  # auxiliary prediction tasks
 
 
 @dataclass
@@ -380,6 +488,7 @@ class Config(_FreezeGuard):
     model: GPTConfig = field(default_factory=GPTConfig)
     profile: ProfileConfig = field(default_factory=ProfileConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
+    rl: RLConfig = field(default_factory=RLConfig)
 
     def freeze(self) -> None:
         _freeze_dataclass(self)
@@ -398,19 +507,6 @@ class Config(_FreezeGuard):
     @classmethod
     def from_json(cls, s: str) -> "Config":
         return cls.from_dict(json.loads(s))
-
-
-def _resolve_feature_names_for_input(cfg: "Config") -> List[str]:
-    base_names = get_feature_names()
-    feature_keep = cfg.train.feature_keep or []
-    if not feature_keep:
-        return base_names
-
-    unknown = [name for name in feature_keep if name not in base_names]
-    if unknown:
-        raise ValueError(f"train.feature_keep references unknown features: {unknown}")
-    # Preserve requested ordering to reflect downstream column selection
-    return list(feature_keep)
 
 
 def _player_prefixes(feature_names: Sequence[str]) -> List[str]:
@@ -440,7 +536,7 @@ def _controller_field_bases() -> List[str]:
 
 
 def _compute_model_input_size(cfg: "Config") -> int:
-    feature_names = _resolve_feature_names_for_input(cfg)
+    feature_names = get_feature_names()
 
     if "stage" not in feature_names:
         raise ValueError("Required feature 'stage' missing; cannot derive model input size.")
@@ -476,11 +572,10 @@ def _compute_model_input_size(cfg: "Config") -> int:
     gamestate_count = len(feature_names) - reserved
 
     embedding_dims = (
-        cfg.model.stage_embedding_dim
-        + len(prefixes) * cfg.model.character_embedding_dim
-        + len(prefixes) * cfg.model.action_embedding_dim
+            cfg.model.stage_embedding_dim
+            + len(prefixes) * cfg.model.character_embedding_dim
+            + len(prefixes) * cfg.model.action_embedding_dim
     )
-
     return embedding_dims + gamestate_count + len(controller_names)
 
 
@@ -489,7 +584,6 @@ def _apply_derived_fields(cfg: "Config") -> None:
 
 
 _GLOBAL_CFG: Optional[Config] = None
-_GLOBAL_CFG_NAME: Final[str] = "GLOBAL_CONFIG"
 
 
 def init_config(

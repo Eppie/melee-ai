@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import importlib
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-from functools import partial
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -14,6 +11,7 @@ import zarr
 from torch.utils.data import Dataset, Sampler
 
 from config import FeatureConfig, get_config
+from feature_transforms import FeatureTransformSpec, feature_spec_from_config
 
 
 @dataclass(frozen=True)
@@ -157,174 +155,35 @@ class ZarrCorpusIndex:
         return X, Y
 
 
-# -------------------------------------------
-# Feature transforms & column selection hooks
-# -------------------------------------------
+def _resolve_feature_groups(
+        feature_names: Sequence[str],
+        requested: Sequence[str],
+) -> List[Tuple[int, ...]]:
+    name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
 
-FeatureFn = Callable[[np.ndarray], np.ndarray]
+    if all(name in name_to_idx for name in requested):
+        return [tuple(name_to_idx[name] for name in requested)]
 
+    prefixes: set[str] = set()
+    for name in feature_names:
+        head, _, tail = name.partition("_")
+        if tail and head.startswith("p") and head[1:].isdigit():
+            prefixes.add(head)
 
-@dataclass(frozen=True)
-class FeatureTransformSpec:
-    """
-    Per-feature transform hook. Map feature name -> function operating on a (L,) or (L,1) view.
-    Keep it vectorized; it will be applied column-wise.
-    """
-    by_name: Dict[str, FeatureFn]
-
-
-def _transform_scale(column: np.ndarray, *, factor: float) -> np.ndarray:
-    column *= factor
-    return column
-
-
-def _transform_offset(column: np.ndarray, *, delta: float) -> np.ndarray:
-    column += delta
-    return column
-
-
-def _transform_clip(column: np.ndarray, *, lo: float, hi: float) -> np.ndarray:
-    np.clip(column, lo, hi, out=column)
-    return column
-
-
-def _transform_log1p(column: np.ndarray) -> np.ndarray:
-    np.log1p(column, out=column)
-    return column
-
-
-@dataclass
-class _ComposedTransform:
-    parts: Tuple[FeatureFn, ...]
-
-    def __call__(self, column: np.ndarray) -> np.ndarray:
-        for part in self.parts:
-            column = part(column)
-        return column
-
-
-@dataclass
-class _ImportedCallableTransform:
-    path: str
-    args: Tuple[Any, ...] = ()
-    kwargs: Dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "_fn", _import_callable(self.path))
-
-    def __call__(self, column: np.ndarray) -> np.ndarray:
-        fn = getattr(self, "_fn", None)
-        if fn is None:
-            fn = _import_callable(self.path)
-            object.__setattr__(self, "_fn", fn)
-        result = fn(column, *self.args, **self.kwargs)
-        if result is not None and result is not column:
-            column[...] = result
-        return column
-
-    def __getstate__(self) -> Dict[str, Any]:
-        return {"path": self.path, "args": self.args, "kwargs": self.kwargs}
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        object.__setattr__(self, "path", state["path"])
-        object.__setattr__(self, "args", tuple(state.get("args", ())))
-        object.__setattr__(self, "kwargs", dict(state.get("kwargs", {})))
-        self.__post_init__()
-
-
-def _import_callable(path: str) -> Callable[[np.ndarray], Any]:
-    if ":" in path:
-        module_name, attr_path = path.split(":", 1)
-    else:
-        module_name, attr_path = path.rsplit(".", 1)
-    module = importlib.import_module(module_name)
-    target = module
-    for part in attr_path.split("."):
-        target = getattr(target, part)
-    if not callable(target):
-        raise TypeError(f"Referenced object '{path}' is not callable.")
-    return target
-
-
-def _resolve_transform_callable(spec: Any) -> FeatureFn:
-    """Resolve a transform spec into a numpy-column function."""
-
-    if callable(spec):
-        module = getattr(spec, "__module__", None)
-        qualname = getattr(spec, "__qualname__", None)
-        if module and qualname and module != "__main__":
-            return _ImportedCallableTransform(f"{module}.{qualname}")
-        raise TypeError(
-            "Callable feature transforms must be referenceable via module path; "
-            "pass a string like 'package.module:function' or ('callable', '...') instead."
-        )
-
-    if isinstance(spec, (list, tuple)) and spec:
-        tag, *params = spec
-        tag = str(tag).lower()
-        if tag == "scale":
-            factor = float(params[0]) if params else 1.0
-            return partial(_transform_scale, factor=factor)
-        if tag == "offset":
-            delta = float(params[0]) if params else 0.0
-            return partial(_transform_offset, delta=delta)
-        if tag == "clip":
-            lo = float(params[0]) if params and params[0] is not None else -np.inf
-            hi = float(params[1]) if len(params) > 1 and params[1] is not None else np.inf
-            return partial(_transform_clip, lo=lo, hi=hi)
-        if tag == "compose":
-            parts = [_resolve_transform_callable(p) for p in params]
-            return _ComposedTransform(tuple(parts))
-        if tag == "log1p":
-            return _transform_log1p
-        if tag == "callable":
-            if not params:
-                raise ValueError("'callable' spec requires a target path.")
-            target = params[0]
-            args: Tuple[Any, ...] = ()
-            kwargs: Dict[str, Any] = {}
-            if len(params) > 1:
-                second = params[1]
-                if isinstance(second, (list, tuple)):
-                    args = tuple(second)
-                    if len(params) > 2 and isinstance(params[2], Mapping):
-                        kwargs = dict(params[2])
-                elif isinstance(second, Mapping):
-                    kwargs = dict(second)
-                else:
-                    args = tuple(params[1:])
-            return _ImportedCallableTransform(str(target), args=args, kwargs=kwargs)
-        raise ValueError(f"Unknown transform spec tag '{tag}'.")
-
-    if isinstance(spec, str):
-        return _resolve_transform_callable((spec,))
-
-    if isinstance(spec, Mapping):
-        if "callable" in spec:
-            target = spec["callable"]
-            if not isinstance(target, str):
-                raise TypeError("Feature transform 'callable' must be a string path.")
-            args = tuple(spec.get("args", ()))
-            kwargs = dict(spec.get("kwargs", {}))
-            return _ImportedCallableTransform(target, args=args, kwargs=kwargs)
-        if "compose" in spec:
-            components = spec["compose"]
-            if not isinstance(components, (list, tuple)):
-                raise TypeError("'compose' value must be a sequence.")
-            parts = [_resolve_transform_callable(p) for p in components]
-            return _ComposedTransform(tuple(parts))
-
-    raise TypeError(f"Unsupported transform spec {spec!r}.")
-
-
-def _feature_spec_from_config(feature_cfg: FeatureConfig) -> Optional[FeatureTransformSpec]:
-    transforms = getattr(feature_cfg, "transforms", None)
-    if not transforms:
-        return None
-    fn_map: Dict[str, FeatureFn] = {}
-    for name, raw_spec in transforms.items():
-        fn_map[name] = _resolve_transform_callable(raw_spec)
-    return FeatureTransformSpec(fn_map)
+    groups: List[Tuple[int, ...]] = []
+    for prefix in sorted(prefixes):
+        indices: List[int] = []
+        found_all = True
+        for feature in requested:
+            col = f"{prefix}_{feature}"
+            idx = name_to_idx.get(col)
+            if idx is None:
+                found_all = False
+                break
+            indices.append(idx)
+        if found_all and indices:
+            groups.append(tuple(indices))
+    return groups
 
 
 def _apply_feature_transforms(
@@ -332,34 +191,38 @@ def _apply_feature_transforms(
         feature_names: Sequence[str],
         spec: Optional[FeatureTransformSpec]
 ) -> np.ndarray:
-    if spec is None or not spec.by_name:
+    if spec is None or not spec.steps:
         return X
-    # apply per-column (vectorized)
+
     out = X
-    for j, name in enumerate(feature_names):
-        fn = spec.by_name.get(name)
-        if fn is not None:
-            # view as (L,) vector for convenience
-            col = out[:, j]
-            out[:, j] = fn(col)
+    for step in spec.steps:
+        index_groups = _resolve_feature_groups(feature_names, step.features)
+        if not index_groups:
+            continue
+        for group in index_groups:
+            idxs = np.asarray(group, dtype=np.int64)
+            if idxs.size == 1:
+                col_idx = int(idxs[0])
+                block = out[:, col_idx].copy()
+                result = step.fn(block)
+                if result is None:
+                    result = block
+                if result.shape != block.shape:
+                    raise ValueError(
+                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
+                    )
+                out[:, col_idx] = result
+            else:
+                block = out[:, idxs].copy()
+                result = step.fn(block)
+                if result is None:
+                    result = block
+                if result.shape != block.shape:
+                    raise ValueError(
+                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
+                    )
+                out[:, idxs] = result
     return out
-
-
-def _select_columns(
-        X: np.ndarray,
-        names: Sequence[str],
-        keep: Optional[Sequence[str]]
-) -> Tuple[np.ndarray, List[int], List[str]]:
-    if not keep:
-        return X, list(range(X.shape[1])), list(names)
-    name2idx = {n: i for i, n in enumerate(names)}
-    idxs: List[int] = []
-    for n in keep:
-        if n not in name2idx:
-            raise KeyError(f"Requested feature '{n}' not found")
-        idxs.append(name2idx[n])
-    idxs_np = np.asarray(idxs, dtype=np.int64)
-    return X[:, idxs_np], idxs, [names[i] for i in idxs]
 
 
 class WindowDataset(Dataset):
@@ -368,8 +231,8 @@ class WindowDataset(Dataset):
 
     __getitem__(i) returns:
         dict(
-            X: FloatTensor [L, F_sel],
-            Y: FloatTensor [L, Y_sel] or empty (0-dim second axis) if no targets,
+            X: FloatTensor [L, F],
+            Y: FloatTensor [L, Yd] or empty (0-dim second axis) if no targets,
             episode_id: int,
             start: int,
         )
@@ -379,8 +242,6 @@ class WindowDataset(Dataset):
             self,
             data_dir: str | Path,
             *,
-            feature_keep: Optional[Sequence[str]] = None,
-            target_keep: Optional[Sequence[str]] = None,
             feature_transforms: Optional[FeatureTransformSpec] = None,
             ep_cache_size: int = 8,
             return_numpy: bool = False,
@@ -388,38 +249,17 @@ class WindowDataset(Dataset):
         super().__init__()
         self.index = ZarrCorpusIndex(data_dir)
         self.seq_len = self.index.seq_len
-        self.feature_keep = list(feature_keep) if feature_keep else None
-        self.target_keep = list(target_keep) if target_keep else None
         self.transforms = feature_transforms
         self._cache = _LRUEpisodeCache(max_open=ep_cache_size)
         self._return_numpy = return_numpy  # if True, return np.float32 arrays instead of torch tensors
 
-        # Pre-compute column indices (validated lazily against first episode slice)
-        self._feature_keep_idxs: Optional[List[int]] = None
-        self._target_keep_idxs: Optional[List[int]] = None
+        self._feature_names = tuple(self.index.feature_names)
+        self._target_names = tuple(self.index.target_names)
+        self._feature_names_sel = list(self._feature_names)
+        self._target_names_sel = list(self._target_names)
 
     def __len__(self) -> int:
         return self.index.total_windows
-
-    def _resolve_column_selections(
-            self, X: np.ndarray, Y: Optional[np.ndarray]
-    ) -> Tuple[List[int], Optional[List[int]], List[str], Optional[List[str]]]:
-        # compute once
-        if self._feature_keep_idxs is None:
-            _, feat_idxs, feat_names = _select_columns(
-                X[:1, :], self.index.feature_names, self.feature_keep
-            )
-            self._feature_keep_idxs = feat_idxs
-            self._feature_names_sel = feat_names
-        if Y is not None and self._target_keep_idxs is None:
-            _, targ_idxs, targ_names = _select_columns(
-                Y[:1, :], self.index.target_names, self.target_keep
-            )
-            self._target_keep_idxs = targ_idxs
-            self._target_names_sel = targ_names
-        return self._feature_keep_idxs, self._target_keep_idxs, self._feature_names_sel, getattr(self,
-                                                                                                 "_target_names_sel",
-                                                                                                 None)
 
     def __getitem__(self, i: int) -> Dict[str, object]:
         ep_idx, offset = self.index.window_to_episode(i)
@@ -432,16 +272,12 @@ class WindowDataset(Dataset):
         Xw = Xa[start:start + L, :]  # (L, F)
         Yw = None if Ya is None else Ya[start:start + L, :]  # (L, Yd)
 
-        # Select columns (if requested) - compute idxs on first call
-        feat_keep_idxs, targ_keep_idxs, feat_names_sel, _ = self._resolve_column_selections(Xw, Yw)
-        if feat_keep_idxs is not None:
-            Xw = Xw[:, np.asarray(feat_keep_idxs, dtype=np.int64)]
-        if Yw is not None and targ_keep_idxs is not None:
-            Yw = Yw[:, np.asarray(targ_keep_idxs, dtype=np.int64)]
-
         # Apply per-feature transforms (in-place on view)
         Xw = np.ascontiguousarray(Xw)  # ensure contiguous for in-place ops
-        Xw = _apply_feature_transforms(Xw, feat_names_sel, self.transforms)
+        Xw = _apply_feature_transforms(Xw, self._feature_names, self.transforms)
+        if Yw is not None:
+            Yw = np.ascontiguousarray(Yw)
+            Yw = _apply_feature_transforms(Yw, self._target_names, self.transforms)
 
         if self._return_numpy:
             X_out = Xw.astype(np.float32, copy=False)
@@ -560,11 +396,9 @@ def make_dataloader() -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampl
     Builds dataset + sampler + DataLoader with tuned defaults.
     """
     config = get_config()
-    feature_spec = _feature_spec_from_config(config.features)
+    feature_spec = feature_spec_from_config(config.features)
     ds = WindowDataset(
         config.zarr.out_root,
-        feature_keep=config.train.feature_keep,
-        target_keep=config.train.target_keep,
         feature_transforms=feature_spec,
         return_numpy=False,
     )
@@ -577,7 +411,7 @@ def make_dataloader() -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampl
     if target_windows is not None:
         effective_num_samples = target_windows
 
-    stride = getattr(config.train, "stride", 1)
+    stride = config.train.stride
     sampler = RandomWindowSampler(
         index=ds.index,
         stride=stride,

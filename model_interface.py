@@ -2,93 +2,41 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from collections import deque
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 from tensordict import TensorDict
 
+from column_map import ColumnMap, BUTTON_TARGET_NAMES, CONTROLLER_KEY_GROUPS
 from model.gpt import GPTv7
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
-from preprocess import C_STICK_XY_CLUSTER_CENTERS_V0_1, FOX_STICK_64
-from train import build_inputs_for_gptv7
+from config import FeatureConfig
+from feature_transforms import FeatureTransformSpec, build_transform_spec
+from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from schema import (
+    PLAYER_SPEC,
+    extract_common_fields,
+    extract_player_fields,
+    get_feature_names,
+    get_target_names,
+)
+from train import build_inputs_for_gptv7, _print_table_block, _format_action
 from utils import _resolve_device
 
-# Keep the feature ordering in-sync with training.
-_FEATURE_CONTROLLER_KEYS = {
-    "main": ("main_stick_x", "main_stick_y"),
-    "c": ("c_stick_x", "c_stick_y"),
-    "buttons": ("button_a", "button_b", "button_xy", "button_z", "button_lr"),
-    "shoulder": ("shoulder_analog",),
-}
-_BUTTON_TARGETS = [
-    "p1_button_a",
-    "p1_button_b",
-    "p1_button_xy",
-    "p1_button_z",
-    "p1_button_lr",
-]
+_DEFAULT_FEATURE_NAMES = get_feature_names()
 
-_DEFAULT_FEATURE_NAMES = [
-    "stage",
-    "p1_action",
-    "p1_character",
-    "p1_position_x",
-    "p1_position_y",
-    "p1_percent",
-    "p1_stock",
-    "p1_facing",
-    "p1_on_ground",
-    "p1_button_a",
-    "p1_button_b",
-    "p1_button_xy",
-    "p1_button_z",
-    "p1_button_lr",
-    "p1_main_stick_x",
-    "p1_main_stick_y",
-    "p1_c_stick_x",
-    "p1_c_stick_y",
-    "p1_shoulder_analog",
-    "p1_shield_strength",
-    "p1_is_invulnerable",
-    "p1_jumps_left",
-    "p2_action",
-    "p2_character",
-    "p2_position_x",
-    "p2_position_y",
-    "p2_percent",
-    "p2_stock",
-    "p2_facing",
-    "p2_on_ground",
-    "p2_button_a",
-    "p2_button_b",
-    "p2_button_xy",
-    "p2_button_z",
-    "p2_button_lr",
-    "p2_main_stick_x",
-    "p2_main_stick_y",
-    "p2_c_stick_x",
-    "p2_c_stick_y",
-    "p2_shoulder_analog",
-    "p2_shield_strength",
-    "p2_is_invulnerable",
-    "p2_jumps_left",
-]
+_DEFAULT_TARGET_NAMES = get_target_names()
 
-_DEFAULT_TARGET_NAMES = _BUTTON_TARGETS + [
-    "p1_main_stick_x",
-    "p1_main_stick_y",
-    "p1_c_stick_x",
-    "p1_c_stick_y",
-    "p1_shoulder_analog",
-]
+_DEFAULT_BUTTON_THRESHOLD: float = 0.5
+_DEFAULT_THRESHOLD_PATH = Path(__file__).resolve().with_name("button_thresholds.json")
 
-_DEFAULT_BUTTON_THRESHOLD = 0.5
-_DEFAULT_SHOULDER_CENTERS = (0.0, 0.7, 0.85)
+_FEATURE_TRANSFORMS_SPEC: Optional[FeatureTransformSpec] = None
 
 
 @dataclasses.dataclass
@@ -130,68 +78,142 @@ def _safe_float(value: object) -> float:
         raise
 
 
-def _bool_to_float(value: bool) -> float:
-    return 1.0 if value else 0.0
+def set_feature_transforms(transforms: Optional[Any]) -> None:
+    """Configure per-feature transforms used at inference time."""
+
+    global _FEATURE_TRANSFORMS_SPEC
+    if not transforms:
+        _FEATURE_TRANSFORMS_SPEC = None
+        return
+
+    _FEATURE_TRANSFORMS_SPEC = build_transform_spec(transforms)
 
 
-def _player_fields(player, prefix: str) -> Dict[str, float]:
-    if player is None:
-        zeros: Dict[str, float] = {}
-        for key in [
-            "action",
-            "character",
-            "position_x",
-            "position_y",
-            "percent",
-            "stock",
-            "facing",
-            "on_ground",
-            "button_a",
-            "button_b",
-            "button_xy",
-            "button_z",
-            "button_lr",
-            "main_stick_x",
-            "main_stick_y",
-            "c_stick_x",
-            "c_stick_y",
-            "shoulder_analog",
-            "shield_strength",
-            "is_invulnerable",
-            "jumps_left",
-        ]:
-            zeros[f"{prefix}_{key}"] = 0.0
-        return zeros
+set_feature_transforms(FeatureConfig().transforms)
 
-    controller_state = player.controller_state
-    button = controller_state.button
 
-    button_xy = bool(button[enums.Button.BUTTON_X]) or bool(button[enums.Button.BUTTON_Y])
-    button_lr = bool(button[enums.Button.BUTTON_L]) or bool(button[enums.Button.BUTTON_R])
+def _load_saved_button_thresholds(path: Path) -> Optional[List[float]]:
+    print(f"Loading button thresholds from {path}")
+    try:
+        with path.open("r") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as err:
+        print(f"Warning: failed to load button thresholds from {path}: {err}")
+        return None
 
+    buttons = data.get("buttons")
+    thresholds = data.get("thresholds")
+    threshold_map = data.get("threshold_map")
+
+    button_keys = list(CONTROLLER_KEY_GROUPS["buttons"])
+
+    values: Optional[List[float]] = None
+    if isinstance(thresholds, list) and len(thresholds) == len(button_keys):
+        values = [float(x) for x in thresholds]
+    elif isinstance(threshold_map, Mapping):
+        order = buttons if isinstance(buttons, list) and len(buttons) == len(button_keys) else button_keys
+        values = [float(threshold_map.get(key, _DEFAULT_BUTTON_THRESHOLD)) for key in order]
+
+    if values is not None and len(values) == len(button_keys):
+        return values
+
+    print(f"Warning: threshold file {path} missing expected fields; ignoring.")
+    return None
+
+
+def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float]:
+    spec = _FEATURE_TRANSFORMS_SPEC
+    if not spec or not spec.steps:
+        return features
+
+    out = dict(features)
+    keys = list(out.keys())
+    key_set = set(keys)
+
+    prefixes: set[str] = set()
+    for key in keys:
+        head, _, tail = key.partition("_")
+        if tail and head.startswith("p") and head[1:].isdigit():
+            prefixes.add(head)
+
+    def _resolve_groups(requested: Sequence[str]) -> List[Tuple[str, ...]]:
+        if all(name in key_set for name in requested):
+            return [tuple(requested)]
+        groups: List[Tuple[str, ...]] = []
+        for prefix in sorted(prefixes):
+            group: List[str] = []
+            for feature in requested:
+                key = f"{prefix}_{feature}"
+                if key not in key_set:
+                    break
+                group.append(key)
+            else:
+                if group:
+                    groups.append(tuple(group))
+        return groups
+
+    for step in spec.steps:
+        groups = _resolve_groups(step.features)
+        if not groups:
+            continue
+        for group in groups:
+            if len(group) == 1:
+                key = group[0]
+                value = np.array(out[key], dtype=np.float32)
+                result = step.fn(value.copy())
+                if result is None:
+                    result = value
+                if result.shape != value.shape:
+                    raise ValueError(
+                        f"Transform '{step.transform}' expected output shape {value.shape}, got {result.shape}."
+                    )
+                out[key] = float(result)
+            else:
+                block = np.array([[float(out[k]) for k in group]], dtype=np.float32)
+                result = step.fn(block.copy())
+                if result is None:
+                    result = block
+                if result.shape != block.shape:
+                    raise ValueError(
+                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
+                    )
+                for idx, key in enumerate(group):
+                    out[key] = float(result[0, idx])
+
+    return out
+
+
+def _controller_state_to_features(prefix: str, state: ControllerState) -> Dict[str, float]:
     return {
-        f"{prefix}_action": float(player.action.value),
-        f"{prefix}_character": float(player.character.value),
-        f"{prefix}_position_x": float(player.position.x),
-        f"{prefix}_position_y": float(player.position.y),
-        f"{prefix}_percent": float(player.percent),
-        f"{prefix}_stock": float(player.stock),
-        f"{prefix}_facing": _bool_to_float(bool(player.facing)),
-        f"{prefix}_on_ground": _bool_to_float(bool(player.on_ground)),
-        f"{prefix}_button_a": _bool_to_float(bool(button[enums.Button.BUTTON_A])),
-        f"{prefix}_button_b": _bool_to_float(bool(button[enums.Button.BUTTON_B])),
-        f"{prefix}_button_xy": _bool_to_float(button_xy),
-        f"{prefix}_button_z": _bool_to_float(bool(button[enums.Button.BUTTON_Z])),
-        f"{prefix}_button_lr": _bool_to_float(button_lr),
-        f"{prefix}_main_stick_x": float(controller_state.main_stick[0]),
-        f"{prefix}_main_stick_y": float(controller_state.main_stick[1]),
-        f"{prefix}_c_stick_x": float(controller_state.c_stick[0]),
-        f"{prefix}_c_stick_y": float(controller_state.c_stick[1]),
-        f"{prefix}_shoulder_analog": float(controller_state.l_shoulder),
-        f"{prefix}_shield_strength": float(getattr(player, "shield_strength", 0.0)),
-        f"{prefix}_is_invulnerable": _bool_to_float(bool(getattr(player, "invulnerable", False))),
-        f"{prefix}_jumps_left": float(getattr(player, "jumps_left", 0)),
+        f"{prefix}_button_a": float(state.button_a),
+        f"{prefix}_button_b": float(state.button_b),
+        f"{prefix}_button_xy": float(state.button_xy),
+        f"{prefix}_button_lr": float(state.button_lr),
+        f"{prefix}_button_z": float(state.button_z),
+        f"{prefix}_main_stick_x": float(state.main_stick_x),
+        f"{prefix}_main_stick_y": float(state.main_stick_y),
+        f"{prefix}_c_stick_x": float(state.c_stick_x),
+        f"{prefix}_c_stick_y": float(state.c_stick_y),
+        f"{prefix}_shoulder_analog": float(state.shoulder_analog),
     }
+
+
+def _zero_player_fields(prefix: str) -> Dict[str, float]:
+    return {f"{prefix}_{name}": dtype(0) for name, dtype in PLAYER_SPEC}
+
+
+def _prefixed_player_fields(player, prefix: str) -> Dict[str, float]:
+    if player is None or getattr(player, "controller_state", None) is None:
+        return _zero_player_fields(prefix)
+
+    try:
+        extracted = extract_player_fields(player)
+    except ValueError:
+        return _zero_player_fields(prefix)
+
+    return {f"{prefix}_{name}": value for name, value in extracted.items()}
 
 
 def model_to_dolphin01(
@@ -232,57 +254,25 @@ def collect_raw_inputs_from_gamestate(
     ego_player = gamestate.players.get(bot_port)
     opp_player = gamestate.players.get(opp_port)
 
-    features: Dict[str, float] = {
-        "stage": float(gamestate.stage.value),
-    }
-    features.update(_player_fields(ego_player, "p1"))
-    features.update(_player_fields(opp_player, "p2"))
-    return features
+    values: Dict[str, float] = extract_common_fields(gamestate)
+    prefixed_common = {name: val for name, val in values.items()}
 
+    player_values: Dict[str, float] = {}
+    player_values.update(_prefixed_player_fields(ego_player, "p1"))
+    player_values.update(_prefixed_player_fields(opp_player, "p2"))
 
-class InferenceColumnMap:
-    """Minimal ColumnMap used at inference time."""
+    combined = {**prefixed_common, **player_values}
+    combined = _apply_transforms_to_features(combined)
 
-    def __init__(self, feature_names: Sequence[str], target_names: Sequence[str]) -> None:
-        self.feat_names = list(feature_names)
-        self.targ_names = list(target_names)
+    feature_names = get_feature_names()
 
-        name2idx = {n: i for i, n in enumerate(self.feat_names)}
-        self.stage_idx = name2idx["stage"]
-        self.ego_char_idx = name2idx["p1_character"]
-        self.opp_char_idx = name2idx["p2_character"]
-        self.ego_action_idx = name2idx["p1_action"]
-        self.opp_action_idx = name2idx["p2_action"]
+    final: Dict[str, float] = {}
+    for name in feature_names:
+        if name not in combined:
+            raise KeyError(f"Feature '{name}' missing from collected inputs.")
+        final[name] = _safe_float(combined[name])
 
-        self.controller_idxs: List[int] = []
-        for prefix in ("p1_", "p2_"):
-            for key_group in ("main", "c", "buttons", "shoulder"):
-                for key in _FEATURE_CONTROLLER_KEYS[key_group]:
-                    full = f"{prefix}{key}"
-                    if full in name2idx:
-                        self.controller_idxs.append(name2idx[full])
-
-        excluded = {
-            self.stage_idx,
-            self.ego_char_idx,
-            self.opp_char_idx,
-            self.ego_action_idx,
-            self.opp_action_idx,
-            *self.controller_idxs,
-        }
-        self.gamestate_idxs = [i for i in range(len(self.feat_names)) if i not in excluded]
-
-        targ2idx = {n: i for i, n in enumerate(self.targ_names)}
-
-        def _ti(name: str) -> int:
-            if name not in targ2idx:
-                raise KeyError(f"Target '{name}' not present in checkpoint schema.")
-            return targ2idx[name]
-
-        self.y_main = (_ti("p1_main_stick_x"), _ti("p1_main_stick_y"))
-        self.y_c = (_ti("p1_c_stick_x"), _ti("p1_c_stick_y"))
-        self.y_buttons = [_ti(name) for name in _BUTTON_TARGETS]
-        self.y_shoulder = targ2idx.get("p1_shoulder_analog")
+    return final
 
 
 class GPTInferenceEngine:
@@ -294,16 +284,16 @@ class GPTInferenceEngine:
             *,
             device: Optional[str] = None,
             data_root: Optional[str | Path] = None,
-            button_threshold: float | Sequence[float] = _DEFAULT_BUTTON_THRESHOLD,
-            shoulder_centers: Optional[Sequence[float]] = None,
+            thresholds_path: Optional[str | Path] = None,
             history: Optional[int] = None,
             warmup_frames: int = 128,
     ) -> None:
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})
 
-        data_root = Path(data_root or train_cfg.get("data_root"))
+        data_root = Path(data_root or train_cfg.get("data_root", "dataset_FOX_vs_FOX"))
         meta_path = data_root / "meta.json"
+        transforms_spec: Optional[Any] = None
         if meta_path.exists():
             with meta_path.open("r") as f:
                 meta = json.load(f)
@@ -311,39 +301,74 @@ class GPTInferenceEngine:
             feature_names = meta["schema"]["features"]
             target_names = meta["schema"]["targets"]
             self.seq_len = history or int(meta.get("seq_len", 256))
+            build_cfg = meta.get("build_config")
+            if isinstance(build_cfg, Mapping):
+                features_cfg = build_cfg.get("features")
+                if isinstance(features_cfg, Mapping):
+                    transforms_cfg = features_cfg.get("transforms")
+                    if transforms_cfg:
+                        transforms_spec = transforms_cfg
         else:
             feature_names = list(_DEFAULT_FEATURE_NAMES)
             target_names = list(_DEFAULT_TARGET_NAMES)
             self.seq_len = history or 256
         self.device = _resolve_device(device)
-        self.shoulder_centers = tuple(
-            shoulder_centers or train_cfg["shoulder_centers"]
-        )
+        self.shoulder_centers = SHOULDER_QUANTIZED
         self.warmup_frames = warmup_frames
+
+        if transforms_spec is None and isinstance(train_cfg, Mapping):
+            features_cfg = train_cfg.get("features")
+            if isinstance(features_cfg, Mapping):
+                transforms_cfg = features_cfg.get("transforms")
+                if transforms_cfg:
+                    transforms_spec = transforms_cfg
+
+        if transforms_spec is not None:
+            set_feature_transforms(transforms_spec)
 
         self.model = GPTv7().to(self.device)
         self.model.load_state_dict(ckpt["model"])
         self.model.eval()
 
         self.feature_names = feature_names
-        self.colmap = InferenceColumnMap(feature_names, target_names)
+        self.colmap = ColumnMap(feature_names, target_names)
         self.feature_dim = len(feature_names)
         self.buffer: deque[torch.Tensor] = deque(maxlen=self.seq_len)
 
-        if isinstance(button_threshold, Iterable) and not isinstance(button_threshold, (str, bytes)):
-            thresholds = list(button_threshold)
-            if len(thresholds) != len(_BUTTON_TARGETS):
-                raise ValueError(
-                    f"Expected {len(_BUTTON_TARGETS)} button thresholds, got {len(thresholds)}"
-                )
-            self.button_thresholds = torch.tensor(thresholds, dtype=torch.float32)
-        else:
-            self.button_thresholds = torch.full(
-                (len(_BUTTON_TARGETS),), float(button_threshold), dtype=torch.float32
-            )
+        controller_feature_keys: list[str] = []
+        for group in CONTROLLER_KEY_GROUPS.values():
+            for name in group:
+                key = f"p1_{name}"
+                if key in self.feature_names and key not in controller_feature_keys:
+                    controller_feature_keys.append(key)
+        shoulder_key = "p1_shoulder_analog"
+        if shoulder_key in self.feature_names and shoulder_key not in controller_feature_keys:
+            controller_feature_keys.append(shoulder_key)
+        self._controller_feature_keys: Tuple[str, ...] = tuple(controller_feature_keys)
+        self._prev_controller_features: Dict[str, float] = {}
+        self._update_prev_controller_features(ControllerState.neutral())
+        self._frames_seen = 0
 
-        self.button_thresholds = torch.clamp(self.button_thresholds, 0.0, 1.0)
-        self.button_thresholds = self.button_thresholds.to(torch.float32)
+        num_buttons = len(BUTTON_TARGET_NAMES)
+        threshold_tensor = torch.full((num_buttons,), _DEFAULT_BUTTON_THRESHOLD, dtype=torch.float32)
+
+        saved_thresholds: Optional[List[float]] = None
+        candidate_paths: List[Path] = []
+        if thresholds_path is not None:
+            candidate_paths.append(Path(thresholds_path).expanduser())
+        candidate_paths.append(_DEFAULT_THRESHOLD_PATH)
+
+        for path in candidate_paths:
+            values = _load_saved_button_thresholds(path)
+            if values is not None:
+                saved_thresholds = values
+                break
+
+        if saved_thresholds is not None:
+            threshold_tensor = torch.tensor(saved_thresholds, dtype=torch.float32)
+
+        self.button_thresholds = torch.clamp(threshold_tensor, 0.0, 1.0).to(torch.float32)
+        print(f'using button thresholds: {self.button_thresholds}')
 
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
         frame = torch.zeros(self.feature_dim, dtype=torch.float32)
@@ -361,8 +386,42 @@ class GPTInferenceEngine:
     def _build_inputs(self, batch_X: torch.Tensor) -> TensorDict:
         return build_inputs_for_gptv7(batch_X, self.colmap)
 
+    def _preview_recent_frames(self) -> None:
+        if not self.buffer:
+            return
+        frames = list(self.buffer)[-10:]
+        data = torch.stack(frames, dim=0).cpu().numpy()
+        feature_names = list(self.feature_names)
+        formatters: Dict[str, Callable[[object], str]] = {}
+        for key in feature_names:
+            if key.endswith("_action"):
+                formatters[key] = _format_action
+
+        print("=== Inference preview (most recent frames) ===")
+        _print_table_block(
+            "Features",
+            feature_names,
+            data,
+            formatters=formatters,
+            max_columns=10,
+        )
+
+    def _override_controller_features(self, features: Mapping[str, float]) -> Dict[str, float]:
+        updated = dict(features)
+        for key in self._controller_feature_keys:
+            if key in self._prev_controller_features and key in updated:
+                updated[key] = self._prev_controller_features[key]
+        return updated
+
+    def _update_prev_controller_features(self, state: ControllerState) -> None:
+        values = _controller_state_to_features("p1", state)
+        if _FEATURE_TRANSFORMS_SPEC and _FEATURE_TRANSFORMS_SPEC.steps:
+            transformed = _apply_transforms_to_features(dict(values))
+            self._prev_controller_features = {k: float(transformed[k]) for k in values}
+        else:
+            self._prev_controller_features = {k: float(v) for k, v in values.items()}
+
     def _decode_stick(self, logits: torch.Tensor, palette: np.ndarray) -> np.ndarray:
-        # print(logits)
         idx = torch.argmax(logits, dim=-1).detach().cpu().numpy().astype(np.int32)
         xy01 = model_to_dolphin01(idx, palette11=palette)
         return xy01.reshape(-1)
@@ -382,8 +441,8 @@ class GPTInferenceEngine:
 
         shoulder_logits = outputs.get("shoulder")
 
-        main_xy = self._decode_stick(main_logits, np.asarray(FOX_STICK_64, dtype=np.float32))
-        c_xy = self._decode_stick(c_logits, np.asarray(C_STICK_XY_CLUSTER_CENTERS_V0_1, dtype=np.float32))
+        main_xy = self._decode_stick(main_logits, np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32))
+        c_xy = self._decode_stick(c_logits, np.asarray(C_STICK_QUANTIZED, dtype=np.float32))
         buttons_bool = self._decode_buttons(button_probs)
 
         if shoulder_logits is not None:
@@ -415,13 +474,21 @@ class GPTInferenceEngine:
         return self._build_inputs(batch)
 
     def predict_from_raw(self, raw_inputs: Dict[str, float]) -> ControllerState:
-        inputs_td = self.prepare_inputs(raw_inputs)
+        features = self._override_controller_features(raw_inputs)
+        inputs_td = self.prepare_inputs(features)
+        self._frames_seen += 1
+        if self.buffer and len(self.buffer) >= self.warmup_frames and self._frames_seen % 1000 == 0:
+            self._preview_recent_frames()
         if inputs_td is None or len(self.buffer) < self.warmup_frames:
-            print(inputs_td, len(self.buffer))
-            return ControllerState.neutral()
+            controller = ControllerState.neutral()
+            self._update_prev_controller_features(controller)
+            return controller
         with torch.inference_mode():
             outputs = self.model(inputs_td)
-        return self._decode_outputs(outputs)
+        controller = self._decode_outputs(outputs)
+        print(controller)
+        self._update_prev_controller_features(controller)
+        return controller
 
 
 _ACTIVE_ENGINE: Optional[GPTInferenceEngine] = None

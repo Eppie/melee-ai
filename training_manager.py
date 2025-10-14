@@ -29,16 +29,17 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from tqdm.auto import tqdm
 
+from column_map import ColumnMap
 from config import Config, get_config, init_config, reset_config_for_tests
 from controller_quantization import quantize_targets
 from loss import _compute_ce_weights, _compute_pos_weights
 from model.gpt import GPTv7
 from train import (
-    ColumnMap,
     build_inputs_for_gptv7,
     cosine_lr_schedule,
     RunningMetrics,
 )
+from utils import _resolve_device
 from window_dataset import make_dataloader
 
 TRAINING_FLOP_MULTIPLIER = 3.0  # forward + backward (approximation)
@@ -243,16 +244,6 @@ def expand_search_space(space: Mapping[str, Sequence[str]]) -> Iterator[Dict[str
     value_lists = [list(space[k]) for k in keys]
     for combo in itertools.product(*value_lists):
         yield {k: v for k, v in zip(keys, combo)}
-
-
-def choose_device(preferred: Optional[str] = None) -> torch.device:
-    if preferred:
-        return torch.device(preferred)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
 
 
 def _swiglu_flops(input_dim: int, inner_dim: int, output_dim: int, tokens: int) -> float:
@@ -560,7 +551,7 @@ def run_training_once(
     if verbose:
         print(f"[{run_id}] model parameter count: {parameter_count:,}")
     loader, ds, sampler = make_dataloader()
-    colmap = ColumnMap(ds)
+    colmap = ColumnMap.from_dataset(ds)
 
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -630,7 +621,7 @@ def run_training_once(
                         Y = batch["Y"].to(device, non_blocking=True)
 
                         inputs_td = build_inputs_for_gptv7(X, colmap)
-                        target_info = quantize_targets(Y, colmap, cfg.train.shoulder_centers)
+                        target_info = quantize_targets(Y, colmap, input_domain="unit11")
 
                         pred = model(inputs_td)
                         B, L, _ = pred["main_stick"].shape
@@ -1140,7 +1131,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     base_overrides = dict(parse_key_value(s) for s in args.set)
     search_space = parse_search_items(args.search)
 
-    device = choose_device(args.device)
+    device = _resolve_device(args.device)
     verbose = not args.no_verbose
     results_log_path = args.results_log
     objectives = [parse_objective(expr) for expr in args.target_objective]

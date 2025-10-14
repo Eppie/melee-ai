@@ -4,13 +4,13 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
-from torch.distributions import Bernoulli, Categorical
 
 from config import get_config
 from model.attention import CausalSelfAttention
 from model.feed_forward import ActivationFFN, MoEFFN
 from model.norm import _create_norm
-from model.output_head import LinearHead, MultiLabelButtonHeadLinear
+from model.output_head import MLPHead, MultiLabelButtonHead, MultiLabelButtonHeadTiny, TinyMLPHead
+from model.value_head import TinyValueHead
 
 
 class MoEMLP(nn.Module):
@@ -130,13 +130,14 @@ class GPTv7(nn.Module):
                 nn.Linear(input_dim, output_dim, bias=config.model.bias),
             )
 
+        #
         base_dim: int = self.n_embd
-        self.shoulder_head = LinearHead(base_dim, shoulder_output_size, bias=config.model.bias)
-        self.c_stick_head = LinearHead(c_stick_input_size, c_stick_output_size, bias=config.model.bias)
-        self.main_stick_head = LinearHead(main_stick_input_size, main_stick_output_size, bias=config.model.bias)
-        self.button_head = MultiLabelButtonHeadLinear(
-            button_input_size, button_output_size, bias=config.model.bias
-        )
+        # self.shoulder_head = LinearHead(base_dim, shoulder_output_size, bias=config.model.bias)
+        # self.c_stick_head = LinearHead(c_stick_input_size, c_stick_output_size, bias=config.model.bias)
+        # self.main_stick_head = LinearHead(main_stick_input_size, main_stick_output_size, bias=config.model.bias)
+        # self.button_head = MultiLabelButtonHeadLinear(
+        #     button_input_size, button_output_size, bias=config.model.bias
+        # )
         # self.shoulder_head = head_block(self.n_embd, shoulder_output_size)
         # self.c_stick_head = head_block(c_stick_input_size, c_stick_output_size)
         # self.main_stick_head = head_block(main_stick_input_size, main_stick_output_size)
@@ -146,10 +147,56 @@ class GPTv7(nn.Module):
         #     bias=config.model.bias,
         # )
 
-        self.enable_rl_heads = bool(getattr(config.model, "enable_rl_heads", False))
-        self._rl_value_head: Optional[nn.Module] = None
-        self._initialize_rl_heads(config)
+        # --- NEW: Define a small, shared hidden dimension for all heads ---
+        head_hidden_dim = 128  # Drastically smaller than 1024+ before!
+        head_activation = "gelu"  # GELU is a standard, efficient choice
 
+        # --- Instantiate the Lightweight Heads ---
+        self.shoulder_head = TinyMLPHead(
+            input_size=base_dim,
+            output_size=shoulder_output_size,
+            hidden=head_hidden_dim,
+            activation=head_activation,
+            bias=config.model.bias
+        )
+
+        self.c_stick_head = TinyMLPHead(
+            input_size=c_stick_input_size,
+            output_size=c_stick_output_size,
+            hidden=head_hidden_dim,
+            activation=head_activation,
+            bias=config.model.bias
+        )
+
+        self.main_stick_head = TinyMLPHead(
+            input_size=main_stick_input_size,
+            output_size=main_stick_output_size,
+            hidden=head_hidden_dim,
+            activation=head_activation,
+            bias=config.model.bias
+        )
+
+        # Wrap the button head to get both logits and probs
+        self.button_head = MultiLabelButtonHeadTiny(
+            TinyMLPHead(
+                input_size=button_input_size,
+                output_size=button_output_size,
+                hidden=head_hidden_dim,
+                activation=head_activation,
+                bias=config.model.bias
+            )
+        )
+        
+        # Value head for RL (critic network)
+        self.value_head: Optional[TinyValueHead] = None
+        if config.model.use_value_head:
+            self.value_head = TinyValueHead(
+                input_dim=self.n_embd,
+                hidden=head_hidden_dim,
+                activation=head_activation,
+                bias=config.model.bias,
+            )
+        
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
@@ -179,13 +226,7 @@ class GPTv7(nn.Module):
             dim=-1,
         )
 
-    def forward(
-            self,
-            inputs: TensorDict,
-            *,
-            actions: Optional[TensorDict] = None,
-            return_rl_outputs: Optional[bool] = None,
-    ) -> TensorDict:
+    def forward(self, inputs: TensorDict) -> TensorDict:
         # B = batch size
         # L = sequence length
         B, L, _ = inputs["gamestate"].shape
@@ -241,88 +282,14 @@ class GPTv7(nn.Module):
         )
 
         cfg = get_config().model
+        
+        # Add value prediction if value head is enabled
+        if cfg.use_value_head and self.value_head is not None:
+            value = self.value_head(x_BLD)  # [B, L, 1]
+            outputs.set("value", value)
+        
         if cfg.use_moe and total_aux_loss is not None and num_moe_layers > 0:
             avg_aux_loss = total_aux_loss / num_moe_layers
             outputs.set("moe_aux_loss", avg_aux_loss.reshape(1, 1).expand(B, L))
 
-        add_rl = return_rl_outputs if return_rl_outputs is not None else self.enable_rl_heads
-        if not add_rl:
-            return outputs
-
-        if not self.enable_rl_heads:
-            raise RuntimeError(
-                "RL outputs requested but `enable_rl_heads` is False in the config."
-            )
-
-        rl_data = TensorDict({}, batch_size=(B, L))
-        if self._rl_value_head is not None:
-            value = self._rl_value_head(x_BLD).squeeze(-1)
-            rl_data.set("value", value)
-
-        policy = TensorDict({}, batch_size=(B, L))
-        policy.set("buttons_logits", button_logits)
-        policy.set("buttons_probs", button_probs)
-        policy.set("shoulder_logits", shoulder)
-        policy.set("c_stick_logits", c_stick)
-        policy.set("main_stick_logits", main_stick)
-        rl_data.set("policy", policy)
-
-        if actions is not None:
-            log_prob, entropy = self._rl_evaluate_actions(policy, actions)
-            rl_data.set("action_log_prob", log_prob)
-            rl_data.set("policy_entropy", entropy)
-
-        outputs.update(rl_data)
         return outputs
-
-    def _initialize_rl_heads(
-            self,
-            config,
-    ) -> None:
-        if not self.enable_rl_heads:
-            return
-
-        bias = config.model.bias
-        self._rl_value_head = nn.Sequential(
-            _create_norm(self.n_embd),
-            nn.Linear(self.n_embd, 1, bias=bias),
-        )
-
-    def _rl_evaluate_actions(
-            self,
-            policy: TensorDict,
-            actions: TensorDict,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        sample = next(iter(policy.values()))
-        log_prob = sample.new_zeros(policy.batch_size)
-        entropy = sample.new_zeros(policy.batch_size)
-
-        if "buttons" in actions.keys() and "buttons_logits" in policy.keys():
-            buttons_logits = policy.get("buttons_logits")
-            buttons_actions = actions.get("buttons").to(buttons_logits.device, buttons_logits.dtype)
-            btn_dist = Bernoulli(logits=buttons_logits)
-            log_prob = log_prob + btn_dist.log_prob(buttons_actions).sum(dim=-1)
-            entropy = entropy + btn_dist.entropy().sum(dim=-1)
-
-        if "main_stick" in actions.keys() and "main_stick_logits" in policy.keys():
-            logits = policy.get("main_stick_logits")
-            main_actions = actions.get("main_stick").to(logits.device).long()
-            dist = Categorical(logits=logits)
-            log_prob = log_prob + dist.log_prob(main_actions)
-            entropy = entropy + dist.entropy()
-
-        if "c_stick" in actions.keys() and "c_stick_logits" in policy.keys():
-            logits = policy.get("c_stick_logits")
-            c_actions = actions.get("c_stick").to(logits.device).long()
-            dist = Categorical(logits=logits)
-            log_prob = log_prob + dist.log_prob(c_actions)
-            entropy = entropy + dist.entropy()
-
-        if "shoulder" in actions.keys() and "shoulder_logits" in policy.keys():
-            logits = policy.get("shoulder_logits")
-            sh_actions = actions.get("shoulder").to(logits.device).long()
-            dist = Categorical(logits=logits)
-            log_prob = log_prob + dist.log_prob(sh_actions)
-            entropy = entropy + dist.entropy()
-
-        return log_prob, entropy

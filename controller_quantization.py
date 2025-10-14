@@ -5,30 +5,56 @@ from typing import Dict, Optional, Sequence
 import numpy as np
 import torch
 
-from preprocess import FOX_STICK_64, C_STICK_XY_CLUSTER_CENTERS_V0_1
+from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
 
 
 def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:
     """Map controller coordinates from [0,1] to [-1,1] and clamp to the unit circle."""
     xy11 = torch.clamp(xy01 * 2.0 - 1.0, -1.0, 1.0)
+    return _clamp_unit_circle(xy11)
+
+
+def _clamp_unit_circle(xy11: torch.Tensor) -> torch.Tensor:
+    """Clamp arbitrary stick coordinates in [-1,1] to the unit circle."""
     radius = torch.linalg.norm(xy11, dim=-1, keepdim=True)
     scale = torch.clamp(radius, min=1.0)
     return xy11 / scale.clamp_min(1e-12)
 
 
 def quantize_targets(
-    batch_Y: torch.FloatTensor,
-    colmap,
-    shoulder_centers: Optional[Sequence[float]] = None,
+        batch_Y: torch.FloatTensor,
+        colmap,
+        *,
+        input_domain: str = "auto",
 ) -> Dict[str, torch.Tensor]:
-    """Convert raw controller targets in [0,1] space to palette indices."""
+    """Convert controller targets to palette indices.
+
+    Parameters
+    ----------
+    batch_Y:
+        Target tensor [..., features].
+    colmap:
+        Column map describing which slices correspond to controller fields.
+    input_domain:
+        "unit01" if the incoming stick coordinates are in [0,1],
+        "unit11" if they are already in [-1,1],
+        "auto" (default) to inspect the data and choose automatically.
+    """
     B, L, _ = batch_Y.shape
     device = batch_Y.device
 
     # Main stick palette lookup
-    main_xy01 = batch_Y[..., list(colmap.y_main)]
-    main_xy11 = sticks01_to_unit11(main_xy01)
-    P_main = torch.tensor(np.asarray(FOX_STICK_64, dtype=np.float32), device=device)
+    main_xy = batch_Y[..., list(colmap.y_main)]
+    if input_domain == "unit11":
+        main_xy11 = _clamp_unit_circle(torch.clamp(main_xy, -1.0, 1.0))
+    elif input_domain == "unit01":
+        main_xy11 = sticks01_to_unit11(main_xy)
+    else:  # auto
+        if torch.any(main_xy < 0.0) or torch.any(main_xy > 1.0):
+            main_xy11 = _clamp_unit_circle(torch.clamp(main_xy, -1.0, 1.0))
+        else:
+            main_xy11 = sticks01_to_unit11(main_xy)
+    P_main = torch.tensor(np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32), device=device)
     V_main = main_xy11.reshape(-1, 2)
     main_norm = V_main.pow(2).sum(dim=1, keepdim=True)
     palette_norm = P_main.pow(2).sum(dim=1).unsqueeze(0)
@@ -37,9 +63,20 @@ def quantize_targets(
     y_main_idx = torch.argmin(d2, dim=1).view(B, L)
 
     # C-stick palette lookup
-    c_xy01 = batch_Y[..., list(colmap.y_c)]
-    c_xy11 = sticks01_to_unit11(c_xy01)
-    P_c = torch.tensor(np.asarray(C_STICK_XY_CLUSTER_CENTERS_V0_1, dtype=np.float32), device=device)
+    c_xy = batch_Y[..., list(colmap.y_c)]
+    if input_domain == "unit11":
+        c_xy11 = _clamp_unit_circle(torch.clamp(c_xy, -1.0, 1.0))
+    elif input_domain == "unit01":
+        c_xy11 = sticks01_to_unit11(c_xy)
+    else:
+        if torch.any(c_xy < 0.0) or torch.any(c_xy > 1.0):
+            c_xy11 = _clamp_unit_circle(torch.clamp(c_xy, -1.0, 1.0))
+        else:
+            c_xy11 = sticks01_to_unit11(c_xy)
+    P_c = torch.tensor(
+        np.asarray(C_STICK_QUANTIZED, dtype=np.float32),
+        device=device,
+    )
     V_c = c_xy11.reshape(-1, 2)
     c_norm = V_c.pow(2).sum(dim=1, keepdim=True)
     palette_c_norm = P_c.pow(2).sum(dim=1).unsqueeze(0)
@@ -52,13 +89,14 @@ def quantize_targets(
     y_buttons = batch_Y[..., btn_cols].to(torch.float32)
     y_buttons = torch.clamp(y_buttons, 0.0, 1.0)
 
-    # Optional shoulder binning
     y_shoulder_idx = None
-    if colmap.y_shoulder is not None and shoulder_centers is not None:
-        centers = torch.tensor(np.asarray(shoulder_centers, dtype=np.float32), device=device)
+    shoulder_K = 0
+    if getattr(colmap, "y_shoulder", None) is not None:
+        centers = torch.tensor(np.asarray(SHOULDER_QUANTIZED, dtype=np.float32), device=device)
         s = batch_Y[..., colmap.y_shoulder].unsqueeze(-1)
         d2s = (s - centers) ** 2
         y_shoulder_idx = torch.argmin(d2s, dim=-1)
+        shoulder_K = len(SHOULDER_QUANTIZED)
 
     return {
         "main_idx": y_main_idx,
@@ -68,7 +106,5 @@ def quantize_targets(
         "main_K": P_main.shape[0],
         "c_K": P_c.shape[0],
         "buttons_K": y_buttons.shape[-1],
-        "shoulder_K": (
-            len(shoulder_centers) if (colmap.y_shoulder is not None and shoulder_centers is not None) else 0
-        ),
+        "shoulder_K": shoulder_K,
     }

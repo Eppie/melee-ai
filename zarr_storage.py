@@ -3,18 +3,19 @@ import math
 import os
 import shutil
 import time
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
+import tqdm
 import zarr
 
 from config import init_config, get_config
 from libmelee.melee.console import Console
 from libmelee.melee.gamestate import GameState
 from schema import Row, extract_row, get_feature_names, get_target_names
-
 
 ROW_FIELDS = tuple(fields(Row))
 
@@ -212,52 +213,18 @@ def _rows_to_dense(rows: Sequence[object], schema: Schema) -> \
     return X, Y, feat_dtypes, targ_dtypes
 
 
-def _process_shard(
-        shard_id: int,
-        raw_paths: Sequence[str],
-        schema: Schema,
-) -> ShardResult:
-    config = get_config()
-    shard_path = Path(config.zarr.out_root) / f"shard_{shard_id:05d}.zarr"
-    writer = EpisodeWriter(schema, str(shard_path))
-
-    feat_dtypes_first: List[str] | None = None
-    targ_dtypes_first: List[str] | None = None
-
-    episode_ids: List[int] = []
-    frames: List[int] = []
-
-    for local_idx, raw_path in enumerate(raw_paths):
-        episode_id = shard_id * config.zarr.shard_size + local_idx
-        rows = process_one_episode(raw_path)
-        X, Y, feat_dtypes, targ_dtypes = _rows_to_dense(rows, schema)
-
-        if feat_dtypes_first is None:
-            feat_dtypes_first = feat_dtypes
-            targ_dtypes_first = targ_dtypes
-
-        writer.write_episode(episode_id, X, Y)
-
-        episode_ids.append(episode_id)
-        frames.append(X.shape[0])
-
-    writer.finalize()
-
-    return ShardResult(
-        shard_id=shard_id,
-        episode_ids=episode_ids,
-        frames=frames,
-        feat_dtypes=feat_dtypes_first or [],
-        targ_dtypes=targ_dtypes_first or [],
-    )
+def _process_episode_task(raw_path: str, schema: Schema) -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
+    rows = process_one_episode(raw_path)
+    return _rows_to_dense(rows, schema)
 
 
 def _merge_and_write_metadata(
         results: List[ShardResult],
         schema: Schema,
+        out_root: str
 ) -> None:
     config = get_config()
-    out_dir = Path(config.zarr.out_root)
+    out_dir = Path(out_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Index
@@ -297,7 +264,7 @@ def _merge_and_write_metadata(
         json.dump(meta, f, indent=2)
 
 
-def build_dataset(raw_episode_paths: Sequence[str], schema: Schema) -> None:
+def build_dataset(raw_episode_paths: Sequence[str], schema: Schema, out_root: str) -> None:
     config = get_config()
     N = len(raw_episode_paths)
     if N == 0:
@@ -310,14 +277,75 @@ def build_dataset(raw_episode_paths: Sequence[str], schema: Schema) -> None:
         end = min((s + 1) * config.zarr.shard_size, N)
         shards.append(list(raw_episode_paths[start:end]))
 
+    Path(out_root).mkdir(parents=True, exist_ok=True)
+
+    max_workers = min(N, max(1, os.cpu_count() or 1))
+    writers: Dict[int, EpisodeWriter] = {}
+    shard_episode_entries: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(num_shards)}
+    shard_feat_dtypes: Dict[int, List[str] | None] = {i: None for i in range(num_shards)}
+    shard_targ_dtypes: Dict[int, List[str] | None] = {i: None for i in range(num_shards)}
+
+    futures: Dict[Future, Tuple[int, int]] = {}
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        for shard_idx, shard_paths in enumerate(shards):
+            for local_idx, raw_path in enumerate(shard_paths):
+                future = executor.submit(_process_episode_task, raw_path, schema)
+                futures[future] = (shard_idx, local_idx)
+
+        with tqdm.tqdm(total=N, desc="Processing episodes", unit="episode") as progress:
+            for future in as_completed(futures):
+                shard_idx, local_idx = futures[future]
+                try:
+                    X, Y, feat_dtypes, targ_dtypes = future.result()
+                except Exception as exc:  # pragma: no cover - include episode context when bubbling
+                    raise RuntimeError(
+                        f"Episode processing failed for shard {shard_idx}, index {local_idx}: {exc}"
+                    ) from exc
+
+                progress.update(1)
+
+                writer = writers.get(shard_idx)
+                if writer is None:
+                    shard_path = Path(out_root) / f"shard_{shard_idx:05d}.zarr"
+                    writer = EpisodeWriter(schema, str(shard_path))
+                    writers[shard_idx] = writer
+
+                episode_id = shard_idx * config.zarr.shard_size + local_idx
+                writer.write_episode(episode_id, X, Y)
+
+                if shard_feat_dtypes[shard_idx] is None:
+                    shard_feat_dtypes[shard_idx] = feat_dtypes
+                    shard_targ_dtypes[shard_idx] = targ_dtypes
+
+                shard_episode_entries[shard_idx].append((episode_id, X.shape[0]))
+
     results: List[ShardResult] = []
-    Path(config.zarr.out_root).mkdir(parents=True, exist_ok=True)
-    for s in range(num_shards):
-        result = _process_shard(s, shards[s], schema)
-        results.append(result)
+    for shard_idx in range(num_shards):
+        entries = shard_episode_entries[shard_idx]
+        if not entries:
+            continue
+
+        entries.sort(key=lambda item: item[0])
+        writer = writers.get(shard_idx)
+        if writer is None:
+            raise RuntimeError(f"Writer missing for shard {shard_idx} despite recorded entries")
+        writer.finalize()
+
+        episode_ids = [ep for ep, _ in entries]
+        frames = [frames for _, frames in entries]
+
+        results.append(
+            ShardResult(
+                shard_id=shard_idx,
+                episode_ids=episode_ids,
+                frames=frames,
+                feat_dtypes=shard_feat_dtypes[shard_idx] or [],
+                targ_dtypes=shard_targ_dtypes[shard_idx] or [],
+            )
+        )
 
     results.sort(key=lambda r: r.shard_id)
-    _merge_and_write_metadata(results, schema)
+    _merge_and_write_metadata(results, schema, out_root)
 
 
 def create_melee_schema() -> Schema:
@@ -332,21 +360,46 @@ def main():
     init_config()
     config = get_config()
 
-    slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "*.slp")))[:10]
+    train_slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "*.slp")))[:config.zarr.episode_count]
+    validation_slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "*.slp")))[
+                           config.zarr.episode_count:config.zarr.episode_count + config.zarr.validation_count]
 
-    if not slp_files:
+    if not train_slp_files:
         print(f"No .slp files found in {config.zarr.input_root}")
         return
 
-    print(f"Found {len(slp_files)} .slp files in {config.zarr.input_root}")
+    if not validation_slp_files:
+        print(f"No .slp files found in {config.zarr.input_root}")
+        return
+
+    print(f"Found {len(train_slp_files)} .slp files in {config.zarr.input_root}")
+    print(f"Found {len(validation_slp_files)} validation .slp files in {config.zarr.input_root}")
+
     schema = create_melee_schema()
 
     print(f"Schema: {len(schema.features)} features, {len(schema.targets)} targets")
     print(f"Output directory: {config.zarr.out_root}")
+    print(f"Validation directory: {config.zarr.validation_root}")
     print(f"Configuration: seq_len={config.seq_len}, shard_size={config.zarr.shard_size}")
 
     try:
-        build_dataset(slp_files, schema)
+        build_dataset(validation_slp_files, schema, config.zarr.validation_root)
+        print(f"Dataset built successfully in {config.zarr.validation_root}")
+
+        # Print some statistics
+        lengths = np.load(os.path.join(config.zarr.validation_root, "lengths.npy"))
+        print(f"Total episodes: {len(lengths)}")
+        print(f"Total frames: {lengths.sum()}")
+        print(f"Average frames per episode: {lengths.mean():.1f}")
+        print(f"Frame range: {lengths.min()} - {lengths.max()}")
+
+    except Exception as e:
+        print(f"Error building dataset: {e}")
+        raise
+
+
+    try:
+        build_dataset(train_slp_files, schema, config.zarr.out_root)
         print(f"Dataset built successfully in {config.zarr.out_root}")
 
         # Print some statistics
@@ -359,6 +412,7 @@ def main():
     except Exception as e:
         print(f"Error building dataset: {e}")
         raise
+
 
 
 if __name__ == "__main__":

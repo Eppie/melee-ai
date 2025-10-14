@@ -20,6 +20,33 @@ class LinearHead(nn.Module):
         return self.fc(self.norm(x))
 
 
+class MLPHead(nn.Module):
+    """A standard MLP head: Norm -> FFN -> Linear."""
+
+    def __init__(self, input_size: int, output_size: int, *, bias: bool) -> None:
+        super().__init__()
+        cfg = get_config().model
+        # Use a hidden dimension that is a fraction of the input, e.g., half.
+        # This is a common practice for heads to keep them lightweight.
+        hidden_dim = input_size // 2
+
+        self.net = nn.Sequential(
+            _create_norm(input_size),
+            # An FFN block for non-linearity
+            ActivationFFN(
+                input_size,
+                mult=cfg.ffn_mult,  # Or you could use a smaller, fixed multiplier
+                activation=cfg.ffn_activation,
+                bias=bias,
+            ),
+            # Final projection to the output size
+            nn.Linear(input_size, output_size, bias=bias),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 class MultiLabelButtonHeadLinear(nn.Module):
     """Small multi-label head: Norm -> Linear -> Sigmoid (for probs)."""
 

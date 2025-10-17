@@ -703,6 +703,98 @@ def _multilabel_prf(true: torch.Tensor, pred: torch.Tensor) -> Tuple[float, floa
     return em, float(prec), float(rec), float(f1), f1_macro
 
 
+def _collect_gradient_diagnostics(model: torch.nn.Module, *, eps: float = 1e-12) -> Dict[str, float]:
+    """Aggregate gradient statistics for monitoring numerical stability."""
+    total_sq = 0.0
+    total_abs = 0.0
+    total_sum = 0.0
+    grad_elems = 0
+    zero_elems = 0
+    nan_elems = 0
+    inf_elems = 0
+    max_grad_abs = 0.0
+    params_with_grad = 0
+
+    total_param_sq = 0.0
+    max_param_abs = 0.0
+    ratio_sum = 0.0
+    ratio_max = 0.0
+    ratio_min = float("inf")
+    ratio_count = 0
+
+    for param in model.parameters():
+        grad = param.grad
+        if grad is None:
+            continue
+        params_with_grad += 1
+
+        grad_data = grad.detach()
+        grad_float = grad_data.float()
+
+        sum_sq = grad_float.pow(2).sum().item()
+        total_sq += sum_sq
+        abs_sum = grad_float.abs().sum().item()
+        total_abs += abs_sum
+        total_sum += grad_float.sum().item()
+
+        numel = grad_float.numel()
+        grad_elems += numel
+        zero_elems += int((grad_float == 0).sum().item())
+        nan_elems += int(torch.isnan(grad_float).sum().item())
+        inf_elems += int(torch.isinf(grad_float).sum().item())
+
+        if numel:
+            max_grad_abs = max(max_grad_abs, float(grad_float.abs().max().item()))
+
+        param_data = param.detach().float()
+        total_param_sq += param_data.pow(2).sum().item()
+        if param_data.numel():
+            max_param_abs = max(max_param_abs, float(param_data.abs().max().item()))
+
+        param_abs_mean = float(param_data.abs().mean().item()) if param_data.numel() else 0.0
+        grad_abs_mean = float(grad_float.abs().mean().item()) if numel else 0.0
+        if param_abs_mean > eps and numel:
+            ratio = grad_abs_mean / max(param_abs_mean, eps)
+            ratio_sum += ratio
+            ratio_count += 1
+            ratio_max = max(ratio_max, ratio)
+            ratio_min = min(ratio_min, ratio)
+
+    total_norm = math.sqrt(total_sq) if total_sq > 0 else 0.0
+    mean_abs = total_abs / max(1, grad_elems)
+    mean_val = total_sum / max(1, grad_elems)
+    mean_sq = total_sq / max(1, grad_elems)
+    variance = max(mean_sq - mean_val ** 2, 0.0)
+    std_val = math.sqrt(variance)
+    zero_fraction = zero_elems / max(1, grad_elems)
+
+    param_total_norm = math.sqrt(total_param_sq) if total_param_sq > 0 else 0.0
+    ratio_avg = ratio_sum / ratio_count if ratio_count else 0.0
+    ratio_min = ratio_min if ratio_count else 0.0
+    grad_to_param_ratio = total_norm / max(param_total_norm, eps)
+
+    return {
+        "total_norm": float(total_norm),
+        "mean_abs": float(mean_abs),
+        "mean": float(mean_val),
+        "std": float(std_val),
+        "max_abs": float(max_grad_abs),
+        "zero_fraction": float(zero_fraction),
+        "num_elements": float(grad_elems),
+        "zero_count": float(zero_elems),
+        "nan_count": float(nan_elems),
+        "inf_count": float(inf_elems),
+        "nonfinite_count": float(nan_elems + inf_elems),
+        "params_with_grad": float(params_with_grad),
+        "param_total_norm": float(param_total_norm),
+        "param_max_abs": float(max_param_abs),
+        "grad_param_ratio_mean": float(ratio_avg),
+        "grad_param_ratio_max": float(ratio_max if ratio_count else 0.0),
+        "grad_param_ratio_min": float(ratio_min),
+        "grad_to_param_norm_ratio": float(grad_to_param_ratio),
+    }
+
+
 def change_boost(Y, B, L, device, epoch):
     change_mask = torch.zeros((B, L), device=device, dtype=torch.bool)
     # Compare from the second timestep onwards
@@ -1075,12 +1167,38 @@ def train_loop(
             for pg in opt.param_groups:
                 pg["lr"] = lr
 
+            log_this_iter = (it % 100 == 0) or (it == len(loader) - 1)
+            should_collect_grad_stats = use_wandb and log_this_iter
+            grad_stats: Optional[Dict[str, float]] = None
+
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
 
+            if scaler.is_enabled():
+                if should_collect_grad_stats or (config.train.grad_clip is not None and config.train.grad_clip > 0):
+                    scaler.unscale_(opt)
+
+            if should_collect_grad_stats:
+                grad_stats = _collect_gradient_diagnostics(model)
+
             if config.train.grad_clip is not None and config.train.grad_clip > 0:
-                scaler.unscale_(opt)
-                clip_grad_norm_(model.parameters(), config.train.grad_clip)
+                pre_clip_norm_tensor = clip_grad_norm_(model.parameters(), config.train.grad_clip)
+                pre_clip_norm = float(pre_clip_norm_tensor)
+                if should_collect_grad_stats and grad_stats is not None:
+                    grad_stats.setdefault("total_norm", float(grad_stats.get("total_norm", pre_clip_norm)))
+                    grad_stats["total_norm_pre_clip"] = pre_clip_norm
+                    grad_stats["total_norm_post_clip"] = float(min(pre_clip_norm, config.train.grad_clip))
+                    if pre_clip_norm > config.train.grad_clip:
+                        grad_stats["clip_coef"] = float(config.train.grad_clip / max(pre_clip_norm, 1e-12))
+                        grad_stats["was_clipped"] = 1.0
+                    else:
+                        grad_stats["clip_coef"] = 1.0
+                        grad_stats["was_clipped"] = 0.0
+            elif should_collect_grad_stats and grad_stats is not None:
+                grad_stats.setdefault("total_norm_pre_clip", grad_stats.get("total_norm", 0.0))
+                grad_stats["total_norm_post_clip"] = grad_stats.get("total_norm", 0.0)
+                grad_stats["clip_coef"] = 1.0
+                grad_stats["was_clipped"] = 0.0
 
             scaler.step(opt)
             scaler.update()
@@ -1177,7 +1295,7 @@ def train_loop(
                 }
                 torch.save(ckpt, out_dir / f"model_ep{epoch + 1:03d}_{it:03d}.pt")
                 _prune_checkpoints(out_dir, keep=10)
-            if it % 100 == 0 or it == len(loader) - 1:
+            if log_this_iter:
 
                 dt = max(1e-9, time.time() - t0)
                 B_cur, L_cur, F_cur = X.shape
@@ -1377,6 +1495,38 @@ def train_loop(
                         "metrics/buttons_em_rep": em_rep,
                         "throughput/frames_per_s": frames_per_s,
                     }
+                    if grad_stats is not None:
+                        log_payload.update({
+                            "gradients/total_norm": grad_stats.get("total_norm", 0.0),
+                            "gradients/total_norm_pre_clip": grad_stats.get("total_norm_pre_clip", grad_stats.get("total_norm", 0.0)),
+                            "gradients/total_norm_post_clip": grad_stats.get("total_norm_post_clip", grad_stats.get("total_norm", 0.0)),
+                            "gradients/mean_abs": grad_stats.get("mean_abs", 0.0),
+                            "gradients/mean": grad_stats.get("mean", 0.0),
+                            "gradients/std": grad_stats.get("std", 0.0),
+                            "gradients/max_abs": grad_stats.get("max_abs", 0.0),
+                            "gradients/zero_fraction": grad_stats.get("zero_fraction", 0.0),
+                            "gradients/grad_to_param_norm_ratio": grad_stats.get("grad_to_param_norm_ratio", 0.0),
+                            "gradients/grad_param_ratio_mean": grad_stats.get("grad_param_ratio_mean", 0.0),
+                            "gradients/grad_param_ratio_max": grad_stats.get("grad_param_ratio_max", 0.0),
+                            "gradients/grad_param_ratio_min": grad_stats.get("grad_param_ratio_min", 0.0),
+                            "gradients/nonfinite_count": grad_stats.get("nonfinite_count", 0.0),
+                            "gradients/nan_count": grad_stats.get("nan_count", 0.0),
+                            "gradients/inf_count": grad_stats.get("inf_count", 0.0),
+                            "gradients/params_with_grad": grad_stats.get("params_with_grad", 0.0),
+                            "gradients/clip_coef": grad_stats.get("clip_coef", 1.0),
+                            "gradients/was_clipped": grad_stats.get("was_clipped", 0.0),
+                            "gradients/num_elements": grad_stats.get("num_elements", 0.0),
+                            "parameters/total_norm": grad_stats.get("param_total_norm", 0.0),
+                            "parameters/max_abs": grad_stats.get("param_max_abs", 0.0),
+                        })
+                        grad_elems = grad_stats.get("num_elements", 0.0)
+                        nonfinite = grad_stats.get("nonfinite_count", 0.0)
+                        if grad_elems:
+                            log_payload["gradients/nonfinite_fraction"] = float(nonfinite / max(grad_elems, 1.0))
+                    try:
+                        log_payload["optimizer/loss_scale"] = float(scaler.get_scale())
+                    except Exception:
+                        pass
                     # Per-button metrics
                     try:
                         btn_names = CONTROLLER_KEY_GROUPS["buttons"]

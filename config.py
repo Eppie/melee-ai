@@ -32,9 +32,9 @@ class _FreezeGuard:
 @dataclass
 class ZarrConfig(_FreezeGuard):
     input_root: str = '/home/eppie/hal/replays'
-    out_root: str = '/home/eppie/melee-ai/processed_data_400'
+    out_root: str = '/home/eppie/melee-ai/processed_data_1000'
     validation_root: str = '/home/eppie/melee-ai/validation_set'
-    episode_count: int = 400
+    episode_count: int = 1000
     validation_count: int = 20
     shard_size: int = 100
     target_chunk_mb: float = 8.0
@@ -313,7 +313,7 @@ class GPTConfig:
     n_layer: int = 4 # DONE
     n_head: int = 8 # DONE
     dropout: float = 0.03  # (DONE)
-    bias: bool = True  # TODO: remove. True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    bias: bool = False # DONE
     input_size: int = -1  # populated dynamically based on dataset schema
     num_stages: int = 6
     num_characters: int = 26
@@ -323,7 +323,7 @@ class GPTConfig:
     action_embedding_dim: int = 32
     gamma: float = 0.999  # (DONE)
     norm_type: str = "layernorm"  # (DONE)
-    norm_eps: float = 1e-6
+    norm_eps: float = 1e-7 # DONE
     norm_affine: bool = True  # (DONE)
     norm_placement: str = "post"  # options: pre, post, both (DONE)
     qk_norm: bool = False  # (DONE)
@@ -334,8 +334,8 @@ class GPTConfig:
     rope_theta: float = 10000.0
     rope_scaling: Optional[str] = None  # e.g., "ntk", "yarn"
     rope_scaling_factor: float = 1.0
-    ffn_mult: float = 8.0 / 3.0
-    ffn_activation: str = "swiglu"
+    ffn_mult: float = 2 # DONE
+    ffn_activation: str = "geglu" # DONE
     head_flow: str = "parallel"  # options: sequential, parallel
     target_shapes_by_head: dict[str, int] = field(default_factory=lambda: {
         "main_stick": len(CONTROL_STICK_QUANTIZED),

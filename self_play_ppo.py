@@ -304,9 +304,9 @@ class SelfPlayPPOTrainer:
             weight_decay=config.train.weight_decay,
         )
         
-        # GradScaler for AMP
-        from torch import GradScaler
-        self.scaler = GradScaler(device='cuda', enabled=config.train.use_amp)
+        # GradScaler for AMP (PyTorch 2.1 uses torch.cuda.amp) — no device arg
+        from torch.cuda.amp import GradScaler
+        self.scaler = GradScaler(enabled=config.train.use_amp)
         
         # Create a second model instance for player 2 (opponent)
         # This will be loaded from checkpoints during self-play
@@ -1103,4 +1103,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

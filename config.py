@@ -31,11 +31,10 @@ class _FreezeGuard:
 
 @dataclass
 class ZarrConfig(_FreezeGuard):
-    input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
-    # input_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/test/'
-    out_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/processed_data_1000'
-    validation_root: str = '/Users/eppie/PycharmProjects/new-melee-ai/validation_set'
-    episode_count: int = 1000
+    input_root: str = '/home/eppie/hal/replays'
+    out_root: str = '/home/eppie/melee-ai/processed_data_400'
+    validation_root: str = '/home/eppie/melee-ai/validation_set'
+    episode_count: int = 400
     validation_count: int = 20
     shard_size: int = 100
     target_chunk_mb: float = 8.0
@@ -48,20 +47,20 @@ class ZarrConfig(_FreezeGuard):
 class TrainConfig:
     batch_size: int = 64
     epochs: int = 100
-    lr: float = 3e-4
-    weight_decay: float = 0.005
+    lr: float = 2e-4 # (DONE)
+    weight_decay: float = 0.002 # (DONE)
     betas: Tuple[float, float] = (0.9, 0.95)
     warmup_steps: int = 10
-    max_steps: Optional[int] = None  # cap total steps (useful for quick tests)
-    num_workers: int = 8
+    max_steps: Optional[int] = None
+    num_workers: int = 16
     prefetch_factor: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
     stride = 1
 
     # losses
-    grad_clip: float = 1.0
-    label_smoothing: float = 0.0
+    grad_clip: float = 1.2 # (DONE)
+    label_smoothing: float = 0.02 # (DONE)
 
     # Automatic Mixed Precision (AMP)
     use_amp: bool = True
@@ -309,11 +308,11 @@ class GPTConfig:
         - Interactions: combine with high expert counts; may require tuning `moe_expert_capacity_factor`.
         - Reasonable choice: True for detailed routing, False for simpler all-to-all.
     """
-    block_size: int = 512
-    n_embd: int = 384
-    n_layer: int = 3
-    n_head: int = 4
-    dropout: float = 0.1
+    block_size: int = 512 # DONE
+    n_embd: int = 512 # DONE
+    n_layer: int = 4 # DONE
+    n_head: int = 8 # DONE
+    dropout: float = 0.03  # (DONE)
     bias: bool = True  # TODO: remove. True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     input_size: int = -1  # populated dynamically based on dataset schema
     num_stages: int = 6
@@ -322,15 +321,15 @@ class GPTConfig:
     stage_embedding_dim: int = 4
     character_embedding_dim: int = 12
     action_embedding_dim: int = 32
-    gamma: float = 0.999
-    norm_type: str = "rmsnorm"
+    gamma: float = 0.999  # (DONE)
+    norm_type: str = "layernorm"  # (DONE)
     norm_eps: float = 1e-6
-    norm_affine: bool = True
-    norm_placement: str = "post"  # options: pre, post, both
-    qk_norm: bool = True
+    norm_affine: bool = True  # (DONE)
+    norm_placement: str = "post"  # options: pre, post, both (DONE)
+    qk_norm: bool = False  # (DONE)
     qk_norm_type: Optional[str] = None  # defaults to norm_type when None
-    attention_type: str = "gqa"  # options: mha, gqa, mqa
-    n_kv_head: Optional[int] = 2
+    attention_type: str = "gqa"  # TODO: maybe mqa?
+    n_kv_head: Optional[int] = 4 # DONE
     pe_type: str = "rope"  # options: rope, alibi
     rope_theta: float = 10000.0
     rope_scaling: Optional[str] = None  # e.g., "ntk", "yarn"
@@ -375,6 +374,16 @@ class FeatureConfig(_FreezeGuard):
                 "transform": "stick_palette",
                 "features": ["c_stick_x", "c_stick_y"],
                 "palette": "c_stick",
+            },
+            {
+                "transform": "scale",
+                "features": ["facing"],
+                "factor": 2.0,
+            },
+            {
+                "transform": "offset",
+                "features": ["facing"],
+                "delta": -1.0,
             },
             {
                 "transform": "scale",

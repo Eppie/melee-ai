@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
+import json
+import os
 from pathlib import Path
 from textwrap import indent
 from typing import Callable, Dict
@@ -11,7 +13,7 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 from tensordict import TensorDict
-from torch import GradScaler
+from torch.cuda.amp import GradScaler
 from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
@@ -24,6 +26,12 @@ from libmelee.melee.enums import Action
 from loss import compute_loss_components
 from model.gpt import GPTv7
 from utils import print_model_diagram, _resolve_device
+
+# Optional Weights & Biases logging
+try:
+    import wandb  # type: ignore
+except Exception:  # pragma: no cover
+    wandb = None  # type: ignore
 from window_dataset import make_dataloader
 
 _MAIN_STICK_LABELS: List[str] = [f"({x:.2f},{y:.2f})" for x, y in CONTROL_STICK_QUANTIZED]
@@ -201,6 +209,20 @@ def cosine_lr_schedule(step: int, total_steps: int, base_lr: float, warmup: int 
         return base_lr * (step + 1) / max(1, warmup)
     progress = (step - warmup) / max(1, total_steps - warmup)
     return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
+def per_epoch_linear_decay_lr(step_in_epoch: int, steps_per_epoch: int, lr_max: float) -> float:
+    """Per-epoch linear decay: start at lr_max then decrease to 0 by epoch end.
+
+    - step_in_epoch: zero-based iteration index within current epoch
+    - steps_per_epoch: total iterations planned in the epoch
+    """
+    if steps_per_epoch <= 1:
+        return lr_max
+    # progress in [0, 1] across the epoch
+    t = float(step_in_epoch) / float(max(1, steps_per_epoch - 1))
+    # linear decay from lr_max to 0
+    return lr_max * max(0.0, 1.0 - t)
 
 
 # -----------------------------
@@ -863,9 +885,8 @@ def train_loop(
     opt = torch.optim.AdamW(model.parameters(), lr=config.train.lr, betas=config.train.betas,
                             weight_decay=config.train.weight_decay)
     
-    # GradScaler for automatic mixed precision
-    # Note: device_type should be 'cuda' for both CUDA and MPS in current PyTorch versions
-    scaler = GradScaler(device='cuda', enabled=config.train.use_amp)
+    # GradScaler for automatic mixed precision (no device arg in torch 2.1)
+    scaler = GradScaler(enabled=config.train.use_amp)
 
     steps_per_epoch = config.train.steps_per_epoch or math.ceil(len(loader))
     total_steps = config.train.max_steps or (config.train.epochs * steps_per_epoch)
@@ -874,8 +895,82 @@ def train_loop(
 
     out_dir = Path(config.train.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Persist most-recent global_step so wandb step stays monotonic between checkpoints
+    last_step_file = out_dir / "last_step.txt"
+
+    # Initialize Weights & Biases if available
+    use_wandb = False
+    if wandb is not None:
+        try:
+            wandb_settings = {}
+            run_name = getattr(config.train, "run_name", None)
+            if run_name:
+                wandb_settings["name"] = run_name
+            # Enable resuming to the SAME run after restarts by keeping a stable run id
+            run_id_file = out_dir / "wandb_run_id.txt"
+            # Allow explicit id via config if provided
+            resume_run_id: Optional[str] = getattr(config.train, "wandb_run_id", None)
+            # 1) Prefer a stored run id (created after first init)
+            try:
+                if not resume_run_id and run_id_file.exists():
+                    resume_run_id = run_id_file.read_text().strip() or None
+            except Exception:
+                resume_run_id = resume_run_id or None
+            # 2) Allow override via environment (e.g., WANDB_RUN_ID)
+            if not resume_run_id:
+                resume_run_id = os.environ.get("WANDB_RUN_ID") or os.environ.get("WANDB_RESUME_ID")
+            # 3) As a fallback, try to discover the last run id from out_dir/wandb/latest-run
+            if not resume_run_id:
+                try:
+                    latest = (out_dir / "wandb" / "latest-run").resolve(strict=True)
+                    # Try metadata first
+                    meta_path = latest / "files" / "wandb-metadata.json"
+                    if meta_path.exists():
+                        meta = json.loads(meta_path.read_text())
+                        resume_run_id = meta.get("id") or meta.get("run_id")
+                    # Fallback: parse directory name 'run-YYYYMMDD_HHMMSS-<id>'
+                    if not resume_run_id:
+                        base = latest.name
+                        if "-" in base:
+                            resume_run_id = base.split("-")[-1]
+                except Exception:
+                    pass
+            if resume_run_id:
+                # Ask wandb to resume, but allow fresh start if the id doesn't exist remotely
+                wandb_settings["id"] = resume_run_id
+                wandb_settings["resume"] = "allow"
+            wandb.init(
+                project=getattr(config.train, "wandb_project", "melee-ai"),
+                config={
+                    "train": dict(vars(config.train)),
+                    "model": dict(vars(config.model)),
+                    "seq_len": getattr(config, "seq_len", None),
+                },
+                dir=str(out_dir),
+                **wandb_settings,
+            )
+            # Persist the effective run id so a subsequent restart can reuse it
+            try:
+                if wandb.run is not None and getattr(wandb.run, "id", None):
+                    run_id_file.write_text(str(wandb.run.id))
+            except Exception:
+                pass
+            try:
+                wandb.watch(model, log="gradients", log_freq=100)
+            except Exception:
+                pass
+            use_wandb = True
+        except Exception as e:
+            print(f"wandb init failed: {e}. Continuing without wandb.")
 
     start_epoch, global_step = _load_latest_checkpoint(out_dir, model, opt, scaler, device)
+    # If we have a more recent persisted step, prefer it to keep wandb step increasing
+    try:
+        if last_step_file.exists():
+            persisted = int(last_step_file.read_text().strip())
+            global_step = max(global_step, persisted)
+    except Exception:
+        pass
 
     if start_epoch >= config.train.epochs:
         print(f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting.")
@@ -974,8 +1069,9 @@ def train_loop(
             logits_btn = pred["buttons"]  # [B,L,Kb]
             target_btn = target_info["buttons"]
 
-            # LR schedule
-            lr = cosine_lr_schedule(global_step, total_steps, config.train.lr, config.train.warmup_steps)
+            # Per-epoch LR: start at max at epoch start, linearly decay to 0 by epoch end
+            lr_max = getattr(config.train, "lr_max", None) or config.train.lr
+            lr = per_epoch_linear_decay_lr(it, steps_per_epoch, lr_max)
             for pg in opt.param_groups:
                 pg["lr"] = lr
 
@@ -1070,7 +1166,7 @@ def train_loop(
             global_step += 1
 
             # Throughput / logs (rank 0)
-            if it % 100 == 0:
+            if it % 5000 == 0:
                 ckpt = {
                     "model": model.state_dict(),
                     "optimizer": opt.state_dict(),
@@ -1081,11 +1177,13 @@ def train_loop(
                 }
                 torch.save(ckpt, out_dir / f"model_ep{epoch + 1:03d}_{it:03d}.pt")
                 _prune_checkpoints(out_dir, keep=10)
-            if it % 30 == 0 or it == len(loader) - 1:
+            if it % 100 == 0 or it == len(loader) - 1:
 
                 dt = max(1e-9, time.time() - t0)
-                tok_per_batch = X.numel()  # rough proxy (B*L*F numeric)
-                ips = (it + 1) * tok_per_batch / dt
+                B_cur, L_cur, F_cur = X.shape
+                # frames/s: each frame is a token in [B,L]
+                frames_per_batch = B_cur * L_cur
+                frames_per_s = (it + 1) * frames_per_batch / dt
 
                 # ---------- Per-batch metrics & confusions ----------
                 # MAIN
@@ -1181,7 +1279,7 @@ def train_loop(
                 # ---------- Compose log ----------
                 header = (
                     f"ep {epoch + 1}/{config.train.epochs} it {it + 1}/{len(loader)}\n"
-                    f"  loss {epoch_loss / (it + 1):.4f} | lr {lr:.2e} | items/s {ips:,.0f} | {this_loss}"
+                    f"  loss {epoch_loss / (it + 1):.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | {this_loss}"
                 )
                 main_line = (
                     f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f}) | rep {acc_main_rep_b:.3f}"
@@ -1245,6 +1343,68 @@ def train_loop(
 
                 print("\n".join(log_lines))
 
+                # Log to wandb (mirror console metrics)
+                if use_wandb:
+                    log_payload = {
+                        "epoch": epoch + 1,
+                        "iter": it + 1,
+                        "global_step": global_step,
+                        "lr": lr,
+                        "loss/total": epoch_loss / (it + 1),
+                        "loss/main": this_loss.get("main", 0.0),
+                        "loss/c": this_loss.get("c", 0.0),
+                        "loss/buttons": this_loss.get("buttons", 0.0),
+                        "loss/shoulder": this_loss.get("shoulder", 0.0),
+                        "loss/moe_aux": this_loss.get("moe_aux", 0.0),
+                        "loss/value": this_loss.get("value", 0.0),
+                        # main stick
+                        "metrics/acc_main_batch": acc_main_b,
+                        "metrics/acc_main_change": acc_main_chg,
+                        "metrics/acc_main_hold": acc_main_hold,
+                        "metrics/acc_main_rep": acc_main_rep_b,
+                        # c-stick
+                        "metrics/acc_c_batch": acc_c_b,
+                        "metrics/acc_c_change": acc_c_chg,
+                        "metrics/acc_c_hold": acc_c_hold,
+                        "metrics/acc_c_rep": acc_c_rep_b,
+                        # buttons
+                        "metrics/buttons_em_batch": em_b,
+                        "metrics/buttons_em_change": em_btn_chg,
+                        "metrics/buttons_em_hold": em_btn_hold,
+                        "metrics/buttons_f1_micro_batch": f1_b,
+                        "metrics/buttons_f1_micro_maj": f1_maj,
+                        "metrics/buttons_f1_micro_rep": f1_rep,
+                        "metrics/buttons_em_rep": em_rep,
+                        "throughput/frames_per_s": frames_per_s,
+                    }
+                    # Per-button metrics
+                    try:
+                        btn_names = CONTROLLER_KEY_GROUPS["buttons"]
+                        for idx, name in enumerate(btn_names):
+                            label = _BUTTON_PRETTY.get(name, name)
+                            log_payload[f"buttons/{label}_acc"] = float(btn_match[idx].item())
+                            log_payload[f"buttons/{label}_f1"] = float(btn_f1[idx].item())
+                            log_payload[f"buttons/{label}_rate"] = float(btn_rate[idx].item())
+                    except Exception:
+                        pass
+                    if 'value_pred_mean' in locals():
+                        log_payload.update({
+                            "value/pred_mean": value_pred_mean,
+                            "value/target_mean": value_target_mean,
+                            "value/mse": value_mse,
+                            "value/mae": value_mae,
+                            "value/corr": float(correlation.item()),
+                        })
+                    try:
+                        wandb.log(log_payload, step=global_step)
+                    except Exception:
+                        pass
+                    # persist latest step for robust resume
+                    try:
+                        last_step_file.write_text(str(global_step))
+                    except Exception:
+                        pass
+
         if (epoch + 1) % config.train.save_every_epochs == 0:
             print(f"[epoch {epoch + 1}] summary: {metrics.short_str()}")
 
@@ -1260,6 +1420,29 @@ def train_loop(
             }
             torch.save(ckpt, out_dir / f"model_ep{epoch + 1:03d}.pt")
             _prune_checkpoints(out_dir, keep=10)
+            # persist latest step alongside checkpoint
+            try:
+                last_step_file.write_text(str(global_step))
+            except Exception:
+                pass
+
+            # Log checkpoint as artifact
+            if use_wandb:
+                ckpt_path = out_dir / f"model_ep{epoch + 1:03d}.pt"
+                try:
+                    wandb.log({"checkpoint/epoch": epoch + 1})
+                    art = wandb.Artifact("model", type="model")
+                    art.add_file(str(ckpt_path))
+                    wandb.log_artifact(art)
+                except Exception:
+                    pass
+
+    # Finish wandb run
+    if use_wandb:
+        try:
+            wandb.finish()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

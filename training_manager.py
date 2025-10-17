@@ -146,6 +146,7 @@ class TrainingRunResult:
     reached_target_objectives: bool
     interrupted: bool
     stopped_due_to_cap: bool
+    stopped_due_to_time_limit: bool
     time_seconds: float
     estimated_forward_flops: float
     estimated_training_flops: float
@@ -452,9 +453,13 @@ def run_training_once(
         objectives: Sequence[StoppingObjective],
         device: torch.device,
         verbose: bool,
+        time_limit_seconds: Optional[float] = None,
 ) -> TrainingRunResult:
     reset_config_for_tests()
     cfg = init_config(initial=base_initial, cli_overrides=overrides, freeze=False)
+
+    if time_limit_seconds is not None and time_limit_seconds <= 0:
+        raise ValueError(f"[{run_id}] time limit must be positive; got {time_limit_seconds}")
 
     user_set_num_workers = any(key.endswith("train.num_workers") for key in overrides)
     user_set_pin_memory = any(key.endswith("train.pin_memory") for key in overrides)
@@ -501,6 +506,7 @@ def run_training_once(
             reached_target_objectives=False,
             interrupted=False,
             stopped_due_to_cap=False,
+            stopped_due_to_time_limit=False,
             time_seconds=0.0,
             estimated_forward_flops=0.0,
             estimated_training_flops=0.0,
@@ -533,6 +539,7 @@ def run_training_once(
             reached_target_objectives=False,
             interrupted=False,
             stopped_due_to_cap=False,
+            stopped_due_to_time_limit=False,
             time_seconds=0.0,
             estimated_forward_flops=0.0,
             estimated_training_flops=0.0,
@@ -579,6 +586,7 @@ def run_training_once(
     reached_target_loss = False
     interrupted = False
     stopped_due_to_cap = False
+    stopped_due_to_time_limit = False
     stop_reason = "completed"
 
     profiler_ctx, _ = _build_profiler_context(cfg, run_id, verbose=verbose)
@@ -608,6 +616,12 @@ def run_training_once(
                         mininterval=0.5,
                     )
                     while True:
+                        if time_limit_seconds is not None:
+                            elapsed = time.perf_counter() - start_time
+                            if elapsed >= time_limit_seconds:
+                                stopped_due_to_time_limit = True
+                                stop_reason = "time_limit"
+                                break
                         if cfg.train.steps_per_epoch is not None and steps_this_epoch >= cfg.train.steps_per_epoch:
                             break
                         if cfg.train.max_steps is not None and global_step >= cfg.train.max_steps:
@@ -680,7 +694,8 @@ def run_training_once(
 
                         loss = loss_main + loss_c + loss_btn + loss_s + loss_aux
 
-                        lr = cosine_lr_schedule(global_step, total_steps_cap, cfg.train.lr, cfg.train.warmup_steps)
+                        #lr = cosine_lr_schedule(global_step, total_steps_cap, cfg.train.lr, cfg.train.warmup_steps)
+                        lr = cfg.train.lr
                         for pg in opt.param_groups:
                             pg["lr"] = lr
 
@@ -940,13 +955,27 @@ def run_training_once(
                             _shutdown_loader_iter(loader_iter)
                             loader_iter = None
                             break
+
+                        if time_limit_seconds is not None:
+                            elapsed = time.perf_counter() - start_time
+                            if elapsed >= time_limit_seconds:
+                                stopped_due_to_time_limit = True
+                                stop_reason = "time_limit"
+                                _shutdown_loader_iter(loader_iter)
+                                loader_iter = None
+                                break
                 finally:
                     if progress is not None:
                         progress.close()
                     _shutdown_loader_iter(loader_iter)
                     loader_iter = None
 
-                if reached_target_loss or objectives_met or global_step >= total_steps_cap:
+                if (
+                        reached_target_loss
+                        or objectives_met
+                        or global_step >= total_steps_cap
+                        or stopped_due_to_time_limit
+                ):
                     break
         except KeyboardInterrupt:
             interrupted = True
@@ -969,6 +998,8 @@ def run_training_once(
         stop_reason = "target_met"
     elif stopped_due_to_cap:
         stop_reason = "max_steps_reached"
+    elif stopped_due_to_time_limit:
+        stop_reason = "time_limit"
     elif epochs_completed >= cfg.train.epochs:
         stop_reason = "epochs_completed"
     else:
@@ -986,6 +1017,7 @@ def run_training_once(
         reached_target_objectives=objectives_met,
         interrupted=interrupted,
         stopped_due_to_cap=stopped_due_to_cap,
+        stopped_due_to_time_limit=stopped_due_to_time_limit,
         time_seconds=elapsed,
         estimated_forward_flops=forward_flops,
         estimated_training_flops=training_flops,
@@ -1010,6 +1042,7 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
         return "No successful runs."
     best_by_flops = min(valid_results, key=lambda r: r.estimated_training_flops)
     best_by_time = min(valid_results, key=lambda r: r.time_seconds)
+    best_by_loss = min(valid_results, key=lambda r: r.final_loss)
     detail_lines = []
     for res in valid_results:
         status_bits = []
@@ -1019,6 +1052,8 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
             status_bits.append("objective met")
         if res.stopped_due_to_cap:
             status_bits.append("max steps reached")
+        if res.stopped_due_to_time_limit:
+            status_bits.append("time limit")
         if res.interrupted:
             status_bits.append("interrupted")
         status = ", ".join(status_bits) if status_bits else "completed"
@@ -1052,11 +1087,20 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
     best_by_time_tokens = (
         f"{best_by_time.tokens_per_second:,.0f}" if best_by_time.tokens_per_second is not None else "n/a"
     )
+    best_by_loss_tokens = (
+        f"{best_by_loss.tokens_per_second:,.0f}" if best_by_loss.tokens_per_second is not None else "n/a"
+    )
     best_by_flops_reason = best_by_flops.stop_reason.replace("_", " ") if best_by_flops.stop_reason else "unknown"
     best_by_time_reason = best_by_time.stop_reason.replace("_", " ") if best_by_time.stop_reason else "unknown"
+    best_by_loss_reason = best_by_loss.stop_reason.replace("_", " ") if best_by_loss.stop_reason else "unknown"
 
     lines = [
         f"Executed {len(results)} run(s).",
+        (
+            f"Best loss:  {best_by_loss.run_id} | loss {best_by_loss.final_loss:.4f} | "
+            f"time {best_by_loss.time_seconds:.1f}s | total {format_flops(best_by_loss.estimated_training_flops)} | "
+            f"tokens/s {best_by_loss_tokens} | reason {best_by_loss_reason}"
+        ),
         (
             f"Best FLOPs: {best_by_flops.run_id} | loss {best_by_flops.final_loss:.4f} | "
             f"time {best_by_flops.time_seconds:.1f}s | total {format_flops(best_by_flops.estimated_training_flops)} | "
@@ -1092,7 +1136,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="KEY=V1,V2",
         help="Hyperparameter grid; repeat to define multiple axes.",
     )
-    p.add_argument("--target-loss", type=float, default=None, help="Early-stop when loss <= target.")
+    p.add_argument("--target-loss", type=float, default=1, help="Early-stop when loss <= target.")
     p.add_argument(
         "--target-objective",
         action="append",
@@ -1102,6 +1146,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Early-stop when the given metric objective is met. "
             "Examples: --target-objective acc_main>=0.92 --target-objective loss<=1.5"
         ),
+    )
+    p.add_argument(
+        "--time-limit-seconds",
+        type=float,
+        default=None,
+        help="Optional wall-clock time limit (seconds) applied to each run.",
     )
     p.add_argument("--device", type=str, default=None, help="Device to use (cpu/cuda/mps).")
     p.add_argument("--report", type=Path, default=None, help="Optional path to save JSON report.")
@@ -1160,6 +1210,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             objectives=objectives,
             device=device,
             verbose=verbose,
+            time_limit_seconds=args.time_limit_seconds,
         )
         results.append(result)
         if results_log_path is not None:

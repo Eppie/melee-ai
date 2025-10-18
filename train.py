@@ -68,10 +68,10 @@ def _load_latest_checkpoint(
         optimizer: Optimizer,
         scaler: GradScaler,
         device: torch.device,
-) -> Tuple[int, int]:
+) -> Tuple[int, int, int]:
     checkpoints = _sorted_checkpoint_paths(directory)
     if not checkpoints:
-        return 0, 0
+        return 0, 0, 0
 
     latest = checkpoints[0]
     print(f"Resuming from checkpoint: {latest}")
@@ -90,9 +90,24 @@ def _load_latest_checkpoint(
     if scaler_state:
         scaler.load_state_dict(scaler_state)
 
-    start_epoch = int(ckpt.get("epoch", 0))
+    resume_epoch = ckpt.get("resume_epoch", None)
+    if resume_epoch is None:
+        raw_epoch = int(ckpt.get("epoch", 0))
+        resume_epoch = raw_epoch
+        resume_iter = ckpt.get("resume_iter", ckpt.get("iteration", 0))
+        if "resume_iter" not in ckpt and "iteration" not in ckpt:
+            # Legacy checkpoints stored the *next* epoch to run. Adjust so we resume from the
+            # previous epoch and start at the beginning of that epoch.
+            if raw_epoch > 0:
+                resume_epoch = raw_epoch - 1
+            resume_iter = 0
+    else:
+        resume_iter = ckpt.get("resume_iter", 0)
+
+    start_epoch = int(resume_epoch)
+    start_iter = max(int(resume_iter), 0)
     global_step = int(ckpt.get("global_step", 0))
-    return max(start_epoch, 0), max(global_step, 0)
+    return max(start_epoch, 0), max(global_step, 0), start_iter
 
 
 def _bytes(n: int) -> str:
@@ -211,18 +226,6 @@ def cosine_lr_schedule(step: int, total_steps: int, base_lr: float, warmup: int 
     return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-def per_epoch_linear_decay_lr(step_in_epoch: int, steps_per_epoch: int, lr_max: float) -> float:
-    """Per-epoch linear decay: start at lr_max then decrease to 0 by epoch end.
-
-    - step_in_epoch: zero-based iteration index within current epoch
-    - steps_per_epoch: total iterations planned in the epoch
-    """
-    if steps_per_epoch <= 1:
-        return lr_max
-    # progress in [0, 1] across the epoch
-    t = float(step_in_epoch) / float(max(1, steps_per_epoch - 1))
-    # linear decay from lr_max to 0
-    return lr_max * max(0.0, 1.0 - t)
 
 
 # -----------------------------
@@ -270,7 +273,7 @@ def build_inputs_for_gptv7(batch_X: torch.FloatTensor, colmap: ColumnMap) -> Ten
 
 
 # -----------------------------
-# Running metrics (per-epoch)
+# Metrics utilities
 # -----------------------------
 
 def _safe_div(n: float, d: float) -> float:
@@ -295,289 +298,15 @@ def _safe_bincount(x: torch.Tensor, minlength: int, device: torch.device) -> tor
     return counts.to(device=device, dtype=torch.float32)
 
 
-class RunningMetrics:
-    """
-    Tracks running metrics for:
-      - main stick (classification)
-      - c-stick (classification)
-      - buttons (multi-label)
-      - shoulder (classification)
-    Includes baselines:
-      - majority (running)
-      - repeat-last (ignoring first timestep)
-    Also accumulates confusion matrices for main and c.
-    """
-
-    def __init__(self, K_main: int, K_c: int, K_buttons: int, K_shoulder: int,
-                 device: torch.device | None = None) -> None:
-        self.device = device or torch.device("cpu")
-        dtype = torch.float32
-
-        # Main
-        self.K_main = K_main
-        self.main_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.main_total = torch.zeros((), device=self.device, dtype=dtype)
-        self.main_confusion = torch.zeros((K_main, K_main), device=self.device, dtype=dtype)
-        self.main_label_counts = torch.zeros(K_main, device=self.device, dtype=dtype)
-        self.main_maj_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.main_rep_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.main_rep_total = torch.zeros((), device=self.device, dtype=dtype)
-
-        # C-stick
-        self.K_c = K_c
-        self.c_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.c_total = torch.zeros((), device=self.device, dtype=dtype)
-        self.c_confusion = torch.zeros((K_c, K_c), device=self.device, dtype=dtype)
-        self.c_label_counts = torch.zeros(K_c, device=self.device, dtype=dtype)
-        self.c_maj_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.c_rep_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.c_rep_total = torch.zeros((), device=self.device, dtype=dtype)
-
-        # Buttons (multi-label)
-        self.K_buttons = K_buttons
-        self.btn_tp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_fp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_fn = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_exact_match_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.btn_total = torch.zeros((), device=self.device, dtype=dtype)
-
-        self.btn_maj_tp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_maj_fp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_maj_fn = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_maj_exact = torch.zeros((), device=self.device, dtype=dtype)
-        self.btn_pos_counts = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-
-        self.btn_rep_tp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_rep_fp = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_rep_fn = torch.zeros(K_buttons, device=self.device, dtype=dtype)
-        self.btn_rep_exact = torch.zeros((), device=self.device, dtype=dtype)
-        self.btn_rep_total = torch.zeros((), device=self.device, dtype=dtype)
-
-        # Shoulder
-        self.K_shoulder = K_shoulder
-        self.shoulder_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.shoulder_total = torch.zeros((), device=self.device, dtype=dtype)
-        self.shoulder_maj_correct = torch.zeros((), device=self.device, dtype=dtype)
-        self.shoulder_label_counts = torch.zeros(K_shoulder, device=self.device, dtype=dtype)
-
-    # ------- helpers -------
-
-    def _majority_label(self, counts: torch.Tensor) -> int:
-        total = counts.sum()
-        if total.detach().cpu().item() == 0:
-            return 0
-        return int(torch.argmax(counts).detach().cpu().item())
-
-    # ------- main stick -------
-
-    def update_main(
-            self,
-            pred_idx: torch.Tensor,  # [N]
-            true_idx: torch.Tensor,  # [N]
-            maj_before: int,
-            repeat_idx: torch.Tensor,  # [N]
-            repeat_mask: torch.Tensor,  # [N] bool
-    ) -> None:
-        with torch.no_grad():
-            self.main_total.add_(float(true_idx.numel()))
-
-            self.main_correct.add_((pred_idx == true_idx).float().sum())
-
-            K = self.K_main
-            flat = true_idx * K + pred_idx
-            cm = _safe_bincount(flat, K * K, self.device).view(K, K)
-            self.main_confusion.add_(cm)
-
-            maj_tensor = torch.full_like(true_idx, maj_before)
-            self.main_maj_correct.add_((true_idx == maj_tensor).float().sum())
-
-            rep_correct = (repeat_idx[repeat_mask] == true_idx[repeat_mask]).float().sum()
-            self.main_rep_correct.add_(rep_correct)
-            self.main_rep_total.add_(repeat_mask.float().sum())
-
-            self.main_label_counts.add_(_safe_bincount(true_idx, K, self.device))
-
-    # ------- c-stick -------
-
-    def update_c(
-            self,
-            pred_idx: torch.Tensor,
-            true_idx: torch.Tensor,
-            maj_before: int,
-            repeat_idx: torch.Tensor,
-            repeat_mask: torch.Tensor,
-    ) -> None:
-        with torch.no_grad():
-            self.c_total.add_(float(true_idx.numel()))
-
-            self.c_correct.add_((pred_idx == true_idx).float().sum())
-
-            K = self.K_c
-            flat = true_idx * K + pred_idx
-            cm = _safe_bincount(flat, K * K, self.device).view(K, K)
-            self.c_confusion.add_(cm)
-
-            maj_tensor = torch.full_like(true_idx, maj_before)
-            self.c_maj_correct.add_((true_idx == maj_tensor).float().sum())
-
-            rep_correct = (repeat_idx[repeat_mask] == true_idx[repeat_mask]).float().sum()
-            self.c_rep_correct.add_(rep_correct)
-            self.c_rep_total.add_(repeat_mask.float().sum())
-
-            self.c_label_counts.add_(_safe_bincount(true_idx, K, self.device))
-
-    # ------- buttons (multi-label) -------
-
-    def update_buttons(
-            self,
-            logits: torch.Tensor,  # [B,L,Kb]
-            true: torch.Tensor,  # [B,L,Kb] in {0,1}
-            probs: torch.Tensor | None = None,
-    ) -> None:
-        with torch.no_grad():
-            B, L, Kb = true.shape
-            if probs is None:
-                probs = torch.sigmoid(logits)
-            else:
-                probs = probs.detach()
-            pred = (probs > 0.5).to(true.dtype)
-
-            self.btn_exact_match_correct.add_((pred == true).all(dim=-1).float().sum())
-            self.btn_total.add_(float(B * L))
-
-            pred_b = pred.bool()
-            true_b = true.bool()
-            tp = (pred_b & true_b).float().sum(dim=(0, 1))
-            fp = (pred_b & (~true_b)).float().sum(dim=(0, 1))
-            fn = ((~pred_b) & true_b).float().sum(dim=(0, 1))
-
-            self.btn_tp.add_(tp)
-            self.btn_fp.add_(fp)
-            self.btn_fn.add_(fn)
-
-            self.btn_pos_counts.add_(true.float().sum(dim=(0, 1)))
-
-            totals_seen = torch.clamp(self.btn_total - float(B * L), min=1.0)
-            prev = self.btn_pos_counts
-            maj_vec = (prev * 2.0 >= totals_seen).to(true.dtype)
-            maj = maj_vec.view(1, 1, Kb).expand(B, L, Kb)
-
-            mb = maj.bool()
-            self.btn_maj_tp.add_((mb & true_b).float().sum(dim=(0, 1)))
-            self.btn_maj_fp.add_((mb & (~true_b)).float().sum(dim=(0, 1)))
-            self.btn_maj_fn.add_(((~mb) & true_b).float().sum(dim=(0, 1)))
-            self.btn_maj_exact.add_((maj == true).all(dim=-1).float().sum())
-
-            if L > 1:
-                rep = torch.zeros_like(true)
-                rep[:, 1:, :] = true[:, :-1, :]
-                rb2 = rep.bool()
-                mask = torch.zeros((B, L), dtype=torch.float32, device=true.device)
-                mask[:, 1:] = 1.0
-                m2 = mask.unsqueeze(-1).expand_as(true)
-                mask_bool = m2.bool()
-                self.btn_rep_tp.add_((rb2 & true_b & mask_bool).float().sum(dim=(0, 1)))
-                self.btn_rep_fp.add_((rb2 & (~true_b) & mask_bool).float().sum(dim=(0, 1)))
-                self.btn_rep_fn.add_(((~rb2) & true_b & mask_bool).float().sum(dim=(0, 1)))
-                self.btn_rep_exact.add_(((rep == true) & mask_bool).view(B, L, -1).all(dim=-1).float().sum())
-                self.btn_rep_total.add_(mask.sum())
-
-    def update_shoulder(
-            self,
-            logits: Optional[torch.Tensor],  # [B,L,Ks] or None
-            true_idx: Optional[torch.Tensor],  # [B,L] or None
-            maj_before: Optional[int],  # int or None
-    ) -> None:
-        if logits is None or true_idx is None:
-            return
-        with torch.no_grad():
-            pred_idx = logits.argmax(dim=-1).reshape(-1)
-            true_flat = true_idx.reshape(-1)
-
-            self.shoulder_total.add_(float(true_flat.numel()))
-            self.shoulder_correct.add_((pred_idx == true_flat).float().sum())
-            if maj_before is not None:
-                maj_tensor = torch.full_like(true_flat, maj_before)
-                self.shoulder_maj_correct.add_((true_flat == maj_tensor).float().sum())
-            if self.shoulder_label_counts is not None:
-                self.shoulder_label_counts.add_(_safe_bincount(true_flat, self.K_shoulder, self.device))
-
-    # ------- summaries -------
-
-    def _btn_prf(self, tp: torch.Tensor, fp: torch.Tensor, fn: torch.Tensor) -> Tuple[float, float, float, float]:
-        # micro
-        TP = tp.sum().item()
-        FP = fp.sum().item()
-        FN = fn.sum().item()
-        prec_micro = _safe_div(TP, TP + FP)
-        rec_micro = _safe_div(TP, TP + FN)
-        f1_micro = _safe_div(2 * prec_micro * rec_micro, prec_micro + rec_micro)
-        # macro
-        prec_c = (tp / (tp + fp).clamp_min(1)).float()
-        rec_c = (tp / (tp + fn).clamp_min(1)).float()
-        f1_c = (2 * prec_c * rec_c / (prec_c + rec_c).clamp_min(1e-12)).nan_to_num(0.0)
-        f1_macro = float(f1_c.mean().item())
-        return float(prec_micro), float(rec_micro), float(f1_micro), f1_macro
-
-    def summary(self) -> Dict[str, float]:
-        out: Dict[str, float] = {}
-        # main/c acc
-        out["acc_main"] = _safe_div(self.main_correct, self.main_total)
-        out["acc_main_maj"] = _safe_div(self.main_maj_correct, self.main_total)
-        out["acc_main_rep"] = _safe_div(self.main_rep_correct, self.main_rep_total)
-
-        out["acc_c"] = _safe_div(self.c_correct, self.c_total)
-
-        out["acc_c_maj"] = _safe_div(self.c_maj_correct, self.c_total)
-        out["acc_c_rep"] = _safe_div(self.c_rep_correct, self.c_rep_total)
-
-        # buttons
-        pm, rm, f1m, f1macro = self._btn_prf(self.btn_tp, self.btn_fp, self.btn_fn)
-        out["btn_em"] = _safe_div(self.btn_exact_match_correct, self.btn_total)
-        out["btn_prec_micro"] = pm
-        out["btn_rec_micro"] = rm
-        out["btn_f1_micro"] = f1m
-        out["btn_f1_macro"] = f1macro
-
-        # buttons baselines
-
-        pmm, rmm, f1mm, f1mmm = self._btn_prf(self.btn_maj_tp, self.btn_maj_fp, self.btn_maj_fn)
-        out["btn_em_maj"] = _safe_div(self.btn_maj_exact, self.btn_total)
-        out["btn_f1_micro_maj"] = pmm if pmm == pmm else 0.0
-        out["btn_f1_macro_maj"] = f1mm
-
-        pmx, rmx, f1mx, f1mmx = self._btn_prf(self.btn_rep_tp, self.btn_rep_fp, self.btn_rep_fn)
-        out["btn_em_rep"] = _safe_div(self.btn_rep_exact, self.btn_rep_total)
-        out["btn_f1_micro_rep"] = f1mx
-        out["btn_f1_macro_rep"] = f1mmx
-
-        # shoulder
-        out["acc_shoulder"] = _safe_div(self.shoulder_correct, self.shoulder_total)
-        out["acc_shoulder_maj"] = _safe_div(self.shoulder_maj_correct, self.shoulder_total)
-
-        return out
-
-    def short_str(self) -> str:
-        s = self.summary()
-        return (
-                f" | main acc {s['acc_main']:.3f} maj {s['acc_main_maj']:.3f}, rep {s['acc_main_rep']:.3f})"
-                f" | c acc {s['acc_c']:.3f}, maj {s['acc_c_maj']:.3f}, rep {s['acc_c_rep']:.3f})"
-                f" | btn EM {s['btn_em']:.3f} F1μ {s['btn_f1_micro']:.3f} , maj {s['btn_f1_micro_maj']:.3f}, rep {s['btn_f1_micro_rep']:.3f})"
-                + (f" | shoulder acc {s['acc_shoulder']:.3f}" if 'acc_shoulder' in s else "")
-        )
-
-
 # -----------------------------
-# Pretty-print helpers for metrics (per-batch)
+# Metrics helpers for per-batch logging
 # -----------------------------
 
-# MPS-safe majority helper (no torch.mode)
 def _majority_flat(x: torch.Tensor) -> int:
-    """Return majority label from a 1D integer tensor using CPU bincount (MPS-safe)."""
+    """Return the majority label from a 1D tensor using CPU bincount (MPS-safe)."""
     if x.numel() == 0:
         return 0
-    x_cpu = x.detach().to(torch.int64).cpu()
-    counts = torch.bincount(x_cpu)
+    counts = torch.bincount(x.detach().to(torch.int64).cpu())
     return int(torch.argmax(counts).item())
 
 
@@ -619,19 +348,15 @@ def _format_confusion_small(
         title: str | None = None,
         labels: Optional[Sequence[str]] = None,
 ) -> str:
-    """
-    If K <= max_size, render full matrix with row sums and diagonal percentages.
-    Otherwise, print top off-diagonal confusions.
-    """
+    """Render a confusion matrix or its top confusions in a compact string."""
     K = cm.shape[0]
     if title is None:
         title = "confusion"
 
-    label_list: Sequence[str]
     if labels is not None:
         if len(labels) != K:
             raise ValueError("labels length must match confusion matrix dimensions")
-        label_list = [str(lbl) for lbl in labels]
+        label_list: Sequence[str] = [str(lbl) for lbl in labels]
     else:
         label_list = [f"{i:02d}" for i in range(K)]
 
@@ -640,51 +365,40 @@ def _format_confusion_small(
         if not tops:
             return f"{title}: (no confusions)"
         lines = [f"{title}: top confusions (true->pred: count, %offdiag)"]
-        lines += [
-            f"  {label_list[t]}->{label_list[p]}: {c} ({pct:.1f}%)"
-            for t, p, c, pct in tops
-        ]
+        lines += [f"  {label_list[t]}->{label_list[p]}: {c} ({pct:.1f}%)" for t, p, c, pct in tops]
         return "\n".join(lines)
 
     arr = cm.numpy()
-    row_sums_1d = arr.sum(axis=1)  # shape (K,)
+    row_sums = arr.sum(axis=1)
     diag_vals = np.diag(arr).astype(float)
-    # Safe divide: out=0 where row sum == 0
     with np.errstate(divide='ignore', invalid='ignore'):
-        diag_pct = np.divide(diag_vals * 100.0, row_sums_1d, out=np.zeros_like(diag_vals, dtype=float),
-                             where=row_sums_1d > 0)
+        diag_pct = np.divide(diag_vals * 100.0, row_sums, out=np.zeros_like(diag_vals, dtype=float), where=row_sums > 0)
 
-    col_width = max(len(lbl) for lbl in label_list)
-    cell_width = max(4, col_width)
-    header = " " * (cell_width + 1) + " ".join([lbl.rjust(cell_width) for lbl in label_list]) + " | sum"
+    cell_width = max(4, max(len(lbl) for lbl in label_list))
+    header = " " * (cell_width + 1) + " ".join(lbl.rjust(cell_width) for lbl in label_list) + " | sum"
     lines = [f"{title}: full {K}x{K}", header]
     for i in range(K):
-        row = " ".join([f"{int(v):>{cell_width}d}" for v in arr[i]])
-        lines.append(f"{label_list[i].rjust(cell_width)}: {row} | {int(row_sums_1d[i]):>{cell_width}d}")
-    lines.append("diag% per row: " + " ".join([f"{p:>5.1f}" for p in diag_pct]))
+        row = " ".join(f"{int(v):>{cell_width}d}" for v in arr[i])
+        lines.append(f"{label_list[i].rjust(cell_width)}: {row} | {int(row_sums[i]):>{cell_width}d}")
+    lines.append("diag% per row: " + " ".join(f"{p:>5.1f}" for p in diag_pct))
     return "\n".join(lines)
 
 
 def _multilabel_prf(true: torch.Tensor, pred: torch.Tensor) -> Tuple[float, float, float, float, float]:
-    """
-    Compute (EM, precision_micro, recall_micro, f1_micro, f1_macro) for multi-label predictions.
-    Accepts tensors of shape [B, L, K] *or* [N, K]; returns floats.
-    """
+    """Return EM, precision, recall, F1 (micro), and F1 (macro) for multi-label predictions."""
     if true.dim() == 2:
-        # treat as [N, K]
         true_ = true.unsqueeze(0)
         pred_ = pred.unsqueeze(0)
-        B, L, K = 1, true.shape[0], true.shape[1]
     else:
         true_ = true
         pred_ = pred
-        B, L, K = true.shape
 
     t = true_.bool()
     p = pred_.bool()
     tp = (t & p).sum().item()
     fp = ((~t) & p).sum().item()
     fn = (t & (~p)).sum().item()
+
     prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
@@ -795,20 +509,20 @@ def _collect_gradient_diagnostics(model: torch.nn.Module, *, eps: float = 1e-12)
     }
 
 
-def change_boost(Y, B, L, device, epoch):
+def change_boost(Y: torch.Tensor, B: int, L: int, device: torch.device, epoch: int, *, ratio: float = 10, mode: str = "batch") -> torch.Tensor:
+    # Identify "change" frames
     change_mask = torch.zeros((B, L), device=device, dtype=torch.bool)
-    # Compare from the second timestep onwards
-    state_changed = torch.any(Y[:, 1:] != Y[:, :-1], dim=-1)
-    change_mask[:, 1:] = state_changed
+    if L > 1:
+        state_changed = torch.any(Y[:, 1:] != Y[:, :-1], dim=-1)
+        change_mask[:, 1:] = state_changed
 
-    # Define a weight for "change" frames vs "hold" frames
-    # For example, make change frames 10x more important.
-    change_weight = max(1, 10 - (epoch % 7))
-    # Create a weight tensor for the loss function
-    sample_weights = torch.ones((B, L), device=device)
-    sample_weights[change_mask] = change_weight
-    return sample_weights
+    # Raw weights: 1x for hold, 10x for change
+    w = torch.ones((B, L), device=device)
+    w[change_mask] = ratio
 
+    # Normalize to remove batch composition effects (keep ratio intact)
+    w = w / (w.mean() + 1e-12)
+    return w
 
 @dataclass(frozen=True)
 class RewardFeatureIdx:
@@ -910,6 +624,42 @@ def compute_frame_rewards(
     return rw
 
 
+_GAMMA_POW_CACHE: Dict[Tuple[int, float, torch.dtype, str, int], torch.Tensor] = {}
+
+
+def _gamma_cache_key(length: int, gamma: float, device: torch.device, dtype: torch.dtype) -> Tuple[int, float, torch.dtype, str, int]:
+    dev = torch.device(device)
+    return (
+        int(length),
+        float(gamma),
+        dtype,
+        dev.type,
+        dev.index if dev.index is not None else -1,
+    )
+
+
+def _get_gamma_powers(length: int, gamma: float, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    if length <= 0:
+        return torch.empty((0,), device=device, dtype=dtype)
+
+    key = _gamma_cache_key(length, gamma, device, dtype)
+    cached = _GAMMA_POW_CACHE.get(key)
+    if cached is not None and cached.device == device and cached.dtype == dtype:
+        return cached
+
+    compute_dtype = dtype
+    if device.type == "cpu" and dtype == torch.float16:
+        compute_dtype = torch.float32
+
+    arange = torch.arange(length, device=device, dtype=compute_dtype)
+    gamma_scalar = torch.as_tensor(gamma, device=device, dtype=compute_dtype)
+    powers = torch.pow(gamma_scalar, arange)
+    if compute_dtype != dtype:
+        powers = powers.to(dtype=dtype)
+    _GAMMA_POW_CACHE[key] = powers
+    return powers
+
+
 def compute_value_targets(
         X: torch.Tensor,
         colmap: ColumnMap,
@@ -917,34 +667,30 @@ def compute_value_targets(
         *,
         reward_idx: Optional[RewardFeatureIdx] = None,
 ) -> torch.Tensor:
-    """Compute discounted returns in O(B·L), vectorized across batch."""
+    """Compute discounted returns in O(B·L) using cached gamma powers and fused scans."""
     B, L, _ = X.shape
     device = X.device
     dtype = X.dtype
 
-    # Per-frame rewards (already fast)
-    r = compute_frame_rewards(X, colmap, idx=reward_idx)  # [B, L]
+    if L == 0:
+        return torch.empty((B, 0, 1), device=device, dtype=dtype)
 
-    # Backward discounted scan: G_t = r_t + gamma * G_{t+1}
-    G = torch.empty((B, L), device=device, dtype=dtype)
-    next_G = torch.zeros((B,), device=device, dtype=dtype)
+    rewards = compute_frame_rewards(X, colmap, idx=reward_idx)  # [B, L]
+    gamma_val = float(gamma)
+    gamma_powers = _get_gamma_powers(L, gamma_val, device, rewards.dtype)
 
-    # reverse loop over time dimension (only L steps, not L^2)
-    for t in range(L - 1, -1, -1):
-        # G[:, t] = r[:, t] + gamma * next_G
-        cur = r[:, t].add(next_G.mul(gamma))
-        G[:, t] = cur
-        next_G = cur  # reuse for next iteration
+    if abs(gamma_val) < 1e-12:
+        returns = rewards.clone()
+    else:
+        weighted = rewards * gamma_powers  # broadcast multiply
+        discounted = torch.cumsum(weighted.flip(1), dim=1).flip(1)
+        returns = discounted / gamma_powers.clamp_min(1e-12)
 
-    # Add terminal “win” bonus (constant 1.0 at episode end, discounted by steps remaining)
-    terminal = 1.0
-    # vector of gamma^(L - t - 1) for t=0..L-1
-    pow_vec = torch.pow(torch.tensor(gamma, device=device, dtype=dtype),
-                        torch.arange(L - 1, -1, -1, device=device, dtype=dtype))
-    # pow_vec[t] = gamma^(L-1-t) == gamma^(steps_to_end)
-    G.add_(pow_vec.mul_(terminal))
+    terminal_bonus = 1.0
+    terminal_vec = gamma_powers.flip(0)
+    returns = returns + terminal_bonus * terminal_vec
 
-    return G.unsqueeze(-1)  # [B, L, 1]
+    return returns.unsqueeze(-1)  # [B, L, 1]
 
 
 def train_loop(
@@ -1055,7 +801,7 @@ def train_loop(
         except Exception as e:
             print(f"wandb init failed: {e}. Continuing without wandb.")
 
-    start_epoch, global_step = _load_latest_checkpoint(out_dir, model, opt, scaler, device)
+    start_epoch, global_step, start_iter = _load_latest_checkpoint(out_dir, model, opt, scaler, device)
     # If we have a more recent persisted step, prefer it to keep wandb step increasing
     try:
         if last_step_file.exists():
@@ -1073,6 +819,8 @@ def train_loop(
         return
 
     preview_done = False
+    resume_epoch = start_epoch
+    resume_iter = start_iter
 
     # Main epochs
     for epoch in range(start_epoch, config.train.epochs):
@@ -1080,19 +828,31 @@ def train_loop(
             sampler.set_epoch(epoch)
         model.train()
 
-        metrics = RunningMetrics(
-            K_main=config.model.target_shapes_by_head["main_stick"],
-            K_c=config.model.target_shapes_by_head["c_stick"],
-            K_buttons=config.model.target_shapes_by_head["buttons"],
-            K_shoulder=config.model.target_shapes_by_head["shoulder"],
-            device=device,
-        )
-
         epoch_loss = 0.0
         t0 = time.time()
+        skip_until = resume_iter if epoch == resume_epoch else 0
+        applied_skip = skip_until if skip_until else 0
+        skip_remaining = skip_until
+        if skip_until and hasattr(sampler, "set_start_offset"):
+            try:
+                sampler.set_start_offset(skip_until)
+                print(f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches via sampler offset.")
+                preview_done = True
+                skip_remaining = 0
+                skip_until = 0
+            except Exception as exc:
+                print(f"Sampler offset failed ({exc}); falling back to loading batches for skip.")
+        elif skip_until:
+            print(f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches by consuming them (may take time).")
+            preview_done = True
 
         max_iters = config.train.steps_per_epoch
+        iters_processed = 0
+
         for it, batch in enumerate(loader):
+            if skip_remaining:
+                skip_remaining -= 1
+                continue
             if max_iters is not None and it >= max_iters:
                 break
             if config.train.max_steps and global_step >= config.train.max_steps:
@@ -1109,7 +869,11 @@ def train_loop(
             # Determine autocast device type and dtype
             autocast_device = 'cuda' if device.type in ('cuda', 'mps') else 'cpu'
             amp_dtype = torch.float16 if config.train.amp_dtype == "float16" else torch.bfloat16
-            
+
+            value_pred: Optional[torch.Tensor] = None
+            value_target: Optional[torch.Tensor] = None
+            loss_value = torch.tensor(0.0, device=device)
+
             # Forward pass and loss computation with automatic mixed precision
             with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=config.train.use_amp):
                 # Build model inputs & target labels
@@ -1120,6 +884,7 @@ def train_loop(
                 B, L, _ = pred["main_stick"].shape
                 sample_weights = change_boost(Y, B, L, device, epoch)
 
+                value_pred = pred.get("value", None)
                 probs_btn = pred.get("buttons_probs", None)
 
                 loss_components = compute_loss_components(
@@ -1138,14 +903,20 @@ def train_loop(
                 loss_aux = loss_components["moe_aux"]
 
                 # Value head loss (if enabled)
-                loss_value = torch.tensor(0.0, device=device)
-                if config.model.use_value_head and "value" in pred:
-                    value_pred = pred["value"]  # [B, L, 1]
-                    value_target = compute_value_targets(X, colmap, gamma=config.rl.gamma,
-                                                         reward_idx=reward_idx)  # [B, L, 1]
+                if config.model.use_value_head and value_pred is not None:
+                    value_target = compute_value_targets(
+                        X,
+                        colmap,
+                        gamma=config.rl.gamma,
+                        reward_idx=reward_idx,
+                    )  # [B, L, 1]
 
                     # MSE loss for value prediction
-                    value_loss_raw = torch.nn.functional.mse_loss(value_pred, value_target, reduction='none')  # [B, L, 1]
+                    value_loss_raw = torch.nn.functional.mse_loss(
+                        value_pred,
+                        value_target,
+                        reduction='none',
+                    )  # [B, L, 1]
 
                     # Apply same sample weights as policy loss
                     weighted_value_loss = value_loss_raw.squeeze(-1) * sample_weights  # [B, L]
@@ -1161,13 +932,18 @@ def train_loop(
             logits_btn = pred["buttons"]  # [B,L,Kb]
             target_btn = target_info["buttons"]
 
-            # Per-epoch LR: start at max at epoch start, linearly decay to 0 by epoch end
             lr_max = getattr(config.train, "lr_max", None) or config.train.lr
-            lr = per_epoch_linear_decay_lr(it, steps_per_epoch, lr_max)
+            lr = cosine_lr_schedule(
+                global_step,
+                total_steps,
+                lr_max,
+                getattr(config.train, "warmup_steps", 0),
+            )
             for pg in opt.param_groups:
                 pg["lr"] = lr
 
-            log_this_iter = (it % 100 == 0) or (it == len(loader) - 1)
+            current_iter = applied_skip + iters_processed
+            log_this_iter = (current_iter % 100 == 0)
             should_collect_grad_stats = use_wandb and log_this_iter
             grad_stats: Optional[Dict[str, float]] = None
 
@@ -1205,24 +981,18 @@ def train_loop(
 
             epoch_loss += float(loss.detach().item())
 
-            # ---- Running metrics & baselines ----
-            # Shapes: [B,L,*]
-            # Main stick predictions/labels
+            # ---- Per-batch metrics (no running aggregation) ----
             pred_main_idx = logits_main.argmax(dim=-1).view(B, L)
             true_main_idx = target_main.view(B, L)
-            # C-stick
             pred_c_idx = logits_c.argmax(dim=-1).view(B, L)
             true_c_idx = target_c.view(B, L)
-            # Buttons
             btn_logits = logits_btn  # [B,L,Kb]
             btn_true = target_btn  # [B,L,Kb]
             btn_probs = probs_btn
 
-            # Create masks for where the true action changes. Shape: [B, L]
             main_change_mask = torch.zeros_like(true_main_idx, dtype=torch.bool)
             main_change_mask[:, 1:] = (true_main_idx[:, 1:] != true_main_idx[:, :-1])
             main_hold_mask = ~main_change_mask
-            # The first frame of a sequence can't be a "change", so it's always a "hold".
             main_hold_mask[:, 0] = True
 
             c_change_mask = torch.zeros_like(true_c_idx, dtype=torch.bool)
@@ -1230,17 +1000,11 @@ def train_loop(
             c_hold_mask = ~c_change_mask
             c_hold_mask[:, 0] = True
 
-            # For buttons, a change is any bit flip
             btn_change_mask = torch.zeros((B, L), device=device, dtype=torch.bool)
             btn_change_mask[:, 1:] = torch.any(btn_true[:, 1:] != btn_true[:, :-1], dim=-1)
             btn_hold_mask = ~btn_change_mask
             btn_hold_mask[:, 0] = True
 
-            # Baselines for main/c:
-            main_major = metrics._majority_label(metrics.main_label_counts)
-            c_major = metrics._majority_label(metrics.c_label_counts)
-
-            # repeat-last (ignore first timestep)
             rep_mask = torch.ones((B, L), dtype=torch.bool, device=device)
             rep_mask[:, 0] = False
             main_rep = torch.zeros_like(true_main_idx)
@@ -1248,28 +1012,6 @@ def train_loop(
             if L > 1:
                 main_rep[:, 1:] = true_main_idx[:, :-1]
                 c_rep[:, 1:] = true_c_idx[:, :-1]
-
-            # Update metrics
-            metrics.update_main(
-                pred_main_idx.reshape(-1),
-                true_main_idx.reshape(-1),
-                main_major,
-                main_rep.reshape(-1),
-                rep_mask.reshape(-1),
-            )
-            metrics.update_c(
-                pred_c_idx.reshape(-1),
-                true_c_idx.reshape(-1),
-                c_major,
-                c_rep.reshape(-1),
-                rep_mask.reshape(-1),
-            )
-            metrics.update_buttons(btn_logits, btn_true, btn_probs)
-
-            # shoulder metrics
-            B_, L_, _Ks = pred["shoulder"].shape
-            sh_major = metrics._majority_label(metrics.shoulder_label_counts) if metrics.K_shoulder else None
-            metrics.update_shoulder(pred["shoulder"], target_info["shoulder_idx"], sh_major)
 
             # Prepare loss dict safely
             this_loss = {
@@ -1282,6 +1024,8 @@ def train_loop(
             }
 
             global_step += 1
+            iters_processed += 1
+            completed_batches = applied_skip + iters_processed
 
             # Throughput / logs (rank 0)
             if it % 5000 == 0:
@@ -1291,6 +1035,9 @@ def train_loop(
                     "scaler": scaler.state_dict(),
                     "config": config.train.__dict__,
                     "epoch": epoch + 1,
+                    "resume_epoch": epoch,
+                    "resume_iter": completed_batches,
+                    "iteration": completed_batches,
                     "global_step": global_step,
                 }
                 torch.save(ckpt, out_dir / f"model_ep{epoch + 1:03d}_{it:03d}.pt")
@@ -1301,7 +1048,8 @@ def train_loop(
                 B_cur, L_cur, F_cur = X.shape
                 # frames/s: each frame is a token in [B,L]
                 frames_per_batch = B_cur * L_cur
-                frames_per_s = (it + 1) * frames_per_batch / dt
+                frames_per_s = iters_processed * frames_per_batch / dt
+                avg_loss_running = epoch_loss / max(1, iters_processed)
 
                 # ---------- Per-batch metrics & confusions ----------
                 # MAIN
@@ -1396,8 +1144,8 @@ def train_loop(
 
                 # ---------- Compose log ----------
                 header = (
-                    f"ep {epoch + 1}/{config.train.epochs} it {it + 1}/{len(loader)}\n"
-                    f"  loss {epoch_loss / (it + 1):.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | {this_loss}"
+                    f"ep {epoch + 1}/{config.train.epochs} it {completed_batches}/{len(loader)}\n"
+                    f"  loss {avg_loss_running:.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | {this_loss}"
                 )
                 main_line = (
                     f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f}) | rep {acc_main_rep_b:.3f}"
@@ -1435,19 +1183,25 @@ def train_loop(
                 )
 
                 # VALUE HEAD (if enabled)
-                if config.model.use_value_head and "value" in pred:
-                    value_pred = pred["value"]  # [B, L, 1]
-                    value_target = compute_value_targets(X, colmap, gamma=config.rl.gamma)
-
+                if config.model.use_value_head and value_pred is not None:
+                    if value_target is None:
+                        value_target_eval = compute_value_targets(
+                            X,
+                            colmap,
+                            gamma=config.rl.gamma,
+                            reward_idx=reward_idx,
+                        )
+                    else:
+                        value_target_eval = value_target
                     # Compute value prediction metrics
                     value_pred_mean = value_pred.mean().item()
-                    value_target_mean = value_target.mean().item()
-                    value_mse = ((value_pred - value_target) ** 2).mean().item()
-                    value_mae = (value_pred - value_target).abs().mean().item()
+                    value_target_mean = value_target_eval.mean().item()
+                    value_mse = ((value_pred - value_target_eval) ** 2).mean().item()
+                    value_mae = (value_pred - value_target_eval).abs().mean().item()
 
                     # Correlation between predicted and target values
                     vp_flat = value_pred.reshape(-1)
-                    vt_flat = value_target.reshape(-1)
+                    vt_flat = value_target_eval.reshape(-1)
                     vp_centered = vp_flat - vp_flat.mean()
                     vt_centered = vt_flat - vt_flat.mean()
                     correlation = (vp_centered * vt_centered).sum() / (
@@ -1465,10 +1219,10 @@ def train_loop(
                 if use_wandb:
                     log_payload = {
                         "epoch": epoch + 1,
-                        "iter": it + 1,
+                        "iter": completed_batches,
                         "global_step": global_step,
                         "lr": lr,
-                        "loss/total": epoch_loss / (it + 1),
+                        "loss/total": avg_loss_running,
                         "loss/main": this_loss.get("main", 0.0),
                         "loss/c": this_loss.get("c", 0.0),
                         "loss/buttons": this_loss.get("buttons", 0.0),
@@ -1555,8 +1309,13 @@ def train_loop(
                     except Exception:
                         pass
 
-        if (epoch + 1) % config.train.save_every_epochs == 0:
-            print(f"[epoch {epoch + 1}] summary: {metrics.short_str()}")
+        if epoch == resume_epoch:
+            resume_iter = 0
+            resume_epoch = -1
+
+        if (epoch + 1) % config.train.save_every_epochs == 0 and iters_processed:
+            avg_epoch_loss = epoch_loss / max(1, iters_processed)
+            print(f"[epoch {epoch + 1}] avg_loss {avg_epoch_loss:.4f} ({iters_processed} iters)")
 
         # Save checkpoint
         if (epoch + 1) % config.train.save_every_epochs == 0:
@@ -1566,6 +1325,9 @@ def train_loop(
                 "scaler": scaler.state_dict(),
                 "config": config.train.__dict__,
                 "epoch": epoch + 1,
+                "resume_epoch": epoch + 1,
+                "resume_iter": 0,
+                "iteration": 0,
                 "global_step": global_step,
             }
             torch.save(ckpt, out_dir / f"model_ep{epoch + 1:03d}.pt")

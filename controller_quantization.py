@@ -1,11 +1,26 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 
 from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+
+
+_MAIN_STICK_PALETTE_CPU = torch.as_tensor(
+    np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
+)
+_C_STICK_PALETTE_CPU = torch.as_tensor(
+    np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
+)
+_SHOULDER_PALETTE_CPU = torch.as_tensor(
+    np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
+) if SHOULDER_QUANTIZED else None
+
+_MAIN_STICK_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+_C_STICK_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+_SHOULDER_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 
 
 def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:
@@ -19,6 +34,32 @@ def _clamp_unit_circle(xy11: torch.Tensor) -> torch.Tensor:
     radius = torch.linalg.norm(xy11, dim=-1, keepdim=True)
     scale = torch.clamp(radius, min=1.0)
     return xy11 / scale.clamp_min(1e-12)
+
+
+def _device_cache_key(device: torch.device) -> Tuple[str, Optional[int]]:
+    """Canonicalize device key to support caching with and without explicit indices."""
+    if device.type == "cuda":
+        index = device.index
+        if index is None and torch.cuda.is_available():
+            index = torch.cuda.current_device()
+        return device.type, index
+    return device.type, device.index
+
+
+def _palette_for_device(
+    cpu_palette: torch.Tensor,
+    cache: Dict[Tuple[str, Optional[int]], torch.Tensor],
+    device: torch.device,
+) -> torch.Tensor:
+    """Return palette tensor on the requested device, caching to avoid repeated copies."""
+    if device.type == "cpu":
+        return cpu_palette
+    key = _device_cache_key(device)
+    cached = cache.get(key)
+    if cached is None or cached.device != device:
+        cached = cpu_palette.to(device=device)
+        cache[key] = cached
+    return cached
 
 
 def quantize_targets(
@@ -54,7 +95,7 @@ def quantize_targets(
             main_xy11 = _clamp_unit_circle(torch.clamp(main_xy, -1.0, 1.0))
         else:
             main_xy11 = sticks01_to_unit11(main_xy)
-    P_main = torch.tensor(np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32), device=device)
+    P_main = _palette_for_device(_MAIN_STICK_PALETTE_CPU, _MAIN_STICK_CACHE, device)
     V_main = main_xy11.reshape(-1, 2)
     main_norm = V_main.pow(2).sum(dim=1, keepdim=True)
     palette_norm = P_main.pow(2).sum(dim=1).unsqueeze(0)
@@ -73,10 +114,7 @@ def quantize_targets(
             c_xy11 = _clamp_unit_circle(torch.clamp(c_xy, -1.0, 1.0))
         else:
             c_xy11 = sticks01_to_unit11(c_xy)
-    P_c = torch.tensor(
-        np.asarray(C_STICK_QUANTIZED, dtype=np.float32),
-        device=device,
-    )
+    P_c = _palette_for_device(_C_STICK_PALETTE_CPU, _C_STICK_CACHE, device)
     V_c = c_xy11.reshape(-1, 2)
     c_norm = V_c.pow(2).sum(dim=1, keepdim=True)
     palette_c_norm = P_c.pow(2).sum(dim=1).unsqueeze(0)
@@ -92,7 +130,9 @@ def quantize_targets(
     y_shoulder_idx = None
     shoulder_K = 0
     if getattr(colmap, "y_shoulder", None) is not None:
-        centers = torch.tensor(np.asarray(SHOULDER_QUANTIZED, dtype=np.float32), device=device)
+        if _SHOULDER_PALETTE_CPU is None:
+            raise RuntimeError("Shoulder quantization palette requested but not defined.")
+        centers = _palette_for_device(_SHOULDER_PALETTE_CPU, _SHOULDER_CACHE, device)
         s = batch_Y[..., colmap.y_shoulder].unsqueeze(-1)
         d2s = (s - centers) ** 2
         y_shoulder_idx = torch.argmin(d2s, dim=-1)

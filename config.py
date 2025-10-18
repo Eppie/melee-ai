@@ -45,12 +45,12 @@ class ZarrConfig(_FreezeGuard):
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 64
+    batch_size: int = 128
     epochs: int = 100
-    lr: float = 2e-4 # (DONE)
+    lr: float = 1.3e-4 # (DONE)
     weight_decay: float = 0.002 # (DONE)
     betas: Tuple[float, float] = (0.9, 0.95)
-    warmup_steps: int = 10
+    warmup_steps: int = 10000
     max_steps: Optional[int] = None
     num_workers: int = 16
     prefetch_factor: int = 4
@@ -59,7 +59,7 @@ class TrainConfig:
     stride = 1
 
     # losses
-    grad_clip: float = 1.2 # (DONE)
+    grad_clip: float = 5.0 # (DONE)
     label_smoothing: float = 0.02 # (DONE)
 
     # Automatic Mixed Precision (AMP)

@@ -326,9 +326,14 @@ class RandomWindowSampler(Sampler[int]):
         self.stride = int(stride)
         self.generator = generator
         self.epoch = 0
+        self._start_offset = 0
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
+
+    def set_start_offset(self, offset: int) -> None:
+        """Skip the first `offset` samples the next time the sampler is iterated."""
+        self._start_offset = max(0, int(offset))
 
     def _count_for_epoch(self, epoch: int) -> int:
         s = self.stride
@@ -357,6 +362,14 @@ class RandomWindowSampler(Sampler[int]):
             w = ep.num_windows
             if m < w:
                 inds.extend(base + t for t in range(m, w, s))
+
+        start_offset = min(self._start_offset, len(inds)) if self._start_offset else 0
+        self._start_offset = 0
+        if start_offset:
+            inds = inds[start_offset:]
+
+        if not inds:
+            return
 
         # Deterministic per-epoch shuffle
         g = self.generator or torch.Generator()

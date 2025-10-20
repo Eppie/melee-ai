@@ -63,12 +63,12 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--batch-size", type=int, default=128, help="Batch size (B).")
-    parser.add_argument("--seq-len", type=int, default=64, help="Sequence length (L).")
-    parser.add_argument("--features", type=int, default=32, help="Number of feature columns (F). Must be ≥ 9.")
+    parser.add_argument("--seq-len", type=int, default=256, help="Sequence length (L).")
+    parser.add_argument("--features", type=int, default=73, help="Number of feature columns (F). Must be ≥ 9.")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor.")
     parser.add_argument("--device", type=str, default="cpu", help="Device to benchmark on, e.g. cpu or cuda.")
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32"], help="Floating point dtype for X.")
-    parser.add_argument("--min-seconds", type=float, default=1.0, help="Minimum wall-clock time per benchmark run.")
+    parser.add_argument("--min-seconds", type=float, default=10.0, help="Minimum wall-clock time per benchmark run.")
     return parser.parse_args()
 
 

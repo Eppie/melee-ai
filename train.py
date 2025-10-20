@@ -509,7 +509,7 @@ def _collect_gradient_diagnostics(model: torch.nn.Module, *, eps: float = 1e-12)
     }
 
 
-def change_boost(Y: torch.Tensor, B: int, L: int, device: torch.device, epoch: int, *, ratio: float = 10, mode: str = "batch") -> torch.Tensor:
+def change_boost(Y: torch.Tensor, B: int, L: int, device: torch.device, epoch: int, *, ratio: float = 2, mode: str = "batch") -> torch.Tensor:
     # Identify "change" frames
     change_mask = torch.zeros((B, L), device=device, dtype=torch.bool)
     if L > 1:

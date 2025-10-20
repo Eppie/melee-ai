@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).parent.parent))
 from config import init_config
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
@@ -14,7 +15,6 @@ from model_interface import (
     GPTInferenceEngine,
     apply_model_outputs_to_game,
     collect_raw_inputs_from_gamestate,
-    set_active_engine,
 )
 
 
@@ -24,7 +24,7 @@ class ProfilerConfig:
 
 
 if __name__ == "__main__":
-    init_config(cli_overrides={"model.num_stages": 7, "model.num_characters": 26})
+    init_config(cli_overrides={"model.num_stages": 6, "model.num_characters": 26})
     parser = argparse.ArgumentParser(description='Example of libmelee in action')
     parser.add_argument('--debug', '-d', action='store_true',
                         help='Debug mode. Creates a CSV of all game states')
@@ -35,7 +35,7 @@ if __name__ == "__main__":
     parser.add_argument('--iso', default=None, type=str,
                         help='Path to melee iso.')
     parser.add_argument('--checkpoint', '-c', type=Path,
-                        default=Path('/Users/eppie/PycharmProjects/new-melee-ai/model_ep009.pt'),
+                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep002_000.pt'),
                         help='Path to trained model checkpoint (.pt)')
     parser.add_argument('--device', default='mps',
                         help='Torch device to run on (auto/cpu/cuda/mps)')
@@ -50,11 +50,9 @@ if __name__ == "__main__":
     engine = GPTInferenceEngine(
         checkpoint_path=args.checkpoint,
         device=args.device,
-        button_threshold=args.button_threshold,
         warmup_frames=args.warmup_frames,
         data_root=args.data_root,
     )
-    set_active_engine(engine)
     console = Console(
         path=args.dolphin_executable_path,
         slippi_address=args.address,
@@ -136,12 +134,12 @@ if __name__ == "__main__":
                 autostart=False,
                 swag=False,
             )
-            # menu_helper.choose_character(
-            #     character=Character.FOX,
-            #     gamestate=gamestate,
-            #     controller=controllers[2],
-            #     cpu_level=9,
-            #     costume=1,
-            #     swag=False,
-            #     start=True,
-            # )
+            menu_helper.choose_character(
+                character=Character.FOX,
+                gamestate=gamestate,
+                controller=controllers[2],
+                cpu_level=9,
+                costume=1,
+                swag=False,
+                start=True,
+            )

@@ -24,7 +24,7 @@ from controller_quantization import quantize_targets
 from controller_utils import CONTROL_STICK_QUANTIZED
 from libmelee.melee.enums import Action
 from loss import compute_loss_components
-from model.gpt import GPTv7
+from model.nano_gpt import GPT
 from utils import print_model_diagram, _resolve_device
 
 # Optional Weights & Biases logging
@@ -241,10 +241,10 @@ _BUTTON_PRETTY = {
 }
 
 
-def build_inputs_for_gptv7(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorDict:
+def build_inputs_for_gpt(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorDict:
     """
     batch_X: [B, L, F] float32 (features of current frame)
-    Returns TensorDict with the keys GPTv7._embed_inputs expects.
+    Returns TensorDict with the keys GPT._embed_inputs expects.
     """
     B, L, _ = batch_X.shape
 
@@ -694,7 +694,7 @@ def compute_value_targets(
 
 
 def train_loop(
-        model: GPTv7,
+        model: GPT,
 ) -> None:
     device = _resolve_device(None)
     model = model.to(device)
@@ -726,7 +726,7 @@ def train_loop(
     # GradScaler for automatic mixed precision (no device arg in torch 2.1)
     scaler = GradScaler(enabled=config.train.use_amp)
 
-    steps_per_epoch = config.train.steps_per_epoch or math.ceil(len(loader))
+    steps_per_epoch = math.ceil(len(loader))
     total_steps = config.train.max_steps or (config.train.epochs * steps_per_epoch)
     global_step = 0
     start_epoch = 0
@@ -846,15 +846,12 @@ def train_loop(
             print(f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches by consuming them (may take time).")
             preview_done = True
 
-        max_iters = config.train.steps_per_epoch
         iters_processed = 0
 
         for it, batch in enumerate(loader):
             if skip_remaining:
                 skip_remaining -= 1
                 continue
-            if max_iters is not None and it >= max_iters:
-                break
             if config.train.max_steps and global_step >= config.train.max_steps:
                 break
 
@@ -877,7 +874,7 @@ def train_loop(
             # Forward pass and loss computation with automatic mixed precision
             with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=config.train.use_amp):
                 # Build model inputs & target labels
-                inputs_td = build_inputs_for_gptv7(X, colmap)
+                inputs_td = build_inputs_for_gpt(X, colmap)
                 target_info = quantize_targets(Y, colmap, input_domain="unit11")
 
                 pred: TensorDict = model(inputs_td)  # keys: buttons, main_stick, c_stick, (shoulder), optionally value
@@ -891,8 +888,6 @@ def train_loop(
                     pred,
                     target_info,
                     label_smoothing=config.train.label_smoothing,
-                    use_moe=config.model.use_moe,
-                    moe_aux_loss_weight=config.model.moe_aux_loss_weight,
                     sample_weights=sample_weights,  # Pass the new weights
                 )
                 loss = loss_components["total"]
@@ -900,7 +895,6 @@ def train_loop(
                 loss_c = loss_components["c"]
                 loss_btn = loss_components["buttons"]
                 loss_s = loss_components["shoulder"]
-                loss_aux = loss_components["moe_aux"]
 
                 # Value head loss (if enabled)
                 if config.model.use_value_head and value_pred is not None:
@@ -943,7 +937,7 @@ def train_loop(
                 pg["lr"] = lr
 
             current_iter = applied_skip + iters_processed
-            log_this_iter = (current_iter % 100 == 0)
+            log_this_iter = (current_iter % 10 == 0)
             should_collect_grad_stats = use_wandb and log_this_iter
             grad_stats: Optional[Dict[str, float]] = None
 
@@ -1019,7 +1013,6 @@ def train_loop(
                 "c": float(loss_c.detach().item()),
                 "shoulder": float(loss_s.detach().item()),
                 "buttons": float(loss_btn.detach().item()),
-                "moe_aux": float(loss_aux.detach().item()) if (loss_aux is not None) else 0.0,
                 "value": float(loss_value.detach().item()) if config.model.use_value_head else 0.0,
             }
 
@@ -1227,7 +1220,6 @@ def train_loop(
                         "loss/c": this_loss.get("c", 0.0),
                         "loss/buttons": this_loss.get("buttons", 0.0),
                         "loss/shoulder": this_loss.get("shoulder", 0.0),
-                        "loss/moe_aux": this_loss.get("moe_aux", 0.0),
                         "loss/value": this_loss.get("value", 0.0),
                         # main stick
                         "metrics/acc_main_batch": acc_main_b,
@@ -1359,6 +1351,6 @@ def train_loop(
 
 if __name__ == "__main__":
     init_config()
-    model = GPTv7()
+    model = GPT(get_config())
     print_model_diagram(model)
     train_loop(model)

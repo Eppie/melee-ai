@@ -417,8 +417,6 @@ def make_dataloader() -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampl
     )
 
     target_windows = config.train.windows_per_epoch
-    if config.train.steps_per_epoch is not None:
-        target_windows = config.train.steps_per_epoch * config.train.batch_size
 
     effective_num_samples = config.train.num_samples
     if target_windows is not None:

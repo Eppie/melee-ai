@@ -16,9 +16,10 @@ from model.gpt import GPTv7
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
-from config import FeatureConfig
+from config import FeatureConfig, get_config
 from feature_transforms import FeatureTransformSpec, build_transform_spec
 from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from model.nano_gpt import GPT
 from schema import (
     PLAYER_SPEC,
     extract_common_fields,
@@ -26,7 +27,7 @@ from schema import (
     get_feature_names,
     get_target_names,
 )
-from train import build_inputs_for_gptv7, _print_table_block, _format_action
+from train import build_inputs_for_gpt, _print_table_block, _format_action
 from utils import _resolve_device
 
 _DEFAULT_FEATURE_NAMES = get_feature_names()
@@ -326,7 +327,7 @@ class GPTInferenceEngine:
         if transforms_spec is not None:
             set_feature_transforms(transforms_spec)
 
-        self.model = GPTv7().to(self.device)
+        self.model = GPT(get_config()).to(self.device)
         self.model.load_state_dict(ckpt["model"])
         self.model.eval()
 
@@ -384,7 +385,7 @@ class GPTInferenceEngine:
         return stacked.unsqueeze(0).to(self.device)
 
     def _build_inputs(self, batch_X: torch.Tensor) -> TensorDict:
-        return build_inputs_for_gptv7(batch_X, self.colmap)
+        return build_inputs_for_gpt(batch_X, self.colmap)
 
     def _preview_recent_frames(self) -> None:
         if not self.buffer:

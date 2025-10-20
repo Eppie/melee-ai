@@ -18,9 +18,15 @@ _SHOULDER_PALETTE_CPU = torch.as_tensor(
     np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
 ) if SHOULDER_QUANTIZED else None
 
+# Precompute palette norm squared for faster distance calculations
+_MAIN_STICK_NORM_SQ_CPU = (_MAIN_STICK_PALETTE_CPU * _MAIN_STICK_PALETTE_CPU).sum(dim=1)
+_C_STICK_NORM_SQ_CPU = (_C_STICK_PALETTE_CPU * _C_STICK_PALETTE_CPU).sum(dim=1)
+
 _MAIN_STICK_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 _C_STICK_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 _SHOULDER_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+_MAIN_STICK_NORM_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+_C_STICK_NORM_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 
 
 def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:
@@ -31,9 +37,11 @@ def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:
 
 def _clamp_unit_circle(xy11: torch.Tensor) -> torch.Tensor:
     """Clamp arbitrary stick coordinates in [-1,1] to the unit circle."""
-    radius = torch.linalg.norm(xy11, dim=-1, keepdim=True)
-    scale = torch.clamp(radius, min=1.0)
-    return xy11 / scale.clamp_min(1e-12)
+    # Optimized: use squared norm to avoid sqrt, then only normalize if needed
+    radius_sq = (xy11 * xy11).sum(dim=-1, keepdim=True)
+    # Only normalize if radius > 1
+    scale = torch.where(radius_sq > 1.0, torch.sqrt(radius_sq.clamp_min(1e-12)), torch.ones_like(radius_sq))
+    return xy11 / scale
 
 
 def _device_cache_key(device: torch.device) -> Tuple[str, Optional[int]]:
@@ -62,6 +70,26 @@ def _palette_for_device(
     return cached
 
 
+def _quantize_stick(xy: torch.Tensor, palette: torch.Tensor, palette_norm_sq: torch.Tensor, 
+                    input_domain: str, B: int, L: int) -> torch.Tensor:
+    """Helper to quantize a stick to palette indices. Optimized to reduce redundant code."""
+    if input_domain == "unit11":
+        xy11 = _clamp_unit_circle(torch.clamp(xy, -1.0, 1.0))
+    elif input_domain == "unit01":
+        xy11 = sticks01_to_unit11(xy)
+    else:  # auto
+        needs_clamp = torch.any(xy < 0.0) or torch.any(xy > 1.0)
+        xy11 = _clamp_unit_circle(torch.clamp(xy, -1.0, 1.0)) if needs_clamp else sticks01_to_unit11(xy)
+    
+    # Quantize using squared distance (avoids redundant pow/sum calls)
+    V = xy11.reshape(-1, 2)
+    # Compute ||V - P||^2 = ||V||^2 - 2*V·P + ||P||^2 (palette norm is precomputed)
+    v_norm_sq = (V * V).sum(dim=1, keepdim=True)
+    dot = V @ palette.t()
+    d2 = v_norm_sq - 2.0 * dot + palette_norm_sq.unsqueeze(0)
+    return torch.argmin(d2, dim=1).view(B, L)
+
+
 def quantize_targets(
         batch_Y: torch.FloatTensor,
         colmap,
@@ -84,43 +112,17 @@ def quantize_targets(
     B, L, _ = batch_Y.shape
     device = batch_Y.device
 
-    # Main stick palette lookup
+    # Main stick quantization
     main_xy = batch_Y[..., list(colmap.y_main)]
-    if input_domain == "unit11":
-        main_xy11 = _clamp_unit_circle(torch.clamp(main_xy, -1.0, 1.0))
-    elif input_domain == "unit01":
-        main_xy11 = sticks01_to_unit11(main_xy)
-    else:  # auto
-        if torch.any(main_xy < 0.0) or torch.any(main_xy > 1.0):
-            main_xy11 = _clamp_unit_circle(torch.clamp(main_xy, -1.0, 1.0))
-        else:
-            main_xy11 = sticks01_to_unit11(main_xy)
     P_main = _palette_for_device(_MAIN_STICK_PALETTE_CPU, _MAIN_STICK_CACHE, device)
-    V_main = main_xy11.reshape(-1, 2)
-    main_norm = V_main.pow(2).sum(dim=1, keepdim=True)
-    palette_norm = P_main.pow(2).sum(dim=1).unsqueeze(0)
-    dot = V_main @ P_main.t()
-    d2 = main_norm - 2.0 * dot + palette_norm
-    y_main_idx = torch.argmin(d2, dim=1).view(B, L)
+    P_main_norm_sq = _palette_for_device(_MAIN_STICK_NORM_SQ_CPU, _MAIN_STICK_NORM_CACHE, device)
+    y_main_idx = _quantize_stick(main_xy, P_main, P_main_norm_sq, input_domain, B, L)
 
-    # C-stick palette lookup
+    # C-stick quantization
     c_xy = batch_Y[..., list(colmap.y_c)]
-    if input_domain == "unit11":
-        c_xy11 = _clamp_unit_circle(torch.clamp(c_xy, -1.0, 1.0))
-    elif input_domain == "unit01":
-        c_xy11 = sticks01_to_unit11(c_xy)
-    else:
-        if torch.any(c_xy < 0.0) or torch.any(c_xy > 1.0):
-            c_xy11 = _clamp_unit_circle(torch.clamp(c_xy, -1.0, 1.0))
-        else:
-            c_xy11 = sticks01_to_unit11(c_xy)
     P_c = _palette_for_device(_C_STICK_PALETTE_CPU, _C_STICK_CACHE, device)
-    V_c = c_xy11.reshape(-1, 2)
-    c_norm = V_c.pow(2).sum(dim=1, keepdim=True)
-    palette_c_norm = P_c.pow(2).sum(dim=1).unsqueeze(0)
-    dot_c = V_c @ P_c.t()
-    d2c = c_norm - 2.0 * dot_c + palette_c_norm
-    y_c_idx = torch.argmin(d2c, dim=1).view(B, L)
+    P_c_norm_sq = _palette_for_device(_C_STICK_NORM_SQ_CPU, _C_STICK_NORM_CACHE, device)
+    y_c_idx = _quantize_stick(c_xy, P_c, P_c_norm_sq, input_domain, B, L)
 
     # Buttons remain probabilistic targets
     btn_cols = colmap.y_buttons

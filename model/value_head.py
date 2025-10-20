@@ -25,13 +25,12 @@ class ValueHead(nn.Module):
         - Linear projection to scalar value
     """
     
-    def __init__(self, input_dim: int, hidden_mult: float = 2.0, bias: bool = True) -> None:
+    def __init__(self, input_dim: int, hidden_mult: float = 2.0) -> None:
         """Initialize value head.
         
         Args:
             input_dim: Dimension of input features (typically n_embd from transformer)
             hidden_mult: Multiplier for hidden dimension in FFN
-            bias: Whether to use bias in linear layers
         """
         super().__init__()
         
@@ -45,11 +44,10 @@ class ValueHead(nn.Module):
             input_dim,
             mult=hidden_mult,
             activation=config.ffn_activation,
-            bias=bias,
         )
         
         # Project to scalar value
-        self.value_proj = nn.Linear(input_dim, 1, bias=bias)
+        self.value_proj = nn.Linear(input_dim, 1, bias=False)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass to estimate state values.
@@ -79,7 +77,6 @@ class TinyValueHead(nn.Module):
         input_dim: int,
         hidden: int = 128,
         activation: str = "gelu",
-        bias: bool = True,
     ) -> None:
         """Initialize tiny value head.
         
@@ -87,15 +84,14 @@ class TinyValueHead(nn.Module):
             input_dim: Dimension of input features
             hidden: Hidden layer size
             activation: Activation function name
-            bias: Whether to use bias terms
         """
         super().__init__()
         
         self.net = nn.Sequential(
             _create_norm(input_dim),
-            nn.Linear(input_dim, hidden, bias=bias),
+            nn.Linear(input_dim, hidden, bias=False),
             self._get_activation(activation),
-            nn.Linear(hidden, 1, bias=bias),
+            nn.Linear(hidden, 1, bias=False),
         )
     
     def _get_activation(self, name: str) -> nn.Module:

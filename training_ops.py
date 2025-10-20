@@ -27,7 +27,6 @@ class LossResult:
         c: C-stick classification loss
         buttons: Button multi-label loss
         shoulder: Shoulder classification loss
-        aux: Auxiliary MOE loss (0.0 if not using MOE)
         components: Dict mapping loss names to values for logging
     """
     total: torch.Tensor
@@ -35,7 +34,6 @@ class LossResult:
     c: torch.Tensor
     buttons: torch.Tensor
     shoulder: torch.Tensor
-    aux: torch.Tensor
     components: Dict[str, float]
 
 
@@ -44,8 +42,6 @@ def compute_all_losses(
         target_info: TargetInfo,
         *,
         label_smoothing: float = 0.0,
-        use_moe: bool = False,
-        moe_aux_loss_weight: float = 0.0,
         sample_weights: Optional[torch.Tensor] = None,
 ) -> LossResult:
     """Compute all training losses in a unified way.
@@ -55,12 +51,9 @@ def compute_all_losses(
     duplicated loss computation logic in train.py and run_training.py.
 
     Args:
-        pred: Model predictions (TensorDict with keys: main_stick, c_stick,
-              buttons, shoulder, optionally moe_aux_loss)
+        pred: Model predictions (TensorDict with keys: main_stick, c_stick, buttons, shoulder)
         target_info: Quantized target information from controller_quantization
         label_smoothing: Label smoothing factor for cross-entropy losses
-        use_moe: Whether the model uses Mixture of Experts
-        moe_aux_loss_weight: Weight for MOE auxiliary loss
         sample_weights: Optional per-sample weights [B, L] for weighted loss
 
     Returns:
@@ -145,13 +138,8 @@ def compute_all_losses(
         else:
             loss_shoulder = loss_shoulder.mean()
 
-    # MOE auxiliary loss
-    loss_aux = torch.zeros((), device=device)
-    if use_moe and "moe_aux_loss" in pred:
-        loss_aux = pred["moe_aux_loss"].mean() * moe_aux_loss_weight
-
     # Total loss
-    total_loss = loss_main + loss_c + loss_buttons + loss_shoulder + loss_aux
+    total_loss = loss_main + loss_c + loss_buttons + loss_shoulder
 
     # Components dict for logging
     components = {
@@ -159,7 +147,6 @@ def compute_all_losses(
         "c": float(loss_c.detach().item()),
         "buttons": float(loss_buttons.detach().item()),
         "shoulder": float(loss_shoulder.detach().item()),
-        "moe_aux": float(loss_aux.detach().item()) if loss_aux is not None else 0.0,
     }
 
     return LossResult(
@@ -168,7 +155,6 @@ def compute_all_losses(
         c=loss_c,
         buttons=loss_buttons,
         shoulder=loss_shoulder,
-        aux=loss_aux,
         components=components,
     )
 
@@ -403,8 +389,6 @@ class TrainingStepInputs:
     device: torch.device
     label_smoothing: float
     grad_clip: Optional[float]
-    use_moe: bool
-    moe_aux_loss_weight: float
     sample_weights: Optional[torch.Tensor] = None
 
 
@@ -460,8 +444,6 @@ def perform_training_step(inputs: TrainingStepInputs) -> TrainingStepOutputs:
         pred,
         target_info,
         label_smoothing=inputs.label_smoothing,
-        use_moe=inputs.use_moe,
-        moe_aux_loss_weight=inputs.moe_aux_loss_weight,
         sample_weights=inputs.sample_weights,
     )
 

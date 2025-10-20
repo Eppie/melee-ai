@@ -11,10 +11,10 @@ from model.norm import _create_norm
 class LinearHead(nn.Module):
     """Small head: Norm -> Linear."""
 
-    def __init__(self, input_size: int, output_size: int, *, bias: bool) -> None:
+    def __init__(self, input_size: int, output_size: int) -> None:
         super().__init__()
         self.norm = _create_norm(input_size)
-        self.fc = nn.Linear(input_size, output_size, bias=bias)
+        self.fc = nn.Linear(input_size, output_size, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc(self.norm(x))
@@ -23,7 +23,7 @@ class LinearHead(nn.Module):
 class MLPHead(nn.Module):
     """A standard MLP head: Norm -> FFN -> Linear."""
 
-    def __init__(self, input_size: int, output_size: int, *, bias: bool) -> None:
+    def __init__(self, input_size: int, output_size: int) -> None:
         super().__init__()
         cfg = get_config().model
         # Use a hidden dimension that is a fraction of the input, e.g., half.
@@ -37,10 +37,9 @@ class MLPHead(nn.Module):
                 input_size,
                 mult=cfg.ffn_mult,  # Or you could use a smaller, fixed multiplier
                 activation=cfg.ffn_activation,
-                bias=bias,
             ),
             # Final projection to the output size
-            nn.Linear(input_size, output_size, bias=bias),
+            nn.Linear(input_size, output_size, bias=False),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -50,10 +49,10 @@ class MLPHead(nn.Module):
 class MultiLabelButtonHeadLinear(nn.Module):
     """Small multi-label head: Norm -> Linear -> Sigmoid (for probs)."""
 
-    def __init__(self, input_size: int, output_size: int, *, bias: bool) -> None:
+    def __init__(self, input_size: int, output_size: int) -> None:
         super().__init__()
         self.norm = _create_norm(input_size)
-        self.fc = nn.Linear(input_size, output_size, bias=bias)
+        self.fc = nn.Linear(input_size, output_size, bias=False)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         logits = self.fc(self.norm(x))
@@ -64,7 +63,7 @@ class MultiLabelButtonHeadLinear(nn.Module):
 class MultiLabelButtonHead(nn.Module):
     """Predict independent button probabilities via shared features."""
 
-    def __init__(self, input_size: int, output_size: int, *, bias: bool) -> None:
+    def __init__(self, input_size: int, output_size: int) -> None:
         super().__init__()
         cfg = get_config().model
         self.net = nn.Sequential(
@@ -73,9 +72,8 @@ class MultiLabelButtonHead(nn.Module):
                 input_size,
                 mult=cfg.ffn_mult,
                 activation=cfg.ffn_activation,
-                bias=bias,
             ),
-            nn.Linear(input_size, output_size, bias=bias),
+            nn.Linear(input_size, output_size, bias=False),
         )
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -94,7 +92,6 @@ class TinyMLPHead(nn.Module):
             *,
             hidden: int,
             activation: str,
-            bias: bool,
     ) -> None:
         super().__init__()
         self.norm = _create_norm(input_size)
@@ -106,9 +103,9 @@ class TinyMLPHead(nn.Module):
         else:
             raise ValueError(f"Unsupported head activation '{activation}'")
         self.net = nn.Sequential(
-            nn.Linear(input_size, hidden, bias=bias),
+            nn.Linear(input_size, hidden, bias=False),
             act_layer,
-            nn.Linear(hidden, output_size, bias=bias),
+            nn.Linear(hidden, output_size, bias=False),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -125,13 +122,12 @@ class TinyGLUHead(nn.Module):
             *,
             hidden: int,
             activation: str,
-            bias: bool,
     ) -> None:
         super().__init__()
         self.norm = _create_norm(input_size)
-        self.w1 = nn.Linear(input_size, hidden, bias=bias)
-        self.v1 = nn.Linear(input_size, hidden, bias=bias)
-        self.w2 = nn.Linear(hidden, output_size, bias=bias)
+        self.w1 = nn.Linear(input_size, hidden, bias=False)
+        self.v1 = nn.Linear(input_size, hidden, bias=False)
+        self.w2 = nn.Linear(hidden, output_size, bias=False)
         act = activation.lower()
         if act == "swiglu":
             self._gate = torch.nn.functional.silu
@@ -158,13 +154,12 @@ class LowRankAdapterHead(nn.Module):
             *,
             rank: int,
             activation: str,
-            bias: bool,
     ) -> None:
         super().__init__()
         self.norm = _create_norm(input_size)
-        self.down = nn.Linear(input_size, rank, bias=bias)
-        self.up = nn.Linear(rank, input_size, bias=bias)
-        self.out = nn.Linear(input_size, output_size, bias=bias)
+        self.down = nn.Linear(input_size, rank, bias=False)
+        self.up = nn.Linear(rank, input_size, bias=False)
+        self.out = nn.Linear(input_size, output_size, bias=False)
         act = activation.lower()
         if act == "gelu":
             self.act: nn.Module = nn.GELU()

@@ -7,42 +7,26 @@ from tensordict import TensorDict
 
 from config import get_config
 from model.attention import CausalSelfAttention
-from model.feed_forward import ActivationFFN, MoEFFN
+from model.feed_forward import ActivationFFN
 from model.norm import _create_norm
 from model.output_head import MLPHead, MultiLabelButtonHead, MultiLabelButtonHeadTiny, TinyMLPHead
 from model.value_head import TinyValueHead
 
 
-class MoEMLP(nn.Module):
-    """Transformer MLP block with optional MoE FFN."""
+class MLP(nn.Module):
+    """Transformer MLP block"""
 
     def __init__(self) -> None:
         super().__init__()
         cfg = get_config().model
-        if cfg.use_moe:
-            self.ffn = MoEFFN(
-                cfg.n_embd,
-                num_experts=cfg.moe_num_experts,
-                num_active=cfg.moe_num_active,
+        self.ffn = ActivationFFN(
+            cfg.n_embd,
                 mult=cfg.ffn_mult,
                 activation=cfg.ffn_activation,
-                bias=cfg.bias,
-            )
-            self.is_moe = True
-        else:
-            self.ffn = ActivationFFN(
-                cfg.n_embd,
-                mult=cfg.ffn_mult,
-                activation=cfg.ffn_activation,
-                bias=cfg.bias,
-            )
-            self.is_moe = False
+        )
         self.dropout = nn.Dropout(cfg.dropout)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        if self.is_moe:
-            out, aux_loss = self.ffn(x)
-            return self.dropout(out), aux_loss
         return self.dropout(self.ffn(x)), None
 
 
@@ -51,7 +35,7 @@ class Block(nn.Module):
         super().__init__()
         config = get_config()
         self.attn = CausalSelfAttention()
-        self.mlp = MoEMLP()
+        self.mlp = MLP()
         placement = config.model.norm_placement.lower()
         if placement not in {"pre", "post", "both"}:
             raise ValueError(f"Unsupported norm placement '{config.model.norm_placement}'.")
@@ -118,34 +102,7 @@ class GPTv7(nn.Module):
 
         # Put shoulder and c-stick first because they are less complex and they modify/override other inputs
 
-        def head_block(input_dim: int, output_dim: int) -> nn.Sequential:
-            return nn.Sequential(
-                _create_norm(input_dim),
-                ActivationFFN(
-                    input_dim,
-                    mult=config.model.ffn_mult,
-                    activation=config.model.ffn_activation,
-                    bias=config.model.bias,
-                ),
-                nn.Linear(input_dim, output_dim, bias=config.model.bias),
-            )
-
-        #
         base_dim: int = self.n_embd
-        # self.shoulder_head = LinearHead(base_dim, shoulder_output_size, bias=config.model.bias)
-        # self.c_stick_head = LinearHead(c_stick_input_size, c_stick_output_size, bias=config.model.bias)
-        # self.main_stick_head = LinearHead(main_stick_input_size, main_stick_output_size, bias=config.model.bias)
-        # self.button_head = MultiLabelButtonHeadLinear(
-        #     button_input_size, button_output_size, bias=config.model.bias
-        # )
-        # self.shoulder_head = head_block(self.n_embd, shoulder_output_size)
-        # self.c_stick_head = head_block(c_stick_input_size, c_stick_output_size)
-        # self.main_stick_head = head_block(main_stick_input_size, main_stick_output_size)
-        # self.button_head = MultiLabelButtonHead(
-        #     button_input_size,
-        #     button_output_size,
-        #     bias=config.model.bias,
-        # )
 
         # --- NEW: Define a small, shared hidden dimension for all heads ---
         head_hidden_dim = 128  # Drastically smaller than 1024+ before!
@@ -157,7 +114,6 @@ class GPTv7(nn.Module):
             output_size=shoulder_output_size,
             hidden=head_hidden_dim,
             activation=head_activation,
-            bias=config.model.bias
         )
 
         self.c_stick_head = TinyMLPHead(
@@ -165,7 +121,6 @@ class GPTv7(nn.Module):
             output_size=c_stick_output_size,
             hidden=head_hidden_dim,
             activation=head_activation,
-            bias=config.model.bias
         )
 
         self.main_stick_head = TinyMLPHead(
@@ -173,7 +128,6 @@ class GPTv7(nn.Module):
             output_size=main_stick_output_size,
             hidden=head_hidden_dim,
             activation=head_activation,
-            bias=config.model.bias
         )
 
         # Wrap the button head to get both logits and probs
@@ -183,7 +137,6 @@ class GPTv7(nn.Module):
                 output_size=button_output_size,
                 hidden=head_hidden_dim,
                 activation=head_activation,
-                bias=config.model.bias
             )
         )
         
@@ -194,7 +147,6 @@ class GPTv7(nn.Module):
                 input_dim=self.n_embd,
                 hidden=head_hidden_dim,
                 activation=head_activation,
-                bias=config.model.bias,
             )
         
         # init all weights
@@ -207,8 +159,6 @@ class GPTv7(nn.Module):
     def _init_weights(self, module) -> None:
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
@@ -238,12 +188,10 @@ class GPTv7(nn.Module):
 
         x_BLD = self.transformer.drop(proj_inputs_BLD)
         total_aux_loss: Optional[torch.Tensor] = None
-        num_moe_layers = 0
         for block in self.transformer.h:
             x_BLD, aux_loss = block(x_BLD)
             if aux_loss is not None:
                 total_aux_loss = aux_loss if total_aux_loss is None else total_aux_loss + aux_loss
-                num_moe_layers += 1
         x_BLD = self.transformer.ln_f(x_BLD)
 
         head_flow = get_config().model.head_flow.lower()
@@ -287,9 +235,4 @@ class GPTv7(nn.Module):
         if cfg.use_value_head and self.value_head is not None:
             value = self.value_head(x_BLD)  # [B, L, 1]
             outputs.set("value", value)
-        
-        if cfg.use_moe and total_aux_loss is not None and num_moe_layers > 0:
-            avg_aux_loss = total_aux_loss / num_moe_layers
-            outputs.set("moe_aux_loss", avg_aux_loss.reshape(1, 1).expand(B, L))
-
         return outputs

@@ -912,7 +912,7 @@ def _evaluate(
     total_tokens = 0
     total_frames = 0
 
-    loss_sums: Dict[str, float] = {key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder", "moe_aux")}
+    loss_sums: Dict[str, float] = {key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder")}
 
     model.eval()
     total_batches = len(loader)
@@ -943,8 +943,6 @@ def _evaluate(
                 pred,
                 target_info,
                 label_smoothing=config.train.label_smoothing,
-                use_moe=config.model.use_moe,
-                moe_aux_loss_weight=config.model.moe_aux_loss_weight,
                 sample_weights=None,
             )
 
@@ -1425,11 +1423,11 @@ def _print_final_summary(
         print(f"Button thresholds: [{formatted_thr}]")
 
     print("\nLoss (per batch):")
-    for key in ("total", "main", "c", "buttons", "shoulder", "moe_aux"):
+    for key in ("total", "main", "c", "buttons", "shoulder"):
         print(f"  {key:>8}: {avg_loss[key]:.6f}")
 
     print("\nLoss (per frame):")
-    for key in ("total", "main", "c", "buttons", "shoulder", "moe_aux"):
+    for key in ("total", "main", "c", "buttons", "shoulder"):
         print(f"  {key:>8}: {per_frame_loss[key]:.8f}")
 
     print("\nMain Stick:")

@@ -38,8 +38,6 @@ def compute_loss_components(
         target_info: Mapping[str, Any],
         *,
         label_smoothing: float,
-        use_moe: bool,
-        moe_aux_loss_weight: float,
         sample_weights: Optional[Tensor] = None,
 ) -> Dict[str, Tensor]:
     """Compute total loss and its components for the controller model.
@@ -119,18 +117,13 @@ def compute_loss_components(
             label_smoothing=label_smoothing,
         )
 
-    loss_aux = torch.zeros((), device=logits_main.device)
-    if use_moe and "moe_aux_loss" in pred:
-        loss_aux = pred["moe_aux_loss"].mean() * moe_aux_loss_weight
-
-    total_loss = loss_main + loss_c + loss_buttons + loss_shoulder + loss_aux
+    total_loss = loss_main + loss_c + loss_buttons + loss_shoulder
     return {
         "total": total_loss,
         "main": loss_main,
         "c": loss_c,
         "buttons": loss_buttons,
         "shoulder": loss_shoulder,
-        "moe_aux": loss_aux,
     }
 
 

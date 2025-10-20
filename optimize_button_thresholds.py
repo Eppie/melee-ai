@@ -16,8 +16,8 @@ from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
 from config import get_config, init_config
 from controller_quantization import quantize_targets
 from feature_transforms import feature_spec_from_config
-from model.gpt import GPTv7
-from train import build_inputs_for_gptv7, _BUTTON_PRETTY
+from model.nano_gpt import GPT
+from train import build_inputs_for_gpt, _BUTTON_PRETTY
 from utils import _resolve_device
 from window_dataset import WindowDataset, worker_init_fn
 
@@ -64,8 +64,8 @@ def _make_loader(data_root: Path, batch_size: int, num_workers: int, pin_memory:
     return loader, dataset
 
 
-def _load_checkpoint(path: Path, device: torch.device) -> GPTv7:
-    model = GPTv7()
+def _load_checkpoint(path: Path, device: torch.device) -> GPT:
+    model = GPT(get_config())
     ckpt = torch.load(path, map_location="cpu")
     model.load_state_dict(ckpt["model"])
     model.to(device)
@@ -75,7 +75,7 @@ def _load_checkpoint(path: Path, device: torch.device) -> GPTv7:
 
 @torch.no_grad()
 def _gather_statistics(
-        model: GPTv7,
+        model: GPT,
         loader: DataLoader,
         colmap: ColumnMap,
         device: torch.device,
@@ -99,7 +99,7 @@ def _gather_statistics(
         X = batch["X"].to(device, non_blocking=True)
         Y = batch["Y"].to(device, non_blocking=True)
 
-        inputs_td = build_inputs_for_gptv7(X, colmap)
+        inputs_td = build_inputs_for_gpt(X, colmap)
         target_info = quantize_targets(Y, colmap, input_domain="unit11")
 
         pred = model(inputs_td)
@@ -330,8 +330,8 @@ def main() -> None:
     num_thresholds = max(2, args.threshold_samples)
     thresholds = torch.linspace(0.0, 1.0, steps=num_thresholds)
 
-    if args.max_batches is not None:
-        loader = list(loader)[:args.max_batches]
+    # if args.max_batches is not None:
+    #     loader = list(loader)[:args.max_batches]
 
     stats = _gather_statistics(
         model,

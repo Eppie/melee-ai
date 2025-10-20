@@ -72,8 +72,8 @@ def _module_label(module: nn.Module, cache: Dict[int, Tuple[int, int]]) -> str:
             extras.append(f"mult={mult}")
         if act is not None:
             extras.append(f"act={act}")
-    elif module.__class__.__name__ == "MoEMLP":
-        extras.append("moe" if getattr(module, "is_moe", False) else "dense")
+    elif module.__class__.__name__ == "MLP":
+        extras.append("dense")
 
     total_params, trainable_params = _collect_param_stats(module, cache)
     if total_params:

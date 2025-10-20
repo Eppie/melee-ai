@@ -1,12 +1,11 @@
 import math
-from typing import Optional
 
 import torch
 from torch import nn as nn
 
 from config import get_config
 from model.norm import QKNorm
-from model.positional_encoding import _ntk_scaled_theta, _rope_cache, apply_rope_inplace, _alibi_bias
+from model.positional_encoding import _rope_cache, apply_rope_inplace
 
 
 class CausalSelfAttention(nn.Module):
@@ -28,10 +27,10 @@ class CausalSelfAttention(nn.Module):
         assert self.n_head % self.n_kv_head == 0, "n_head must be divisible by n_kv_head"
         self.n_groups = self.n_head // self.n_kv_head
 
-        self.q_proj = nn.Linear(self.n_embd, self.n_head * self.head_dim, bias=cfg.bias)
-        self.k_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=cfg.bias)
-        self.v_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=cfg.bias)
-        self.o_proj = nn.Linear(self.n_embd, self.n_embd, bias=cfg.bias)
+        self.q_proj = nn.Linear(self.n_embd, self.n_head * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
 
         self.dropout = cfg.dropout
         self.attn_dropout = nn.Dropout(self.dropout)
@@ -44,10 +43,7 @@ class CausalSelfAttention(nn.Module):
             qk_type = cfg.qk_norm_type or cfg.norm_type
             self.qk_norm = QKNorm(self.head_dim, qk_type, cfg.norm_eps, cfg.norm_affine)
 
-        self.pe_type = cfg.pe_type.lower()
         self.rope_theta = cfg.rope_theta
-        self.rope_scaling = cfg.rope_scaling.lower() if cfg.rope_scaling else None
-        self.rope_scaling_factor = cfg.rope_scaling_factor
 
         if not self.flash:
             self.register_buffer(
@@ -70,19 +66,12 @@ class CausalSelfAttention(nn.Module):
         if self.qk_norm is not None:
             q, k = self.qk_norm(q, k)
 
-        alibi_bias: Optional[torch.Tensor] = None
-        if self.pe_type == "rope":
-            theta = self.rope_theta
-            if self.rope_scaling in {"ntk", "yarn"}:
-                theta = _ntk_scaled_theta(theta, self.rope_scaling_factor)
-            cos, sin = _rope_cache(L, D, theta, q.device)
-            q, k = apply_rope_inplace(q, k, cos, sin)
-        elif self.pe_type == "alibi":
-            alibi_bias = _alibi_bias(B, H, L, q.device)
-        else:
-            raise ValueError(f"Unsupported positional encoding type '{self.pe_type}'.")
 
-        if self.flash and alibi_bias is None:
+        theta = self.rope_theta
+        cos, sin = _rope_cache(L, D, theta, q.device)
+        q, k = apply_rope_inplace(q, k, cos, sin)
+
+        if self.flash:
             y = torch.nn.functional.scaled_dot_product_attention(
                 q,
                 k,
@@ -93,13 +82,10 @@ class CausalSelfAttention(nn.Module):
             )
         else:
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(D))
-            if alibi_bias is not None:
-                att = att + alibi_bias
-            else:
-                if not hasattr(self, "bias_mask"):
-                    raise RuntimeError("Causal mask buffer missing for non-flash attention path.")
-                mask = self.bias_mask[:L, :L].unsqueeze(0).unsqueeze(0)
-                att = att.masked_fill(~mask, float("-inf"))
+            if not hasattr(self, "bias_mask"):
+                raise RuntimeError("Causal mask buffer missing for non-flash attention path.")
+            mask = self.bias_mask[:L, :L].unsqueeze(0).unsqueeze(0)
+            att = att.masked_fill(~mask, float("-inf"))
             att = att.softmax(dim=-1)
             if self.dropout > 0:
                 att = self.attn_dropout(att)

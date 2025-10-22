@@ -20,8 +20,8 @@ from controller_quantization import quantize_targets
 from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
 from feature_transforms import feature_spec_from_config
 from loss import compute_loss_components
-from model.gpt import GPTv7
-from train import RunningMetrics, build_inputs_for_gptv7, _BUTTON_PRETTY, _MAIN_STICK_LABELS, compute_value_targets
+from model.nano_gpt import GPT
+from train import RunningMetrics, build_inputs_for_gpt, _BUTTON_PRETTY, _MAIN_STICK_LABELS, compute_value_targets
 from utils import _resolve_device
 from window_dataset import WindowDataset, worker_init_fn
 
@@ -869,7 +869,7 @@ def _update_running_metrics(
 
 
 def _evaluate(
-        model: GPTv7,
+        model: GPT,
         loader: DataLoader,
         colmap: ColumnMap,
         device: torch.device,
@@ -929,7 +929,7 @@ def _evaluate(
             X: torch.Tensor = batch["X"].to(device, non_blocking=True)
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
-            inputs_td = build_inputs_for_gptv7(X, colmap)
+            inputs_td = build_inputs_for_gpt(X, colmap)
             target_info = quantize_targets(Y, colmap, input_domain="unit11")
 
             pred = model(inputs_td)
@@ -1569,7 +1569,7 @@ def main() -> None:
 
     colmap = ColumnMap.from_dataset(dataset)
 
-    model = GPTv7()
+    model = GPT()
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(ckpt["model"])
     model.to(device)

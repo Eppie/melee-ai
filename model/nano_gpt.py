@@ -12,100 +12,23 @@ Notable features:
 """
 
 import math
-from re import S
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tensordict import TensorDict
-from torch.distributions import Bernoulli, Categorical
 
-def norm(x):
-    # Purely functional rmsnorm with no learnable params
-    return F.rms_norm(x, (x.size(-1),))
-
-
-def apply_rotary_emb(x, cos, sin):
-    assert x.ndim == 4  # multihead attention
-    d = x.shape[3] // 2
-    x1, x2 = x[..., :d], x[..., d:] # split up last time into two halves
-    y1 = x1 * cos + x2 * sin # rotate pairs of dims
-    y2 = x1 * (-sin) + x2 * cos
-    out = torch.cat([y1, y2], 3) # re-assemble
-    out = out.to(x.dtype) # ensure input/output dtypes match
-    return out
-
-
-def repeat_kv(x, n_rep):
-    """torch.repeat_interleave(x, dim=1, repeats=n_rep)"""
-    if n_rep == 1:
-        return x
-    bs, n_kv_heads, slen, head_dim = x.shape
-    return (
-        x[:, :, None, :, :]
-        .expand(bs, n_kv_heads, n_rep, slen, head_dim)
-        .reshape(bs, n_kv_heads * n_rep, slen, head_dim)
-    )
-
-
-class CausalSelfAttention(nn.Module):
-    def __init__(self, n_embd, n_head, n_kv_head, dropout, bias = False):
-        super().__init__()
-        self.n_head = n_head
-        self.n_kv_head = n_kv_head
-        self.n_embd = n_embd
-        self.head_dim = n_embd // n_head
-        self.dropout = dropout
-        assert n_embd % n_head == 0
-        assert n_kv_head <= n_head and n_head % n_kv_head == 0
-        self.c_q = nn.Linear(n_embd, n_head * self.head_dim, bias=bias)
-        self.c_k = nn.Linear(n_embd, n_kv_head * self.head_dim, bias=bias)
-        self.c_v = nn.Linear(n_embd, n_kv_head * self.head_dim, bias=bias)
-        self.c_proj = nn.Linear(n_embd, n_embd, bias=bias)
-
-        self.attn_dropout = nn.Dropout(dropout)
-        self.resid_dropout = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        B, T, C = x.size()
-
-        # Project the input to get queries, keys, and values
-        q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
-        k = self.c_k(x).view(B, T, self.n_kv_head, self.head_dim)
-        v = self.c_v(x).view(B, T, self.n_kv_head, self.head_dim)
-
-
-        q = apply_rotary_emb(q, cos, sin)
-        k = apply_rotary_emb(k, cos, sin)
-
-        q = norm(q)
-        k = norm(k)
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-
-        nrep = self.n_head // self.n_kv_head
-        k = repeat_kv(k, nrep)
-        v = repeat_kv(v, nrep)
-
-        y = F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=None,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=True,
-        )
-
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
-        y = self.resid_dropout(self.c_proj(y))
-        return y
+from model.attention import CausalSelfAttention
+from model.norm import norm
+from model.output_head import SimpleHead, ButtonHead
+from model.value_head import ValueHead
 
 
 class MLP(nn.Module):
-    def __init__(self, n_embd, bias = False):
+    def __init__(self, n_embd):
         super().__init__()
-        self.c_fc = nn.Linear(n_embd, 4 * n_embd, bias=bias)
-        self.c_proj = nn.Linear(4 * n_embd, n_embd, bias=bias)
+        self.c_fc = nn.Linear(n_embd, 4 * n_embd, bias=False)
+        self.c_proj = nn.Linear(4 * n_embd, n_embd, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.c_fc(x)
@@ -115,54 +38,15 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, n_embd, n_head, n_kv_head, dropout, bias = False):
+    def __init__(self, n_embd, n_head, n_kv_head, dropout):
         super().__init__()
-        self.attn = CausalSelfAttention(n_embd, n_head, n_kv_head, dropout, bias)
-        self.mlp = MLP(n_embd, bias)
+        self.attn = CausalSelfAttention(n_embd, n_head, n_kv_head, dropout)
+        self.mlp = MLP(n_embd)
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(norm(x), cos, sin)
         x = x + self.mlp(norm(x))
         return x
-
-class SimpleHead(nn.Module):
-    def __init__(self, input_size, output_size, hidden = 128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_size, hidden, bias=False),
-            nn.ReLU(),
-            nn.Linear(hidden, output_size, bias=False),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-class ButtonHead(nn.Module):
-    def __init__(self, input_size, output_size, hidden = 128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_size, hidden, bias=False),
-            nn.ReLU(),
-            nn.Linear(hidden, output_size, bias=False),
-        )
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        logits = self.net(norm(x))
-        probs = torch.sigmoid(logits)
-        return logits, probs
-
-
-class ValueHead(nn.Module):
-    def __init__(self, input_dim, hidden = 128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden, bias=False),
-            nn.ReLU(),
-            nn.Linear(hidden, 1, bias=False),
-        )
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(norm(x))
-
 
 
 class GPT(nn.Module):
@@ -182,7 +66,7 @@ class GPT(nn.Module):
         self.drop = nn.Dropout(cfg.dropout)
         
         self.blocks = nn.ModuleList([
-            Block(self.n_embd, cfg.n_head, cfg.n_kv_head, cfg.dropout, bias=False)
+            Block(self.n_embd, cfg.n_head, cfg.n_kv_head, cfg.dropout)
             for _ in range(cfg.n_layer)
         ])
 
@@ -229,7 +113,7 @@ class GPT(nn.Module):
             fan_in = module.weight.size(1)
             std = 1.0 / math.sqrt(fan_in) * min(1.0, math.sqrt(fan_out / fan_in))
             torch.nn.init.normal_(module.weight, mean=0.0, std=std)
-            if module.bias is not None:
+            if module.bias is not None:  # TODO: confirm unused then remove
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)

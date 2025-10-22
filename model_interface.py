@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import math
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -11,8 +10,7 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
-from column_map import ColumnMap, BUTTON_TARGET_NAMES, CONTROLLER_KEY_GROUPS
-from model.gpt import GPTv7
+from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
@@ -33,9 +31,6 @@ from utils import _resolve_device
 _DEFAULT_FEATURE_NAMES = get_feature_names()
 
 _DEFAULT_TARGET_NAMES = get_target_names()
-
-_DEFAULT_BUTTON_THRESHOLD: float = 0.5
-_DEFAULT_THRESHOLD_PATH = Path(__file__).resolve().with_name("button_thresholds.json")
 
 _FEATURE_TRANSFORMS_SPEC: Optional[FeatureTransformSpec] = None
 
@@ -91,37 +86,6 @@ def set_feature_transforms(transforms: Optional[Any]) -> None:
 
 
 set_feature_transforms(FeatureConfig().transforms)
-
-
-def _load_saved_button_thresholds(path: Path) -> Optional[List[float]]:
-    print(f"Loading button thresholds from {path}")
-    try:
-        with path.open("r") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError) as err:
-        print(f"Warning: failed to load button thresholds from {path}: {err}")
-        return None
-
-    buttons = data.get("buttons")
-    thresholds = data.get("thresholds")
-    threshold_map = data.get("threshold_map")
-
-    button_keys = list(CONTROLLER_KEY_GROUPS["buttons"])
-
-    values: Optional[List[float]] = None
-    if isinstance(thresholds, list) and len(thresholds) == len(button_keys):
-        values = [float(x) for x in thresholds]
-    elif isinstance(threshold_map, Mapping):
-        order = buttons if isinstance(buttons, list) and len(buttons) == len(button_keys) else button_keys
-        values = [float(threshold_map.get(key, _DEFAULT_BUTTON_THRESHOLD)) for key in order]
-
-    if values is not None and len(values) == len(button_keys):
-        return values
-
-    print(f"Warning: threshold file {path} missing expected fields; ignoring.")
-    return None
 
 
 def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float]:
@@ -316,6 +280,8 @@ class GPTInferenceEngine:
         self.device = _resolve_device(device)
         self.shoulder_centers = SHOULDER_QUANTIZED
         self.warmup_frames = warmup_frames
+        self._main_stick_palette = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
+        self._c_stick_palette = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
 
         if transforms_spec is None and isinstance(train_cfg, Mapping):
             features_cfg = train_cfg.get("features")
@@ -349,27 +315,6 @@ class GPTInferenceEngine:
         self._prev_controller_features: Dict[str, float] = {}
         self._update_prev_controller_features(ControllerState.neutral())
         self._frames_seen = 0
-
-        num_buttons = len(BUTTON_TARGET_NAMES)
-        threshold_tensor = torch.full((num_buttons,), _DEFAULT_BUTTON_THRESHOLD, dtype=torch.float32)
-
-        saved_thresholds: Optional[List[float]] = None
-        candidate_paths: List[Path] = []
-        if thresholds_path is not None:
-            candidate_paths.append(Path(thresholds_path).expanduser())
-        candidate_paths.append(_DEFAULT_THRESHOLD_PATH)
-
-        for path in candidate_paths:
-            values = _load_saved_button_thresholds(path)
-            if values is not None:
-                saved_thresholds = values
-                break
-
-        if saved_thresholds is not None:
-            threshold_tensor = torch.tensor(saved_thresholds, dtype=torch.float32)
-
-        self.button_thresholds = torch.clamp(threshold_tensor, 0.0, 1.0).to(torch.float32)
-        print(f'using button thresholds: {self.button_thresholds}')
 
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
         frame = torch.zeros(self.feature_dim, dtype=torch.float32)
@@ -422,15 +367,21 @@ class GPTInferenceEngine:
         else:
             self._prev_controller_features = {k: float(v) for k, v in values.items()}
 
-    def _decode_stick(self, logits: torch.Tensor, palette: np.ndarray) -> np.ndarray:
-        idx = torch.argmax(logits, dim=-1).detach().cpu().numpy().astype(np.int32)
-        xy01 = model_to_dolphin01(idx, palette11=palette)
+    def _decode_stick(self, logits: torch.Tensor, palette: np.ndarray, stick_name: str) -> np.ndarray:
+        # Decode sticks by selecting the most likely quantized bin (argmax).
+        idx = torch.argmax(logits.detach(), dim=-1)
+        if stick_name == "c_stick":
+            probs = torch.softmax(logits.detach(), dim=-1).cpu().numpy()
+        idx_np = idx.detach().cpu().numpy().astype(np.int32)
+        xy01 = model_to_dolphin01(idx_np, palette11=palette)
         return xy01.reshape(-1)
 
     def _decode_buttons(self, probs: torch.Tensor) -> List[bool]:
-        probs_cpu = probs.detach().cpu()
-        thresholds = self.button_thresholds.to(probs_cpu.device)
-        return (probs_cpu >= thresholds).tolist()
+        # Interpret button activations probabilistically, sampling directly from the model probabilities.
+        eps = torch.finfo(probs.dtype).eps
+        clamped_probs = torch.clamp(probs.detach(), eps, 1 - eps)
+        samples = torch.bernoulli(clamped_probs).bool().cpu()
+        return samples.tolist()
 
     def _decode_outputs(self, outputs: TensorDict) -> ControllerState:
         main_logits = outputs["main_stick"][0, -1]
@@ -442,8 +393,8 @@ class GPTInferenceEngine:
 
         shoulder_logits = outputs.get("shoulder")
 
-        main_xy = self._decode_stick(main_logits, np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32))
-        c_xy = self._decode_stick(c_logits, np.asarray(C_STICK_QUANTIZED, dtype=np.float32))
+        main_xy = self._decode_stick(main_logits, self._main_stick_palette, "main_stick")
+        c_xy = self._decode_stick(c_logits, self._c_stick_palette, "c_stick")
         buttons_bool = self._decode_buttons(button_probs)
 
         if shoulder_logits is not None:
@@ -487,7 +438,6 @@ class GPTInferenceEngine:
         with torch.inference_mode():
             outputs = self.model(inputs_td)
         controller = self._decode_outputs(outputs)
-        print(controller)
         self._update_prev_controller_features(controller)
         return controller
 

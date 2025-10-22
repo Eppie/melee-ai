@@ -1,96 +1,71 @@
-import math
-
 import torch
 from torch import nn as nn
+from torch.nn import functional as F
 
-from config import get_config
-from model.norm import QKNorm
-from model.positional_encoding import _rope_cache, apply_rope_inplace
+from model.norm import norm
+from model.positional_encoding import apply_rotary_emb
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, n_embd, n_head, n_kv_head, dropout):
         super().__init__()
-        cfg = get_config().model
-        assert cfg.n_embd % cfg.n_head == 0
-        self.n_head = cfg.n_head
-        self.n_embd = cfg.n_embd
-        self.head_dim = self.n_embd // self.n_head
+        self.num_query_heads = n_head
+        self.num_kv_heads = n_kv_head
+        self.n_embd = n_embd
+        self.head_dim = n_embd // n_head
+        self.dropout = dropout
+        assert n_embd % n_head == 0
+        assert n_kv_head <= n_head and n_head % n_kv_head == 0
+        self.c_q = nn.Linear(n_embd, n_head * self.head_dim, bias=False) # query projection
+        self.c_k = nn.Linear(n_embd, n_kv_head * self.head_dim, bias=False) # key projection
+        self.c_v = nn.Linear(n_embd, n_kv_head * self.head_dim, bias=False) # value projection
+        self.c_proj = nn.Linear(n_embd, n_embd, bias=False) # output projection
 
-        attn_type = cfg.attention_type.lower()
-        if attn_type == "mqa":
-            self.n_kv_head = 1
-        elif attn_type == "gqa":
-            self.n_kv_head = cfg.n_kv_head or max(1, self.n_head // 4)
-        else:
-            self.n_kv_head = self.n_head
-        assert self.n_head % self.n_kv_head == 0, "n_head must be divisible by n_kv_head"
-        self.n_groups = self.n_head // self.n_kv_head
+        self.attention_dropout = nn.Dropout(dropout)
+        self.residual_dropout = nn.Dropout(dropout)
 
-        self.q_proj = nn.Linear(self.n_embd, self.n_head * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        batch_size, sequence_length, C = x.size()
 
-        self.dropout = cfg.dropout
-        self.attn_dropout = nn.Dropout(self.dropout)
-        self.resid_dropout = nn.Dropout(self.dropout)
+        # Project the input to get queries, keys, and values
+        query_states = self.c_q(x).view(batch_size, sequence_length, self.num_query_heads, self.head_dim)
+        key_states = self.c_k(x).view(batch_size, sequence_length, self.num_kv_heads, self.head_dim)
+        value_states = self.c_v(x).view(batch_size, sequence_length, self.num_kv_heads, self.head_dim)
 
-        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
+        query_states = apply_rotary_emb(query_states, cos, sin)
+        key_states = apply_rotary_emb(key_states, cos, sin)
 
-        self.qk_norm = None
-        if cfg.qk_norm:
-            qk_type = cfg.qk_norm_type or cfg.norm_type
-            self.qk_norm = QKNorm(self.head_dim, qk_type, cfg.norm_eps, cfg.norm_affine)
+        query_states = norm(query_states)
+        key_states = norm(key_states)
 
-        self.rope_theta = cfg.rope_theta
+        query_states = query_states.transpose(1, 2)
+        key_states = key_states.transpose(1, 2)
 
-        if not self.flash:
-            self.register_buffer(
-                "bias_mask",
-                torch.tril(torch.ones(cfg.block_size, cfg.block_size)).to(torch.bool),
-                persistent=False,
-            )
+        value_states = value_states.transpose(1, 2)
 
-    def forward(self, x: torch.Tensor):
-        B, L, _ = x.size()
-        H, D = self.n_head, self.head_dim
-        q = self.q_proj(x).view(B, L, H, D).transpose(1, 2)
-        k = self.k_proj(x).view(B, L, self.n_kv_head, D).transpose(1, 2)
-        v = self.v_proj(x).view(B, L, self.n_kv_head, D).transpose(1, 2)
+        num_repetitions = self.num_query_heads // self.num_kv_heads
+        key_states = repeat_kv(key_states, num_repetitions)
+        value_states = repeat_kv(value_states, num_repetitions)
 
-        if self.n_groups > 1:
-            k = k.repeat_interleave(self.n_groups, dim=1)
-            v = v.repeat_interleave(self.n_groups, dim=1)
+        attention_output = F.scaled_dot_product_attention(
+            query_states, key_states, value_states,
+            attn_mask=None,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=True,
+        )
 
-        if self.qk_norm is not None:
-            q, k = self.qk_norm(q, k)
+        attention_output = attention_output.transpose(1, 2).contiguous().view(batch_size, sequence_length, C)
+        attention_output = self.residual_dropout(self.c_proj(attention_output))
+        return attention_output
 
 
-        theta = self.rope_theta
-        cos, sin = _rope_cache(L, D, theta, q.device)
-        q, k = apply_rope_inplace(q, k, cos, sin)
-
-        if self.flash:
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=True,
-            )
-        else:
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(D))
-            if not hasattr(self, "bias_mask"):
-                raise RuntimeError("Causal mask buffer missing for non-flash attention path.")
-            mask = self.bias_mask[:L, :L].unsqueeze(0).unsqueeze(0)
-            att = att.masked_fill(~mask, float("-inf"))
-            att = att.softmax(dim=-1)
-            if self.dropout > 0:
-                att = self.attn_dropout(att)
-            y = att @ v
-
-        y = y.transpose(1, 2).contiguous().view(B, L, self.n_embd)
-        y = self.resid_dropout(self.o_proj(y))
-        return y
+def repeat_kv(x, n_rep):
+    """torch.repeat_interleave(x, dim=1, repeats=n_rep)"""
+    if n_rep == 1:
+        return x
+    bs, n_kv_heads, slen, head_dim = x.shape
+    return (
+        x[:, :, None, :, :]
+        .expand(bs, n_kv_heads, n_rep, slen, head_dim)
+        .reshape(bs, n_kv_heads * n_rep, slen, head_dim)
+    )

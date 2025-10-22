@@ -35,7 +35,7 @@ if __name__ == "__main__":
     parser.add_argument('--iso', default=None, type=str,
                         help='Path to melee iso.')
     parser.add_argument('--checkpoint', '-c', type=Path,
-                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep002_000.pt'),
+                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep009_55000.pt'),
                         help='Path to trained model checkpoint (.pt)')
     parser.add_argument('--device', default='mps',
                         help='Torch device to run on (auto/cpu/cuda/mps)')
@@ -129,7 +129,7 @@ if __name__ == "__main__":
                 gamestate,
                 controllers[1],
                 Character.FOX,
-                Stage.BATTLEFIELD,
+                Stage.YOSHIS_STORY,
                 costume=1,
                 autostart=False,
                 swag=False,

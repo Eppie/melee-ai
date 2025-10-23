@@ -13,30 +13,28 @@ from typing import Dict, List, Optional
 
 import torch
 from tensordict import TensorDict
-from torch.cuda.amp import GradScaler
 from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 
 from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
 from config import get_config, init_config
 from controller_utils import CONTROL_STICK_QUANTIZED
 from loss import compute_loss_components
 from model.nano_gpt import GPT
-from utils import print_model_diagram, _resolve_device
-from window_dataset import make_dataloader
-
+from train.batch_utils import build_model_inputs, quantize_controller_targets, SampleWeightRatios, \
+    compute_component_sample_weights
 # Train module utilities
 from train.checkpoint import (
     save_checkpoint, _load_latest_checkpoint, _prune_checkpoints,
 )
+from train.display import format_confusion_matrix
+from train.gradients import collect_gradient_diagnostics
+from train.lr_schedule import cosine_lr_schedule
 from train.metrics import (
     compute_confusion_matrix,
     multilabel_prf,
 )
-from train.lr_schedule import cosine_lr_schedule
-from train.gradients import collect_gradient_diagnostics
-from train.batch_utils import build_model_inputs, quantize_controller_targets, compute_sample_weights
 from train.value_head import build_reward_feature_index, compute_value_targets
-from train.display import format_confusion_matrix, print_batch_preview
 from train.wandb_utils import (
     WandbConfig,
     WandbLogger,
@@ -44,6 +42,8 @@ from train.wandb_utils import (
     finish_wandb,
     WANDB_AVAILABLE,
 )
+from utils import print_model_diagram, _resolve_device
+from window_dataset import make_dataloader
 
 _MAIN_STICK_LABELS: List[str] = [f"({x:.2f},{y:.2f})" for x, y in CONTROL_STICK_QUANTIZED]
 
@@ -55,7 +55,27 @@ _BUTTON_PRETTY = {
     "button_lr": "L/R",
 }
 
-# Local helpers  
+button_overrides = {
+    # names must match CONTROLLER_KEY_GROUPS["buttons"]
+    "button_z": 20.0,  # 1.21% active → boost more
+    "button_b": 12.0,  # ~4.15%
+    "button_a": 12.0,  # ~4.43%
+    "button_xy": 10.0,  # ~8.61%
+    "button_lr": 8.0,  # ~11.58%
+}
+
+ratios = SampleWeightRatios(
+    main_change=10.0,
+    c_change=10.0,
+    shoulder_change=10.0,
+    buttons_change_default=10.0,
+    buttons_change_per_key=button_overrides,
+    hold_base=1.0,
+    value_change=8.0,  # critic slightly emphasizes interesting frames too
+)
+
+
+# Local helpers
 def _safe_div(n: float, d: float) -> float:
     return float(n) / float(d) if d else 0.0
 
@@ -66,7 +86,7 @@ def train_loop(
     device = _resolve_device(None)
     model = model.to(device)
     config = get_config()
-    
+
     # Verify PyTorch version and MPS support for AMP
     if config.train.use_amp:
         print(f"Using PyTorch {torch.__version__}")
@@ -78,7 +98,7 @@ def train_loop(
             print(f"AMP enabled with {config.train.amp_dtype} on CUDA backend")
         else:
             print(f"Warning: AMP may not be optimized for device type '{device.type}'")
-    
+
     # Build loader + sampler
     loader, ds, sampler = make_dataloader()
 
@@ -89,7 +109,7 @@ def train_loop(
     # Optimizer & (optional) simple cosine LR
     opt = torch.optim.AdamW(model.parameters(), lr=config.train.lr, betas=config.train.betas,
                             weight_decay=config.train.weight_decay)
-    
+
     # GradScaler for automatic mixed precision (no device arg in torch 2.1)
     scaler = GradScaler(enabled=config.train.use_amp)
 
@@ -119,7 +139,7 @@ def train_loop(
         },
     )
     logger = WandbLogger(wandb_run, enabled=WANDB_AVAILABLE and wandb_run is not None)
-    
+
     start_epoch, global_step, start_iter = _load_latest_checkpoint(out_dir, model, opt, scaler, device)
     # If we have a more recent persisted step, prefer it to keep wandb step increasing
     try:
@@ -198,7 +218,9 @@ def train_loop(
 
                 pred: TensorDict = model(inputs_td)  # keys: buttons, main_stick, c_stick, (shoulder), optionally value
                 B, L, _ = pred["main_stick"].shape
-                sample_weights = compute_sample_weights(Y, B, L, device, ratio=10.0)
+                weights = compute_component_sample_weights(
+                    target_info, device, ratios=ratios, button_names=CONTROLLER_KEY_GROUPS["buttons"]
+                )
 
                 value_pred = pred.get("value", None)
                 probs_btn = pred.get("buttons_probs", None)
@@ -207,7 +229,7 @@ def train_loop(
                     pred,
                     target_info,
                     label_smoothing=config.train.label_smoothing,
-                    sample_weights=sample_weights,  # Pass the new weights
+                    sample_weights=weights,  # <-- dict with per-component weights
                 )
                 loss = loss_components["total"]
                 loss_main = loss_components["main"]
@@ -215,27 +237,16 @@ def train_loop(
                 loss_btn = loss_components["buttons"]
                 loss_s = loss_components["shoulder"]
 
-                # Value head loss (if enabled)
                 if config.model.use_value_head and value_pred is not None:
                     value_target = compute_value_targets(
-                        X,
-                        colmap,
-                        gamma=config.rl.gamma,
-                        reward_idx=reward_idx,
+                        X, colmap, gamma=config.rl.gamma, reward_idx=reward_idx
                     )  # [B, L, 1]
-
-                    # MSE loss for value prediction
                     value_loss_raw = torch.nn.functional.mse_loss(
-                        value_pred,
-                        value_target,
-                        reduction='none',
-                    )  # [B, L, 1]
+                        value_pred, value_target, reduction='none'
+                    ).squeeze(-1)  # [B, L]
 
-                    # Apply same sample weights as policy loss
-                    weighted_value_loss = value_loss_raw.squeeze(-1) * sample_weights  # [B, L]
-                    loss_value = weighted_value_loss.mean()
-
-                    # Add to total loss with coefficient
+                    value_w = weights.get("global", weights["main"])  # pick your poison
+                    loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
                     loss = loss + config.rl.value_loss_coef * loss_value
 
             logits_main = pred["main_stick"].reshape(B * L, -1)
@@ -270,7 +281,7 @@ def train_loop(
             # Collect gradient diagnostics before clipping
             if should_collect_grad_stats:
                 grad_stats = collect_gradient_diagnostics(model)
-                
+
             # Gradient clipping
             if config.train.grad_clip is not None and config.train.grad_clip > 0:
                 from torch.nn.utils import clip_grad_norm_
@@ -279,7 +290,8 @@ def train_loop(
                     grad_stats["total_norm_pre_clip"] = pre_clip_norm
                     grad_stats["total_norm_post_clip"] = min(pre_clip_norm, config.train.grad_clip)
                     grad_stats["was_clipped"] = float(pre_clip_norm > config.train.grad_clip)
-                    grad_stats["clip_coef"] = config.train.grad_clip / max(pre_clip_norm, 1e-12) if pre_clip_norm > config.train.grad_clip else 1.0
+                    grad_stats["clip_coef"] = config.train.grad_clip / max(pre_clip_norm,
+                                                                           1e-12) if pre_clip_norm > config.train.grad_clip else 1.0
 
             scaler.step(opt)
             scaler.update()
@@ -363,7 +375,8 @@ def train_loop(
                 K_main = int(target_info["main_K"])
                 cm_main_b = compute_confusion_matrix(main_true_flat, main_pred_flat, K_main)
                 acc_main_b = float((main_pred_flat == main_true_flat).float().mean().item())
-                main_major_lbl = int(torch.bincount(main_true_flat.cpu()).argmax().item()) if main_true_flat.numel() else 0
+                main_major_lbl = int(
+                    torch.bincount(main_true_flat.cpu()).argmax().item()) if main_true_flat.numel() else 0
                 acc_main_rep_b = float((main_rep.reshape(-1)[rep_mask.reshape(-1)] == main_true_flat[
                     rep_mask.reshape(-1)]).float().mean().item()) if rep_mask.any() else 0.0
                 main_conf_str = format_confusion_matrix(
@@ -466,8 +479,7 @@ def train_loop(
                     f"            maj F1μ {f1_maj:.3f} | rep F1μ {f1_rep:.3f} | EM_rep {em_rep:.3f}"
                 )
                 per_button = []
-                btn_names = CONTROLLER_KEY_GROUPS["buttons"]
-                for idx, name in enumerate(btn_names):
+                for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
                     label = _BUTTON_PRETTY.get(name, name)
                     per_button.append(
                         f"{label}: acc {btn_match[idx].item():.3f} F1 {btn_f1[idx].item():.3f} rate {btn_rate[idx].item():.3f}"
@@ -566,8 +578,7 @@ def train_loop(
                         pass
                     # Per-button metrics
                     try:
-                        btn_names = CONTROLLER_KEY_GROUPS["buttons"]
-                        for idx, name in enumerate(btn_names):
+                        for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
                             label = _BUTTON_PRETTY.get(name, name)
                             log_payload[f"buttons/{label}_acc"] = float(btn_match[idx].item())
                             log_payload[f"buttons/{label}_f1"] = float(btn_f1[idx].item())

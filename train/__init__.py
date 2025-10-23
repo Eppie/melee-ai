@@ -12,6 +12,11 @@ This package provides modular, loosely-coupled utilities for training:
 """
 from __future__ import annotations
 
+# Batch processing
+from train.batch_utils import (
+    build_model_inputs,
+    quantize_controller_targets,
+)
 # Checkpoint management
 from train.checkpoint import (
     _sorted_checkpoint_paths as sorted_checkpoint_paths,
@@ -20,45 +25,6 @@ from train.checkpoint import (
     _load_latest_checkpoint as load_latest_checkpoint,
     save_checkpoint,
 )
-
-# Metrics
-from train.metrics import (
-    MetricsAccumulator,
-    compute_confusion_matrix,
-    compute_change_hold_accuracy,
-    multilabel_prf,
-)
-
-# Learning rate schedules
-from train.lr_schedule import (
-    cosine_lr_schedule,
-    linear_warmup,
-    constant_lr,
-    get_lr_schedule,
-)
-
-# Gradient utilities
-from train.gradients import (
-    _move_optimizer_state_to_device as move_optimizer_state_to_device,
-    collect_gradient_diagnostics,
-    clip_gradients_with_diagnostics,
-)
-
-# Batch processing
-from train.batch_utils import (
-    build_model_inputs,
-    quantize_controller_targets,
-    compute_sample_weights,
-)
-
-# Value head (RL)
-from train.value_head import (
-    RewardFeatureIdx,
-    build_reward_feature_index,
-    compute_frame_rewards,
-    compute_value_targets,
-)
-
 # Display and formatting
 from train.display import (
     format_confusion_matrix,
@@ -67,7 +33,33 @@ from train.display import (
     format_training_progress,
     print_batch_preview,
 )
-
+# Gradient utilities
+from train.gradients import (
+    _move_optimizer_state_to_device as move_optimizer_state_to_device,
+    collect_gradient_diagnostics,
+    clip_gradients_with_diagnostics,
+)
+# Learning rate schedules
+from train.lr_schedule import (
+    cosine_lr_schedule,
+    linear_warmup,
+    constant_lr,
+    get_lr_schedule,
+)
+# Metrics
+from train.metrics import (
+    MetricsAccumulator,
+    compute_confusion_matrix,
+    compute_change_hold_accuracy,
+    multilabel_prf,
+)
+# Value head (RL)
+from train.value_head import (
+    RewardFeatureIdx,
+    build_reward_feature_index,
+    compute_frame_rewards,
+    compute_value_targets,
+)
 # Wandb integration (optional)
 from train.wandb_utils import (
     WandbConfig,
@@ -101,7 +93,6 @@ __all__ = [
     # Batch utils
     "build_model_inputs",
     "quantize_controller_targets",
-    "compute_sample_weights",
     # Value head
     "RewardFeatureIdx",
     "build_reward_feature_index",
@@ -120,4 +111,3 @@ __all__ = [
     "finish_wandb",
     "WANDB_AVAILABLE",
 ]
-

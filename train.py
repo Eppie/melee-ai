@@ -137,7 +137,7 @@ def train_loop(
         print(f"Global step {global_step} reached configured max_steps={config.train.max_steps}; exiting.")
         return
 
-    preview_done = False
+    # preview_done = False
     resume_epoch = start_epoch
     resume_iter = start_iter
 
@@ -156,14 +156,14 @@ def train_loop(
             try:
                 sampler.set_start_offset(skip_until)
                 print(f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches via sampler offset.")
-                preview_done = True
+                # preview_done = True
                 skip_remaining = 0
                 skip_until = 0
             except Exception as exc:
                 print(f"Sampler offset failed ({exc}); falling back to loading batches for skip.")
         elif skip_until:
             print(f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches by consuming them (may take time).")
-            preview_done = True
+            # preview_done = True
 
         iters_processed = 0
 
@@ -174,9 +174,9 @@ def train_loop(
             if config.train.max_steps and global_step >= config.train.max_steps:
                 break
 
-            if not preview_done:
-                print_batch_preview(batch, colmap.feat_names, colmap.targ_names)
-                preview_done = True
+            # if not preview_done:
+            #     print_batch_preview(batch, colmap.feat_names, colmap.targ_names)
+            #     preview_done = True
 
             # Move to device
             X: torch.Tensor = batch["X"].to(device, non_blocking=True)  # [B,L,F]

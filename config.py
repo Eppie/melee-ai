@@ -149,13 +149,6 @@ class GPTConfig:
         - Interactions: associated embedding dims (`stage_embedding_dim`, `character_embedding_dim`, `action_embedding_dim`) should scale with log of vocab size.
         - Reasonable range: fixed by game rules (stages≈6, characters≈26, actions≈396).
 
-    stage_embedding_dim / character_embedding_dim / action_embedding_dim (ints):
-        - Model size: linear scaling of embedding tables and input fusion width.
-        - Training speed: small impact on forward pass; impacts final concatenated input width.
-        - Restrictions: keep modest to avoid bloating input embedding; must be <= `n_embd`.
-        - Interactions: higher dims may require reducing `input_size` if embeddings are concatenated; coordinate with feature engineering.
-        - Reasonable range: 4-32 depending on vocabulary diversity.
-
     gamma (float):
         - Model size: no effect.
         - Training speed: only affects loss discounting in RL-style objectives; negligible cost.
@@ -243,9 +236,6 @@ class GPTConfig:
     num_stages: int = 6
     num_characters: int = 26
     num_actions: int = 396
-    stage_embedding_dim: int = 4
-    character_embedding_dim: int = 12
-    action_embedding_dim: int = 32
     gamma: float = 0.999  # (DONE)
     norm_type: str = "layernorm"  # (DONE)
     norm_eps: float = 1e-7 # DONE
@@ -491,14 +481,8 @@ def _compute_model_input_size(cfg: "Config") -> int:
 
     gamestate_count = len(feature_names) - reserved
 
-    embedding_dims = (
-            cfg.model.stage_embedding_dim
-            + len(prefixes) * cfg.model.character_embedding_dim
-            + len(prefixes) * cfg.model.action_embedding_dim
-    )
-
     onehot_dims = cfg.model.num_stages + (len(prefixes) * (cfg.model.num_characters + cfg.model.num_actions))
-    return embedding_dims + gamestate_count + len(controller_names) + onehot_dims
+    return gamestate_count + len(controller_names) + onehot_dims
 
 
 def _apply_derived_fields(cfg: "Config") -> None:

@@ -4,19 +4,19 @@ import dataclasses
 import json
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 from tensordict import TensorDict
 
 from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
+from config import FeatureConfig, get_config
+from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from feature_transforms import FeatureTransformSpec, build_transform_spec
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
-from config import FeatureConfig, get_config
-from feature_transforms import FeatureTransformSpec, build_transform_spec
-from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
 from model.nano_gpt import GPT
 from schema import (
     PLAYER_SPEC,
@@ -25,7 +25,8 @@ from schema import (
     get_feature_names,
     get_target_names,
 )
-from train import build_inputs_for_gpt, _print_table_block, _format_action
+from train import build_model_inputs
+from train.display import _format_action, _print_table_block
 from utils import _resolve_device
 
 _DEFAULT_FEATURE_NAMES = get_feature_names()
@@ -247,9 +248,7 @@ class GPTInferenceEngine:
             self,
             checkpoint_path: str | Path,
             *,
-            device: Optional[str] = None,
             data_root: Optional[str | Path] = None,
-            thresholds_path: Optional[str | Path] = None,
             history: Optional[int] = None,
             warmup_frames: int = 128,
     ) -> None:
@@ -277,7 +276,7 @@ class GPTInferenceEngine:
             feature_names = list(_DEFAULT_FEATURE_NAMES)
             target_names = list(_DEFAULT_TARGET_NAMES)
             self.seq_len = history or 256
-        self.device = _resolve_device(device)
+        self.device = _resolve_device()
         self.shoulder_centers = SHOULDER_QUANTIZED
         self.warmup_frames = warmup_frames
         self._main_stick_palette = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
@@ -330,7 +329,7 @@ class GPTInferenceEngine:
         return stacked.unsqueeze(0).to(self.device)
 
     def _build_inputs(self, batch_X: torch.Tensor) -> TensorDict:
-        return build_inputs_for_gpt(batch_X, self.colmap)
+        return build_model_inputs(batch_X, self.colmap)
 
     def _preview_recent_frames(self) -> None:
         if not self.buffer:

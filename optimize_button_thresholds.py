@@ -314,7 +314,7 @@ def main() -> None:
     else:
         checkpoint = _ensure_absolute(checkpoint, Path.cwd())
 
-    device = _resolve_device(args.device)
+    device = _resolve_device()
 
     batch_size = args.batch_size or config.train.batch_size
     num_workers = args.num_workers if args.num_workers is not None else config.train.num_workers

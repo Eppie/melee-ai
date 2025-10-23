@@ -22,6 +22,7 @@ from model.attention import CausalSelfAttention
 from model.norm import norm
 from model.output_head import SimpleHead, ButtonHead
 from model.value_head import ValueHead
+from utils import _resolve_device
 
 
 class MLP(nn.Module):
@@ -58,13 +59,9 @@ class GPT(nn.Module):
         self.n_embd: int = cfg.n_embd
         self.input_size: int = cfg.input_size
 
-        self.stage_emb = nn.Embedding(cfg.num_stages, cfg.stage_embedding_dim)
-        self.character_emb = nn.Embedding(cfg.num_characters, cfg.character_embedding_dim)
-        self.action_emb = nn.Embedding(cfg.num_actions, cfg.action_embedding_dim)
-
         self.proj_down = nn.Linear(self.input_size, self.n_embd, bias=False)
         self.drop = nn.Dropout(cfg.dropout)
-        
+
         self.blocks = nn.ModuleList([
             Block(self.n_embd, cfg.n_head, cfg.n_kv_head, cfg.dropout)
             for _ in range(cfg.n_layer)
@@ -75,7 +72,6 @@ class GPT(nn.Module):
         self.c_stick_output_size = self.target_shapes_by_head["c_stick"]
         self.main_stick_output_size = self.target_shapes_by_head["main_stick"]
         self.button_output_size = self.target_shapes_by_head["buttons"]
-
 
         head_hidden_dim = 128
 
@@ -91,7 +87,6 @@ class GPT(nn.Module):
         self.shoulder_head = SimpleHead(shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim)
         self.value_head = ValueHead(self.n_embd, hidden=head_hidden_dim)
 
-
         self.rotary_seq_len = self.block_size * 2
         head_dim = cfg.n_embd // cfg.n_head
         rope_base = getattr(cfg, "rope_theta", 10000.0)
@@ -105,7 +100,6 @@ class GPT(nn.Module):
             torch.nn.init.zeros_(block.mlp.c_proj.weight)
             torch.nn.init.zeros_(block.attn.c_proj.weight)
 
-
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             # https://arxiv.org/pdf/2310.17813
@@ -118,12 +112,8 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
 
-
-    def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
-        # autodetect the device from model embeddings
-        
-        if device is None:
-            device = self.stage_emb.weight.device
+    def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000):
+        device = _resolve_device()
         # stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
         inv_freq = 1.0 / (base ** (channel_range / head_dim))
@@ -132,8 +122,8 @@ class GPT(nn.Module):
         # calculate the rotation frequencies at each (time, channel) pair
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
-        cos, sin = cos.bfloat16(), sin.bfloat16() # keep them in bfloat16
-        cos, sin = cos[None, :, None, :], sin[None, :, None, :] # add batch and head dims for later broadcasting
+        cos, sin = cos.bfloat16(), sin.bfloat16()  # keep them in bfloat16
+        cos, sin = cos[None, :, None, :], sin[None, :, None, :]  # add batch and head dims for later broadcasting
         return cos, sin
 
     def _embed_inputs(self, inputs: TensorDict) -> torch.Tensor:
@@ -141,22 +131,20 @@ class GPT(nn.Module):
         return torch.cat(
             [
                 F.one_hot(inputs["stage"].squeeze(-1).long(), num_classes=self.config.model.num_stages).float(),
-                F.one_hot(inputs["ego_character"].squeeze(-1).long(), num_classes=self.config.model.num_characters).float(),
-                F.one_hot(inputs["opponent_character"].squeeze(-1).long(), num_classes=self.config.model.num_characters).float(),
+                F.one_hot(inputs["ego_character"].squeeze(-1).long(),
+                          num_classes=self.config.model.num_characters).float(),
+                F.one_hot(inputs["opponent_character"].squeeze(-1).long(),
+                          num_classes=self.config.model.num_characters).float(),
                 F.one_hot(inputs["ego_action"].squeeze(-1).long(), num_classes=self.config.model.num_actions).float(),
-                F.one_hot(inputs["opponent_action"].squeeze(-1).long(), num_classes=self.config.model.num_actions).float(),
-                self.stage_emb(inputs["stage"]).squeeze(-2),
-                self.character_emb(inputs["ego_character"]).squeeze(-2),
-                self.character_emb(inputs["opponent_character"]).squeeze(-2),
-                self.action_emb(inputs["ego_action"]).squeeze(-2),
-                self.action_emb(inputs["opponent_action"]).squeeze(-2),
+                F.one_hot(inputs["opponent_action"].squeeze(-1).long(),
+                          num_classes=self.config.model.num_actions).float(),
                 inputs["gamestate"],
                 inputs["controller"],
             ],
             dim=-1,
         )
 
-    def forward(self, inputs: TensorDict, *, actions = None, return_rl_outputs = None) -> TensorDict:
+    def forward(self, inputs: TensorDict) -> TensorDict:
         B, L, _ = inputs["gamestate"].shape
         assert L <= self.block_size, f"Cannot forward sequence of length {L}, block size is only {self.block_size}"
 
@@ -165,18 +153,23 @@ class GPT(nn.Module):
         x = self.drop(x)
         cos = self.cos[:, :L]
         sin = self.sin[:, :L]
-        
+
         for block in self.blocks:
             x = block(x, cos, sin)
 
         x = norm(x)
 
         base = x
-        # Reordered computation: buttons first, then main_stick, then c_stick, then shoulder
         button_logits, button_probs = self.button_head(base)
-        main_stick = self.main_stick_head(torch.cat((base, button_logits), dim=-1))
-        c_stick = self.c_stick_head(torch.cat((base, button_logits, main_stick), dim=-1))
-        shoulder = self.shoulder_head(torch.cat((base, button_logits, main_stick, c_stick), dim=-1))
+
+        main_stick = self.main_stick_head(torch.cat(
+            (base, button_logits.detach()), dim=-1))
+
+        c_stick = self.c_stick_head(torch.cat(
+            (base, button_logits.detach(), main_stick.detach()), dim=-1))
+
+        shoulder = self.shoulder_head(torch.cat(
+            (base, button_logits.detach(), main_stick.detach(), c_stick.detach()), dim=-1))
 
         outputs = TensorDict(
             {
@@ -191,5 +184,5 @@ class GPT(nn.Module):
 
         value = self.value_head(x)
         outputs.set("value", value)
-        
+
         return outputs

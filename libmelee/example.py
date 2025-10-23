@@ -5,6 +5,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from utils import _resolve_device
+
 sys.path.append(str(Path(__file__).parent.parent))
 from config import init_config
 from libmelee.melee.console import Console
@@ -35,10 +37,8 @@ if __name__ == "__main__":
     parser.add_argument('--iso', default=None, type=str,
                         help='Path to melee iso.')
     parser.add_argument('--checkpoint', '-c', type=Path,
-                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep009_55000.pt'),
+                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep014_55000.pt'),
                         help='Path to trained model checkpoint (.pt)')
-    parser.add_argument('--device', default='mps',
-                        help='Torch device to run on (auto/cpu/cuda/mps)')
     parser.add_argument('--button-threshold', default=0.45, type=float,
                         help='Sigmoid threshold for button activation')
     parser.add_argument('--warmup-frames', default=256, type=int,
@@ -49,7 +49,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     engine = GPTInferenceEngine(
         checkpoint_path=args.checkpoint,
-        device=args.device,
         warmup_frames=args.warmup_frames,
         data_root=args.data_root,
     )

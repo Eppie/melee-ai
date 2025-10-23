@@ -31,11 +31,14 @@ class _FreezeGuard:
 
 @dataclass
 class ZarrConfig(_FreezeGuard):
+    # input_root: str = '/home/eppie/hal/replays'
+    # out_root: str = '/home/eppie/melee-ai/processed_data_1000'
+    # validation_root: str = '/home/eppie/melee-ai/validation_set'
     input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
-    out_root: str = '/Users/eppie/melee-ai/processed_data_50'
-    validation_root: str = '/Users/eppie/melee-ai/validation_set'
-    episode_count: int = 50
-    validation_count: int = 10
+    out_root: str = '/Users/eppie/PycharmProjects/nano-melee/processed_data_1000'
+    validation_root: str = '/Users/eppie/PycharmProjects/nano-melee/validation_set'
+    episode_count: int = 1000
+    validation_count: int = 1000
     shard_size: int = 100
     target_chunk_mb: float = 8.0
     compressor: BloscCodec = field(
@@ -45,16 +48,16 @@ class ZarrConfig(_FreezeGuard):
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 32
+    batch_size: int = 128
     epochs: int = 100
     lr: float = 1.3e-4 # (DONE)
     weight_decay: float = 0.002 # (DONE)
     betas: Tuple[float, float] = (0.9, 0.95)
-    warmup_steps: int = 30
+    warmup_steps: int = 5000
     max_steps: Optional[int] = None
-    num_workers: int = 16  # Reduced from 8: spawn overhead on macOS makes fewer workers better
-    prefetch_factor: int = 2  # Reduced from 4: less memory pressure, workers stay busier
-    pin_memory: bool = False
+    num_workers: int = 16
+    prefetch_factor: int = 4
+    pin_memory: bool = True
     persistent_workers: bool = True
     stride = 1
 

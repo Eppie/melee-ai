@@ -22,6 +22,7 @@ from feature_transforms import feature_spec_from_config
 from loss import compute_loss_components
 from model.nano_gpt import GPT
 from train import RunningMetrics, build_inputs_for_gpt, _BUTTON_PRETTY, _MAIN_STICK_LABELS, compute_value_targets
+from train.checkpoint import _latest_checkpoint
 from utils import _resolve_device
 from window_dataset import WindowDataset, worker_init_fn
 
@@ -496,17 +497,6 @@ def _get_run_lengths(sequence: List) -> List[int]:
             current_run = 1
     lengths.append(current_run)
     return lengths
-
-
-def _latest_checkpoint(directory: Path) -> Optional[Path]:
-    directory = directory.expanduser()
-    if not directory.exists():
-        return None
-    candidates = [p for p in directory.glob('*.pt') if p.is_file()]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
 
 
 def _ensure_absolute(path: Path, anchor: Path) -> Path:
@@ -1550,7 +1540,7 @@ def main() -> None:
     else:
         checkpoint_path = _ensure_absolute(checkpoint_path, Path.cwd())
 
-    device = _resolve_device(args.device)
+    device = _resolve_device()
 
     batch_size = args.batch_size or config.train.batch_size
     num_workers = args.num_workers if args.num_workers is not None else config.train.num_workers
@@ -1570,6 +1560,7 @@ def main() -> None:
     colmap = ColumnMap.from_dataset(dataset)
 
     model = GPT()
+    # TODO: use loading from checkpoint.py
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(ckpt["model"])
     model.to(device)

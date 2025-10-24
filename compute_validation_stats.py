@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from abc import ABC, abstractmethod
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -14,10 +15,53 @@ import multiprocessing
 
 import numpy as np
 
+from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
 from tqdm import tqdm
 
 
 DEFAULT_PERCENTILES: List[float] = [0.5, 1.0, 10.0, 25.0, 50.0, 90.0, 99.0, 99.5]
+
+MAIN_STICK_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
+MAIN_STICK_PALETTE_NORM = np.sum(MAIN_STICK_PALETTE ** 2, axis=1, keepdims=True)
+C_STICK_PALETTE = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
+C_STICK_PALETTE_NORM = np.sum(C_STICK_PALETTE ** 2, axis=1, keepdims=True)
+
+STICK_QUANTIZATION_CONFIG = [
+    ("p1_main_stick_quantized", "p1_main_stick_x", "p1_main_stick_y", MAIN_STICK_PALETTE, MAIN_STICK_PALETTE_NORM),
+    ("p2_main_stick_quantized", "p2_main_stick_x", "p2_main_stick_y", MAIN_STICK_PALETTE, MAIN_STICK_PALETTE_NORM),
+    ("p1_c_stick_quantized", "p1_c_stick_x", "p1_c_stick_y", C_STICK_PALETTE, C_STICK_PALETTE_NORM),
+    ("p2_c_stick_quantized", "p2_c_stick_x", "p2_c_stick_y", C_STICK_PALETTE, C_STICK_PALETTE_NORM),
+]
+
+SHOULDER_QUANTIZATION_CONFIG = {
+    "p1_shoulder_analog": "p1_shoulder_quantized",
+    "p2_shoulder_analog": "p2_shoulder_quantized",
+}
+
+SHOULDER_PALETTE = np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
+
+
+@dataclass(frozen=True)
+class ShoulderQuantizationSpec:
+    name: str
+    source_idx: int
+
+    @property
+    def num_categories(self) -> int:
+        return int(len(SHOULDER_QUANTIZED))
+
+
+@dataclass(frozen=True)
+class StickQuantizationSpec:
+    name: str
+    x_idx: int
+    y_idx: int
+    palette: np.ndarray
+    palette_norm: np.ndarray
+
+    @property
+    def num_categories(self) -> int:
+        return int(self.palette.shape[0])
 
 
 @dataclass(frozen=True)
@@ -92,7 +136,7 @@ def _resolve_worker_count(requested: Optional[int]) -> int:
 
 
 def _open_episode_array(data_root: Path, episode: EpisodeInfo, shard_cache: Dict[int, object]) -> "zarr.Array":
-    import zarr  # lazy import for worker compatibility
+    import zarr
 
     group = shard_cache.get(episode.shard_id)
     if group is None:
@@ -101,6 +145,50 @@ def _open_episode_array(data_root: Path, episode: EpisodeInfo, shard_cache: Dict
         shard_cache[episode.shard_id] = group
     ep_name = f"ep_{episode.episode_id:06d}"
     return group[ep_name]["X"]
+
+
+def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
+    xy01_clipped = np.clip(xy01, 0.0, 1.0)
+    xy11 = xy01_clipped * 2.0 - 1.0
+    norms = np.linalg.norm(xy11, axis=1, keepdims=True)
+    mask = norms > 1.0
+    if np.any(mask):
+        xy11[mask] /= norms[mask]
+    return xy11
+
+
+def _quantize_stick_indices(
+    xy_values: np.ndarray,
+    *,
+    palette: np.ndarray,
+    palette_norm: np.ndarray,
+) -> np.ndarray:
+    if xy_values.shape[1] != 2:
+        raise ValueError("Stick quantization expects two columns (x, y).")
+    values = xy_values.astype(np.float32, copy=False)
+    if np.any(values < 0.0) or np.any(values > 1.0):
+        xy11 = np.clip(values, -1.0, 1.0)
+        norms = np.linalg.norm(xy11, axis=1, keepdims=True)
+        mask = norms > 1.0
+        if np.any(mask):
+            xy11[mask] /= norms[mask]
+    else:
+        xy01 = np.clip(values, 0.0, 1.0)
+        xy11 = _sticks01_to_unit11_np(xy01.copy())
+    dot = xy11 @ palette.T
+    norm = np.sum(xy11 ** 2, axis=1, keepdims=True)
+    d2 = norm - 2.0 * dot + palette_norm.T
+    idx = np.argmin(d2, axis=1)
+    return idx.astype(np.int32, copy=False)
+
+
+def _quantize_shoulder_indices(values: np.ndarray) -> np.ndarray:
+    if values.ndim != 1:
+        values = values.reshape(-1)
+    arr = values.astype(np.float32, copy=False)
+    diffs = np.abs(arr[:, None] - SHOULDER_PALETTE[None, :])
+    idx = np.argmin(diffs, axis=1)
+    return idx.astype(np.int32, copy=False)
 
 
 def _canonical_value(value: object) -> object:
@@ -201,11 +289,10 @@ class RunStats:
 
 
 def _median_from_counts(length_counts: Sequence[Tuple[int, int]], total_runs: int) -> float:
-    """Compute an exact median from (length, count) pairs."""
     if total_runs == 0:
         return math.nan
     midpoint1 = (total_runs + 1) // 2
-    midpoint2 = (total_runs + 2) // 2  # same as midpoint1 for odd totals
+    midpoint2 = (total_runs + 2) // 2
 
     acc = 0
     first = None
@@ -226,7 +313,6 @@ def _value_at_rank(
     cumulative_counts: Sequence[Tuple[int, int]],
     rank: int,
 ) -> float:
-    # rank is zero-based index into the expanded run-length list.
     if rank <= 0:
         return float(length_counts[0][0])
     total_runs = cumulative_counts[-1][1]
@@ -238,8 +324,12 @@ def _value_at_rank(
     return float(length_counts[-1][0])
 
 
+# --- Unified Value Stats -----------------------------------------------------
+
+
 @dataclass
-class BooleanValueStats:
+class ValueStats:
+    """Statistics for a single value in categorical/boolean columns."""
     count: int
     run_stats: RunStats
 
@@ -247,21 +337,89 @@ class BooleanValueStats:
         self.count = 0
         self.run_stats = RunStats()
 
-    def merge(self, other: BooleanValueStats) -> None:
+    def merge(self, other: ValueStats) -> None:
         self.count += other.count
         self.run_stats.merge(other.run_stats)
 
 
-@dataclass
-class BooleanColumnStats:
-    name: str
-    value_stats: Dict[int, BooleanValueStats]
-    total: int
+# --- Column Stats Base -------------------------------------------------------
 
+
+class ColumnStats(ABC):
+    """Base class for column statistics."""
+    
     def __init__(self, name: str) -> None:
         self.name = name
-        self.value_stats = {0: BooleanValueStats(), 1: BooleanValueStats()}
         self.total = 0
+
+    @abstractmethod
+    def update(self, values: np.ndarray) -> None:
+        """Update stats with values from a chunk."""
+        pass
+
+    @abstractmethod
+    def update_runs(self, runs: Iterable[Tuple[object, int]]) -> None:
+        """Update run-length statistics."""
+        pass
+
+    @abstractmethod
+    def merge(self, other: ColumnStats) -> None:
+        """Merge stats from another collector."""
+        pass
+
+    @abstractmethod
+    def finalize(self, percentiles: Sequence[float]) -> Dict[str, object]:
+        """Return final statistics as a dictionary."""
+        pass
+
+
+class DiscreteColumnStats(ColumnStats):
+    """Base for boolean and categorical columns."""
+    
+    def __init__(self, name: str, known_values: Sequence[object]) -> None:
+        super().__init__(name)
+        self.value_stats: Dict[object, ValueStats] = {val: ValueStats() for val in known_values}
+
+    def _ensure_value(self, value: object) -> ValueStats:
+        """Ensure a value exists in stats, creating if needed."""
+        if value not in self.value_stats:
+            self.value_stats[value] = ValueStats()
+        return self.value_stats[value]
+
+    def update_runs(self, runs: Iterable[Tuple[object, int]]) -> None:
+        for value, length in runs:
+            if value is None:
+                continue
+            canonical = _canonical_value(value)
+            self._ensure_value(canonical).run_stats.add(length)
+
+    def merge(self, other: DiscreteColumnStats) -> None:
+        self.total += other.total
+        for value, stats in other.value_stats.items():
+            self._ensure_value(value).merge(stats)
+
+    def _format_value_results(self, percentiles: Sequence[float]) -> List[Dict[str, object]]:
+        """Format value statistics for output."""
+        if self.total == 0:
+            return []
+        
+        results = []
+        for value in sorted(self.value_stats.keys(), key=lambda v: (str(type(v)), v)):
+            data = self.value_stats[value]
+            percent = (data.count / self.total * 100.0) if self.total else 0.0
+            results.append({
+                "value": value,
+                "count": data.count,
+                "percent": percent,
+                "run_lengths": data.run_stats.summary(),
+                "run_percentiles": data.run_stats.percentile_values(percentiles),
+            })
+        return results
+
+
+class BooleanColumnStats(DiscreteColumnStats):
+    def __init__(self, name: str) -> None:
+        super().__init__(name, [0, 1])
 
     def update(self, values: np.ndarray) -> None:
         if values.size == 0:
@@ -275,131 +433,41 @@ class BooleanColumnStats:
         self.value_stats[1].count += ones
         self.total += ints.size
 
-    def update_runs(self, runs: Iterable[Tuple[object, int]]) -> None:
-        for value, length in runs:
-            if value is None:
-                continue
-            key = int(value)
-            if key in self.value_stats:
-                self.value_stats[key].run_stats.add(length)
-
-    def merge(self, other: "BooleanColumnStats") -> None:
-        self.total += other.total
-        for key in (0, 1):
-            self.value_stats[key].merge(other.value_stats[key])
-
     def finalize(self, percentiles: Sequence[float]) -> Dict[str, object]:
-        results: Dict[str, object] = {
+        return {
             "type": "boolean",
             "total_count": self.total,
-            "values": [],
+            "values": self._format_value_results(percentiles),
         }
-        if self.total == 0:
-            return results
-        for key in (0, 1):
-            data = self.value_stats[key]
-            percent = (data.count / self.total * 100.0) if self.total else 0.0
-            results["values"].append({
-                "value": key,
-                "count": data.count,
-                "percent": percent,
-                "run_lengths": data.run_stats.summary(),
-                "run_percentiles": data.run_stats.percentile_values(percentiles),
-            })
-        return results
 
 
-@dataclass
-class CategoricalValueStats:
-    count: int
-    run_stats: RunStats
-
-    def __init__(self) -> None:
-        self.count = 0
-        self.run_stats = RunStats()
-
-    def merge(self, other: "CategoricalValueStats") -> None:
-        self.count += other.count
-        self.run_stats.merge(other.run_stats)
-
-
-@dataclass
-class CategoricalColumnStats:
-    name: str
-    values: Dict[object, CategoricalValueStats]
-    total: int
-
-    def __init__(self, name: str, known_values: Sequence[object]) -> None:
-        self.name = name
-        self.values = {val: CategoricalValueStats() for val in known_values}
-        self.total = 0
-
+class CategoricalColumnStats(DiscreteColumnStats):
     def update(self, values: np.ndarray) -> None:
         if values.size == 0:
             return
         self.total += values.size
         for raw_val, cnt in zip(*np.unique(values, return_counts=True)):
             val = _canonical_value(raw_val)
-            if val not in self.values:
-                self.values[val] = CategoricalValueStats()
-            self.values[val].count += int(cnt)
-
-    def update_runs(self, runs: Iterable[Tuple[object, int]]) -> None:
-        for value, length in runs:
-            val = _canonical_value(value)
-            if val not in self.values:
-                self.values[val] = CategoricalValueStats()
-            self.values[val].run_stats.add(length)
-
-    def merge(self, other: "CategoricalColumnStats") -> None:
-        self.total += other.total
-        for value, stats in other.values.items():
-            if value not in self.values:
-                self.values[value] = CategoricalValueStats()
-            self.values[value].merge(stats)
+            self._ensure_value(val).count += int(cnt)
 
     def finalize(self, percentiles: Sequence[float]) -> Dict[str, object]:
-        results: Dict[str, object] = {
+        return {
             "type": "categorical",
             "total_count": self.total,
-            "cardinality": len(self.values),
-            "values": [],
+            "cardinality": len(self.value_stats),
+            "values": self._format_value_results(percentiles),
         }
-        if self.total == 0:
-            return results
-        for value in sorted(self.values.keys(), key=lambda v: (str(type(v)), v)):
-            data = self.values[value]
-            percent = (data.count / self.total * 100.0) if self.total else 0.0
-            results["values"].append({
-                "value": value,
-                "count": data.count,
-                "percent": percent,
-                "run_lengths": data.run_stats.summary(),
-                "run_percentiles": data.run_stats.percentile_values(percentiles),
-            })
-        return results
 
 
-@dataclass
-class ContinuousColumnStats:
-    name: str
-    total: int
-    sum_: float
-    sum_sq: float
-    min_: float
-    max_: float
-    run_stats: RunStats
-    percentiles: Dict[str, float]
-
+class ContinuousColumnStats(ColumnStats):
     def __init__(self, name: str) -> None:
-        self.name = name
-        self.total = 0
+        super().__init__(name)
         self.sum_ = 0.0
         self.sum_sq = 0.0
         self.min_ = float("inf")
         self.max_ = float("-inf")
         self.run_stats = RunStats()
-        self.percentiles = {}
+        self.percentiles: Dict[str, float] = {}
 
     def update(self, values: np.ndarray) -> None:
         if values.size == 0:
@@ -419,7 +487,7 @@ class ContinuousColumnStats:
         for _value, length in runs:
             self.run_stats.add(length)
 
-    def merge(self, other: "ContinuousColumnStats") -> None:
+    def merge(self, other: ContinuousColumnStats) -> None:
         if other.total == 0:
             self.run_stats.merge(other.run_stats)
             return
@@ -512,23 +580,106 @@ class ColumnSignature:
             if len(self.unique_values) > limit:
                 self.saw_more_than_limit = True
 
-    def merge(self, other: "ColumnSignature") -> None:
+    def merge(self, other: ColumnSignature) -> None:
         self.unique_values.update(other.unique_values)
         self.saw_more_than_limit = self.saw_more_than_limit or other.saw_more_than_limit
         self.is_boolean_candidate = self.is_boolean_candidate and other.is_boolean_candidate
 
 
-def _classify_worker(args: Tuple[str, List[EpisodeInfo], int, int]) -> List[ColumnSignature]:
-    data_root_str, episodes, num_features, limit = args
-    data_root = Path(data_root_str)
+def _process_episodes(
+    data_root: Path,
+    episodes: List[EpisodeInfo],
+    processor: callable,
+) -> object:
+    """Generic episode processor for workers."""
     shard_cache: Dict[int, object] = {}
-    signatures = [ColumnSignature() for _ in range(num_features)]
     for episode in episodes:
         X = _open_episode_array(data_root, episode, shard_cache)
+        processor(X, episode)
+    return processor.get_result()
+
+
+class ClassifyProcessor:
+    """Processor for column classification."""
+    def __init__(self, num_features: int, limit: int) -> None:
+        self.signatures = [ColumnSignature() for _ in range(num_features)]
+        self.num_features = num_features
+        self.limit = limit
+
+    def __call__(self, X: "zarr.Array", episode: EpisodeInfo) -> None:
         for chunk in _iter_episode_chunks(X):
-            for col_idx in range(num_features):
-                signatures[col_idx].update(chunk[:, col_idx], limit)
-    return signatures
+            for col_idx in range(self.num_features):
+                self.signatures[col_idx].update(chunk[:, col_idx], self.limit)
+
+    def get_result(self) -> List[ColumnSignature]:
+        return self.signatures
+
+
+class StatsProcessor:
+    """Processor for computing statistics."""
+
+    def __init__(
+        self,
+        feature_names: Sequence[str],
+        column_types: Sequence[str],
+        unique_values: Sequence[set],
+        stick_specs: Sequence[StickQuantizationSpec],
+        shoulder_specs: Sequence[ShoulderQuantizationSpec],
+    ) -> None:
+        self.collectors = _create_collectors(feature_names, column_types, unique_values)
+        self.num_features = len(feature_names)
+        self.stick_specs = list(stick_specs)
+        self.shoulder_specs = list(shoulder_specs)
+
+        self._stick_offset = self.num_features
+        for spec in self.stick_specs:
+            known_values = list(range(spec.num_categories))
+            self.collectors.append(CategoricalColumnStats(spec.name, known_values))
+
+        self._shoulder_offset = self._stick_offset + len(self.stick_specs)
+        shoulder_categories = list(range(len(SHOULDER_QUANTIZED)))
+        for spec in self.shoulder_specs:
+            self.collectors.append(CategoricalColumnStats(spec.name, shoulder_categories))
+
+    def __call__(self, X: "zarr.Array", episode: EpisodeInfo) -> None:
+        data = np.asarray(X[:])
+        for col_idx in range(self.num_features):
+            values = data[:, col_idx]
+            collector = self.collectors[col_idx]
+            collector.update(values)
+            collector.update_runs(_iter_runs(values))
+        for offset, spec in enumerate(self.stick_specs):
+            collector = self.collectors[self._stick_offset + offset]
+            xy = data[:, [spec.x_idx, spec.y_idx]]
+            quantized = _quantize_stick_indices(xy, palette=spec.palette, palette_norm=spec.palette_norm)
+            collector.update(quantized)
+            collector.update_runs(_iter_runs(quantized))
+        for offset, spec in enumerate(self.shoulder_specs):
+            collector = self.collectors[self._shoulder_offset + offset]
+            analog = data[:, spec.source_idx]
+            quantized = _quantize_shoulder_indices(analog)
+            collector.update(quantized)
+            collector.update_runs(_iter_runs(quantized))
+
+    def get_result(self) -> List[ColumnStats]:
+        return self.collectors
+
+
+def _parallel_worker(args: Tuple[str, List[EpisodeInfo], str, object]) -> object:
+    """Generic parallel worker."""
+    data_root_str, episodes, processor_type, processor_args = args
+    data_root = Path(data_root_str)
+    
+    if processor_type == "classify":
+        num_features, limit = processor_args
+        processor = ClassifyProcessor(num_features, limit)
+    elif processor_type == "stats":
+        feature_names, column_types, unique_values, stick_specs, shoulder_specs = processor_args
+        processor = StatsProcessor(feature_names, column_types, unique_values, stick_specs, shoulder_specs)
+    else:
+        raise ValueError(f"Unknown processor type: {processor_type}")
+    
+    return _process_episodes(data_root, episodes, processor)
 
 
 @dataclass
@@ -545,14 +696,15 @@ def classify_columns(index: ValidationDatasetIndex, *, categorical_threshold: in
     total_eps = len(index.episodes)
     print(f"Classifying columns across {total_eps} episodes...", flush=True)
     effective_workers = max(1, min(workers, len(index.episodes)))
+    
     if effective_workers == 1:
         with tqdm(total=total_eps, desc="classify", unit="episode", leave=False) as pbar:
+            processor = ClassifyProcessor(num_features, categorical_threshold)
             for episode in index.episodes:
                 X, _ = index.open_episode_arrays(episode)
-                for chunk in _iter_episode_chunks(X):
-                    for col_idx in range(num_features):
-                        signatures[col_idx].update(chunk[:, col_idx], categorical_threshold)
+                processor(X, episode)
                 pbar.update(1)
+            signatures = processor.get_result()
     else:
         chunks = _split_into_chunks(index.episodes, effective_workers * 4)
         with tqdm(total=total_eps, desc="classify", unit="episode", leave=False) as pbar:
@@ -560,8 +712,8 @@ def classify_columns(index: ValidationDatasetIndex, *, categorical_threshold: in
                 future_to_size: Dict[object, int] = {}
                 for chunk in chunks:
                     future = executor.submit(
-                        _classify_worker,
-                        (str(index.data_dir), chunk, num_features, categorical_threshold),
+                        _parallel_worker,
+                        (str(index.data_dir), chunk, "classify", (num_features, categorical_threshold)),
                     )
                     future_to_size[future] = len(chunk)
                 for future in as_completed(future_to_size):
@@ -569,7 +721,6 @@ def classify_columns(index: ValidationDatasetIndex, *, categorical_threshold: in
                     for idx in range(num_features):
                         signatures[idx].merge(partial[idx])
                     pbar.update(future_to_size[future])
-
 
     column_types: List[str] = []
     unique_values: List[set] = []
@@ -587,8 +738,8 @@ def classify_columns(index: ValidationDatasetIndex, *, categorical_threshold: in
     return DatasetProfile(column_types, unique_values)
 
 
-def _create_collectors(feature_names: Sequence[str], column_types: Sequence[str], unique_values: Sequence[set]) -> List[object]:
-    collectors: List[object] = []
+def _create_collectors(feature_names: Sequence[str], column_types: Sequence[str], unique_values: Sequence[set]) -> List[ColumnStats]:
+    collectors: List[ColumnStats] = []
     for idx, column_type in enumerate(column_types):
         name = feature_names[idx]
         if column_type == "boolean":
@@ -598,23 +749,6 @@ def _create_collectors(feature_names: Sequence[str], column_types: Sequence[str]
             collectors.append(CategoricalColumnStats(name, known_values))
         else:
             collectors.append(ContinuousColumnStats(name))
-    return collectors
-
-
-def _stats_worker(args: Tuple[str, List[EpisodeInfo], Sequence[str], Sequence[str], Sequence[set]]) -> List[object]:
-    data_root_str, episodes, feature_names, column_types, unique_values = args
-    data_root = Path(data_root_str)
-    collectors = _create_collectors(feature_names, column_types, unique_values)
-    num_features = len(feature_names)
-    shard_cache: Dict[int, object] = {}
-    for episode in episodes:
-        X = _open_episode_array(data_root, episode, shard_cache)
-        data = np.asarray(X[:])
-        for col_idx in range(num_features):
-            values = data[:, col_idx]
-            collector = collectors[col_idx]
-            collector.update(values)
-            collector.update_runs(_iter_runs(values))
     return collectors
 
 
@@ -680,23 +814,47 @@ def compute_continuous_percentiles(
 def compute_statistics(index: ValidationDatasetIndex, *, percentiles: Sequence[float], output_path: Path, workers: int = 1) -> None:
     worker_count = _resolve_worker_count(workers)
     profile = classify_columns(index, workers=worker_count)
-    num_features = len(index.feature_names)
+    feature_names = index.feature_names
 
-    collectors = _create_collectors(index.feature_names, profile.column_types, profile.unique_values)
+    feature_idx = {name: idx for idx, name in enumerate(feature_names)}
+    stick_specs: List[StickQuantizationSpec] = []
+    for column_name, x_name, y_name, palette, palette_norm in STICK_QUANTIZATION_CONFIG:
+        try:
+            x_idx = feature_idx[x_name]
+            y_idx = feature_idx[y_name]
+        except KeyError:
+            continue
+        spec = StickQuantizationSpec(column_name, x_idx, y_idx, palette, palette_norm)
+        stick_specs.append(spec)
+    shoulder_specs: List[ShoulderQuantizationSpec] = []
+    for src_name, column_name in SHOULDER_QUANTIZATION_CONFIG.items():
+        idx = feature_idx.get(src_name)
+        if idx is None:
+            continue
+        shoulder_specs.append(ShoulderQuantizationSpec(column_name, idx))
+
+    collector_names: List[str] = list(feature_names)
+    collector_names.extend(spec.name for spec in stick_specs)
+    collector_names.extend(spec.name for spec in shoulder_specs)
+
+    master_processor = StatsProcessor(
+        feature_names,
+        profile.column_types,
+        profile.unique_values,
+        stick_specs,
+        shoulder_specs,
+    )
+    collectors = master_processor.get_result()
 
     total_eps = len(index.episodes)
     print(f"Computing column statistics across {total_eps} episodes...", flush=True)
     effective_workers = max(1, min(worker_count, len(index.episodes)))
+    
     if effective_workers == 1:
         with tqdm(total=total_eps, desc="stats", unit="episode", leave=False) as pbar:
             for episode in index.episodes:
                 X, _ = index.open_episode_arrays(episode)
-                data = np.asarray(X[:])
-                for col_idx in range(num_features):
-                    values = data[:, col_idx]
-                    collector = collectors[col_idx]
-                    collector.update(values)
-                    collector.update_runs(_iter_runs(values))
+                master_processor(X, episode)
                 pbar.update(1)
     else:
         chunks = _split_into_chunks(index.episodes, effective_workers * 4)
@@ -705,17 +863,22 @@ def compute_statistics(index: ValidationDatasetIndex, *, percentiles: Sequence[f
                 future_to_size: Dict[object, int] = {}
                 for chunk in chunks:
                     future = executor.submit(
-                        _stats_worker,
-                        (str(index.data_dir), chunk, index.feature_names, profile.column_types, profile.unique_values),
+                        _parallel_worker,
+                        (
+                            str(index.data_dir),
+                            chunk,
+                            "stats",
+                            (feature_names, profile.column_types, profile.unique_values, stick_specs, shoulder_specs),
+                        ),
                     )
                     future_to_size[future] = len(chunk)
                 for future in as_completed(future_to_size):
                     partial_collectors = future.result()
-                    for idx in range(num_features):
+                    for idx in range(len(collectors)):
                         collectors[idx].merge(partial_collectors[idx])
                     pbar.update(future_to_size[future])
 
-    # Compute percentiles for continuous columns (serial or parallel per column)
+    # Compute percentiles for continuous columns
     continuous_indices = [idx for idx, typ in enumerate(profile.column_types) if typ == "continuous"]
     percentile_maps = compute_continuous_percentiles(
         index,
@@ -727,16 +890,8 @@ def compute_statistics(index: ValidationDatasetIndex, *, percentiles: Sequence[f
         collectors[idx].set_percentiles(percentile_maps.get(idx, {}))
 
     results: Dict[str, object] = {"columns": {}}
-    for idx, collector in enumerate(collectors):
-        name = index.feature_names[idx]
-        if isinstance(collector, BooleanColumnStats):
-            results["columns"][name] = collector.finalize(percentiles)
-        elif isinstance(collector, CategoricalColumnStats):
-            results["columns"][name] = collector.finalize(percentiles)
-        elif isinstance(collector, ContinuousColumnStats):
-            results["columns"][name] = collector.finalize(percentiles)
-        else:
-            raise TypeError(f"Unknown collector type for column {name}")
+    for name, collector in zip(collector_names, collectors):
+        results["columns"][name] = collector.finalize(percentiles)
 
     with output_path.open("w") as f:
         json.dump(results, f, indent=2)
@@ -771,15 +926,6 @@ def _percentile_label(value: float) -> str:
     return s
 
 
-def _format_run_summary(run_summary: Dict[str, Optional[float]]) -> List[str]:
-    return [
-        _format_number(run_summary.get("min"), is_int=True),
-        _format_number(run_summary.get("max"), is_int=True),
-        _format_number(run_summary.get("mean")),
-        _format_number(run_summary.get("median")),
-    ]
-
-
 def _format_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     widths = [len(h) for h in headers]
     for row in rows:
@@ -794,6 +940,15 @@ def _format_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     for row in rows:
         parts.append(_fmt_row(row))
     return "\n".join(parts)
+
+
+def _format_run_summary(run_summary: Dict[str, Optional[float]]) -> List[str]:
+    return [
+        _format_number(run_summary.get("min"), is_int=True),
+        _format_number(run_summary.get("max"), is_int=True),
+        _format_number(run_summary.get("mean")),
+        _format_number(run_summary.get("median")),
+    ]
 
 
 def _format_run_table(run_summary: Dict[str, Optional[float]], run_percentiles: Dict[str, Optional[float]]) -> str:
@@ -815,8 +970,13 @@ def _format_run_table(run_summary: Dict[str, Optional[float]], run_percentiles: 
     return _format_table(["metric", "value"], rows)
 
 
-def _format_boolean_column(name: str, data: Dict[str, object]) -> str:
-    header = f"Column: {name} (boolean)"
+def _format_discrete_column(name: str, data: Dict[str, object], col_type: str) -> str:
+    """Format boolean or categorical column output."""
+    header_parts = [f"Column: {name} ({col_type})"]
+    if col_type == "categorical":
+        header_parts.append(f"cardinality={data.get('cardinality')}")
+    header = ", ".join(header_parts)
+    
     values = data.get("values", [])
     percentile_keys = sorted({
         key
@@ -839,48 +999,7 @@ def _format_boolean_column(name: str, data: Dict[str, object]) -> str:
             *run_summary,
             *percentile_values,
         ])
-    percentile_headers = [
-        f"run_p{_percentile_label(float(key))}%"
-        for key in percentile_keys
-    ]
-    table = _format_table([
-        "value",
-        "count",
-        "percent",
-        "run_min",
-        "run_max",
-        "run_mean",
-        "run_median",
-        *percentile_headers,
-    ], rows)
-    return f"{header}\n{table}"
-
-
-def _format_categorical_column(name: str, data: Dict[str, object]) -> str:
-    cardinality = data.get("cardinality")
-    header = f"Column: {name} (categorical, cardinality={cardinality})"
-    values = data.get("values", [])
-    percentile_keys = sorted({
-        key
-        for entry in values
-        for key in (entry.get("run_percentiles", {}) or {}).keys()
-    }, key=lambda k: float(k))
-
-    rows = []
-    for entry in values:
-        run_summary = _format_run_summary(entry.get("run_lengths", {}))
-        run_percentiles = entry.get("run_percentiles", {}) or {}
-        percentile_values = [
-            _format_number(run_percentiles.get(key))
-            for key in percentile_keys
-        ]
-        rows.append([
-            str(entry.get("value")),
-            _format_number(entry.get("count"), is_int=True),
-            _format_percent(entry.get("percent")),
-            *run_summary,
-            *percentile_values,
-        ])
+    
     percentile_headers = [
         f"run_p{_percentile_label(float(key))}%"
         for key in percentile_keys
@@ -928,9 +1047,9 @@ def _format_results_for_terminal(results: Dict[str, object]) -> str:
         data = columns[name]
         col_type = data.get("type")
         if col_type == "boolean":
-            lines.append(_format_boolean_column(name, data))
+            lines.append(_format_discrete_column(name, data, "boolean"))
         elif col_type == "categorical":
-            lines.append(_format_categorical_column(name, data))
+            lines.append(_format_discrete_column(name, data, "categorical"))
         elif col_type == "continuous":
             lines.append(_format_continuous_column(name, data))
         else:

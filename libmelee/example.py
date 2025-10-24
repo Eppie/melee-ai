@@ -5,8 +5,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from utils import _resolve_device
-
 sys.path.append(str(Path(__file__).parent.parent))
 from config import init_config
 from libmelee.melee.console import Console
@@ -37,7 +35,7 @@ if __name__ == "__main__":
     parser.add_argument('--iso', default=None, type=str,
                         help='Path to melee iso.')
     parser.add_argument('--checkpoint', '-c', type=Path,
-                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep014_55000.pt'),
+                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep006_025002.pt'),
                         help='Path to trained model checkpoint (.pt)')
     parser.add_argument('--button-threshold', default=0.45, type=float,
                         help='Sigmoid threshold for button activation')
@@ -128,7 +126,7 @@ if __name__ == "__main__":
                 gamestate,
                 controllers[1],
                 Character.FOX,
-                Stage.YOSHIS_STORY,
+                Stage.POKEMON_STADIUM,
                 costume=1,
                 autostart=False,
                 swag=False,

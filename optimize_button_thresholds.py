@@ -17,7 +17,7 @@ from config import get_config, init_config
 from controller_quantization import quantize_targets
 from feature_transforms import feature_spec_from_config
 from model.nano_gpt import GPT
-from train import build_inputs_for_gpt, _BUTTON_PRETTY
+from train import _BUTTON_PRETTY, build_model_inputs
 from utils import _resolve_device
 from window_dataset import WindowDataset, worker_init_fn
 
@@ -99,7 +99,7 @@ def _gather_statistics(
         X = batch["X"].to(device, non_blocking=True)
         Y = batch["Y"].to(device, non_blocking=True)
 
-        inputs_td = build_inputs_for_gpt(X, colmap)
+        inputs_td = build_model_inputs(X, colmap)
         target_info = quantize_targets(Y, colmap, input_domain="unit11")
 
         pred = model(inputs_td)

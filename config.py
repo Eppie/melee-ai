@@ -50,8 +50,8 @@ class ZarrConfig(_FreezeGuard):
 class TrainConfig:
     batch_size: int = 128
     epochs: int = 100
-    lr: float = 1.3e-4 # (DONE)
-    weight_decay: float = 0.002 # (DONE)
+    lr: float = 1.3e-4  # (DONE)
+    weight_decay: float = 0.002  # (DONE)
     betas: Tuple[float, float] = (0.9, 0.95)
     warmup_steps: int = 5000
     max_steps: Optional[int] = None
@@ -62,8 +62,8 @@ class TrainConfig:
     stride = 1
 
     # losses
-    grad_clip: float = 5.0 # (DONE)
-    label_smoothing: float = 0.02 # (DONE)
+    grad_clip: float = 5.0  # (DONE)
+    label_smoothing: float = 0.02  # (DONE)
 
     # Automatic Mixed Precision (AMP)
     use_amp: bool = True
@@ -78,7 +78,6 @@ class TrainConfig:
     # checkpointing
     out_dir: str = "checkpoints"
     save_every_epochs: int = 1
-
 
 
 @dataclass
@@ -227,10 +226,10 @@ class GPTConfig:
         - Reasonable usage: keep close to dataset quantization cardinalities (e.g., FOX sticks 64-way, buttons 5 logits).
 
     """
-    block_size: int = 512 # DONE
-    n_embd: int = 512 # DONE
-    n_layer: int = 4 # DONE
-    n_head: int = 8 # DONE
+    block_size: int = 512  # DONE
+    n_embd: int = 512  # DONE
+    n_layer: int = 4  # DONE
+    n_head: int = 8  # DONE
     dropout: float = 0.03  # (DONE)
     input_size: int = -1  # populated dynamically based on dataset schema
     num_stages: int = 6
@@ -238,16 +237,16 @@ class GPTConfig:
     num_actions: int = 396
     gamma: float = 0.999  # (DONE)
     norm_type: str = "layernorm"  # (DONE)
-    norm_eps: float = 1e-7 # DONE
+    norm_eps: float = 1e-7  # DONE
     norm_affine: bool = True  # (DONE)
     norm_placement: str = "post"  # options: pre, post, both (DONE)
     qk_norm: bool = False  # (DONE)
     qk_norm_type: Optional[str] = None  # defaults to norm_type when None
     attention_type: str = "gqa"  # TODO: maybe mqa?
-    n_kv_head: Optional[int] = 4 # DONE
+    n_kv_head: Optional[int] = 4  # DONE
     rope_theta: float = 10000.0
-    ffn_mult: float = 2 # DONE
-    ffn_activation: str = "geglu" # DONE
+    ffn_mult: float = 2  # DONE
+    ffn_activation: str = "geglu"  # DONE
     head_flow: str = "parallel"  # options: sequential, parallel
     target_shapes_by_head: dict[str, int] = field(default_factory=lambda: {
         "main_stick": len(CONTROL_STICK_QUANTIZED),
@@ -318,75 +317,18 @@ class FeatureConfig(_FreezeGuard):
 @dataclass
 class RLConfig(_FreezeGuard):
     """Reinforcement learning configuration."""
-    
-    # Algorithm selection
-    algorithm: str = "ppo"  # ppo, a2c, reinforce
-    
-    # PPO hyperparameters
-    ppo_epsilon: float = 0.2  # clip range for policy loss
-    ppo_epochs: int = 4  # optimization epochs per rollout batch
-    gae_lambda: float = 0.95  # GAE lambda for advantage estimation
     gamma: float = 0.99  # discount factor for rewards
-    
-    # Training parameters
-    rollout_length: int = 512  # number of steps to collect per rollout
-    batch_size: int = 64  # minibatch size for updates
-    learning_rate: float = 3e-4  # learning rate for both policy and value
     value_loss_coef: float = 0.5  # coefficient for value loss in total loss
-    entropy_coef: float = 0.01  # coefficient for entropy bonus
-    max_grad_norm: float = 0.5  # max gradient norm for clipping
-    
-    # Mixed training (imitation + RL)
-    use_mixed_training: bool = True  # combine expert demos with RL rollouts
-    expert_ratio: float = 0.5  # fraction of batch from expert demos (0=pure RL, 1=pure imitation)
-    expert_ratio_decay: float = 0.995  # multiply expert_ratio by this each epoch
-    min_expert_ratio: float = 0.1  # minimum expert ratio (stops decay)
-    
+
     # Reward weights (customize reward function)
-    reward_win: float = 1.0
-    reward_loss: float = -1.0
-    reward_timeout: float = 0.0  # when game times out
     reward_damage_dealt: float = 0.01  # per % damage
     reward_damage_taken: float = -0.01  # per % damage
     reward_stock_lost: float = -0.3  # when losing a stock
     reward_stock_taken: float = 0.3  # when taking opponent's stock
-    reward_stage_control: float = 0.001  # reward for center stage control
-    reward_l_cancel: float = 0.02  # reward for successful L-cancel
-    reward_combo_hit: float = 0.05  # reward for extending combo
     reward_hitlag_opponent: float = 0.02  # reward when opponent is in hitlag (attacking)
     reward_hitlag_self: float = -0.02  # penalty when we are in hitlag (being hit)
     reward_low_shield: float = -0.1  # penalty for low shield strength (magnified as shield -> 0)
     reward_per_frame: float = -0.001  # small constant penalty per frame to discourage stalling
-    
-    # Self-play configuration
-    self_play_enabled: bool = True
-    opponent_update_freq: int = 10  # update opponent checkpoint every N epochs
-    evaluation_games: int = 20  # number of games for win rate evaluation
-    use_opponent_pool: bool = False  # maintain pool of past checkpoints
-    opponent_pool_size: int = 5  # size of opponent pool if enabled
-    
-    # Environment settings
-    dolphin_path: str = "/Applications/Dolphin.app/Contents/MacOS/Dolphin"  # path to Dolphin executable
-    iso_path: str = "/path/to/melee.iso"  # path to Melee ISO
-    slippi_port: int = 51441  # port for Slippi communication
-    
-    # Replay buffer settings
-    buffer_size: int = 100000  # maximum number of transitions to store
-    prioritized_replay: bool = False  # use prioritized experience replay (future)
-    alpha: float = 0.6  # prioritization exponent (if prioritized_replay=True)
-    beta: float = 0.4  # importance sampling exponent (if prioritized_replay=True)
-    
-    # Logging and checkpointing
-    log_interval: int = 10  # log metrics every N rollouts
-    eval_interval: int = 50  # evaluate policy every N rollouts
-    save_interval: int = 100  # save checkpoint every N rollouts
-    use_wandb: bool = False  # log to Weights & Biases
-    wandb_project: str = "melee-rl"  # W&B project name
-    
-    # Advanced RL techniques (future use)
-    use_curiosity: bool = False  # curiosity-driven exploration
-    use_her: bool = False  # hindsight experience replay
-    use_auxiliary_tasks: bool = False  # auxiliary prediction tasks
 
 
 @dataclass

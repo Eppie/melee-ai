@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 # Optional wandb import
 try:
     import wandb  # type: ignore
+
     WANDB_AVAILABLE = True
 except ImportError:
     wandb = None  # type: ignore
@@ -47,18 +48,18 @@ def init_wandb(
     """
     if not WANDB_AVAILABLE or config.mode == "disabled":
         return None
-    
+
     try:
         # Set mode if specified
         if config.mode is not None:
             os.environ["WANDB_MODE"] = config.mode
-        
+
         # Prepare init kwargs
         init_kwargs: Dict[str, Any] = {
             "project": config.project,
             "dir": str(run_dir),
         }
-        
+
         if config.entity is not None:
             init_kwargs["entity"] = config.entity
         if config.name is not None:
@@ -73,22 +74,22 @@ def init_wandb(
             init_kwargs["tags"] = config.tags
         if hyperparameters:
             init_kwargs["config"] = hyperparameters
-        
+
         # Handle run ID persistence for resume
         run_id_file = run_dir / "wandb_run_id.txt"
         resume_run_id = config.resume_id
-        
+
         # 1) Try stored run ID
         if not resume_run_id and run_id_file.exists():
             try:
                 resume_run_id = run_id_file.read_text().strip() or None
             except Exception:
                 pass
-        
+
         # 2) Try environment variables
         if not resume_run_id:
             resume_run_id = os.environ.get("WANDB_RUN_ID") or os.environ.get("WANDB_RESUME_ID")
-        
+
         # 3) Try to discover from latest-run symlink
         if not resume_run_id:
             try:
@@ -104,15 +105,15 @@ def init_wandb(
                         resume_run_id = base.split("-")[-1]
             except Exception:
                 pass
-        
+
         # Set resume parameters if we have a run ID
         if resume_run_id:
             init_kwargs["id"] = resume_run_id
             init_kwargs["resume"] = "allow"
-        
+
         # Initialize wandb
         run = wandb.init(**init_kwargs)
-        
+
         # Save run ID for future resume
         if run is not None and hasattr(run, "id"):
             try:
@@ -120,9 +121,9 @@ def init_wandb(
                 run_id_file.write_text(str(run.id))
             except Exception:
                 pass
-        
+
         return run
-        
+
     except Exception as e:
         print(f"Warning: wandb initialization failed: {e}")
         return None
@@ -142,7 +143,7 @@ class WandbLogger:
     
     Provides a consistent interface whether wandb is available or not.
     """
-    
+
     def __init__(self, wandb_run: Optional[Any] = None, enabled: bool = True):
         """Initialize logger.
         
@@ -152,7 +153,7 @@ class WandbLogger:
         """
         self.run = wandb_run if WANDB_AVAILABLE else None
         self.enabled = enabled and self.run is not None
-    
+
     def log_metrics(self, metrics: Dict[str, float], step: int, commit: bool = True) -> None:
         """Log metrics to wandb.
         
@@ -163,12 +164,12 @@ class WandbLogger:
         """
         if not self.enabled or self.run is None:
             return
-        
+
         try:
             wandb.log(metrics, step=step, commit=commit)
         except Exception:
             pass
-    
+
     def log_gradients(self, grad_stats: Dict[str, float], step: int) -> None:
         """Log gradient statistics to wandb.
         
@@ -178,11 +179,11 @@ class WandbLogger:
         """
         if not self.enabled:
             return
-        
+
         # Prefix with "gradients/" for organization
         prefixed = {f"gradients/{k}": v for k, v in grad_stats.items()}
         self.log_metrics(prefixed, step, commit=False)
-    
+
     def log_loss_components(self, losses: Dict[str, float], step: int) -> None:
         """Log loss components to wandb.
         
@@ -192,11 +193,11 @@ class WandbLogger:
         """
         if not self.enabled:
             return
-        
+
         # Prefix with "loss/" for organization
         prefixed = {f"loss/{k}": v for k, v in losses.items()}
         self.log_metrics(prefixed, step, commit=False)
-    
+
     def log_hyperparameters(self, params: Dict[str, Any]) -> None:
         """Log hyperparameters to wandb config.
         
@@ -205,37 +206,13 @@ class WandbLogger:
         """
         if not self.enabled or self.run is None:
             return
-        
+
         try:
             for key, value in params.items():
                 wandb.config[key] = value
         except Exception:
             pass
-    
-    def save_checkpoint_artifact(
-            self,
-            checkpoint_path: Path,
-            metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Save checkpoint as wandb artifact.
-        
-        Args:
-            checkpoint_path: Path to checkpoint file
-            metadata: Optional metadata to attach
-        """
-        if not self.enabled or self.run is None:
-            return
-        
-        try:
-            artifact_name = f"checkpoint-{self.run.id}"
-            artifact = wandb.Artifact(artifact_name, type="model")
-            artifact.add_file(str(checkpoint_path))
-            if metadata:
-                artifact.metadata = metadata
-            wandb.log_artifact(artifact)
-        except Exception:
-            pass
-    
+
     def should_log_this_step(self, step: int, frequency: int = 10) -> bool:
         """Check if we should log at this step based on frequency.
         
@@ -247,7 +224,7 @@ class WandbLogger:
             True if we should log
         """
         return self.enabled and (step % frequency == 0)
-    
+
     def watch_model(self, model: Any, log: str = "gradients", log_freq: int = 100) -> None:
         """Watch model for gradient/parameter tracking.
         
@@ -258,7 +235,7 @@ class WandbLogger:
         """
         if not self.enabled or self.run is None:
             return
-        
+
         try:
             wandb.watch(model, log=log, log_freq=log_freq)
         except Exception:

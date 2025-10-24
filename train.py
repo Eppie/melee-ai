@@ -630,9 +630,6 @@ def train_loop(
             except Exception:
                 pass
 
-            # Log checkpoint as artifact
-            logger.save_checkpoint_artifact(ckpt_path, metadata={"epoch": epoch + 1})
-
     # Finish wandb run
     finish_wandb()
 

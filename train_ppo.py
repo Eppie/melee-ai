@@ -244,9 +244,6 @@ def train_on_trajectories(
 
             mb_old_values = old_values[mb_indices]
 
-            # Forward pass with new policy
-            optimizer.zero_grad()
-
             # Build model inputs from states
             # States are raw features [MB, F], need to add sequence dimension
             mb_states_seq = mb_states.unsqueeze(1)  # [MB, 1, F]
@@ -304,23 +301,26 @@ def train_on_trajectories(
                     value_coef=config.rl.value_loss_coef,
                     value_clip=ppo_cfg.value_clip,
                 )
-
-            # Backward pass
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
-
-            # Check for NaN loss BEFORE stepping
+            
+            # Check for NaN loss BEFORE backward pass
             if torch.isnan(loss) or torch.isinf(loss):
                 print(f"\nWARNING: NaN/Inf loss detected in minibatch {mb_idx}, epoch {ppo_epoch}")
                 print(f"  Advantages: min={mb_advantages.min():.4f}, max={mb_advantages.max():.4f}, mean={mb_advantages.mean():.4f}, std={mb_advantages.std():.4f}")
                 print(f"  Returns: min={mb_returns.min():.4f}, max={mb_returns.max():.4f}")
                 print(f"  Old log probs: min={mb_old_log_probs.min():.4f}, max={mb_old_log_probs.max():.4f}")
                 print(f"  New values: min={new_values.min():.4f}, max={new_values.max():.4f}")
-                # Skip this batch
+                # Skip this batch entirely (don't touch optimizer/scaler)
                 continue
+
+            # Forward pass with new policy
+            optimizer.zero_grad()
+            
+            # Backward pass
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
             
             # Optimizer step
             scaler.step(optimizer)

@@ -103,9 +103,9 @@ class SelfPlayEnvironment:
         self.episode_reward = 0.0
         self.previous_gamestate: Optional[GameState] = None
 
-        # Reward computation
-        self.colmap: Optional[ColumnMap] = None
-        self.reward_idx = None
+        # Reward computation - initialize column map immediately
+        self.colmap = ColumnMap(self.feature_names, [])
+        self.reward_idx = build_reward_feature_index(self.colmap)
 
         # Opponent model (loaded at episode start)
         self.opponent_model: Optional[GPT] = None
@@ -226,12 +226,7 @@ class SelfPlayEnvironment:
         frames = list(buffer)
         stacked = torch.stack(frames, dim=0).unsqueeze(0).to(self.device)  # [1, T, F]
 
-        # Use column map to build inputs
-        if self.colmap is None:
-            # Build column map on first use
-            self.colmap = ColumnMap(self.feature_names, [])
-            self.reward_idx = build_reward_feature_index(self.colmap)
-
+        # Use column map to build inputs (already initialized in __init__)
         return build_model_inputs(stacked, self.colmap)
 
     def _sample_action(

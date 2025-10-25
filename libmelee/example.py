@@ -5,7 +5,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).parent.parent))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(REPO_ROOT))
+
+from utils import _resolve_device
 from config import init_config
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
@@ -25,13 +28,17 @@ class ProfilerConfig:
 
 if __name__ == "__main__":
     init_config(cli_overrides={"model.num_stages": 6, "model.num_characters": 26})
+    default_dolphin_path = Path("/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu")
+    default_dolphin_path = str(default_dolphin_path) if default_dolphin_path.exists() else None
+    default_dolphin_home = REPO_ROOT / "dolphin-home" / "User"
+    default_dolphin_home.mkdir(parents=True, exist_ok=True)
     parser = argparse.ArgumentParser(description='Example of libmelee in action')
     parser.add_argument('--debug', '-d', action='store_true',
                         help='Debug mode. Creates a CSV of all game states')
     parser.add_argument('--address', '-a', default="127.0.0.1",
                         help='IP address of Slippi/Wii')
-    parser.add_argument('--dolphin_executable_path', '-e', default=None,
-                        help='The directory where dolphin is')
+    parser.add_argument('--dolphin_executable_path', '-e', default=default_dolphin_path,
+                        help='Path to the dolphin-emu-nogui executable')
     parser.add_argument('--iso', default=None, type=str,
                         help='Path to melee iso.')
     parser.add_argument('--checkpoint', '-c', type=Path,
@@ -52,11 +59,17 @@ if __name__ == "__main__":
     )
     console = Console(
         path=args.dolphin_executable_path,
+        dolphin_home_path=str(default_dolphin_home),
         slippi_address=args.address,
         save_replays=args.debug,
         copy_home_directory=False,
         tmp_home_directory=False,
         blocking_input=True,
+        gfx_backend="Null",
+        disable_audio=True,
+        infinite_time=True,
+        use_exi_inputs=True,
+        enable_ffw=True,
     )
     ports = [1, 2]
 

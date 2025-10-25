@@ -31,14 +31,14 @@ class _FreezeGuard:
 
 @dataclass
 class ZarrConfig(_FreezeGuard):
-    # input_root: str = '/home/eppie/hal/replays'
-    # out_root: str = '/home/eppie/melee-ai/processed_data_1000'
-    # validation_root: str = '/home/eppie/melee-ai/validation_set'
-    input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
-    out_root: str = '/Users/eppie/PycharmProjects/nano-melee/processed_data_1'
-    validation_root: str = '/Users/eppie/PycharmProjects/nano-melee/validation_set'
-    episode_count: int = 1
-    validation_count: int = 2665
+    input_root: str = '/home/eppie/hal/replays'
+    out_root: str = '/home/eppie/melee-ai/processed_data_1000'
+    validation_root: str = '/home/eppie/melee-ai/validation_set'
+    #input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
+    #out_root: str = '/Users/eppie/PycharmProjects/nano-melee/processed_data_1000'
+    #validation_root: str = '/Users/eppie/PycharmProjects/nano-melee/validation_set'
+    episode_count: int = 1000
+    validation_count: int = 1000
     shard_size: int = 100
     target_chunk_mb: float = 8.0
     compressor: BloscCodec = field(

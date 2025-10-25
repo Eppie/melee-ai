@@ -55,7 +55,22 @@ def _load_latest_checkpoint(
 
     model_state = ckpt.get("model")
     if model_state:
-        model.load_state_dict(model_state)
+        incompatible = model.load_state_dict(model_state, strict=False)
+        missing = list(getattr(incompatible, "missing_keys", ()))
+        unexpected = list(getattr(incompatible, "unexpected_keys", ()))
+        if missing:
+            preview = ", ".join(missing[:5])
+            more = "..." if len(missing) > 5 else ""
+            print(
+                f"Checkpoint is missing {len(missing)} parameter(s); "
+                f"initialising from current model weights: {preview}{more}"
+            )
+        if unexpected:
+            preview = ", ".join(unexpected[:5])
+            more = "..." if len(unexpected) > 5 else ""
+            print(
+                f"Checkpoint has {len(unexpected)} unexpected parameter(s); ignoring: {preview}{more}"
+            )
 
     opt_state = ckpt.get("optimizer")
     if opt_state:

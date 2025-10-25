@@ -278,7 +278,7 @@ def train_on_trajectories(
                         ]  # Take last timestep
 
                 new_values = outputs.get(
-                    "value_head", torch.zeros(mb_states.shape[0], 1, 1)
+                    "value", torch.zeros(mb_states.shape[0], 1, 1)
                 )[:, -1, 0]
 
                 # Compute PPO loss

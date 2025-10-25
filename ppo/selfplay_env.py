@@ -103,6 +103,7 @@ class SelfPlayEnvironment:
         self.frame_count = 0
         self.episode_reward = 0.0
         self.previous_gamestate: Optional[GameState] = None
+        self.last_log_frame = 0  # For progress logging
 
         # Reward computation - initialize column map immediately with proper target names
         self.colmap = ColumnMap(self.feature_names, self.target_names)
@@ -133,7 +134,7 @@ class SelfPlayEnvironment:
             blocking_input=True,
             gfx_backend="Null",
             disable_audio=True,
-            infinite_time=True,
+            infinite_time=False,  # Use normal time limit
             use_exi_inputs=True,
             enable_ffw=True,
         )
@@ -202,6 +203,7 @@ class SelfPlayEnvironment:
         self.frame_count = 0
         self.episode_reward = 0.0
         self.previous_gamestate = None
+        self.last_log_frame = 0
 
         # Finish any incomplete trajectory
         if len(self.trajectory_buffer.current_trajectory) > 0:
@@ -444,7 +446,7 @@ class SelfPlayEnvironment:
                 learner_logits, learner_actions, learner_log_prob = self._sample_action(
                     learner_outputs, exploration=True
                 )
-                learner_value = learner_outputs.get("value_head", torch.zeros(1, 1, 1))[
+                learner_value = learner_outputs.get("value", torch.zeros(1, 1, 1))[
                     0, -1, 0
                 ]
 
@@ -521,6 +523,17 @@ class SelfPlayEnvironment:
             metrics["episode/opponent_percent"] = p2.percent
 
         self.previous_gamestate = gamestate
+        
+        # Progress logging every 1000 frames
+        if self.frame_count - self.last_log_frame >= 1000:
+            self.last_log_frame = self.frame_count
+            if p1 and p2:
+                print(
+                    f"  Frame {self.frame_count}: "
+                    f"Learner({p1.stock} stocks, {p1.percent:.0f}%) vs "
+                    f"Opponent({p2.stock} stocks, {p2.percent:.0f}%) | "
+                    f"Total reward: {self.episode_reward:.3f}"
+                )
 
         return done, metrics
 

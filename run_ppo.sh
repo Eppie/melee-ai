@@ -14,7 +14,7 @@ CHECKPOINT="${CHECKPOINT:-checkpoints/model_ep010_065002.pt}"
 OUT_DIR="checkpoints/ppo"
 
 # PPO parameters
-NUM_EPISODES=1000
+NUM_EPISODES=10000
 SAVE_EVERY=10
 ADD_TO_POOL_EVERY=5
 

@@ -342,7 +342,7 @@ def train_on_trajectories(
             # This is a simplification - ideally you'd maintain sequence context
             # But for PPO on single steps, we can treat each as independent
 
-            with autocast(device_type=device.type, enabled=config.train.use_amp):
+            with autocast(device_type=device.type, enabled=False):
                 # Build inputs (this needs proper handling of sequences)
                 # For simplicity, we'll forward each sample independently
 

@@ -168,6 +168,14 @@ def train_on_trajectories(
             gae_lambda=ppo_cfg.gae_lambda,
             normalize=ppo_cfg.normalize_advantages,
         )
+        
+        # Debug: Check for NaN/inf in trajectory
+        if torch.isnan(traj.advantages).any() or torch.isinf(traj.advantages).any():
+            print(f"WARNING: NaN or Inf detected in advantages!")
+            print(f"  Advantages stats: min={traj.advantages.min():.4f}, max={traj.advantages.max():.4f}, mean={traj.advantages.mean():.4f}")
+        if torch.isnan(traj.returns).any() or torch.isinf(traj.returns).any():
+            print(f"WARNING: NaN or Inf detected in returns!")
+            print(f"  Returns stats: min={traj.returns.min():.4f}, max={traj.returns.max():.4f}, mean={traj.returns.mean():.4f}")
 
     # Convert trajectories to tensors and concatenate
     all_data = []
@@ -304,6 +312,16 @@ def train_on_trajectories(
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
 
+            # Check for NaN loss BEFORE stepping
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"\nWARNING: NaN/Inf loss detected in minibatch {mb_idx}, epoch {ppo_epoch}")
+                print(f"  Advantages: min={mb_advantages.min():.4f}, max={mb_advantages.max():.4f}, mean={mb_advantages.mean():.4f}, std={mb_advantages.std():.4f}")
+                print(f"  Returns: min={mb_returns.min():.4f}, max={mb_returns.max():.4f}")
+                print(f"  Old log probs: min={mb_old_log_probs.min():.4f}, max={mb_old_log_probs.max():.4f}")
+                print(f"  New values: min={new_values.min():.4f}, max={new_values.max():.4f}")
+                # Skip this batch
+                continue
+            
             # Optimizer step
             scaler.step(optimizer)
             scaler.update()
@@ -315,11 +333,14 @@ def train_on_trajectories(
                 for key, value in loss_metrics.items():
                     metrics[key] = value
 
-        avg_loss = sum(epoch_losses) / len(epoch_losses)
-        print(
-            f"  Epoch {ppo_epoch + 1}/{ppo_cfg.ppo_epochs}: avg loss = {avg_loss:.4f}"
-        )
-        metrics[f"train/ppo_epoch_{ppo_epoch}_loss"] = avg_loss
+        if len(epoch_losses) > 0:
+            avg_loss = sum(epoch_losses) / len(epoch_losses)
+            print(
+                f"  Epoch {ppo_epoch + 1}/{ppo_cfg.ppo_epochs}: avg loss = {avg_loss:.4f}"
+            )
+            metrics[f"train/ppo_epoch_{ppo_epoch}_loss"] = avg_loss
+        else:
+            print(f"  Epoch {ppo_epoch + 1}/{ppo_cfg.ppo_epochs}: no valid batches (all NaN)")
 
     # Log metrics
     logger.log_metrics(metrics, step=episode)
@@ -433,9 +454,10 @@ def main():
 
     try:
         # Training loop
-        for episode in range(start_episode, start_episode + args.num_episodes):
+        for episode_idx in range(start_episode, start_episode + args.num_episodes):
+            episode_num = episode_idx + 1  # 1-indexed for display
             print(f"\n{'='*80}")
-            print(f"Episode {episode + 1}/{start_episode + args.num_episodes}")
+            print(f"Episode {episode_num}/{start_episode + args.num_episodes}")
             print(f"{'='*80}")
 
             # Set model to eval mode for data collection
@@ -445,7 +467,7 @@ def main():
             episode_metrics = run_episode(env)
 
             # Log episode metrics
-            logger.log_metrics(episode_metrics, step=episode)
+            logger.log_metrics(episode_metrics, step=episode_num)
 
             # Get trajectories
             trajectories = env.trajectory_buffer.get_trajectories()
@@ -461,7 +483,7 @@ def main():
                     trajectories=trajectories,
                     device=device,
                     logger=logger,
-                    episode=episode,
+                    episode=episode_num,
                     feature_names=env.feature_names,
                 )
 
@@ -469,11 +491,11 @@ def main():
             env.trajectory_buffer.clear()
 
             # Add to opponent pool
-            if (episode + 1) % args.add_to_pool_every == 0:
+            if episode_num % args.add_to_pool_every == 0:
                 opponent_pool.add_opponent(
                     model,
                     metadata={
-                        "episode": episode + 1,
+                        "episode": episode_num,
                         "total_reward": episode_metrics.get(
                             "episode/total_reward", 0.0
                         ),
@@ -487,12 +509,12 @@ def main():
                         "pool/size": pool_stats["pool_size"],
                         "pool/total_created": pool_stats["total_opponents_created"],
                     },
-                    step=episode,
+                    step=episode_num,
                 )
 
             # Save checkpoint
-            if (episode + 1) % args.save_every == 0:
-                save_checkpoint(model, optimizer, episode + 1, args.out_dir)
+            if episode_num % args.save_every == 0:
+                save_checkpoint(model, optimizer, episode_num, args.out_dir)
 
         print("\nTraining complete!")
 
@@ -505,7 +527,7 @@ def main():
         env.shutdown_console()
 
         # Save final checkpoint
-        save_checkpoint(model, optimizer, episode + 1, args.out_dir)
+        save_checkpoint(model, optimizer, episode_num, args.out_dir)
 
         print("Done!")
 

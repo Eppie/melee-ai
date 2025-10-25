@@ -77,7 +77,13 @@ class Trajectory:
 
         # Normalize advantages if requested
         if normalize and T > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            adv_mean = advantages.mean()
+            adv_std = advantages.std()
+            if adv_std > 1e-8:  # Only normalize if there's variance
+                advantages = (advantages - adv_mean) / (adv_std + 1e-8)
+            else:
+                # If all advantages are the same, just center them
+                advantages = advantages - adv_mean
 
         self.advantages = advantages
 

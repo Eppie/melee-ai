@@ -285,6 +285,25 @@ def train_on_trajectories(
                 new_values = outputs.get(
                     "value", torch.zeros(mb_states.shape[0], 1, 1)
                 )[:, -1, 0]
+                
+                # Check for NaN in model outputs
+                has_nan_output = False
+                for head, logits in new_action_logits.items():
+                    if torch.isnan(logits).any() or torch.isinf(logits).any():
+                        print(f"\nWARNING: NaN/Inf detected in {head} logits from model forward pass!")
+                        print(f"  {head}: min={logits.min():.4f}, max={logits.max():.4f}, nan_count={torch.isnan(logits).sum()}")
+                        has_nan_output = True
+                if torch.isnan(new_values).any() or torch.isinf(new_values).any():
+                    print(f"\nWARNING: NaN/Inf detected in value head output!")
+                    print(f"  values: min={new_values.min():.4f}, max={new_values.max():.4f}, nan_count={torch.isnan(new_values).sum()}")
+                    has_nan_output = True
+                
+                if has_nan_output:
+                    # Check model parameters
+                    nan_params = sum(1 for p in model.parameters() if torch.isnan(p).any())
+                    print(f"  Model has {nan_params} parameters with NaN")
+                    # Skip this batch
+                    continue
 
                 # Compute PPO loss
                 loss, loss_metrics = compute_total_ppo_loss(
@@ -319,8 +338,28 @@ def train_on_trajectories(
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
 
+            # Check for NaN gradients
+            nan_grads = 0
+            inf_grads = 0
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    if torch.isnan(param.grad).any():
+                        nan_grads += 1
+                    if torch.isinf(param.grad).any():
+                        inf_grads += 1
+            
+            if nan_grads > 0 or inf_grads > 0:
+                print(f"\nWARNING: NaN/Inf gradients detected! nan_grads={nan_grads}, inf_grads={inf_grads}")
+                print(f"  Skipping optimizer step to prevent model corruption")
+                optimizer.zero_grad()
+                continue
+
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
+            
+            # Log gradient norm
+            if mb_idx == 0 and ppo_epoch == 0:
+                metrics["train/grad_norm"] = grad_norm.item()
             
             # Optimizer step
             scaler.step(optimizer)

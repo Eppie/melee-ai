@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+import multiprocessing as mp
+import tempfile
 
 import torch
 from torch.amp import autocast
@@ -68,6 +70,91 @@ def save_checkpoint(
     print(f"Saved checkpoint: {checkpoint_path}")
 
     return checkpoint_path
+
+
+def run_episode_worker(
+    worker_id: int,
+    model_state_dict_path: Path,
+    opponent_state_dict_path: Optional[Path],
+    dolphin_path: Path,
+    iso_path: Path,
+    seq_len: int,
+    max_episode_frames: int,
+) -> Tuple[Optional[Trajectory], Dict[str, float]]:
+    """Worker function to run a single episode in a separate process.
+    
+    Args:
+        worker_id: Worker ID (for Dolphin port offset)
+        model_state_dict_path: Path to saved learner model state dict
+        opponent_state_dict_path: Path to saved opponent model state dict (or None)
+        dolphin_path: Path to Dolphin executable
+        iso_path: Path to Melee ISO
+        seq_len: Sequence length for model
+        max_episode_frames: Maximum frames per episode
+        
+    Returns:
+        Tuple of (trajectory, episode_metrics)
+    """
+    # Re-initialize config in worker process
+    init_config()
+    from config import get_config
+    config = get_config()
+    
+    # Reconstruct model
+    device = torch.device("cpu")  # Workers use CPU
+    model = GPT(config).to(device)
+    model.load_state_dict(torch.load(model_state_dict_path, map_location=device, weights_only=True))
+    model.eval()
+    
+    # Load opponent model if provided
+    opponent_model = None
+    if opponent_state_dict_path is not None and opponent_state_dict_path.exists():
+        opponent_model = GPT(config).to(device)
+        opponent_model.load_state_dict(torch.load(opponent_state_dict_path, map_location=device, weights_only=True))
+        opponent_model.eval()
+    
+    # Create environment with port offset to avoid conflicts
+    from ppo.opponent_pool import OpponentPool
+    import shutil
+    
+    # Create a temporary opponent pool for this worker
+    pool_dir = Path(tempfile.mkdtemp())
+    opponent_pool = OpponentPool(max_size=1, pool_dir=pool_dir)
+    if opponent_model is not None:
+        opponent_pool.add_opponent(opponent_model, metadata={"worker": worker_id})
+    
+    env = SelfPlayEnvironment(
+        learner_model=model,
+        opponent_pool=opponent_pool,
+        dolphin_path=dolphin_path,
+        iso_path=iso_path,
+        device=device,
+        seq_len=seq_len,
+        warmup_frames=128,
+        max_episode_frames=max_episode_frames,
+        slippi_port=51441 + worker_id,  # Offset port for each worker
+    )
+    
+    # Initialize console
+    env.initialize_console()
+    
+    try:
+        # Run episode
+        print(f"[Worker {worker_id}] Starting episode...")
+        episode_metrics = run_episode(env)
+        
+        # Get trajectory
+        trajectories = env.trajectory_buffer.get_trajectories()
+        trajectory = trajectories[0] if len(trajectories) > 0 else None
+        
+        print(f"[Worker {worker_id}] Episode complete: {episode_metrics.get('episode/frames', 0)} frames")
+        
+        return trajectory, episode_metrics
+        
+    finally:
+        # Cleanup
+        env.console.stop()
+        shutil.rmtree(pool_dir, ignore_errors=True)
 
 
 def run_episode(
@@ -477,20 +564,26 @@ def main():
     )
     logger = WandbLogger(wandb_run, enabled=WANDB_AVAILABLE and wandb_run is not None)
 
-    # Create environment
-    env = SelfPlayEnvironment(
-        learner_model=model,
-        opponent_pool=opponent_pool,
-        dolphin_path=args.dolphin_path,
-        iso_path=args.iso,
-        device=device,
-        seq_len=config.seq_len,
-        warmup_frames=128,
-        max_episode_frames=config.ppo.max_episode_frames,
-    )
-
-    # Initialize console
-    env.initialize_console()
+    # Determine if we're using parallel or sequential collection
+    num_workers = config.ppo.num_workers
+    use_parallel = num_workers > 1
+    
+    print(f"Using {'parallel' if use_parallel else 'sequential'} trajectory collection with {num_workers} worker(s)")
+    
+    # For sequential mode, create a single environment
+    env = None
+    if not use_parallel:
+        env = SelfPlayEnvironment(
+            learner_model=model,
+            opponent_pool=opponent_pool,
+            dolphin_path=args.dolphin_path,
+            iso_path=args.iso,
+            device=device,
+            seq_len=config.seq_len,
+            warmup_frames=128,
+            max_episode_frames=config.ppo.max_episode_frames,
+        )
+        env.initialize_console()
 
     try:
         # Training loop
@@ -503,19 +596,77 @@ def main():
             # Set model to eval mode for data collection
             model.eval()
 
-            # Run episode
-            episode_metrics = run_episode(env)
+            # Collect trajectories (parallel or sequential)
+            trajectories = []
+            all_episode_metrics = []
+            
+            if use_parallel:
+                # Parallel collection using multiprocessing
+                print(f"Collecting {num_workers} trajectories in parallel...")
+                
+                # Save model weights to temp files for workers
+                model_temp = Path(tempfile.mkdtemp()) / "learner_model.pt"
+                torch.save(model.state_dict(), model_temp)
+                
+                # Sample opponent and save if it exists
+                opponent_temp = None
+                if not opponent_pool.is_empty():
+                    opponent_model = opponent_pool.sample()
+                    opponent_temp = Path(model_temp).parent / "opponent_model.pt"
+                    torch.save(opponent_model.state_dict(), opponent_temp)
+                
+                # Create worker arguments
+                worker_args = [
+                    (
+                        worker_id,
+                        model_temp,
+                        opponent_temp,
+                        args.dolphin_path,
+                        args.iso,
+                        config.seq_len,
+                        config.ppo.max_episode_frames,
+                    )
+                    for worker_id in range(num_workers)
+                ]
+                
+                # Run workers in parallel
+                with mp.Pool(processes=num_workers) as pool:
+                    results = pool.starmap(run_episode_worker, worker_args)
+                
+                # Collect results
+                for trajectory, metrics in results:
+                    if trajectory is not None:
+                        trajectories.append(trajectory)
+                    all_episode_metrics.append(metrics)
+                
+                # Cleanup temp files
+                import shutil
+                shutil.rmtree(model_temp.parent, ignore_errors=True)
+                
+                # Aggregate metrics (average across workers)
+                episode_metrics = {}
+                if all_episode_metrics:
+                    for key in all_episode_metrics[0].keys():
+                        values = [m.get(key, 0.0) for m in all_episode_metrics]
+                        episode_metrics[key] = sum(values) / len(values)
+                
+            else:
+                # Sequential collection (original behavior)
+                episode_metrics = run_episode(env)
+                trajectories = env.trajectory_buffer.get_trajectories()
 
             # Log episode metrics
             logger.log_metrics(episode_metrics, step=episode_num)
 
-            # Get trajectories
-            trajectories = env.trajectory_buffer.get_trajectories()
             print(f"Collected {len(trajectories)} trajectories")
 
             # Train on trajectories
             if len(trajectories) > 0:
                 model.train()
+                # Get feature names from env or schema
+                from schema import get_feature_names
+                feature_names = env.feature_names if env is not None else get_feature_names()
+                
                 train_metrics = train_on_trajectories(
                     model=model,
                     optimizer=optimizer,
@@ -524,11 +675,12 @@ def main():
                     device=device,
                     logger=logger,
                     episode=episode_num,
-                    feature_names=env.feature_names,
+                    feature_names=feature_names,
                 )
 
-            # Clear trajectory buffer
-            env.trajectory_buffer.clear()
+            # Clear trajectory buffer (sequential mode only)
+            if not use_parallel and env is not None:
+                env.trajectory_buffer.clear()
 
             # Add to opponent pool
             if episode_num % args.add_to_pool_every == 0:
@@ -563,8 +715,9 @@ def main():
 
     finally:
         # Cleanup
-        print("Shutting down environment...")
-        env.shutdown_console()
+        if env is not None:
+            print("Shutting down environment...")
+            env.shutdown_console()
 
         # Save final checkpoint
         save_checkpoint(model, optimizer, episode_num, args.out_dir)

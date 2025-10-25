@@ -18,6 +18,7 @@ from ppo.opponent_pool import OpponentPool
 from ppo.ppo_loss import compute_total_ppo_loss
 from ppo.selfplay_env import SelfPlayEnvironment
 from ppo.trajectory import Trajectory
+from schema import get_target_names
 from train.wandb_utils import WandbConfig, WandbLogger, init_wandb, WANDB_AVAILABLE
 from utils import _resolve_device
 
@@ -258,8 +259,9 @@ def train_on_trajectories(
                 from column_map import ColumnMap
                 from train.batch_utils import build_model_inputs
 
-                # Create column map
-                colmap = ColumnMap(feature_names, [])
+                # Create column map with proper target names
+                target_names = get_target_names()
+                colmap = ColumnMap(feature_names, target_names)
 
                 # Build model inputs
                 model_inputs = build_model_inputs(mb_states_seq, colmap)

@@ -31,7 +31,7 @@ from model_interface import (
 )
 from ppo.opponent_pool import OpponentPool
 from ppo.trajectory import TrajectoryBuffer
-from schema import get_feature_names
+from schema import get_feature_names, get_target_names
 from train.batch_utils import build_model_inputs
 from train.value_head import compute_frame_rewards, build_reward_feature_index
 
@@ -78,6 +78,7 @@ class SelfPlayEnvironment:
 
         # Feature configuration
         self.feature_names = get_feature_names()
+        self.target_names = get_target_names()
         self.feature_dim = len(self.feature_names)
 
         # Dolphin console
@@ -103,8 +104,8 @@ class SelfPlayEnvironment:
         self.episode_reward = 0.0
         self.previous_gamestate: Optional[GameState] = None
 
-        # Reward computation - initialize column map immediately
-        self.colmap = ColumnMap(self.feature_names, [])
+        # Reward computation - initialize column map immediately with proper target names
+        self.colmap = ColumnMap(self.feature_names, self.target_names)
         self.reward_idx = build_reward_feature_index(self.colmap)
 
         # Opponent model (loaded at episode start)

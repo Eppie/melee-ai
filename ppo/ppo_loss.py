@@ -173,6 +173,12 @@ def compute_entropy(action_logits: Dict[str, torch.Tensor]) -> torch.Tensor:
 
             # H(X) = -sum(p * log(p))
             entropy = -(probs * log_probs).sum(dim=-1)  # [B]
+            
+            # Check for NaN in categorical entropy
+            if torch.isnan(entropy).any() or torch.isinf(entropy).any():
+                print(f"  [entropy] NaN/Inf in {head} entropy! nan_count={torch.isnan(entropy).sum()}, inf_count={torch.isinf(entropy).sum()}")
+                print(f"    logits range: [{logits.min():.4f}, {logits.max():.4f}]")
+            
             entropies.append(entropy)
 
     # Buttons (Bernoulli entropy)
@@ -181,14 +187,28 @@ def compute_entropy(action_logits: Dict[str, torch.Tensor]) -> torch.Tensor:
         probs = torch.sigmoid(logits)  # [B, num_buttons]
 
         # H(Bernoulli) = -p*log(p) - (1-p)*log(1-p)
+        # Clamp to prevent log(0)
+        probs_safe = torch.clamp(probs, min=1e-8, max=1.0 - 1e-8)
         button_entropy = -(
-            probs * torch.log(probs + 1e-8) + (1 - probs) * torch.log(1 - probs + 1e-8)
+            probs_safe * torch.log(probs_safe) + (1 - probs_safe) * torch.log(1 - probs_safe)
         )
+        
+        # Check for NaN in button entropy
+        if torch.isnan(button_entropy).any() or torch.isinf(button_entropy).any():
+            print(f"  [entropy] NaN/Inf in button_entropy! nan_count={torch.isnan(button_entropy).sum()}, inf_count={torch.isinf(button_entropy).sum()}")
+            print(f"    probs range: [{probs.min():.8f}, {probs.max():.8f}]")
+        
         # Sum over buttons
         entropies.append(button_entropy.sum(dim=-1))  # [B]
 
     # Sum all entropies
-    return torch.stack(entropies, dim=0).sum(dim=0)  # [B]
+    total_entropy = torch.stack(entropies, dim=0).sum(dim=0)  # [B]
+    
+    # Check for NaN in final entropy
+    if torch.isnan(total_entropy).any() or torch.isinf(total_entropy).any():
+        print(f"  [entropy] NaN/Inf in total_entropy! nan_count={torch.isnan(total_entropy).sum()}, inf_count={torch.isinf(total_entropy).sum()}")
+    
+    return total_entropy
 
 
 def compute_ppo_loss(
@@ -242,17 +262,45 @@ def compute_ppo_loss(
     if torch.isnan(ratio).any() or torch.isinf(ratio).any():
         print(f"  [loss] NaN/Inf in ratio! nan_count={torch.isnan(ratio).sum()}, inf_count={torch.isinf(ratio).sum()}")
 
+    # Check advantages
+    if torch.isnan(advantages).any() or torch.isinf(advantages).any():
+        print(f"  [loss] NaN/Inf in advantages! nan_count={torch.isnan(advantages).sum()}, inf_count={torch.isinf(advantages).sum()}")
+    
     # Clipped surrogate objective
     surr1 = ratio * advantages
     surr2 = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio) * advantages
+    
+    # Check surrogate objectives
+    if torch.isnan(surr1).any() or torch.isinf(surr1).any():
+        print(f"  [loss] NaN/Inf in surr1! nan_count={torch.isnan(surr1).sum()}, inf_count={torch.isinf(surr1).sum()}")
+    if torch.isnan(surr2).any() or torch.isinf(surr2).any():
+        print(f"  [loss] NaN/Inf in surr2! nan_count={torch.isnan(surr2).sum()}, inf_count={torch.isinf(surr2).sum()}")
+    
     policy_loss = -torch.min(surr1, surr2).mean()
+    
+    # Check policy loss
+    if torch.isnan(policy_loss) or torch.isinf(policy_loss):
+        print(f"  [loss] NaN/Inf in policy_loss! value={policy_loss}")
 
     # Entropy bonus (encourage exploration)
     entropy = compute_entropy(new_action_logits).mean()
+    
+    # Check entropy
+    if torch.isnan(entropy) or torch.isinf(entropy):
+        print(f"  [loss] NaN/Inf in entropy! value={entropy}")
+    
     entropy_loss = -entropy_coef * entropy
+    
+    # Check entropy loss
+    if torch.isnan(entropy_loss) or torch.isinf(entropy_loss):
+        print(f"  [loss] NaN/Inf in entropy_loss! value={entropy_loss}")
 
     # Total loss
     total_loss = policy_loss + entropy_loss
+    
+    # Check total loss
+    if torch.isnan(total_loss) or torch.isinf(total_loss):
+        print(f"  [loss] NaN/Inf in total_loss! policy_loss={policy_loss}, entropy_loss={entropy_loss}")
 
     # Metrics for logging
     metrics = {
@@ -295,11 +343,24 @@ def compute_value_loss(
     Returns:
         Tuple of (loss, metrics_dict)
     """
+    # Check inputs
+    if torch.isnan(value_pred).any() or torch.isinf(value_pred).any():
+        print(f"  [value_loss] NaN/Inf in value_pred! nan_count={torch.isnan(value_pred).sum()}, inf_count={torch.isinf(value_pred).sum()}")
+    if torch.isnan(value_target).any() or torch.isinf(value_target).any():
+        print(f"  [value_loss] NaN/Inf in value_target! nan_count={torch.isnan(value_target).sum()}, inf_count={torch.isinf(value_target).sum()}")
+    
     # Simple MSE loss
     value_loss = F.mse_loss(value_pred, value_target)
+    
+    # Check MSE result
+    if torch.isnan(value_loss) or torch.isinf(value_loss):
+        print(f"  [value_loss] NaN/Inf in MSE value_loss! value={value_loss}")
 
     # Optional: clipped value loss
     if value_clip is not None and old_value_pred is not None:
+        if torch.isnan(old_value_pred).any() or torch.isinf(old_value_pred).any():
+            print(f"  [value_loss] NaN/Inf in old_value_pred! nan_count={torch.isnan(old_value_pred).sum()}, inf_count={torch.isinf(old_value_pred).sum()}")
+        
         value_pred_clipped = old_value_pred + torch.clamp(
             value_pred - old_value_pred,
             -value_clip,
@@ -307,6 +368,10 @@ def compute_value_loss(
         )
         value_loss_clipped = F.mse_loss(value_pred_clipped, value_target)
         value_loss = torch.max(value_loss, value_loss_clipped)
+        
+        # Check clipped loss
+        if torch.isnan(value_loss) or torch.isinf(value_loss):
+            print(f"  [value_loss] NaN/Inf in clipped value_loss! value={value_loss}")
 
     metrics = {
         "ppo/value_loss": value_loss.item(),
@@ -351,6 +416,14 @@ def compute_total_ppo_loss(
     Returns:
         Tuple of (total_loss, metrics_dict)
     """
+    # Check all inputs
+    if torch.isnan(new_values).any() or torch.isinf(new_values).any():
+        print(f"  [total_loss] NaN/Inf in new_values! nan_count={torch.isnan(new_values).sum()}, inf_count={torch.isinf(new_values).sum()}")
+    if torch.isnan(old_values).any() or torch.isinf(old_values).any():
+        print(f"  [total_loss] NaN/Inf in old_values! nan_count={torch.isnan(old_values).sum()}, inf_count={torch.isinf(old_values).sum()}")
+    if torch.isnan(returns).any() or torch.isinf(returns).any():
+        print(f"  [total_loss] NaN/Inf in returns! nan_count={torch.isnan(returns).sum()}, inf_count={torch.isinf(returns).sum()}")
+    
     # Policy loss
     policy_loss, policy_metrics = compute_ppo_loss(
         new_action_logits=new_action_logits,
@@ -361,6 +434,10 @@ def compute_total_ppo_loss(
         clip_ratio=clip_ratio,
         entropy_coef=entropy_coef,
     )
+    
+    # Check policy loss
+    if torch.isnan(policy_loss) or torch.isinf(policy_loss):
+        print(f"  [total_loss] NaN/Inf in policy_loss after compute! value={policy_loss}")
 
     # Value loss
     value_loss, value_metrics = compute_value_loss(
@@ -369,9 +446,17 @@ def compute_total_ppo_loss(
         old_value_pred=old_values,
         value_clip=value_clip,
     )
+    
+    # Check value loss
+    if torch.isnan(value_loss) or torch.isinf(value_loss):
+        print(f"  [total_loss] NaN/Inf in value_loss after compute! value={value_loss}")
 
     # Total loss
     total_loss = policy_loss + value_coef * value_loss
+    
+    # Check final total loss
+    if torch.isnan(total_loss) or torch.isinf(total_loss):
+        print(f"  [total_loss] NaN/Inf in FINAL total_loss! policy_loss={policy_loss}, value_loss={value_loss}, value_coef={value_coef}")
 
     # Combined metrics
     metrics = {

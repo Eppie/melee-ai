@@ -379,7 +379,7 @@ class PPOConfig(_FreezeGuard):
 
     # Episode management
     max_episode_frames: int = 18000  # max frames per episode (~5 minutes at 60fps)
-    num_workers: int = 1  # number of parallel workers for trajectory collection
+    num_workers: int = 8  # number of parallel workers for trajectory collection
                           # 1 = sequential (single game), >1 = parallel (multiple games)
                           # Set to number of CPU cores for max throughput (e.g., 8 for 8-core machine)
                           # Each worker runs a separate Dolphin instance

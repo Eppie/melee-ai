@@ -37,12 +37,12 @@ def compute_log_probs(
             logits_orig = action_logits[head]  # [B, num_classes]
             actions = actions_taken[head].long()  # [B]
 
-            # Clamp logits for numerical stability
-            logits = torch.clamp(logits_orig, min=-20.0, max=20.0)
+            # Clamp logits for numerical stability (loose bounds)
+            logits = torch.clamp(logits_orig, min=-1200.0, max=1200.0)
             
             # Log if clamping occurred
             if not torch.equal(logits, logits_orig):
-                n_clamped = ((logits_orig < -20.0) | (logits_orig > 20.0)).sum().item()
+                n_clamped = ((logits_orig < -1200.0) | (logits_orig > 1200.0)).sum().item()
                 print(f"  [{head}] Clamped {n_clamped} logits: "
                       f"range [{logits_orig.min():.2f}, {logits_orig.max():.2f}] "
                       f"-> [{logits.min():.2f}, {logits.max():.2f}]")
@@ -54,12 +54,12 @@ def compute_log_probs(
                 -1
             )  # [B]
             
-            # Clamp log probs to prevent extreme values
-            selected_log_prob = torch.clamp(selected_log_prob_orig, min=-20.0, max=0.0)
+            # Clamp log probs to prevent extreme values (loose bounds)
+            selected_log_prob = torch.clamp(selected_log_prob_orig, min=-100.0, max=0.0)
             
             # Log if log prob clamping occurred
             if not torch.equal(selected_log_prob, selected_log_prob_orig):
-                n_clamped = ((selected_log_prob_orig < -20.0) | (selected_log_prob_orig > 0.0)).sum().item()
+                n_clamped = ((selected_log_prob_orig < -100.0) | (selected_log_prob_orig > 0.0)).sum().item()
                 print(f"  [{head}] Clamped {n_clamped} log_probs: "
                       f"range [{selected_log_prob_orig.min():.2f}, {selected_log_prob_orig.max():.2f}] "
                       f"-> [{selected_log_prob.min():.2f}, {selected_log_prob.max():.2f}]")
@@ -71,12 +71,12 @@ def compute_log_probs(
         logits_orig = action_logits["buttons"]  # [B, num_buttons]
         actions = actions_taken["buttons"].float()  # [B, num_buttons]
 
-        # Clamp logits for numerical stability
-        logits = torch.clamp(logits_orig, min=-20.0, max=20.0)
+        # Clamp logits for numerical stability (loose bounds)
+        logits = torch.clamp(logits_orig, min=-200.0, max=200.0)
         
         # Log if clamping occurred
         if not torch.equal(logits, logits_orig):
-            n_clamped = ((logits_orig < -20.0) | (logits_orig > 20.0)).sum().item()
+            n_clamped = ((logits_orig < -200.0) | (logits_orig > 200.0)).sum().item()
             print(f"  [buttons] Clamped {n_clamped} logits: "
                   f"range [{logits_orig.min():.2f}, {logits_orig.max():.2f}] "
                   f"-> [{logits.min():.2f}, {logits.max():.2f}]")
@@ -170,13 +170,13 @@ def compute_ppo_loss(
     new_log_probs = compute_log_probs(new_action_logits, actions_taken)  # [B]
     
     # Compute ratio: pi_new(a|s) / pi_old(a|s)
-    # Clamp the log prob difference to prevent numerical issues
+    # Clamp the log prob difference to prevent numerical issues (loose bounds for exp safety)
     log_ratio_orig = new_log_probs - old_log_probs
-    log_ratio = torch.clamp(log_ratio_orig, min=-20.0, max=20.0)
+    log_ratio = torch.clamp(log_ratio_orig, min=-50.0, max=50.0)
     
     # Log if clamping occurred
     if not torch.equal(log_ratio, log_ratio_orig):
-        n_clamped = ((log_ratio_orig < -20.0) | (log_ratio_orig > 20.0)).sum().item()
+        n_clamped = ((log_ratio_orig < -50.0) | (log_ratio_orig > 50.0)).sum().item()
         print(f"  [ratio] Clamped {n_clamped} log_ratios: "
               f"range [{log_ratio_orig.min():.2f}, {log_ratio_orig.max():.2f}] "
               f"-> [{log_ratio.min():.2f}, {log_ratio.max():.2f}]")

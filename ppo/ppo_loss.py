@@ -38,11 +38,11 @@ def compute_log_probs(
             actions = actions_taken[head].long()  # [B]
 
             # Clamp logits for numerical stability (loose bounds)
-            logits = torch.clamp(logits_orig, min=-1200.0, max=1200.0)
+            logits = torch.clamp(logits_orig, min=-3000.0, max=3000.0)
             
             # Log if clamping occurred
             if not torch.equal(logits, logits_orig):
-                n_clamped = ((logits_orig < -1200.0) | (logits_orig > 1200.0)).sum().item()
+                n_clamped = ((logits_orig < -3000.0) | (logits_orig > 3000.0)).sum().item()
                 print(f"  [{head}] Clamped {n_clamped} logits: "
                       f"range [{logits_orig.min():.2f}, {logits_orig.max():.2f}] "
                       f"-> [{logits.min():.2f}, {logits.max():.2f}]")
@@ -72,11 +72,11 @@ def compute_log_probs(
         actions = actions_taken["buttons"].float()  # [B, num_buttons]
 
         # Clamp logits for numerical stability (loose bounds)
-        logits = torch.clamp(logits_orig, min=-200.0, max=200.0)
+        logits = torch.clamp(logits_orig, min=-100.0, max=100.0)
         
         # Log if clamping occurred
         if not torch.equal(logits, logits_orig):
-            n_clamped = ((logits_orig < -200.0) | (logits_orig > 200.0)).sum().item()
+            n_clamped = ((logits_orig < -100.0) | (logits_orig > 100.0)).sum().item()
             print(f"  [buttons] Clamped {n_clamped} logits: "
                   f"range [{logits_orig.min():.2f}, {logits_orig.max():.2f}] "
                   f"-> [{logits.min():.2f}, {logits.max():.2f}]")
@@ -86,12 +86,6 @@ def compute_log_probs(
         # Clamp probabilities away from 0 and 1
         probs = torch.clamp(probs_orig, min=1e-7, max=1.0 - 1e-7)
         
-        # Log if probability clamping occurred
-        if not torch.equal(probs, probs_orig):
-            n_clamped = ((probs_orig < 1e-7) | (probs_orig > 1.0 - 1e-7)).sum().item()
-            print(f"  [buttons] Clamped {n_clamped} probs: "
-                  f"range [{probs_orig.min():.6f}, {probs_orig.max():.6f}] "
-                  f"-> [{probs.min():.6f}, {probs.max():.6f}]")
         
         button_log_probs = actions * torch.log(probs) + (
             1 - actions

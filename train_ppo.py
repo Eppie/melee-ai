@@ -432,13 +432,14 @@ def main():
     # Load initial checkpoint if provided
     start_episode = load_initial_checkpoint(model, args.checkpoint, device)
 
-    # Optimizer
+    # Optimizer (use PPO-specific learning rate)
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=config.train.lr,
+        lr=config.ppo.lr,
         betas=config.train.betas,
         weight_decay=config.train.weight_decay,
     )
+    print(f"Using PPO learning rate: {config.ppo.lr:.2e}")
 
     # Gradient scaler for AMP
     scaler = GradScaler(enabled=config.train.use_amp)

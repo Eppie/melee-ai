@@ -372,6 +372,7 @@ class PPOConfig(_FreezeGuard):
     gae_lambda: float = 0.95  # lambda for Generalized Advantage Estimation
 
     # Training
+    lr: float = 1e-5  # learning rate for PPO fine-tuning (lower than supervised training)
     ppo_epochs: int = 4  # number of epochs to train on each trajectory
     minibatch_size: int = 64  # minibatch size for PPO updates
     max_grad_norm: float = 0.5  # gradient clipping for PPO updates

@@ -13,7 +13,7 @@ def compute_log_probs(
     actions_taken: Dict[str, torch.Tensor],
 ) -> torch.Tensor:
     """Compute log probabilities for actions taken.
-
+    
     Args:
         action_logits: Dictionary of action logits for each head
             - main_stick: [B, num_stick_bins]
@@ -25,11 +25,19 @@ def compute_log_probs(
             - c_stick: [B] indices
             - shoulder: [B] indices
             - buttons: [B, num_buttons] bool
-
+    
     Returns:
         [B] total log probabilities
     """
     log_probs = []
+    
+    # Check for NaN in inputs
+    for head, logits in action_logits.items():
+        if torch.isnan(logits).any():
+            print(f"  [compute_log_probs] NaN detected in {head} logits! count={torch.isnan(logits).sum()}")
+    for head, actions in actions_taken.items():
+        if torch.isnan(actions).any():
+            print(f"  [compute_log_probs] NaN detected in {head} actions! count={torch.isnan(actions).sum()}")
 
     # Sticks and shoulder (categorical)
     for head in ["main_stick", "c_stick", "shoulder"]:
@@ -48,11 +56,20 @@ def compute_log_probs(
                       f"-> [{logits.min():.2f}, {logits.max():.2f}]")
             
             log_prob = F.log_softmax(logits, dim=-1)  # [B, num_classes]
+            
+            # Check for NaN after log_softmax
+            if torch.isnan(log_prob).any():
+                print(f"  [{head}] NaN after log_softmax! logits range: [{logits.min():.2f}, {logits.max():.2f}]")
+            
             selected_log_prob_orig = torch.gather(
                 log_prob, -1, actions.unsqueeze(-1)
             ).squeeze(
                 -1
             )  # [B]
+            
+            # Check for NaN after gather
+            if torch.isnan(selected_log_prob_orig).any():
+                print(f"  [{head}] NaN after gather! actions range: [{actions.min()}, {actions.max()}]")
             
             # Clamp log probs to prevent extreme values (loose bounds)
             selected_log_prob = torch.clamp(selected_log_prob_orig, min=-100.0, max=0.0)
@@ -90,11 +107,25 @@ def compute_log_probs(
         button_log_probs = actions * torch.log(probs) + (
             1 - actions
         ) * torch.log(1 - probs)
+        
+        # Check for NaN in button log probs
+        if torch.isnan(button_log_probs).any():
+            print(f"  [buttons] NaN in button_log_probs! probs range: [{probs.min():.6f}, {probs.max():.6f}]")
+        
         # Sum over buttons
         log_probs.append(button_log_probs.sum(dim=-1))  # [B]
 
     # Sum all log probs
-    return torch.stack(log_probs, dim=0).sum(dim=0)  # [B]
+    total_log_probs = torch.stack(log_probs, dim=0).sum(dim=0)  # [B]
+    
+    # Check for NaN in final result
+    if torch.isnan(total_log_probs).any():
+        print(f"  [compute_log_probs] NaN in final total_log_probs! count={torch.isnan(total_log_probs).sum()}")
+        for i, lp in enumerate(log_probs):
+            if torch.isnan(lp).any():
+                print(f"    log_probs[{i}] has NaN: count={torch.isnan(lp).sum()}")
+    
+    return total_log_probs
 
 
 def compute_entropy(action_logits: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -163,6 +194,13 @@ def compute_ppo_loss(
     # Compute new log probs
     new_log_probs = compute_log_probs(new_action_logits, actions_taken)  # [B]
     
+    # Debug: Check old and new log probs
+    if torch.isnan(old_log_probs).any():
+        print(f"  [loss] NaN in old_log_probs! count={torch.isnan(old_log_probs).sum()}")
+    if torch.isnan(new_log_probs).any():
+        print(f"  [loss] NaN in new_log_probs! count={torch.isnan(new_log_probs).sum()}")
+        print(f"  [loss] new_log_probs stats: min={new_log_probs[~torch.isnan(new_log_probs)].min() if (~torch.isnan(new_log_probs)).any() else 'all NaN'}, max={new_log_probs[~torch.isnan(new_log_probs)].max() if (~torch.isnan(new_log_probs)).any() else 'all NaN'}")
+    
     # Compute ratio: pi_new(a|s) / pi_old(a|s)
     # Clamp the log prob difference to prevent numerical issues (loose bounds for exp safety)
     log_ratio_orig = new_log_probs - old_log_probs
@@ -176,6 +214,10 @@ def compute_ppo_loss(
               f"-> [{log_ratio.min():.2f}, {log_ratio.max():.2f}]")
     
     ratio = torch.exp(log_ratio)  # [B]
+    
+    # Check ratio
+    if torch.isnan(ratio).any() or torch.isinf(ratio).any():
+        print(f"  [loss] NaN/Inf in ratio! nan_count={torch.isnan(ratio).sum()}, inf_count={torch.isinf(ratio).sum()}")
 
     # Clipped surrogate objective
     surr1 = ratio * advantages

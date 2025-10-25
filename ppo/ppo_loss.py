@@ -103,9 +103,10 @@ def compute_log_probs(
         # Clamp probabilities away from 0 and 1
         probs = torch.clamp(probs_orig, min=1e-7, max=1.0 - 1e-7)
         
-        # Compute log probs safely
-        log_probs_pos = torch.log(probs)
-        log_probs_neg = torch.log(1 - probs)
+        # Compute log probs safely with clamping to prevent log(0)
+        # Note: We need to clamp both probs and (1-probs) due to floating point precision
+        log_probs_pos = torch.log(torch.clamp(probs, min=1e-7))
+        log_probs_neg = torch.log(torch.clamp(1 - probs, min=1e-7))
         
         # Check for Inf/NaN in log values
         if torch.isinf(log_probs_pos).any() or torch.isnan(log_probs_pos).any():

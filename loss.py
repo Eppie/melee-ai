@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from torch import Tensor
 
+
 def _compute_ce_weights(labels: Tensor, num_classes: int) -> Tensor:
     """Compute class-balanced weights for cross-entropy loss."""
     device = labels.device
@@ -13,6 +14,7 @@ def _compute_ce_weights(labels: Tensor, num_classes: int) -> Tensor:
     weights = counts.sum() / (counts * num_classes)
     return weights.clamp(min=_CE_WEIGHT_MIN, max=_CE_WEIGHT_CLAMP)
 
+
 def _compute_pos_weights(targets: Tensor) -> Tensor:
     """Compute positive class weights for multi-label BCE loss."""
     flat = targets.reshape(-1, targets.shape[-1])
@@ -21,6 +23,7 @@ def _compute_pos_weights(targets: Tensor) -> Tensor:
     neg = total - pos
     pos_weight = neg / pos.clamp_min(1.0)
     return pos_weight.clamp(min=1.0, max=_POS_WEIGHT_CLAMP).to(targets.device)
+
 
 from typing import Any, Dict, Mapping, Optional, Union
 
@@ -44,11 +47,11 @@ def _mean_with_weights(x: Tensor, w: Optional[Tensor]) -> Tensor:
 
 
 def compute_loss_components(
-        pred: Mapping[str, Tensor],
-        target_info: Mapping[str, Any],
-        *,
-        label_smoothing: float,
-        sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
+    pred: Mapping[str, Tensor],
+    target_info: Mapping[str, Any],
+    *,
+    label_smoothing: float,
+    sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
 ) -> Dict[str, Tensor]:
     """
     Accepts either:
@@ -72,7 +75,9 @@ def compute_loss_components(
         w = sample_weights.get(name)
         if w is None:
             return None
-        assert w.ndim == expect_ndim, f"{name} weights must have ndim={expect_ndim}, got {w.shape}"
+        assert (
+            w.ndim == expect_ndim
+        ), f"{name} weights must have ndim={expect_ndim}, got {w.shape}"
         return w
 
     w_main = _get_w("main", 2)  # [B, L]
@@ -85,8 +90,11 @@ def compute_loss_components(
     main_logits = logits_main.reshape(B * L, -1)
     main_weights = _compute_ce_weights(main_targets, int(target_info["main_K"]))
     loss_main_vec = F.cross_entropy(
-        main_logits, main_targets, reduction='none',
-        label_smoothing=label_smoothing, weight=main_weights,
+        main_logits,
+        main_targets,
+        reduction="none",
+        label_smoothing=label_smoothing,
+        weight=main_weights,
     ).reshape(B, L)
     loss_main = _mean_with_weights(loss_main_vec, w_main)
 
@@ -95,8 +103,11 @@ def compute_loss_components(
     c_logits = logits_c.reshape(B * L, -1)
     c_weights = _compute_ce_weights(c_targets, int(target_info["c_K"]))
     loss_c_vec = F.cross_entropy(
-        c_logits, c_targets, reduction='none',
-        label_smoothing=label_smoothing, weight=c_weights,
+        c_logits,
+        c_targets,
+        reduction="none",
+        label_smoothing=label_smoothing,
+        weight=c_weights,
     ).reshape(B, L)
     loss_c = _mean_with_weights(loss_c_vec, w_c)
 
@@ -104,7 +115,7 @@ def compute_loss_components(
     target_btn = target_info["buttons"]
     pos_weight = _compute_pos_weights(target_btn)  # [K_btn]
     loss_btn_all = F.binary_cross_entropy_with_logits(
-        logits_btn, target_btn, reduction='none', pos_weight=pos_weight
+        logits_btn, target_btn, reduction="none", pos_weight=pos_weight
     )  # [B, L, K_btn]
 
     if w_buttons is not None:
@@ -121,7 +132,7 @@ def compute_loss_components(
         sh_vec = F.cross_entropy(
             shoulder_logits.reshape(B * L, -1),
             shoulder_idx.reshape(B * L),
-            reduction='none',
+            reduction="none",
             label_smoothing=label_smoothing,
         ).reshape(B, L)
         loss_shoulder = _mean_with_weights(sh_vec, w_shoulder)

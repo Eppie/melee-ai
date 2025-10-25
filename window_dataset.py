@@ -30,7 +30,9 @@ class _LRUEpisodeCache:
         self._keys: List[Tuple[int, int]] = []  # (shard_id, episode_id)
         self._vals: List[Tuple[zarr.Array, Optional[zarr.Array]]] = []
 
-    def get(self, key: Tuple[int, int]) -> Optional[Tuple[zarr.Array, Optional[zarr.Array]]]:
+    def get(
+        self, key: Tuple[int, int]
+    ) -> Optional[Tuple[zarr.Array, Optional[zarr.Array]]]:
         try:
             i = self._keys.index(key)
         except ValueError:
@@ -40,7 +42,9 @@ class _LRUEpisodeCache:
         self._vals.append(self._vals.pop(i))
         return self._vals[-1]
 
-    def put(self, key: Tuple[int, int], value: Tuple[zarr.Array, Optional[zarr.Array]]) -> None:
+    def put(
+        self, key: Tuple[int, int], value: Tuple[zarr.Array, Optional[zarr.Array]]
+    ) -> None:
         if key in self._keys:
             i = self._keys.index(key)
             self._keys.pop(i)
@@ -65,8 +69,15 @@ class ZarrCorpusIndex:
         wins_path = self.data_dir / "wins_per_ep.npy"
         index_path = self.data_dir / "index.jsonl"
 
-        if not (meta_path.exists() and lengths_path.exists() and wins_path.exists() and index_path.exists()):
-            raise FileNotFoundError("Expected meta.json, lengths.npy, wins_per_ep.npy, index.jsonl in data_dir")
+        if not (
+            meta_path.exists()
+            and lengths_path.exists()
+            and wins_path.exists()
+            and index_path.exists()
+        ):
+            raise FileNotFoundError(
+                "Expected meta.json, lengths.npy, wins_per_ep.npy, index.jsonl in data_dir"
+            )
 
         with meta_path.open("r") as f:
             self.meta = json.load(f)
@@ -81,19 +92,23 @@ class ZarrCorpusIndex:
         with index_path.open("r") as f:
             for line in f:
                 row = json.loads(line)
-                ep_rows.append(EpisodeInfo(
-                    episode_id=int(row["episode_id"]),
-                    shard_id=int(row["shard_id"]),
-                    num_frames=int(row["frames"]),
-                    num_windows=int(windows[len(ep_rows)]),  # aligned order
-                ))
+                ep_rows.append(
+                    EpisodeInfo(
+                        episode_id=int(row["episode_id"]),
+                        shard_id=int(row["shard_id"]),
+                        num_frames=int(row["frames"]),
+                        num_windows=int(windows[len(ep_rows)]),  # aligned order
+                    )
+                )
         assert len(ep_rows) == len(lengths), "index.jsonl and lengths.npy out of sync"
         self.episodes: List[EpisodeInfo] = ep_rows
 
         # prefix sums over windows for fast mapping
         self._windows = windows.astype(np.int64)
         self._cumulative_windows = np.cumsum(self._windows, dtype=np.int64)  # length E
-        self.total_windows: int = int(self._cumulative_windows[-1]) if len(self._cumulative_windows) else 0
+        self.total_windows: int = (
+            int(self._cumulative_windows[-1]) if len(self._cumulative_windows) else 0
+        )
 
         # shard paths
         self._shard_paths: Dict[int, Path] = {}
@@ -110,8 +125,12 @@ class ZarrCorpusIndex:
         start_offset is in [0, wins_in_episode-1].
         """
         if not (0 <= global_win_idx < self.total_windows):
-            raise IndexError(f"window index {global_win_idx} out of range 0..{self.total_windows - 1}")
-        ep_idx = int(np.searchsorted(self._cumulative_windows, global_win_idx, side="right"))
+            raise IndexError(
+                f"window index {global_win_idx} out of range 0..{self.total_windows - 1}"
+            )
+        ep_idx = int(
+            np.searchsorted(self._cumulative_windows, global_win_idx, side="right")
+        )
         base = 0 if ep_idx == 0 else int(self._cumulative_windows[ep_idx - 1])
         offset = int(global_win_idx - base)
         return ep_idx, offset
@@ -124,10 +143,10 @@ class ZarrCorpusIndex:
     # -------- zarr access --------
 
     def open_episode_arrays(
-            self,
-            ep: EpisodeInfo,
-            *,
-            cache: Optional[_LRUEpisodeCache] = None,
+        self,
+        ep: EpisodeInfo,
+        *,
+        cache: Optional[_LRUEpisodeCache] = None,
     ) -> Tuple[zarr.Array, Optional[zarr.Array]]:
         """
         Returns (X_array, Y_array|None) for the episode.
@@ -156,8 +175,8 @@ class ZarrCorpusIndex:
 
 
 def _resolve_feature_groups(
-        feature_names: Sequence[str],
-        requested: Sequence[str],
+    feature_names: Sequence[str],
+    requested: Sequence[str],
 ) -> List[Tuple[int, ...]]:
     name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
 
@@ -187,9 +206,7 @@ def _resolve_feature_groups(
 
 
 def _apply_feature_transforms(
-        X: np.ndarray,
-        feature_names: Sequence[str],
-        spec: Optional[FeatureTransformSpec]
+    X: np.ndarray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
 ) -> np.ndarray:
     if spec is None or not spec.steps:
         return X
@@ -239,19 +256,21 @@ class WindowDataset(Dataset):
     """
 
     def __init__(
-            self,
-            data_dir: str | Path,
-            *,
-            feature_transforms: Optional[FeatureTransformSpec] = None,
-            ep_cache_size: int = 8,
-            return_numpy: bool = False,
+        self,
+        data_dir: str | Path,
+        *,
+        feature_transforms: Optional[FeatureTransformSpec] = None,
+        ep_cache_size: int = 8,
+        return_numpy: bool = False,
     ) -> None:
         super().__init__()
         self.index = ZarrCorpusIndex(data_dir)
         self.seq_len = self.index.seq_len
         self.transforms = feature_transforms
         self._cache = _LRUEpisodeCache(max_open=ep_cache_size)
-        self._return_numpy = return_numpy  # if True, return np.float32 arrays instead of torch tensors
+        self._return_numpy = (
+            return_numpy  # if True, return np.float32 arrays instead of torch tensors
+        )
 
         self._feature_names = tuple(self.index.feature_names)
         self._target_names = tuple(self.index.target_names)
@@ -267,10 +286,13 @@ class WindowDataset(Dataset):
         start = offset  # within episode, window starts at this index
         L = self.seq_len
 
-        Xa, Ya = self.index.open_episode_arrays(ep, cache=self._cache, )
+        Xa, Ya = self.index.open_episode_arrays(
+            ep,
+            cache=self._cache,
+        )
         # Slice contiguous window; arrays are (T, F) and (T, Yd)
-        Xw = Xa[start:start + L, :]  # (L, F)
-        Yw = None if Ya is None else Ya[start:start + L, :]  # (L, Yd)
+        Xw = Xa[start : start + L, :]  # (L, F)
+        Yw = None if Ya is None else Ya[start : start + L, :]  # (L, Yd)
 
         # Apply per-feature transforms (in-place on view)
         Xw = np.ascontiguousarray(Xw)  # ensure contiguous for in-place ops
@@ -281,12 +303,18 @@ class WindowDataset(Dataset):
 
         if self._return_numpy:
             X_out = Xw.astype(np.float32, copy=False)
-            Y_out = (Yw.astype(np.float32, copy=False) if Yw is not None
-                     else np.empty((L, 0), dtype=np.float32))
+            Y_out = (
+                Yw.astype(np.float32, copy=False)
+                if Yw is not None
+                else np.empty((L, 0), dtype=np.float32)
+            )
         else:
             X_out = torch.from_numpy(Xw.astype(np.float32, copy=False))
-            Y_out = (torch.from_numpy(Yw.astype(np.float32, copy=False)) if Yw is not None
-                     else torch.empty((L, 0), dtype=torch.float32))
+            Y_out = (
+                torch.from_numpy(Yw.astype(np.float32, copy=False))
+                if Yw is not None
+                else torch.empty((L, 0), dtype=torch.float32)
+            )
 
         return {
             "X": X_out,
@@ -311,12 +339,12 @@ class RandomWindowSampler(Sampler[int]):
     """
 
     def __init__(
-            self,
-            *,
-            index: ZarrCorpusIndex,
-            num_samples: Optional[int] = None,
-            stride: int = 1,
-            generator: Optional[torch.Generator] = None,
+        self,
+        *,
+        index: ZarrCorpusIndex,
+        num_samples: Optional[int] = None,
+        stride: int = 1,
+        generator: Optional[torch.Generator] = None,
     ) -> None:
         super().__init__()
         if stride < 1:
@@ -373,7 +401,7 @@ class RandomWindowSampler(Sampler[int]):
 
         # Deterministic per-epoch shuffle
         g = self.generator or torch.Generator()
-        seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) % (2 ** 63 - 1)
+        seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) % (2**63 - 1)
         g.manual_seed(seed)
         if len(inds) > 1:
             perm = torch.randperm(len(inds), generator=g).tolist()
@@ -400,11 +428,13 @@ def worker_init_fn(worker_id: int) -> None:
     Set distinct NumPy / PyTorch seeds for each worker. Avoids identical shuffles per worker.
     """
     # Same recipe as PyTorch DistributedSampler docs
-    base_seed = torch.initial_seed() % 2 ** 31
+    base_seed = torch.initial_seed() % 2**31
     np.random.seed(base_seed + worker_id)
 
 
-def make_dataloader() -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampler[int]]:
+def make_dataloader() -> (
+    Tuple[torch.utils.data.DataLoader, WindowDataset, Sampler[int]]
+):
     """
     Builds dataset + sampler + DataLoader with tuned defaults.
     """
@@ -442,8 +472,12 @@ def make_dataloader() -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampl
         sampler=sampler,
         num_workers=config.train.num_workers,
         pin_memory=config.train.pin_memory,
-        prefetch_factor=config.train.prefetch_factor if config.train.num_workers > 0 else None,
-        persistent_workers=config.train.persistent_workers if config.train.num_workers > 0 else False,
+        prefetch_factor=(
+            config.train.prefetch_factor if config.train.num_workers > 0 else None
+        ),
+        persistent_workers=(
+            config.train.persistent_workers if config.train.num_workers > 0 else False
+        ),
         worker_init_fn=worker_init_fn,
         drop_last=False,
         multiprocessing_context=mp_ctx,

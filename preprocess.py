@@ -10,7 +10,9 @@ MAX_FRAMES: int = (60 * 60 * 8) + 123  # Full 8 minute replay
 
 def _preprocess_frame(frame: int) -> np.int32:
     processed_frame = frame + 123
-    assert 0 <= processed_frame <= MAX_FRAMES, f"Processed frame {processed_frame} is out of range (0, {MAX_FRAMES})"
+    assert (
+        0 <= processed_frame <= MAX_FRAMES
+    ), f"Processed frame {processed_frame} is out of range (0, {MAX_FRAMES})"
     return np.int32(processed_frame)
 
 

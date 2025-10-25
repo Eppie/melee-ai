@@ -5,7 +5,7 @@ from model.norm import norm
 
 
 class SimpleHead(nn.Module):
-    def __init__(self, input_size, output_size, hidden = 128):
+    def __init__(self, input_size, output_size, hidden=128):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden, bias=False),
@@ -18,7 +18,7 @@ class SimpleHead(nn.Module):
 
 
 class ButtonHead(nn.Module):
-    def __init__(self, input_size, output_size, hidden = 128):
+    def __init__(self, input_size, output_size, hidden=128):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden, bias=False),

@@ -1,5 +1,4 @@
-""" Stages is a collection of helper data for information regarding stages
-"""
+"""Stages is a collection of helper data for information regarding stages"""
 
 from libmelee.melee import enums
 
@@ -8,37 +7,38 @@ order of (left x boundary, right x boundary, upper y boundary, lower y boundary)
 Source:  Magus420 -
 https://smashboards.com/threads/official-ask-anyone-frame-things-thread.313889/page-20#post-18643652"""
 BLASTZONES = {
-    enums.Stage.BATTLEFIELD : (-224, 224, 200, -108.8),
-    enums.Stage.FINAL_DESTINATION : (-246, 246, 188, -140),
-    enums.Stage.DREAMLAND : (-255, 255, 250, -123),
-    enums.Stage.FOUNTAIN_OF_DREAMS : (-198.75, 198.75, 202.5, -146.25),
-    enums.Stage.POKEMON_STADIUM : (-230, 230, 180, -111),
-    enums.Stage.YOSHIS_STORY : (-175.7, 173.6, 168, -91)
+    enums.Stage.BATTLEFIELD: (-224, 224, 200, -108.8),
+    enums.Stage.FINAL_DESTINATION: (-246, 246, 188, -140),
+    enums.Stage.DREAMLAND: (-255, 255, 250, -123),
+    enums.Stage.FOUNTAIN_OF_DREAMS: (-198.75, 198.75, 202.5, -146.25),
+    enums.Stage.POKEMON_STADIUM: (-230, 230, 180, -111),
+    enums.Stage.YOSHIS_STORY: (-175.7, 173.6, 168, -91),
 }
 
 """Get the X coordinate of the edge of the stage, approaching from off_stage
 IE: This is your X coordinate when hanging on the edge
 NOTE: The left edge is always the same, but negative"""
 EDGE_POSITION = {
-    enums.Stage.BATTLEFIELD : 71.3078536987,
-    enums.Stage.FINAL_DESTINATION : 88.4735488892,
-    enums.Stage.DREAMLAND : 80.1791534424,
-    enums.Stage.FOUNTAIN_OF_DREAMS : 66.2554016113,
-    enums.Stage.POKEMON_STADIUM : 90.657852,
-    enums.Stage.YOSHIS_STORY : 58.907848
+    enums.Stage.BATTLEFIELD: 71.3078536987,
+    enums.Stage.FINAL_DESTINATION: 88.4735488892,
+    enums.Stage.DREAMLAND: 80.1791534424,
+    enums.Stage.FOUNTAIN_OF_DREAMS: 66.2554016113,
+    enums.Stage.POKEMON_STADIUM: 90.657852,
+    enums.Stage.YOSHIS_STORY: 58.907848,
 }
 
 """Get the X coordinate of the edge of the stage, while standing on the stage
 IE: This is your X coordinate when teetering on the edge
 NOTE: The left edge is always the same, but negative"""
 EDGE_GROUND_POSITION = {
-    enums.Stage.BATTLEFIELD : 68.4000015259,
-    enums.Stage.FINAL_DESTINATION : 85.5656967163,
-    enums.Stage.DREAMLAND : 77.2713012695,
-    enums.Stage.FOUNTAIN_OF_DREAMS : 63.3475494385,
-    enums.Stage.POKEMON_STADIUM : 87.75,
-    enums.Stage.YOSHIS_STORY : 56
+    enums.Stage.BATTLEFIELD: 68.4000015259,
+    enums.Stage.FINAL_DESTINATION: 85.5656967163,
+    enums.Stage.DREAMLAND: 77.2713012695,
+    enums.Stage.FOUNTAIN_OF_DREAMS: 63.3475494385,
+    enums.Stage.POKEMON_STADIUM: 87.75,
+    enums.Stage.YOSHIS_STORY: 56,
 }
+
 
 def top_platform_position(stage):
     """Gets the position of the top platform
@@ -63,6 +63,7 @@ def top_platform_position(stage):
         return 42.000099182128906, -15.75, 15.75
     return None, None, None
 
+
 def side_platform_position(right_platform, stage):
     """Gets the position of the specified side platform
 
@@ -77,6 +78,7 @@ def side_platform_position(right_platform, stage):
         return right_platform_position(stage)
     else:
         return left_platform_position(stage)
+
 
 def left_platform_position(stage):
     """Gets the position of the left platform
@@ -96,10 +98,11 @@ def left_platform_position(stage):
     if stage == enums.Stage.DREAMLAND:
         return 30.14219856262207, -61.39289855957031, -31.725400924682617
     if stage == enums.Stage.FOUNTAIN_OF_DREAMS:
-        return None, None, None  #TODO
+        return None, None, None  # TODO
     if stage == enums.Stage.YOSHIS_STORY:
         return 23.450098037719727, -59.5, -28.0
     return None, None, None
+
 
 def right_platform_position(stage):
     """Gets the position of the right platform
@@ -119,10 +122,11 @@ def right_platform_position(stage):
     if stage == enums.Stage.DREAMLAND:
         return 30.242599487304688, 31.70359992980957, 63.074501037597656
     if stage == enums.Stage.FOUNTAIN_OF_DREAMS:
-        return None, None, None  #TODO
+        return None, None, None  # TODO
     if stage == enums.Stage.YOSHIS_STORY:
         return 23.450098037719727, 28.0, 59.5
     return None, None, None
+
 
 _RANDALL_CORNER_POSITIONS = {
     416: (-33.184478759765625, 89.75263977050781),
@@ -154,8 +158,9 @@ _RANDALL_CORNER_POSITIONS = {
     1019: (-14.099089622497559, -102.89810180664062),
     1020: (-14.320136070251465, -103.14761352539062),
     1021: (-14.6375150680542, -103.30630493164062),
-    1022: (-14.954894065856934, -103.46499633789062)
+    1022: (-14.954894065856934, -103.46499633789062),
 }
+
 
 def randall_position(frame):
     """Gets the current position of Randall
@@ -179,7 +184,11 @@ def randall_position(frame):
         start = 101.235443115234
         speed = -0.35484
         frames_in = frame_count - 477
-        return -13.64989, start - randall_width + (speed * frames_in), start + (speed * frames_in)
+        return (
+            -13.64989,
+            start - randall_width + (speed * frames_in),
+            start + (speed * frames_in),
+        )
     # Left section
     if 1022 < frame_count < 1069:
         start = -15.2778692245483
@@ -193,7 +202,11 @@ def randall_position(frame):
         frames_in = frame_count - 1076
         if frame_count < 416:
             frames_in = 125 + frame_count
-        return -33.2489, start + (speed * frames_in), start + randall_width + (speed * frames_in)
+        return (
+            -33.2489,
+            start + (speed * frames_in),
+            start + randall_width + (speed * frames_in),
+        )
     # Right section
     if 423 < frame_count < 469:
         start = -31.160232543945312

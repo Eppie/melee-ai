@@ -1,6 +1,7 @@
-""" Gamestate is a single snapshot in time of the game that represents all necessary information
-        to make gameplay decisions
+"""Gamestate is a single snapshot in time of the game that represents all necessary information
+to make gameplay decisions
 """
+
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -11,25 +12,49 @@ from libmelee.melee import enums
 @dataclass
 class Position:
     """Dataclass for position types. Has (x, y) coords."""
+
     x: np.float32 = np.float32(0)
     y: np.float32 = np.float32(0)
+
 
 Speed = Position
 Cursor = Position
 
+
 @dataclass
 class ECB:
     """ECBs (Environmental collision box) info. It's a diamond with four points that define it."""
+
     top: Position = field(default_factory=Position)
     bottom: Position = field(default_factory=Position)
     left: Position = field(default_factory=Position)
     right: Position = field(default_factory=Position)
 
+
 class GameState(object):
     """Represents the state of a running game of Melee at a given moment in time"""
-    __slots__ = ('frame', 'stage', 'menu_state', 'submenu', 'player', 'players', 'projectiles',
-                 'ready_to_start', 'distance', 'menu_selection', '_newframe', 'playedOn', 'startAt',
-                 'consoleNick', 'is_teams', 'custom', 'stage_select_cursor_x', 'stage_select_cursor_y')
+
+    __slots__ = (
+        "frame",
+        "stage",
+        "menu_state",
+        "submenu",
+        "player",
+        "players",
+        "projectiles",
+        "ready_to_start",
+        "distance",
+        "menu_selection",
+        "_newframe",
+        "playedOn",
+        "startAt",
+        "consoleNick",
+        "is_teams",
+        "custom",
+        "stage_select_cursor_x",
+        "stage_select_cursor_y",
+    )
+
     def __init__(self):
         self.frame = -10000
         """int: The current frame number. Monotonically increases. Can be negative."""
@@ -61,19 +86,69 @@ class GameState(object):
         self.stage_select_cursor_x = 0.0
         self.stage_select_cursor_y = 0.0
 
+
 class PlayerState(object):
-    """ Represents the state of a single player """
-    __slots__ = ('character', 'character_selected', 'percent', 'shield_strength', 'stock', 'facing',
-                 'action', 'action_frame', 'invulnerable', 'invulnerability_left', 'hitlag_left', 'hitstun_frames_left',
-                 'jumps_left', 'on_ground', 'speed_air_x_self', 'speed_y_self', 'speed_x_attack', 'speed_y_attack',
-                 'speed_ground_x_self', 'controller_status', 'off_stage', 'iasa',
-                 'controller_state', 'ecb_bottom', 'ecb_top', 'ecb_left', 'ecb_right',
-                'nana', 'position', 'ecb', 'nickName', 'connectCode',
-                 'displayName', 'team_id', 'is_powershield',
-                 'is_reflect_active', 'is_subaction_invulnerable', 'is_fastfalling', 'is_defender_in_hitlag',
-                 'is_in_hitlag', 'is_holding_character', 'is_shield_active', 'is_in_hitstun',
-                 'is_touching_shield', 'is_cloaked', 'is_follower', 'is_inactive', 'is_dead', 'is_offscreen',
-                 'l_cancel_status', 'cursor_x', 'cursor_y', 'cursor', 'coin_down', 'is_holding_cpu_slider', 'cpu_level')
+    """Represents the state of a single player"""
+
+    __slots__ = (
+        "character",
+        "character_selected",
+        "percent",
+        "shield_strength",
+        "stock",
+        "facing",
+        "action",
+        "action_frame",
+        "invulnerable",
+        "invulnerability_left",
+        "hitlag_left",
+        "hitstun_frames_left",
+        "jumps_left",
+        "on_ground",
+        "speed_air_x_self",
+        "speed_y_self",
+        "speed_x_attack",
+        "speed_y_attack",
+        "speed_ground_x_self",
+        "controller_status",
+        "off_stage",
+        "iasa",
+        "controller_state",
+        "ecb_bottom",
+        "ecb_top",
+        "ecb_left",
+        "ecb_right",
+        "nana",
+        "position",
+        "ecb",
+        "nickName",
+        "connectCode",
+        "displayName",
+        "team_id",
+        "is_powershield",
+        "is_reflect_active",
+        "is_subaction_invulnerable",
+        "is_fastfalling",
+        "is_defender_in_hitlag",
+        "is_in_hitlag",
+        "is_holding_character",
+        "is_shield_active",
+        "is_in_hitstun",
+        "is_touching_shield",
+        "is_cloaked",
+        "is_follower",
+        "is_inactive",
+        "is_dead",
+        "is_offscreen",
+        "l_cancel_status",
+        "cursor_x",
+        "cursor_y",
+        "cursor",
+        "coin_down",
+        "is_holding_cpu_slider",
+        "cpu_level",
+    )
+
     def __init__(self):
         # This value is what the character currently is IN GAME
         #   So this will have no meaning while in menus
@@ -88,7 +163,7 @@ class PlayerState(object):
         """(Position): x, y character position"""
         self.percent = 0
         """(int): The player's damage"""
-        self.shield_strength = 60.
+        self.shield_strength = 60.0
         """(float): The player's shield strength (max 60). Shield breaks at 0"""
         self.is_powershield = False
         """(bool): Is the current action a Powershield? (not directly determinable via action states)"""
@@ -133,6 +208,7 @@ class PlayerState(object):
         """(bool): Helper variable to say if the character is 'off stage'. """
         self.iasa = 0
         from libmelee.melee.controller import ControllerState
+
         self.controller_state = ControllerState()
         """(controller.ControllerState): What buttons were pressed for this character"""
         self.ecb = ECB()
@@ -179,8 +255,10 @@ class PlayerState(object):
         """(bool): Is the player holding the CPU slider in the character select screen?"""
         self.cpu_level = 0
 
+
 class Projectile:
-    """ Represents the state of a projectile (items, lasers, etc...) """
+    """Represents the state of a projectile (items, lasers, etc...)"""
+
     def __init__(self):
         self.position = Position()
         """(Position): x, y projectile position"""
@@ -202,6 +280,7 @@ class Projectile:
         """(int): How long the item has been out"""
         self.subtype = 0
         """(int): The subtype of the item. Many projectiles have 'subtypes' that make them different. They're all different, so it's not an enum"""
+
 
 def port_detector(gamestate, character, costume):
     """Autodiscover what port the given character is on

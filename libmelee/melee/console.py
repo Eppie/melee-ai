@@ -3,6 +3,7 @@
 This can be Dolphin (Slippi's Ishiiruka) or an SLP file. The Console object
 is your method to start and stop Dolphin, set configs, and get the latest GameState.
 """
+
 import base64
 import configparser
 import csv
@@ -66,7 +67,7 @@ def _copytree_safe(src, dst):
 
 
 def _default_home_path(path: str) -> str:
-    return '/Users/eppie/Library/Application Support/com.project-slippi.dolphin/netplay/User/'
+    return "/Users/eppie/Library/Application Support/com.project-slippi.dolphin/netplay/User/"
     if platform.system() == "Darwin":
         return path + "/Contents/Resources/User/"
 
@@ -93,7 +94,7 @@ def read_shift_jis(event_bytes: bytes, offset: int) -> str:
     # Find NUL terminator
     while mv[end] != 0:
         end += 1
-    return bytes(mv[offset:end]).decode('shift-jis')
+    return bytes(mv[offset:end]).decode("shift-jis")
 
 
 def get_exe_path(path: str) -> str:
@@ -124,8 +125,8 @@ class DolphinBuild(enum.Enum):
 
 
 _STRING_TO_BUILD = {
-    'Playback': DolphinBuild.PLAYBACK,
-    'ExiAI': DolphinBuild.EXI_AI,
+    "Playback": DolphinBuild.PLAYBACK,
+    "ExiAI": DolphinBuild.EXI_AI,
 }
 # Precompiled Structs (big-endian)
 _S_I: Final = struct.Struct(">i")
@@ -167,7 +168,7 @@ class DolphinVersion:
 
 def get_dolphin_version(path: str) -> DolphinVersion:
     exe_path = get_exe_path(path)
-    result = subprocess.run([exe_path, '--version'], capture_output=True)
+    result = subprocess.run([exe_path, "--version"], capture_output=True)
 
     # Ishiiruka actually gives returncode 1 and puts
     # "Faster Melee - Slippi (3.4.0)" in stderr!
@@ -175,8 +176,8 @@ def get_dolphin_version(path: str) -> DolphinVersion:
     output = output.decode().strip()
 
     # Mainline versions look like "4.0.0-mainline-beta.4"
-    if output.find('mainline') != -1:
-        version = output.split('-')[0]
+    if output.find("mainline") != -1:
+        version = output.split("-")[0]
         return DolphinVersion(
             mainline=True,
             version=version,
@@ -185,7 +186,7 @@ def get_dolphin_version(path: str) -> DolphinVersion:
         )
 
     # Ishiiruka on MacOS behaves a bit differently.
-    if platform.system() == 'Darwin':
+    if platform.system() == "Darwin":
         # Sadly playback dolphin doesn't output anything differently, so we
         # just assume it's a netplay build.
         assert result.returncode == 255
@@ -196,13 +197,13 @@ def get_dolphin_version(path: str) -> DolphinVersion:
         )
 
     # Ishiiruka
-    contents = output.split(' - ')
-    if contents[0] != 'Faster Melee':
-        raise ValueError(f'Unexpected dolphin version {output}')
+    contents = output.split(" - ")
+    if contents[0] != "Faster Melee":
+        raise ValueError(f"Unexpected dolphin version {output}")
 
     # "Slippi (VERSION)"
-    begin = contents[1].find('(') + 1
-    end = contents[1].find(')')
+    begin = contents[1].find("(") + 1
+    end = contents[1].find(")")
     version = contents[1][begin:end]
 
     if len(contents) == 2:
@@ -210,7 +211,7 @@ def get_dolphin_version(path: str) -> DolphinVersion:
     else:
         build_str = contents[2]
         if build_str not in _STRING_TO_BUILD:
-            raise ValueError(f'Unexpected dolphin version {output}')
+            raise ValueError(f"Unexpected dolphin version {output}")
         build = _STRING_TO_BUILD[build_str]
 
     return DolphinVersion(False, version, build)
@@ -225,58 +226,58 @@ class DumpConfig:
     path: Optional[str] = None
 
     def update_gfx_ini(self, gfx_ini: configparser.ConfigParser):
-        section = 'Settings'
+        section = "Settings"
         if not gfx_ini.has_section(section):
             gfx_ini.add_section(section)
         if self.format:
-            gfx_ini.set(section, 'DumpFormat', self.format)
+            gfx_ini.set(section, "DumpFormat", self.format)
         if self.codec:
-            gfx_ini.set(section, 'DumpCodec', self.codec)
+            gfx_ini.set(section, "DumpCodec", self.codec)
         if self.encoder:
-            gfx_ini.set(section, 'DumpEncoder', self.encoder)
+            gfx_ini.set(section, "DumpEncoder", self.encoder)
         if self.path:
-            gfx_ini.set(section, 'DumpPath', self.path)
+            gfx_ini.set(section, "DumpPath", self.path)
 
-        gfx_ini.set(section, 'BitrateKbps', "3000")
-        gfx_ini.set(section, 'InternalResolutionFrameDumps', "True")
+        gfx_ini.set(section, "BitrateKbps", "3000")
+        gfx_ini.set(section, "InternalResolutionFrameDumps", "True")
 
 
 # pylint: disable=too-many-instance-attributes
 class Console:
-    """The console object that represents your Dolphin / Wii / SLP file
-    """
+    """The console object that represents your Dolphin / Wii / SLP file"""
 
-    def __init__(self,
-                 path: Optional[str] = None,
-                 is_dolphin: bool = True,
-                 dolphin_home_path: Optional[str] = None,
-                 tmp_home_directory: bool = True,
-                 copy_home_directory: bool = False,
-                 slippi_address: str = "127.0.0.1",
-                 slippi_port: int = 51441,
-                 online_delay: int = 0,
-                 blocking_input: bool = False,
-                 polling_mode: bool = False,
-                 polling_timeout: float = 0,
-                 skip_rollback_frames: bool = True,
-                 allow_old_version: bool = False,
-                 logger=None,
-                 setup_gecko_codes: bool = True,
-                 fullscreen: bool = True,
-                 gfx_backend: str = "",
-                 disable_audio: bool = False,
-                 overclock: Optional[float] = None,
-                 emulation_speed: float = 1.0,
-                 save_replays: bool = True,
-                 replay_dir: Optional[str] = None,
-                 user_json_path: Optional[str] = None,
-                 log_level: int = 3,  # WARN, see Source/Core/Common/Logging/Log.h
-                 log_types: list[str] = ['SLIPPI'],
-                 infinite_time: bool = False,
-                 use_exi_inputs=False,
-                 enable_ffw=False,
-                 dump_config: Optional[DumpConfig] = None,
-                 ):
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        is_dolphin: bool = True,
+        dolphin_home_path: Optional[str] = None,
+        tmp_home_directory: bool = True,
+        copy_home_directory: bool = False,
+        slippi_address: str = "127.0.0.1",
+        slippi_port: int = 51441,
+        online_delay: int = 0,
+        blocking_input: bool = False,
+        polling_mode: bool = False,
+        polling_timeout: float = 0,
+        skip_rollback_frames: bool = True,
+        allow_old_version: bool = False,
+        logger=None,
+        setup_gecko_codes: bool = True,
+        fullscreen: bool = True,
+        gfx_backend: str = "",
+        disable_audio: bool = False,
+        overclock: Optional[float] = None,
+        emulation_speed: float = 1.0,
+        save_replays: bool = True,
+        replay_dir: Optional[str] = None,
+        user_json_path: Optional[str] = None,
+        log_level: int = 3,  # WARN, see Source/Core/Common/Logging/Log.h
+        log_types: list[str] = ["SLIPPI"],
+        infinite_time: bool = False,
+        use_exi_inputs=False,
+        enable_ffw=False,
+        dump_config: Optional[DumpConfig] = None,
+    ):
         """Create a Console object
 
         Args:
@@ -332,7 +333,7 @@ class Console:
         self.dolphin_home_path = dolphin_home_path
         self.temp_dir = None
         if tmp_home_directory and self.is_dolphin:
-            self.temp_dir = tempfile.mkdtemp(prefix='libmelee_')
+            self.temp_dir = tempfile.mkdtemp(prefix="libmelee_")
             home_dir = self.temp_dir + "/User/"
             if copy_home_directory:
                 _copytree_safe(self._get_dolphin_home_path(), home_dir)
@@ -352,6 +353,7 @@ class Console:
         """(str): The Slippi version of the console"""
         self.cursor = 0
         from libmelee.melee.controller import Controller  # avoid circular import
+
         self.controllers: list[Controller] = []
         self._current_stage = enums.Stage.NO_STAGE
         self._frame = 0
@@ -400,23 +402,34 @@ class Console:
                 self.dolphin_version = get_dolphin_version(path)
                 self.is_mainline = self.dolphin_version.mainline
 
-                if gfx_backend == 'Null':
-                    if not (self.is_mainline or self.dolphin_version.build == DolphinBuild.EXI_AI):
-                        raise ValueError('Null video requires mainline or ExiAI Ishiiruka.')
+                if gfx_backend == "Null":
+                    if not (
+                        self.is_mainline
+                        or self.dolphin_version.build == DolphinBuild.EXI_AI
+                    ):
+                        raise ValueError(
+                            "Null video requires mainline or ExiAI Ishiiruka."
+                        )
 
                 if self.dolphin_version.build is DolphinBuild.EXI_AI:
                     if not gfx_backend:
-                        self.gfx_backend = 'Null'
-                        logging.info('ExiAI dolphin detected, setting Null video backend.')
+                        self.gfx_backend = "Null"
+                        logging.info(
+                            "ExiAI dolphin detected, setting Null video backend."
+                        )
                         # TODO: modify ExiAI dolphin to use Null by default
-                    elif gfx_backend != 'Null':
+                    elif gfx_backend != "Null":
                         # In principle ExiAI could support something like EGL...
-                        raise ValueError('ExiAI dolphin requires Null video backend.')
+                        raise ValueError("ExiAI dolphin requires Null video backend.")
 
-                if self.use_exi_inputs and self.dolphin_version.build != DolphinBuild.EXI_AI:
+                if (
+                    self.use_exi_inputs
+                    and self.dolphin_version.build != DolphinBuild.EXI_AI
+                ):
                     raise ValueError(
-                        'EXI inputs require a custom dolphin build. '
-                        'See https://github.com/vladfi1/libmelee?tab=readme-ov-file#setup-instructions')
+                        "EXI inputs require a custom dolphin build. "
+                        "See https://github.com/vladfi1/libmelee?tab=readme-ov-file#setup-instructions"
+                    )
 
                 self._setup_home_directory()
         else:
@@ -445,7 +458,7 @@ class Console:
                 self.characterdata[enums.Character(line["CharacterIndex"])] = line
 
     def connect(self):
-        """ Connects to the Slippi server (dolphin or wii).
+        """Connects to the Slippi server (dolphin or wii).
 
         Returns:
             True is successful, False otherwise
@@ -462,25 +475,25 @@ class Console:
         return _default_home_path(self.path)
 
     def _get_dolphin_config_path(self):
-        """ Return the path to dolphin's config directory."""
+        """Return the path to dolphin's config directory."""
         return os.path.join(self._get_dolphin_home_path(), "Config")
 
     def get_dolphin_pipes_path(self, port):
-        """Get the path of the named pipe input file for the given controller port
-        """
+        """Get the path of the named pipe input file for the given controller port"""
         if platform.system() == "Windows":
-            return '\\\\.\\pipe\\slippibot' + str(port)
+            return "\\\\.\\pipe\\slippibot" + str(port)
         pipes_path = self._get_dolphin_home_path() + "/Pipes/"
         if not os.path.isdir(pipes_path):
             os.makedirs(pipes_path, exist_ok=True)
         return pipes_path + f"slippibot{port}"
 
-    def run(self,
-            iso_path: Optional[str] = None,
-            dolphin_user_path: Optional[str] = None,
-            environment_vars: Optional[dict] = None,
-            platform: Optional[str] = None,
-            ):
+    def run(
+        self,
+        iso_path: Optional[str] = None,
+        dolphin_user_path: Optional[str] = None,
+        environment_vars: Optional[dict] = None,
+        platform: Optional[str] = None,
+    ):
         """Run the Dolphin emulator.
 
         This starts the Dolphin process, so don't run this if you're connecting to an
@@ -512,7 +525,7 @@ class Console:
 
         if platform is not None:
             if not self.is_mainline:
-                raise ValueError('Can only set platform for mainline dolphin.')
+                raise ValueError("Can only set platform for mainline dolphin.")
             command.append("--platform")
             command.append(platform)
 
@@ -523,11 +536,11 @@ class Console:
         self._process = subprocess.Popen(command, env=env)
 
     def stop(self):
-        """ Stop the console.
+        """Stop the console.
 
         For Dolphin instances, this will kill the dolphin process.
         For Wiis and SLP files, it just shuts down our connection
-         """
+        """
         if self.path:
             self.connected = False
             self._slippstream.shutdown()
@@ -542,14 +555,16 @@ class Console:
             shutil.rmtree(self.temp_dir)
             self.temp_dir = None
 
-    def _setup_home_directory(self, ):
+    def _setup_home_directory(
+        self,
+    ):
         self._setup_dolphin_ini()
 
         if self.user_json_path:
             home_path = self._get_dolphin_home_path()
-            slippi_path = os.path.join(home_path, 'Slippi')
+            slippi_path = os.path.join(home_path, "Slippi")
             os.makedirs(slippi_path, exist_ok=True)
-            user_json_path = os.path.join(slippi_path, 'user.json')
+            user_json_path = os.path.join(slippi_path, "user.json")
             shutil.copyfile(self.user_json_path, user_json_path)
 
         if self.setup_gecko_codes:
@@ -570,26 +585,26 @@ class Console:
                 config.add_section(section)
 
         if self.is_mainline:
-            config.set("Slippi", 'EnableSpectator', "True")
-            config.set("Slippi", 'SpectatorLocalPort', str(self.slippi_port))
-            config.set("Slippi", 'OnlineDelay', str(self.online_delay))
-            config.set("Slippi", 'BlockingPipes', str(self.blocking_input))
+            config.set("Slippi", "EnableSpectator", "True")
+            config.set("Slippi", "SpectatorLocalPort", str(self.slippi_port))
+            config.set("Slippi", "OnlineDelay", str(self.online_delay))
+            config.set("Slippi", "BlockingPipes", str(self.blocking_input))
 
             config.set("Slippi", "SaveReplays", str(self.save_replays))
             if self.replay_dir:
                 config.set("Slippi", "ReplayDir", self.replay_dir)
         else:
-            config.set("Core", 'SlippiEnableSpectator', "True")
-            config.set("Core", 'SlippiSpectatorLocalPort', str(self.slippi_port))
-            config.set("Core", 'SlippiOnlineDelay', str(self.online_delay))
-            config.set("Core", 'BlockingPipes', str(self.blocking_input))
+            config.set("Core", "SlippiEnableSpectator", "True")
+            config.set("Core", "SlippiSpectatorLocalPort", str(self.slippi_port))
+            config.set("Core", "SlippiOnlineDelay", str(self.online_delay))
+            config.set("Core", "BlockingPipes", str(self.blocking_input))
 
             config.set("Core", "SlippiSaveReplays", str(self.save_replays))
             if self.replay_dir:
                 config.set("Core", "SlippiReplayDir", self.replay_dir)
 
         # Turn on background input so we don't need to have window focus on dolphin
-        config.set("Input", 'backgroundinput', "True")
+        config.set("Input", "backgroundinput", "True")
         config.set("Core", "GFXBackend", self.gfx_backend)
         config.set("Display", "Fullscreen", str(self.fullscreen))
         if self.disable_audio:
@@ -603,9 +618,9 @@ class Console:
         config.set("Core", "EmulationSpeed", str(self.emulation_speed))
 
         if self.dump_config:
-            config.set("Movie", 'DumpFrames', str(self.dump_config.dump))
+            config.set("Movie", "DumpFrames", str(self.dump_config.dump))
 
-        with open(dolphin_ini_path, 'w') as dolphinfile:
+        with open(dolphin_ini_path, "w") as dolphinfile:
             config.write(dolphinfile)
 
         # Set up logger config
@@ -614,7 +629,7 @@ class Console:
         if os.path.isfile(logger_ini_path):
             logger_config.read(logger_ini_path)
 
-        for section in ['Options', 'Logs']:
+        for section in ["Options", "Logs"]:
             if not logger_config.has_section(section):
                 logger_config.add_section(section)
 
@@ -624,7 +639,7 @@ class Console:
         for log_type in self.log_types:
             logger_config.set("Logs", log_type, "True")
 
-        with open(logger_ini_path, 'w') as f:
+        with open(logger_ini_path, "w") as f:
             logger_config.write(f)
 
         # Set up graphics config
@@ -637,13 +652,13 @@ class Console:
         if self.dump_config:
             self.dump_config.update_gfx_ini(gfx_config)
 
-        with open(gfx_ini_path, 'w') as f:
+        with open(gfx_ini_path, "w") as f:
             gfx_config.write(f)
 
     def _setup_gecko_codes(self):
         ini_name = "GALE01r2.ini"
 
-        game_settings_path = os.path.join(self._get_dolphin_home_path(), 'GameSettings')
+        game_settings_path = os.path.join(self._get_dolphin_home_path(), "GameSettings")
         os.makedirs(game_settings_path, exist_ok=True)
         dst_ini_path = os.path.join(game_settings_path, ini_name)
 
@@ -666,17 +681,24 @@ class Console:
         with open(dst_ini_path, "w") as f:
             f.write(ini_text)
 
-    def setup_dolphin_controller(self, port, controllertype=enums.ControllerType.STANDARD):
+    def setup_dolphin_controller(
+        self, port, controllertype=enums.ControllerType.STANDARD
+    ):
         """Setup the necessary files for dolphin to recognize the player at the given
         controller port and type"""
 
         pipes_path = self.get_dolphin_pipes_path(port)
-        if platform.system() != "Windows" and controllertype == enums.ControllerType.STANDARD:
+        if (
+            platform.system() != "Windows"
+            and controllertype == enums.ControllerType.STANDARD
+        ):
             if not os.path.exists(pipes_path):
                 os.mkfifo(pipes_path)
 
         # Read in dolphin's controller config file
-        controller_config_path = os.path.join(self._get_dolphin_config_path(), "GCPadNew.ini")
+        controller_config_path = os.path.join(
+            self._get_dolphin_config_path(), "GCPadNew.ini"
+        )
         config = configparser.ConfigParser()
         config.read(controller_config_path)
 
@@ -686,56 +708,58 @@ class Console:
             config.add_section(section)
 
         if controllertype == enums.ControllerType.STANDARD:
-            config.set(section, 'Device', 'Pipe/0/slippibot' + str(port))
-            config.set(section, 'Buttons/A', 'Button A')
-            config.set(section, 'Buttons/B', 'Button B')
-            config.set(section, 'Buttons/X', 'Button X')
-            config.set(section, 'Buttons/Y', 'Button Y')
-            config.set(section, 'Buttons/Z', 'Button Z')
-            config.set(section, 'Buttons/L', 'Button L')
-            config.set(section, 'Buttons/R', 'Button R')
-            config.set(section, 'Buttons/Threshold', '50')
-            config.set(section, 'Main Stick/Up', 'Axis MAIN Y +')
-            config.set(section, 'Main Stick/Down', 'Axis MAIN Y -')
-            config.set(section, 'Main Stick/Left', 'Axis MAIN X -')
-            config.set(section, 'Main Stick/Right', 'Axis MAIN X +')
-            config.set(section, 'Triggers/L', 'Button L')
-            config.set(section, 'Triggers/R', 'Button R')
-            config.set(section, 'Main Stick/Radius', '100')
-            config.set(section, 'D-Pad/Up', 'Button D_UP')
-            config.set(section, 'D-Pad/Down', 'Button D_DOWN')
-            config.set(section, 'D-Pad/Left', 'Button D_LEFT')
-            config.set(section, 'D-Pad/Right', 'Button D_RIGHT')
-            config.set(section, 'Buttons/Start', 'Button START')
-            config.set(section, 'Buttons/A', 'Button A')
-            config.set(section, 'C-Stick/Up', 'Axis C Y +')
-            config.set(section, 'C-Stick/Down', 'Axis C Y -')
-            config.set(section, 'C-Stick/Left', 'Axis C X -')
-            config.set(section, 'C-Stick/Right', 'Axis C X +')
-            config.set(section, 'C-Stick/Radius', '100')
-            config.set(section, 'Triggers/L-Analog', 'Axis L +')
-            config.set(section, 'Triggers/R-Analog', 'Axis R +')
+            config.set(section, "Device", "Pipe/0/slippibot" + str(port))
+            config.set(section, "Buttons/A", "Button A")
+            config.set(section, "Buttons/B", "Button B")
+            config.set(section, "Buttons/X", "Button X")
+            config.set(section, "Buttons/Y", "Button Y")
+            config.set(section, "Buttons/Z", "Button Z")
+            config.set(section, "Buttons/L", "Button L")
+            config.set(section, "Buttons/R", "Button R")
+            config.set(section, "Buttons/Threshold", "50")
+            config.set(section, "Main Stick/Up", "Axis MAIN Y +")
+            config.set(section, "Main Stick/Down", "Axis MAIN Y -")
+            config.set(section, "Main Stick/Left", "Axis MAIN X -")
+            config.set(section, "Main Stick/Right", "Axis MAIN X +")
+            config.set(section, "Triggers/L", "Button L")
+            config.set(section, "Triggers/R", "Button R")
+            config.set(section, "Main Stick/Radius", "100")
+            config.set(section, "D-Pad/Up", "Button D_UP")
+            config.set(section, "D-Pad/Down", "Button D_DOWN")
+            config.set(section, "D-Pad/Left", "Button D_LEFT")
+            config.set(section, "D-Pad/Right", "Button D_RIGHT")
+            config.set(section, "Buttons/Start", "Button START")
+            config.set(section, "Buttons/A", "Button A")
+            config.set(section, "C-Stick/Up", "Axis C Y +")
+            config.set(section, "C-Stick/Down", "Axis C Y -")
+            config.set(section, "C-Stick/Left", "Axis C X -")
+            config.set(section, "C-Stick/Right", "Axis C X +")
+            config.set(section, "C-Stick/Radius", "100")
+            config.set(section, "Triggers/L-Analog", "Axis L +")
+            config.set(section, "Triggers/R-Analog", "Axis R +")
             # Note: this actually applies to digital presses. If set to 100,
             # digital presses no longer work because the comparison is strict.
-            config.set(section, 'Triggers/Threshold', '90')
+            config.set(section, "Triggers/Threshold", "90")
         # This section is unused if it's not a standard input (I think...)
         else:
-            config.set(section, 'Device', 'XInput2/0/Virtual core pointer')
+            config.set(section, "Device", "XInput2/0/Virtual core pointer")
 
-        with open(controller_config_path, 'w') as configfile:
+        with open(controller_config_path, "w") as configfile:
             config.write(configfile)
 
-        dolphin_config_path = os.path.join(self._get_dolphin_config_path(), "Dolphin.ini")
+        dolphin_config_path = os.path.join(
+            self._get_dolphin_config_path(), "Dolphin.ini"
+        )
         config = configparser.ConfigParser()
         config.read(dolphin_config_path)
         # Indexed at 0. "6" means standard controller, "12" means GCN Adapter
         #  The enum is scoped to the proper value, here
-        config.set("Core", 'SIDevice' + str(port - 1), controllertype.value)
-        with open(dolphin_config_path, 'w') as dolphinfile:
+        config.set("Core", "SIDevice" + str(port - 1), controllertype.value)
+        with open(dolphin_config_path, "w") as dolphinfile:
             config.write(dolphinfile)
 
     def step(self):
-        """ 'step' to the next state of the game and flushes all controllers
+        """'step' to the next state of the game and flushes all controllers
 
         Returns:
             GameState object that represents new current state of the game"""
@@ -751,7 +775,8 @@ class Console:
         frame_ended = False
         while not frame_ended:
             message = self._slippstream.dispatch(
-                self._polling_mode, timeout=self._polling_timeout)
+                self._polling_mode, timeout=self._polling_timeout
+            )
             if message is None:
                 return None
 
@@ -764,17 +789,26 @@ class Console:
             elif message["type"] == "game_event":
                 if len(message["payload"]) > 0:
                     if self.is_dolphin:
-                        frame_ended = self.__handle_slippstream_events(base64.b64decode(message["payload"]),
-                                                                       self._temp_gamestate)
+                        frame_ended = self.__handle_slippstream_events(
+                            base64.b64decode(message["payload"]), self._temp_gamestate
+                        )
                     else:
-                        frame_ended = self.__handle_slippstream_events(message["payload"], self._temp_gamestate)
+                        frame_ended = self.__handle_slippstream_events(
+                            message["payload"], self._temp_gamestate
+                        )
 
             elif message["type"] == "menu_event":
                 if len(message["payload"]) > 0:
-                    self.__handle_slippstream_menu_event(base64.b64decode(message["payload"]), self._temp_gamestate)
+                    self.__handle_slippstream_menu_event(
+                        base64.b64decode(message["payload"]), self._temp_gamestate
+                    )
                     frame_ended = True
 
-            elif self._use_manual_bookends and message["type"] == "frame_end" and self._frame != -10000:
+            elif (
+                self._use_manual_bookends
+                and message["type"] == "frame_end"
+                and self._frame != -10000
+            ):
                 frame_ended = True
 
         gamestate = self._temp_gamestate
@@ -806,8 +840,10 @@ class Console:
         self._frametimestamp = time.time()
         return gamestate
 
-    def __handle_slippstream_events(self, event_bytes: bytes, gamestate: GameState) -> bool:
-        """ Handle a series of events, provided sequentially in a byte array """
+    def __handle_slippstream_events(
+        self, event_bytes: bytes, gamestate: GameState
+    ) -> bool:
+        """Handle a series of events, provided sequentially in a byte array"""
         gamestate.menu_state = enums.Menu.IN_GAME
         mv = memoryview(event_bytes)
         while len(mv) > 0:
@@ -818,7 +854,9 @@ class Console:
                 return False
 
             if event_type == EventType.MENU_EVENT:
-                logging.error("Got a menu event in the middle of a frame. Continuing anyway.")
+                logging.error(
+                    "Got a menu event in the middle of a frame. Continuing anyway."
+                )
                 self.__handle_slippstream_menu_event(mv.tobytes(), gamestate)
                 return True
 
@@ -832,12 +870,14 @@ class Console:
                     cmd_len = _u16(mv, cursor + 0x1)
                     self.eventsize[cmd] = cmd_len + 1
                     cursor += 3
-                mv = mv[payload_size + 1:]
+                mv = mv[payload_size + 1 :]
                 continue
 
             event_size = self.eventsize[command_byte]
             if len(mv) < event_size:
-                logging.warning("Something went wrong unpacking events. Data is probably missing")
+                logging.warning(
+                    "Something went wrong unpacking events. Data is probably missing"
+                )
                 return False
 
             chunk = mv[:event_size]
@@ -878,10 +918,18 @@ class Console:
             elif event_type == EventType.ITEM_UPDATE:
                 self.__item_update(gamestate, chunk)
 
-            elif event_type in [EventType.FOD_INFO, EventType.DL_INFO, EventType.PS_INFO]:
+            elif event_type in [
+                EventType.FOD_INFO,
+                EventType.DL_INFO,
+                EventType.PS_INFO,
+            ]:
                 expected_stage = EVENT_TO_STAGE[event_type]
                 if self._current_stage is not expected_stage:
-                    logging.warning("Got stage info for %s, but gamestate says %s", expected_stage, gamestate.stage)
+                    logging.warning(
+                        "Got stage info for %s, but gamestate says %s",
+                        expected_stage,
+                        gamestate.stage,
+                    )
 
             else:
                 logging.error("Got an unhandled event type: %s", event_type)
@@ -895,21 +943,28 @@ class Console:
         version_num = np.ndarray((1,), ">B", event_bytes, 0x3)[0]
         self.slp_version = str(major) + "." + str(minor) + "." + str(version_num)
         self._use_manual_bookends = self._allow_old_version and (
-                version.parse(self.slp_version) < version.parse("3.0.0"))
+            version.parse(self.slp_version) < version.parse("3.0.0")
+        )
         if major < 3 and not self._allow_old_version:
             raise SlippiVersionTooLow(self.slp_version)
         try:
-            self._current_stage = enums.to_internal_stage(np.ndarray((1,), ">H", event_bytes, 0x13)[0])
+            self._current_stage = enums.to_internal_stage(
+                np.ndarray((1,), ">H", event_bytes, 0x13)[0]
+            )
         except ValueError:
             self._current_stage = enums.Stage.NO_STAGE
 
         self._is_teams = not (np.ndarray((1,), ">H", event_bytes, 0xD)[0] == 0)
 
         for i in range(4):
-            self._costumes[i] = np.ndarray((1,), ">B", event_bytes, 0x68 + (0x24 * i))[0]
+            self._costumes[i] = np.ndarray((1,), ">B", event_bytes, 0x68 + (0x24 * i))[
+                0
+            ]
 
         for i in range(4):
-            self._cpu_level[i] = np.ndarray((1,), ">B", event_bytes, 0x74 + (0x24 * i))[0]
+            self._cpu_level[i] = np.ndarray((1,), ">B", event_bytes, 0x74 + (0x24 * i))[
+                0
+            ]
 
         for i in range(4):
             self._team_id[i] = np.ndarray((1,), ">B", event_bytes, 0x6E + (0x24 * i))[0]
@@ -921,13 +976,13 @@ class Console:
         slp_version = (major, minor, version_num)
 
         if slp_version >= (3, 9, 0):
-            shift_jis_hash = b'\x81\x94'.decode('shift-jis')
+            shift_jis_hash = b"\x81\x94".decode("shift-jis")
 
             for i in range(4):
                 self._display_names[i] = read_shift_jis(event_bytes, 0x1A5 + 0x1F * i)
 
                 connect_code = read_shift_jis(event_bytes, 0x221 + 0xA * i)
-                self._connect_codes[i] = connect_code.replace(shift_jis_hash, '#')
+                self._connect_codes[i] = connect_code.replace(shift_jis_hash, "#")
 
     def __pre_frame(self, gamestate: GameState, event_bytes: bytes) -> None:
         mv = memoryview(event_bytes)
@@ -999,15 +1054,17 @@ class Console:
 
         # Enums via value map (avoid ValueError)
         ch_val = mv[0x7]
-        ps.character = enums.Character._value2member_map_.get(ch_val,
-                                                              enums.Character.UNKNOWN_CHARACTER)  # type: ignore[attr-defined]
+        ps.character = enums.Character._value2member_map_.get(
+            ch_val, enums.Character.UNKNOWN_CHARACTER
+        )  # type: ignore[attr-defined]
 
         act_val = _S_H.unpack_from(event_bytes, 0x8)[0]
-        ps.action = enums.Action._value2member_map_.get(act_val,
-                                                        enums.Action.UNKNOWN_ANIMATION)  # type: ignore[attr-defined]
+        ps.action = enums.Action._value2member_map_.get(
+            act_val, enums.Action.UNKNOWN_ANIMATION
+        )  # type: ignore[attr-defined]
 
         # Facing from float sign
-        ps.facing = (_S_F.unpack_from(event_bytes, 0x12)[0] > 0.0)
+        ps.facing = _S_F.unpack_from(event_bytes, 0x12)[0] > 0.0
 
         percent_val, shield_strength = _S_2F.unpack_from(event_bytes, 0x16)
         ps.percent = int(percent_val)
@@ -1035,7 +1092,9 @@ class Console:
 
         # Scalars with length guards (avoid try/except in hot path)
         blen = len(mv)
-        ps.hitstun_frames_left = int(_S_F.unpack_from(event_bytes, 0x2B)[0]) if blen > 0x2E else 0
+        ps.hitstun_frames_left = (
+            int(_S_F.unpack_from(event_bytes, 0x2B)[0]) if blen > 0x2E else 0
+        )
         ps.on_ground = (mv[0x2F] == 0) if blen > 0x2F else True
         if blen > 0x32:
             ps.jumps_left = mv[0x32]
@@ -1051,7 +1110,9 @@ class Console:
             ps.invulnerable = False
 
         if blen > 0x4C:
-            air_x, y_self, x_attack, y_attack, ground_x, hitlag = _S_6F.unpack_from(event_bytes, 0x35)
+            air_x, y_self, x_attack, y_attack, ground_x, hitlag = _S_6F.unpack_from(
+                event_bytes, 0x35
+            )
             ps.speed_air_x_self = air_x
             ps.speed_y_self = y_self
             ps.speed_x_attack = x_attack
@@ -1059,16 +1120,32 @@ class Console:
             ps.speed_ground_x_self = ground_x
             ps.hitlag_left = int(hitlag)
         else:
-            ps.speed_air_x_self = _S_F.unpack_from(event_bytes, 0x35)[0] if blen > 0x38 else 0.0
-            ps.speed_y_self = _S_F.unpack_from(event_bytes, 0x39)[0] if blen > 0x3C else 0.0
-            ps.speed_x_attack = _S_F.unpack_from(event_bytes, 0x3D)[0] if blen > 0x40 else 0.0
-            ps.speed_y_attack = _S_F.unpack_from(event_bytes, 0x41)[0] if blen > 0x44 else 0.0
-            ps.speed_ground_x_self = _S_F.unpack_from(event_bytes, 0x45)[0] if blen > 0x48 else 0.0
-            ps.hitlag_left = int(_S_F.unpack_from(event_bytes, 0x49)[0]) if blen > 0x4C else 0
+            ps.speed_air_x_self = (
+                _S_F.unpack_from(event_bytes, 0x35)[0] if blen > 0x38 else 0.0
+            )
+            ps.speed_y_self = (
+                _S_F.unpack_from(event_bytes, 0x39)[0] if blen > 0x3C else 0.0
+            )
+            ps.speed_x_attack = (
+                _S_F.unpack_from(event_bytes, 0x3D)[0] if blen > 0x40 else 0.0
+            )
+            ps.speed_y_attack = (
+                _S_F.unpack_from(event_bytes, 0x41)[0] if blen > 0x44 else 0.0
+            )
+            ps.speed_ground_x_self = (
+                _S_F.unpack_from(event_bytes, 0x45)[0] if blen > 0x48 else 0.0
+            )
+            ps.hitlag_left = (
+                int(_S_F.unpack_from(event_bytes, 0x49)[0]) if blen > 0x4C else 0
+            )
 
         # Off-stage helper
         edge = stages.EDGE_GROUND_POSITION.get(gs.stage)
-        if edge is not None and (abs(ps.position.x) > edge or ps.position.y < -6) and not ps.on_ground:
+        if (
+            edge is not None
+            and (abs(ps.position.x) > edge or ps.position.y < -6)
+            and not ps.on_ground
+        ):
             ps.off_stage = True
         else:
             ps.off_stage = False
@@ -1105,13 +1182,19 @@ class Console:
         player_one_x, player_one_y, player_two_x, player_two_y = 0, 0, 0, 0
         for _, player_state in gamestate.players.items():
             if i == 0:
-                player_one_x, player_one_y = player_state.position.x, player_state.position.y
+                player_one_x, player_one_y = (
+                    player_state.position.x,
+                    player_state.position.y,
+                )
             if i == 1:
-                player_two_x, player_two_y = player_state.position.x, player_state.position.y
+                player_two_x, player_two_y = (
+                    player_state.position.x,
+                    player_state.position.y,
+                )
             i += 1
         xdist = player_one_x - player_two_x
         ydist = player_one_y - player_two_y
-        gamestate.distance = math.sqrt((xdist ** 2) + (ydist ** 2))
+        gamestate.distance = math.sqrt((xdist**2) + (ydist**2))
 
     def __item_update(self, gamestate, event_bytes):
         projectile = Projectile()
@@ -1119,7 +1202,7 @@ class Console:
         projectile.position.y = np.ndarray((1,), ">f", event_bytes, 0x18)[0]
         projectile.x = projectile.position.x
         projectile.y = projectile.position.y
-        projectile.speed.x = np.ndarray((1,), ">f", event_bytes, 0xc)[0]
+        projectile.speed.x = np.ndarray((1,), ">f", event_bytes, 0xC)[0]
         projectile.speed.y = np.ndarray((1,), ">f", event_bytes, 0x10)[0]
         projectile.x_speed = projectile.speed.x
         projectile.y_speed = projectile.speed.y
@@ -1130,7 +1213,9 @@ class Console:
         except TypeError:
             projectile.owner = -1
         try:
-            projectile.type = enums.ProjectileType(np.ndarray((1,), ">H", event_bytes, 0x5)[0])
+            projectile.type = enums.ProjectileType(
+                np.ndarray((1,), ">H", event_bytes, 0x5)[0]
+            )
         except ValueError:
             projectile.type = enums.ProjectileType.UNKNOWN_PROJECTILE
 
@@ -1142,19 +1227,30 @@ class Console:
         projectile.subtype = np.ndarray((1,), ">B", event_bytes, 0x7)[0]
 
         # Ignore exploded Samus bombs. They are subtype 3
-        if projectile.type == enums.ProjectileType.SAMUS_BOMB and projectile.subtype == 3:
+        if (
+            projectile.type == enums.ProjectileType.SAMUS_BOMB
+            and projectile.subtype == 3
+        ):
             return
         # Ignore exploded Samus missles
-        if projectile.type == enums.ProjectileType.SAMUS_MISSLE and projectile.subtype in [2, 3]:
+        if (
+            projectile.type == enums.ProjectileType.SAMUS_MISSLE
+            and projectile.subtype in [2, 3]
+        ):
             return
         # Ignore Samus charge beam while charging (not firing)
-        if projectile.type == enums.ProjectileType.SAMUS_CHARGE_BEAM and projectile.subtype == 0:
+        if (
+            projectile.type == enums.ProjectileType.SAMUS_CHARGE_BEAM
+            and projectile.subtype == 0
+        ):
             return
 
         # Add the projectile to the gamestate list
         gamestate.projectiles.append(projectile)
 
-    def __handle_slippstream_menu_event(self, event_bytes: bytes, gamestate: GameState) -> None:
+    def __handle_slippstream_menu_event(
+        self, event_bytes: bytes, gamestate: GameState
+    ) -> None:
         mv = memoryview(event_bytes)
         scene = _u16(mv, 0x1)
         if scene == 0x02:
@@ -1186,11 +1282,22 @@ class Console:
             gamestate.menu_state = enums.Menu.UNKNOWN_MENU
 
         # controller port statuses at CSS
-        if gamestate.menu_state in [enums.Menu.CHARACTER_SELECT, enums.Menu.SLIPPI_ONLINE_CSS]:
-            gamestate.players[1].controller_status = enums.ControllerStatus(_u8(mv, 0x25))
-            gamestate.players[2].controller_status = enums.ControllerStatus(_u8(mv, 0x26))
-            gamestate.players[3].controller_status = enums.ControllerStatus(_u8(mv, 0x27))
-            gamestate.players[4].controller_status = enums.ControllerStatus(_u8(mv, 0x28))
+        if gamestate.menu_state in [
+            enums.Menu.CHARACTER_SELECT,
+            enums.Menu.SLIPPI_ONLINE_CSS,
+        ]:
+            gamestate.players[1].controller_status = enums.ControllerStatus(
+                _u8(mv, 0x25)
+            )
+            gamestate.players[2].controller_status = enums.ControllerStatus(
+                _u8(mv, 0x26)
+            )
+            gamestate.players[3].controller_status = enums.ControllerStatus(
+                _u8(mv, 0x27)
+            )
+            gamestate.players[4].controller_status = enums.ControllerStatus(
+                _u8(mv, 0x28)
+            )
 
             # CSS Cursors
             gamestate.players[1].cursor_x = np.ndarray((1,), ">f", event_bytes, 0x3)[0]
@@ -1206,19 +1313,27 @@ class Console:
 
             # Coin down
             try:
-                gamestate.players[1].coin_down = np.ndarray((1,), ">B", event_bytes, 0x2D)[0] == 2
+                gamestate.players[1].coin_down = (
+                    np.ndarray((1,), ">B", event_bytes, 0x2D)[0] == 2
+                )
             except TypeError:
                 gamestate.players[1].coin_down = False
             try:
-                gamestate.players[2].coin_down = np.ndarray((1,), ">B", event_bytes, 0x2E)[0] == 2
+                gamestate.players[2].coin_down = (
+                    np.ndarray((1,), ">B", event_bytes, 0x2E)[0] == 2
+                )
             except TypeError:
                 gamestate.players[2].coin_down = False
             try:
-                gamestate.players[3].coin_down = np.ndarray((1,), ">B", event_bytes, 0x2F)[0] == 2
+                gamestate.players[3].coin_down = (
+                    np.ndarray((1,), ">B", event_bytes, 0x2F)[0] == 2
+                )
             except TypeError:
                 gamestate.players[3].coin_down = False
             try:
-                gamestate.players[4].coin_down = np.ndarray((1,), ">B", event_bytes, 0x30)[0] == 2
+                gamestate.players[4].coin_down = (
+                    np.ndarray((1,), ">B", event_bytes, 0x30)[0] == 2
+                )
             except TypeError:
                 gamestate.players[4].coin_down = False
 
@@ -1228,25 +1343,33 @@ class Console:
                 gamestate.players[1].character_selected = gamestate.players[1].character
             except TypeError:
                 gamestate.players[1].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[1].character_selected = enums.Character.UNKNOWN_CHARACTER
+                gamestate.players[1].character_selected = (
+                    enums.Character.UNKNOWN_CHARACTER
+                )
             try:
                 gamestate.players[2].character = enums.to_internal(_u8(mv, 0x2A))
                 gamestate.players[2].character_selected = gamestate.players[2].character
             except TypeError:
                 gamestate.players[2].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[2].character_selected = enums.Character.UNKNOWN_CHARACTER
+                gamestate.players[2].character_selected = (
+                    enums.Character.UNKNOWN_CHARACTER
+                )
             try:
                 gamestate.players[3].character = enums.to_internal(_u8(mv, 0x2B))
                 gamestate.players[3].character_selected = gamestate.players[3].character
             except TypeError:
                 gamestate.players[3].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[3].character_selected = enums.Character.UNKNOWN_CHARACTER
+                gamestate.players[3].character_selected = (
+                    enums.Character.UNKNOWN_CHARACTER
+                )
             try:
                 gamestate.players[4].character = enums.to_internal(_u8(mv, 0x2C))
                 gamestate.players[4].character_selected = gamestate.players[4].character
             except TypeError:
                 gamestate.players[4].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[4].character_selected = enums.Character.UNKNOWN_CHARACTER
+                gamestate.players[4].character_selected = (
+                    enums.Character.UNKNOWN_CHARACTER
+                )
 
         if gamestate.menu_state == enums.Menu.STAGE_SELECT:
             try:
@@ -1284,11 +1407,12 @@ class Console:
             elif nametag == 0x00:
                 gamestate.submenu = enums.SubMenu.ONLINE_CSS
 
-
         # Is Holding CPU Slider
         try:
             for i in range(4):
-                gamestate.players[i+1].is_holding_cpu_slider = np.ndarray((1,), ">B", event_bytes, 0x45 + i)[0]
+                gamestate.players[i + 1].is_holding_cpu_slider = np.ndarray(
+                    (1,), ">B", event_bytes, 0x45 + i
+                )[0]
         except TypeError:
             pass
         except KeyError:
@@ -1296,25 +1420,30 @@ class Console:
 
         try:
             for i in range(4):
-                gamestate.players[i+1].cpu_level = np.ndarray((1,), ">B", event_bytes, 0x41 + i)[0]
+                gamestate.players[i + 1].cpu_level = np.ndarray(
+                    (1,), ">B", event_bytes, 0x41 + i
+                )[0]
         except TypeError:
             pass
         except KeyError:
             pass
 
     def __fixframeindexing(self, gamestate: GameState):
-        """ Melee's indexing of action frames is wildly inconsistent.
-            Here we adjust all of the frames to be indexed at 1 (so math is easier)"""
+        """Melee's indexing of action frames is wildly inconsistent.
+        Here we adjust all of the frames to be indexed at 1 (so math is easier)"""
         for _, player in gamestate.players.items():
             if player.action.value in self.zero_indices[player.character.value]:
                 player.action_frame = player.action_frame + 1
 
     def __fixiasa(self, gamestate: GameState):
-        """ The IASA flag doesn't set or reset for special attacks.
-            So let's just set IASA to False for all non-A attacks.
+        """The IASA flag doesn't set or reset for special attacks.
+        So let's just set IASA to False for all non-A attacks.
         """
         for _, player in gamestate.players.items():
             # Luckily for us, all the A-attacks are in a contiguous place in the enums!
             #   So we don't need to call them out one by one
-            if player.action.value < Action.NEUTRAL_ATTACK_1.value or player.action.value > Action.DAIR.value:
+            if (
+                player.action.value < Action.NEUTRAL_ATTACK_1.value
+                or player.action.value > Action.DAIR.value
+            ):
                 player.iasa = False

@@ -1,10 +1,11 @@
-"""Enum values for various Melee objects """
+"""Enum values for various Melee objects"""
 
 from enum import Enum
 
 
 class Stage(Enum):
-    """A VS-mode stage """
+    """A VS-mode stage"""
+
     NO_STAGE = 0
     FINAL_DESTINATION = 0x19
     BATTLEFIELD = 0x18
@@ -32,7 +33,8 @@ def to_internal_stage(stage_id):
 
 
 class Menu(Enum):
-    """A primary menu scene the game can be in """
+    """A primary menu scene the game can be in"""
+
     CHARACTER_SELECT = 0
     STAGE_SELECT = 1
     IN_GAME = 2
@@ -41,11 +43,12 @@ class Menu(Enum):
     MAIN_MENU = 5
     SLIPPI_ONLINE_CSS = 6
     PRESS_START = 7
-    UNKNOWN_MENU = 0xff
+    UNKNOWN_MENU = 0xFF
 
 
 class SubMenu(Enum):
     """Sub-menu of a primary menu"""
+
     MAIN_MENU_SUBMENU = 0
     ONEP_MODE_SUBMENU = 1
     VS_MODE_SUBMENU = 2
@@ -65,12 +68,13 @@ class SubMenu(Enum):
     LANGUAGE_SELECT_SUBMENU = 23
     ERASE_DATA_SUBMENU = 24
     MULTIMAN_MELEE_SUBMENU = 33
-    ONLINE_CSS = 0xfe
-    UNKNOWN_SUBMENU = 0xff
+    ONLINE_CSS = 0xFE
+    UNKNOWN_SUBMENU = 0xFF
 
 
 class ControllerStatus(Enum):
-    """One of three states a controller can be in during character select """
+    """One of three states a controller can be in during character select"""
+
     CONTROLLER_HUMAN = 0
     CONTROLLER_CPU = 1
     CONTROLLER_UNPLUGGED = 3
@@ -81,13 +85,15 @@ class ControllerType(Enum):
 
     Named pipe input is considered 'standard' input by Dolphin.
     """
+
     STANDARD = "6"
     GCN_ADAPTER = "12"
     UNPLUGGED = "0"
 
 
 class AttackState(Enum):
-    """The phases an attack can be in """
+    """The phases an attack can be in"""
+
     WINDUP = 0
     ATTACKING = 1
     COOLDOWN = 2
@@ -99,6 +105,7 @@ class Character(Enum):
 
     Note:
         Numeric values are 'internal' IDs."""
+
     MARIO = 0x00
     FOX = 0x01
     CPTFALCON = 0x02
@@ -109,12 +116,12 @@ class Character(Enum):
     SHEIK = 0x07
     NESS = 0x08
     PEACH = 0x09
-    POPO = 0x0a
-    NANA = 0x0b
-    PIKACHU = 0x0c
-    SAMUS = 0x0d
-    YOSHI = 0x0e
-    JIGGLYPUFF = 0x0f
+    POPO = 0x0A
+    NANA = 0x0B
+    PIKACHU = 0x0C
+    SAMUS = 0x0D
+    YOSHI = 0x0E
+    JIGGLYPUFF = 0x0F
     MEWTWO = 0x10
     LUIGI = 0x11
     MARTH = 0x12
@@ -125,12 +132,12 @@ class Character(Enum):
     PICHU = 0x17
     GAMEANDWATCH = 0x18
     GANONDORF = 0x19
-    ROY = 0x1a
-    WIREFRAME_MALE = 0x1d
-    WIREFRAME_FEMALE = 0x1e
-    GIGA_BOWSER = 0x1f
+    ROY = 0x1A
+    WIREFRAME_MALE = 0x1D
+    WIREFRAME_FEMALE = 0x1E
+    GIGA_BOWSER = 0x1F
     SANDBAG = 0x20
-    UNKNOWN_CHARACTER = 0xff
+    UNKNOWN_CHARACTER = 0xFF
 
 
 def to_internal(char_id):
@@ -158,17 +165,17 @@ def to_internal(char_id):
         return Character.GANONDORF
     if char_id == 0x09:
         return Character.FALCO
-    if char_id == 0x0a:
+    if char_id == 0x0A:
         return Character.FOX
-    if char_id == 0x0b:
+    if char_id == 0x0B:
         return Character.NESS
-    if char_id == 0x0c:
+    if char_id == 0x0C:
         return Character.POPO
-    if char_id == 0x0d:
+    if char_id == 0x0D:
         return Character.KIRBY
-    if char_id == 0x0e:
+    if char_id == 0x0E:
         return Character.SAMUS
-    if char_id == 0x0f:
+    if char_id == 0x0F:
         return Character.ZELDA
     if char_id == 0x10:
         return Character.LINK
@@ -254,6 +261,7 @@ class Button(Enum):
 
     Note:
         String values represent the Dolphin input string for that button"""
+
     BUTTON_A = "A"
     BUTTON_B = "B"
     BUTTON_X = "X"
@@ -272,10 +280,11 @@ class Button(Enum):
 
 
 class Action(Enum):
-    """ The in-game action (or animation) a character can be in
+    """The in-game action (or animation) a character can be in
 
     Note:
         Numeric values (mostly) represent their in-game values"""
+
     DEAD_DOWN = 0x0  # Standard downward death
     DEAD_LEFT = 0x1  # Standard leftward death
     DEAD_RIGHT = 0x2  # Standard rightward death
@@ -286,12 +295,12 @@ class Action(Enum):
     DEAD_FLY_SPLATTER = 0x7  # Hit upwards and have splattered on the camera
     DEAD_FLY_SPLATTER_FLAT = 0x8  # Hit upwards and have splattered on the camera
     DEAD_FLY_SPLATTER_ICE = 0x9
-    DEAD_FLY_SPLATTER_FLAT_ICE = 0xa
-    NOTHING_STATE = 0xb  # state for shiek/zelda when counterpart is the one playing. Or state of Nana when Sopo is alive
-    ON_HALO_DESCENT = 0xc  # Entering on halo
-    ON_HALO_WAIT = 0x0d  # Waiting on halo
-    STANDING = 0x0e  # Standing state
-    WALK_SLOW = 0x0f
+    DEAD_FLY_SPLATTER_FLAT_ICE = 0xA
+    NOTHING_STATE = 0xB  # state for shiek/zelda when counterpart is the one playing. Or state of Nana when Sopo is alive
+    ON_HALO_DESCENT = 0xC  # Entering on halo
+    ON_HALO_WAIT = 0x0D  # Waiting on halo
+    STANDING = 0x0E  # Standing state
+    WALK_SLOW = 0x0F
     WALK_MIDDLE = 0x10
     WALK_FAST = 0x11
     TURNING = 0x12
@@ -303,11 +312,11 @@ class Action(Enum):
     KNEE_BEND = 0x18  # pre-jump animation.
     JUMPING_FORWARD = 0x19  # First jump forward
     JUMPING_BACKWARD = 0x1A  # First jump backward
-    JUMPING_ARIAL_FORWARD = 0x1b  # Aerial jump forward
-    JUMPING_ARIAL_BACKWARD = 0x1c  # Aerial jump backward
+    JUMPING_ARIAL_FORWARD = 0x1B  # Aerial jump forward
+    JUMPING_ARIAL_BACKWARD = 0x1C  # Aerial jump backward
     FALLING = 0x1D  # The "wait" state of the air. Falling straight down
-    FALLING_FORWARD = 0x1e  # falling with forward DI
-    FALLING_BACKWARD = 0x1f  # falling with backward DI
+    FALLING_FORWARD = 0x1E  # falling with forward DI
+    FALLING_BACKWARD = 0x1F  # falling with backward DI
     FALLING_AERIAL = 0x20  # Falling after the second jump
     FALLING_AERIAL_FORWARD = 0x21  # After double-jump forward DI
     FALLING_AERIAL_BACKWARD = 0x22  # After double-jump backward DI
@@ -318,12 +327,12 @@ class Action(Enum):
     CROUCH_START = 0x27  # Going from stand to crouch
     CROUCHING = 0x28
     CROUCH_END = 0x29  # Standing up from crouch
-    LANDING = 0x2a  # Can be canceled. Not stunned
-    LANDING_SPECIAL = 0x2b  # Landing special like from wavedash. Stunned.
-    NEUTRAL_ATTACK_1 = 0x2c  # Jab 1
-    NEUTRAL_ATTACK_2 = 0x2d  # Jab 2
-    NEUTRAL_ATTACK_3 = 0x2e  # Jab 3
-    LOOPING_ATTACK_START = 0x2f  # Start of rapid jab
+    LANDING = 0x2A  # Can be canceled. Not stunned
+    LANDING_SPECIAL = 0x2B  # Landing special like from wavedash. Stunned.
+    NEUTRAL_ATTACK_1 = 0x2C  # Jab 1
+    NEUTRAL_ATTACK_2 = 0x2D  # Jab 2
+    NEUTRAL_ATTACK_3 = 0x2E  # Jab 3
+    LOOPING_ATTACK_START = 0x2F  # Start of rapid jab
     LOOPING_ATTACK_MIDDLE = 0x30  # Middle of a rapid jab
     LOOPING_ATTACK_END = 0x31  # End of a rapid jab
     DASH_ATTACK = 0x32  # AttackDash
@@ -334,12 +343,12 @@ class Action(Enum):
     FTILT_LOW = 0x37
     UPTILT = 0x38
     DOWNTILT = 0x39
-    FSMASH_HIGH = 0x3a
-    FSMASH_MID_HIGH = 0x3b
-    FSMASH_MID = 0x3c
-    FSMASH_MID_LOW = 0x3d
-    FSMASH_LOW = 0x3e
-    UPSMASH = 0x3f
+    FSMASH_HIGH = 0x3A
+    FSMASH_MID_HIGH = 0x3B
+    FSMASH_MID = 0x3C
+    FSMASH_MID_LOW = 0x3D
+    FSMASH_LOW = 0x3E
+    UPSMASH = 0x3F
     DOWNSMASH = 0x40
     NAIR = 0x41
     FAIR = 0x42
@@ -350,24 +359,24 @@ class Action(Enum):
     FAIR_LANDING = 0x47
     BAIR_LANDING = 0x48
     UAIR_LANDING = 0x49
-    DAIR_LANDING = 0x4a
-    DAMAGE_HIGH_1 = 0x4b  # The following are "flinching" animations, meaning you have just been hit by an attack
-    DAMAGE_HIGH_2 = 0x4c
-    DAMAGE_HIGH_3 = 0x4d
-    DAMAGE_NEUTRAL_1 = 0x4e
-    DAMAGE_NEUTRAL_2 = 0x4f
+    DAIR_LANDING = 0x4A
+    DAMAGE_HIGH_1 = 0x4B  # The following are "flinching" animations, meaning you have just been hit by an attack
+    DAMAGE_HIGH_2 = 0x4C
+    DAMAGE_HIGH_3 = 0x4D
+    DAMAGE_NEUTRAL_1 = 0x4E
+    DAMAGE_NEUTRAL_2 = 0x4F
     DAMAGE_NEUTRAL_3 = 0x50
     DAMAGE_LOW_1 = 0x51
     DAMAGE_LOW_2 = 0x52
     DAMAGE_LOW_3 = 0x53
-    DAMAGE_AIR_1 = 0x54 # You were hit in the air
+    DAMAGE_AIR_1 = 0x54  # You were hit in the air
     DAMAGE_AIR_2 = 0x55
     DAMAGE_AIR_3 = 0x56
-    DAMAGE_FLY_HIGH = 0x57 # The following 5 are tumbling states, at least 80 units of knockback and/or 32 frames of hitstun
+    DAMAGE_FLY_HIGH = 0x57  # The following 5 are tumbling states, at least 80 units of knockback and/or 32 frames of hitstun
     DAMAGE_FLY_NEUTRAL = 0x58
     DAMAGE_FLY_LOW = 0x59
-    DAMAGE_FLY_TOP = 0x5a # Attack launched at 70-110 degrees.
-    DAMAGE_FLY_ROLL = 0x5b # Reeling, occurs with 30% chance if at >100% after the attack. Hitstun, tumbling.
+    DAMAGE_FLY_TOP = 0x5A  # Attack launched at 70-110 degrees.
+    DAMAGE_FLY_ROLL = 0x5B  # Reeling, occurs with 30% chance if at >100% after the attack. Hitstun, tumbling.
     ITEM_PICKUP_LIGHT = 0x5C  # Picking up a light item
     ITEM_PICKUP_HEAVY = 0x5D  #
     ITEM_THROW_LIGHT_FORWARD = 0x5E
@@ -386,7 +395,7 @@ class Action(Enum):
     ITEM_THROW_HEAVY_LOW = 0x6B
     ITEM_THROW_LIGHT_SMASH_FORWARD = 0x6C
     ITEM_THROW_LIGHT_SMASH_BACK = 0x6D
-    ITEM_THROW_LIGHT_SMASH_UP = 0x6e
+    ITEM_THROW_LIGHT_SMASH_UP = 0x6E
     ITEM_THROW_LIGHT_SMASH_DOWN = 0x6F
     ITEM_THROW_LIGHT_AIR_SMASH_FORWARD = 0x70
     ITEM_THROW_LIGHT_AIR_SMASH_BACK = 0x71
@@ -414,12 +423,12 @@ class Action(Enum):
     FAN_SWING_4 = 0x87
     STAR_ROD_SWING_1 = 0x88
     STAR_ROD_SWING_2 = 0x89
-    STAR_ROD_SWING_3 = 0x8a
-    STAR_ROD_SWING_4 = 0x8b
-    LIP_STICK_SWING_1 = 0x8c
-    LIP_STICK_SWING_2 = 0x8d
-    LIP_STICK_SWING_3 = 0x8e
-    LIP_STICK_SWING_4 = 0x8f
+    STAR_ROD_SWING_3 = 0x8A
+    STAR_ROD_SWING_4 = 0x8B
+    LIP_STICK_SWING_1 = 0x8C
+    LIP_STICK_SWING_2 = 0x8D
+    LIP_STICK_SWING_3 = 0x8E
+    LIP_STICK_SWING_4 = 0x8F
     ITEM_PARASOL_OPEN = 0x90
     ITEM_PARASOL_FALL = 0x91
     ITEM_PARASOL_FALL_SPECIAL = 0x92
@@ -430,87 +439,87 @@ class Action(Enum):
     GUN_SHOOT_AIR_EMPTY = 0x97
     FIRE_FLOWER_SHOOT = 0x98
     FIRE_FLOWER_SHOOT_AIR = 0x99
-    ITEM_SCREW = 0x9a
-    ITEM_SCREW_AIR = 0x9b
-    DAMAGE_SCREW = 0x9c
-    DAMAGE_SCREW_AIR = 0x9d
-    ITEM_SCOPE_START = 0x9e
-    ITEM_SCOPE_RAPID = 0x9f
-    ITEM_SCOPE_FIRE = 0xa0
-    ITEM_SCOPE_END = 0xa1
-    ITEM_SCOPE_AIR_START = 0xa2
-    ITEM_SCOPE_AIR_RAPID = 0xa3
-    ITEM_SCOPE_AIR_FIRE = 0xa4
-    ITEM_SCOPE_AIR_END = 0xa5
-    ITEM_SCOPE_START_EMPTY = 0xa6
-    ITEM_SCOPE_RAPID_EMPTY = 0xa7
-    ITEM_SCOPE_FIRE_EMPTY = 0xa8
-    ITEM_SCOPE_END_EMPTY = 0xa9
-    ITEM_SCOPE_AIR_START_EMPTY = 0xaa
-    ITEM_SCOPE_AIR_RAPID_EMPTY = 0xab
-    ITEM_SCOPE_AIR_FIRE_EMPTY = 0xac
-    ITEM_SCOPE_AIR_END_EMPTY = 0xad
-    LIFT_WAIT = 0xae
-    LIFT_WALK_1 = 0xaf
-    LIFT_WALK_2 = 0xb0
-    LIFT_TURN = 0xb1
-    SHIELD_START = 0xb2  # Shield startup
-    SHIELD = 0xb3  # Holding shield
-    SHIELD_RELEASE = 0xb4
-    SHIELD_STUN = 0xb5
-    SHIELD_REFLECT = 0xb6  # Probably powershield
-    TECH_MISS_UP = 0xb7  # "facing" up.
-    LYING_GROUND_UP = 0xb8
-    LYING_GROUND_UP_HIT = 0xb9
-    GROUND_GETUP = 0xba
-    GROUND_ATTACK_UP = 0xbb
-    GROUND_ROLL_FORWARD_UP = 0xbc
-    GROUND_ROLL_BACKWARD_UP = 0xbd
-    GROUND_SPOT_UP = 0xbe
-    TECH_MISS_DOWN = 0xbf
-    LYING_GROUND_DOWN = 0xc0
-    DAMAGE_GROUND = 0xc1
-    NEUTRAL_GETUP = 0xc2
-    GETUP_ATTACK = 0xc3
-    GROUND_ROLL_FORWARD_DOWN = 0xc4
-    GROUND_ROLL_BACKWARD_DOWN = 0xc5
-    GROUND_ROLL_SPOT_DOWN = 0xc6
-    NEUTRAL_TECH = 0xc7
-    FORWARD_TECH = 0xc8
-    BACKWARD_TECH = 0xc9
-    WALL_TECH = 0xca
-    WALL_TECH_JUMP = 0xcb
-    CEILING_TECH = 0xcc
-    SHIELD_BREAK_FLY = 0xcd
-    SHIELD_BREAK_FALL = 0xce
-    SHIELD_BREAK_DOWN_U = 0xcf
-    SHIELD_BREAK_DOWN_D = 0xd0
-    SHIELD_BREAK_STAND_U = 0xd1
-    SHIELD_BREAK_STAND_D = 0xd2
-    SHIELD_BREAK_TEETER = 0xd3
-    GRAB = 0xd4
-    GRAB_PULLING = 0xd5  # Successful grab
-    GRAB_RUNNING = 0xd6
-    GRAB_RUNNING_PULLING = 0xd7
-    GRAB_WAIT = 0xd8
-    GRAB_PUMMEL = 0xd9
-    GRAB_BREAK = 0xda  # opponent breaks out of your grab
-    THROW_FORWARD = 0xdb
-    THROW_BACK = 0xdc
-    THROW_UP = 0xdd  # yuck
-    THROW_DOWN = 0xde
-    GRAB_PULLING_HIGH = 0xdf
-    GRABBED_WAIT_HIGH = 0xe0  # XXX Not sure about this
-    PUMMELED_HIGH = 0xe1  # XXX Not sure about this
-    GRAB_PULL = 0xe2  # Being pulled inwards from the grab
-    GRABBED = 0xe3  # Grabbed
-    GRAB_PUMMELED = 0xe4  # Being pummeled
-    GRAB_ESCAPE = 0xe5  # Grab release
-    GRAB_JUMP = 0xe6  # Jumping mash out of grab
-    GRAB_NECK = 0xe7  # Unused
-    GRAB_FOOT = 0xe8  # Unused
-    ROLL_FORWARD = 0xe9
-    ROLL_BACKWARD = 0xea
+    ITEM_SCREW = 0x9A
+    ITEM_SCREW_AIR = 0x9B
+    DAMAGE_SCREW = 0x9C
+    DAMAGE_SCREW_AIR = 0x9D
+    ITEM_SCOPE_START = 0x9E
+    ITEM_SCOPE_RAPID = 0x9F
+    ITEM_SCOPE_FIRE = 0xA0
+    ITEM_SCOPE_END = 0xA1
+    ITEM_SCOPE_AIR_START = 0xA2
+    ITEM_SCOPE_AIR_RAPID = 0xA3
+    ITEM_SCOPE_AIR_FIRE = 0xA4
+    ITEM_SCOPE_AIR_END = 0xA5
+    ITEM_SCOPE_START_EMPTY = 0xA6
+    ITEM_SCOPE_RAPID_EMPTY = 0xA7
+    ITEM_SCOPE_FIRE_EMPTY = 0xA8
+    ITEM_SCOPE_END_EMPTY = 0xA9
+    ITEM_SCOPE_AIR_START_EMPTY = 0xAA
+    ITEM_SCOPE_AIR_RAPID_EMPTY = 0xAB
+    ITEM_SCOPE_AIR_FIRE_EMPTY = 0xAC
+    ITEM_SCOPE_AIR_END_EMPTY = 0xAD
+    LIFT_WAIT = 0xAE
+    LIFT_WALK_1 = 0xAF
+    LIFT_WALK_2 = 0xB0
+    LIFT_TURN = 0xB1
+    SHIELD_START = 0xB2  # Shield startup
+    SHIELD = 0xB3  # Holding shield
+    SHIELD_RELEASE = 0xB4
+    SHIELD_STUN = 0xB5
+    SHIELD_REFLECT = 0xB6  # Probably powershield
+    TECH_MISS_UP = 0xB7  # "facing" up.
+    LYING_GROUND_UP = 0xB8
+    LYING_GROUND_UP_HIT = 0xB9
+    GROUND_GETUP = 0xBA
+    GROUND_ATTACK_UP = 0xBB
+    GROUND_ROLL_FORWARD_UP = 0xBC
+    GROUND_ROLL_BACKWARD_UP = 0xBD
+    GROUND_SPOT_UP = 0xBE
+    TECH_MISS_DOWN = 0xBF
+    LYING_GROUND_DOWN = 0xC0
+    DAMAGE_GROUND = 0xC1
+    NEUTRAL_GETUP = 0xC2
+    GETUP_ATTACK = 0xC3
+    GROUND_ROLL_FORWARD_DOWN = 0xC4
+    GROUND_ROLL_BACKWARD_DOWN = 0xC5
+    GROUND_ROLL_SPOT_DOWN = 0xC6
+    NEUTRAL_TECH = 0xC7
+    FORWARD_TECH = 0xC8
+    BACKWARD_TECH = 0xC9
+    WALL_TECH = 0xCA
+    WALL_TECH_JUMP = 0xCB
+    CEILING_TECH = 0xCC
+    SHIELD_BREAK_FLY = 0xCD
+    SHIELD_BREAK_FALL = 0xCE
+    SHIELD_BREAK_DOWN_U = 0xCF
+    SHIELD_BREAK_DOWN_D = 0xD0
+    SHIELD_BREAK_STAND_U = 0xD1
+    SHIELD_BREAK_STAND_D = 0xD2
+    SHIELD_BREAK_TEETER = 0xD3
+    GRAB = 0xD4
+    GRAB_PULLING = 0xD5  # Successful grab
+    GRAB_RUNNING = 0xD6
+    GRAB_RUNNING_PULLING = 0xD7
+    GRAB_WAIT = 0xD8
+    GRAB_PUMMEL = 0xD9
+    GRAB_BREAK = 0xDA  # opponent breaks out of your grab
+    THROW_FORWARD = 0xDB
+    THROW_BACK = 0xDC
+    THROW_UP = 0xDD  # yuck
+    THROW_DOWN = 0xDE
+    GRAB_PULLING_HIGH = 0xDF
+    GRABBED_WAIT_HIGH = 0xE0  # XXX Not sure about this
+    PUMMELED_HIGH = 0xE1  # XXX Not sure about this
+    GRAB_PULL = 0xE2  # Being pulled inwards from the grab
+    GRABBED = 0xE3  # Grabbed
+    GRAB_PUMMELED = 0xE4  # Being pummeled
+    GRAB_ESCAPE = 0xE5  # Grab release
+    GRAB_JUMP = 0xE6  # Jumping mash out of grab
+    GRAB_NECK = 0xE7  # Unused
+    GRAB_FOOT = 0xE8  # Unused
+    ROLL_FORWARD = 0xE9
+    ROLL_BACKWARD = 0xEA
     SPOTDODGE = 0xEB
     AIRDODGE = 0xEC
     REBOUND_STOP = 0xED  # XXX Not sure about this
@@ -519,15 +528,15 @@ class Action(Enum):
     THROWN_BACK = 0xF0
     THROWN_UP = 0xF1
     THROWN_DOWN = 0xF2
-    THROWN_DOWN_2 = 0xf3  # Unused
-    PLATFORM_DROP = 0xf4  # Drop through platform
+    THROWN_DOWN_2 = 0xF3  # Unused
+    PLATFORM_DROP = 0xF4  # Drop through platform
     EDGE_TEETERING_START = 0xF5  # Starting of edge teetering
     EDGE_TEETERING = 0xF6
-    BOUNCE_WALL = 0xf7  # Missed wall tech
-    BOUNCE_CEILING = 0xf8  # Missed ceiling tech
-    BUMP_WALL = 0xf9
-    BUMP_CIELING = 0xfa
-    SLIDING_OFF_EDGE = 0xfb  # When you get hit and slide off an edge
+    BOUNCE_WALL = 0xF7  # Missed wall tech
+    BOUNCE_CEILING = 0xF8  # Missed ceiling tech
+    BUMP_WALL = 0xF9
+    BUMP_CIELING = 0xFA
+    SLIDING_OFF_EDGE = 0xFB  # When you get hit and slide off an edge
     EDGE_CATCHING = 0xFC  # Initial grabbing of edge stuck in stun here
     EDGE_HANGING = 0xFD
     EDGE_GETUP_SLOW = 0xFE  # >= 100% damage
@@ -627,14 +636,14 @@ class Action(Enum):
     NEUTRAL_B_FULL_CHARGE_AIR = 0x15C
     DOWN_B_GROUND_START = 0x168
     DOWN_B_GROUND = 0x169
-    SHINE_TURN = 0x16c
-    DOWN_B_STUN = 0x16d  # Fox is stunned in these frames
-    DOWN_B_AIR = 0x16e
-    UP_B_GROUND = 0x16f
+    SHINE_TURN = 0x16C
+    DOWN_B_STUN = 0x16D  # Fox is stunned in these frames
+    DOWN_B_AIR = 0x16E
+    UP_B_GROUND = 0x16F
     SHINE_RELEASE_AIR = 0x170
-    SWORD_DANCE_1 = 0x15d
-    SWORD_DANCE_2_HIGH = 0x15e
-    SWORD_DANCE_2_MID = 0x15f
+    SWORD_DANCE_1 = 0x15D
+    SWORD_DANCE_2_HIGH = 0x15E
+    SWORD_DANCE_2_MID = 0x15F
     SWORD_DANCE_3_HIGH = 0x160
     SWORD_DANCE_3_MID = 0x161
     SWORD_DANCE_3_LOW = 0x162
@@ -645,13 +654,13 @@ class Action(Enum):
     SWORD_DANCE_2_HIGH_AIR = 0x167
     SWORD_DANCE_2_MID_AIR = 0x168
     SWORD_DANCE_3_HIGH_AIR = 0x169
-    SWORD_DANCE_3_MID_AIR = 0x16a
-    SWORD_DANCE_3_LOW_AIR = 0x16b
-    SWORD_DANCE_4_HIGH_AIR = 0x16c
-    SWORD_DANCE_4_MID_AIR = 0x16d
-    SWORD_DANCE_4_LOW_AIR = 0x16e
-    FOX_ILLUSION_START = 0x15e
-    FOX_ILLUSION = 0x15f
+    SWORD_DANCE_3_MID_AIR = 0x16A
+    SWORD_DANCE_3_LOW_AIR = 0x16B
+    SWORD_DANCE_4_HIGH_AIR = 0x16C
+    SWORD_DANCE_4_MID_AIR = 0x16D
+    SWORD_DANCE_4_LOW_AIR = 0x16E
+    FOX_ILLUSION_START = 0x15E
+    FOX_ILLUSION = 0x15F
     FOX_ILLUSION_SHORTENED = 0x160
     FIREFOX_WAIT_GROUND = 0x161  # Firefox wait on the ground
     FIREFOX_WAIT_AIR = 0x162  # Firefox wait in the air
@@ -686,11 +695,12 @@ class Action(Enum):
     KIRBY_STONE_FORMING_AIR = 0x18C
     KIRBY_STONE_FALLING = 0x18D
     KIRBY_STONE_UNFORMING = 0x18D
-    UNKNOWN_ANIMATION = 0xffff
+    UNKNOWN_ANIMATION = 0xFFFF
 
 
 class ProjectileType(Enum):
-    """Primary type of prejectile or item """
+    """Primary type of prejectile or item"""
+
     BOB_OMB = 0x06  # Bob-omb (BombHei)
     MR_SATURN = 0x07  # Mr. Saturn (Dosei)
     BEAMSWORD = 0x0C  # Beam Sword
@@ -787,4 +797,4 @@ class ProjectileType(Enum):
     KIRBY_BOWSER_FLAME = 0x9A  # Kirby copy Bowser's Flame (B)
     KIRBY_SAUSAGE = 0x9B  # Kirby copy Mr. Game & Watch's Sausage (B)
     KIRBY_YOSHI_TONGUE = 0x9D  # Yoshi's Tongue?? (B)
-    UNKNOWN_PROJECTILE = 0xff
+    UNKNOWN_PROJECTILE = 0xFF

@@ -18,8 +18,8 @@ def _resolve_device(preferred: Optional[str] = None) -> torch.device:
 
 
 def _collect_param_stats(
-        module: nn.Module,
-        cache: Dict[int, Tuple[int, int]],
+    module: nn.Module,
+    cache: Dict[int, Tuple[int, int]],
 ) -> Tuple[int, int]:
     module_id = id(module)
     if module_id in cache:
@@ -88,10 +88,10 @@ def _module_label(module: nn.Module, cache: Dict[int, Tuple[int, int]]) -> str:
 
 
 def print_model_diagram(
-        model: nn.Module,
-        *,
-        max_depth: Optional[int] = None,
-        stream: Optional[TextIO] = None,
+    model: nn.Module,
+    *,
+    max_depth: Optional[int] = None,
+    stream: Optional[TextIO] = None,
 ) -> str:
     """Print an ASCII diagram of ``model`` and return the rendered text.
 

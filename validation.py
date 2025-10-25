@@ -17,11 +17,21 @@ from torch.utils.data import DataLoader, SequentialSampler
 from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
 from config import get_config, init_config
 from controller_quantization import quantize_targets
-from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from controller_utils import (
+    CONTROL_STICK_QUANTIZED,
+    C_STICK_QUANTIZED,
+    SHOULDER_QUANTIZED,
+)
 from feature_transforms import feature_spec_from_config
 from loss import compute_loss_components
 from model.nano_gpt import GPT
-from train import RunningMetrics, build_inputs_for_gpt, _BUTTON_PRETTY, _MAIN_STICK_LABELS, compute_value_targets
+from train import (
+    RunningMetrics,
+    build_inputs_for_gpt,
+    _BUTTON_PRETTY,
+    _MAIN_STICK_LABELS,
+    compute_value_targets,
+)
 from train.checkpoint import _latest_checkpoint
 from utils import _resolve_device
 from window_dataset import WindowDataset, worker_init_fn
@@ -38,9 +48,9 @@ from typing import Sequence
 
 
 def _nearest_diffs_within_window(
-        true_frames: Sequence[int],
-        pred_frames: Sequence[int],
-        window: int,
+    true_frames: Sequence[int],
+    pred_frames: Sequence[int],
+    window: int,
 ) -> np.ndarray:
     """Return pred-true latencies for each true frame using the nearest predicted
     frame within ±window. Inputs are assumed sorted ascending (they are by construction).
@@ -95,7 +105,11 @@ def _load_saved_button_thresholds(path: Path) -> Optional[List[float]]:
     if isinstance(thresholds, list) and len(thresholds) == len(button_keys):
         values = [float(x) for x in thresholds]
     elif isinstance(threshold_map, dict):
-        order = buttons if isinstance(buttons, list) and len(buttons) == len(button_keys) else button_keys
+        order = (
+            buttons
+            if isinstance(buttons, list) and len(buttons) == len(button_keys)
+            else button_keys
+        )
         values = [float(threshold_map.get(key, 0.5)) for key in order]
 
     if values is not None and len(values) == len(button_keys):
@@ -112,9 +126,15 @@ class ChangeHoldStats:
     hold_correct: float = 0.0
     hold_total: float = 0.0
 
-    def update(self, correct: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor) -> None:
-        change_correct = correct[change_mask].float().sum().item() if change_mask.any() else 0.0
-        hold_correct = correct[hold_mask].float().sum().item() if hold_mask.any() else 0.0
+    def update(
+        self, correct: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor
+    ) -> None:
+        change_correct = (
+            correct[change_mask].float().sum().item() if change_mask.any() else 0.0
+        )
+        hold_correct = (
+            correct[hold_mask].float().sum().item() if hold_mask.any() else 0.0
+        )
         self.change_correct += change_correct
         self.change_total += float(change_mask.sum().item())
         self.hold_correct += hold_correct
@@ -130,6 +150,7 @@ class ChangeHoldStats:
 @dataclass
 class EnhancedMetrics:
     """Additional validation metrics beyond basic accuracy."""
+
     # Stick error metrics (Euclidean distance)
     total_main_stick_error: float = 0.0
     total_c_stick_error: float = 0.0
@@ -175,9 +196,11 @@ class EnhancedMetrics:
     value_pred_list: List[float] = field(default_factory=list)
     value_target_list: List[float] = field(default_factory=list)
     value_frames: int = 0
-    
+
     # Frame-level tracking for value analysis (store tuples of (value_pred, value_target, reward, frame_features))
-    value_frame_data: List[Tuple[float, float, float, np.ndarray]] = field(default_factory=list)
+    value_frame_data: List[Tuple[float, float, float, np.ndarray]] = field(
+        default_factory=list
+    )
 
     total_frames: int = 0
 
@@ -197,6 +220,7 @@ def _format_value(value: object) -> str:
 def _format_action(value: object) -> str:
     """Format action enum values to their names."""
     from libmelee.melee.enums import Action
+
     _ACTION_VALUE_TO_NAME = {action.value: action.name for action in Action}
     try:
         idx = int(float(value))
@@ -206,12 +230,12 @@ def _format_action(value: object) -> str:
 
 
 def _print_table_block(
-        title: str,
-        headers: Sequence[str],
-        data: np.ndarray,
-        *,
-        max_columns: int = 8,
-        formatters: Optional[Dict[str, Callable[[object], str]]] = None,
+    title: str,
+    headers: Sequence[str],
+    data: np.ndarray,
+    *,
+    max_columns: int = 8,
+    formatters: Optional[Dict[str, Callable[[object], str]]] = None,
 ) -> None:
     """Print a table of data with headers and formatted values."""
     if data.size == 0 or not len(headers):
@@ -222,11 +246,13 @@ def _print_table_block(
     num_rows = data.shape[0]
     frame_label = "frame"
     formatters = formatters or {}
-    frame_width = max(len(frame_label), len(str(num_rows - 1)) if num_rows else len(frame_label))
+    frame_width = max(
+        len(frame_label), len(str(num_rows - 1)) if num_rows else len(frame_label)
+    )
 
     for start in range(0, total_cols, max_columns):
-        cols = headers[start:start + max_columns]
-        block = data[:, start:start + len(cols)]
+        cols = headers[start : start + max_columns]
+        block = data[:, start : start + len(cols)]
         formatted_columns: List[List[str]] = []
         col_widths: List[int] = []
         for col_idx, col_name in enumerate(cols):
@@ -256,39 +282,71 @@ def _print_table_block(
 
 def _compute_frame_rewards(X: torch.Tensor, colmap: ColumnMap) -> torch.Tensor:
     """Compute per-frame rewards based on game state changes.
-    
+
     Args:
         X: Input features [B, L, F]
         colmap: Column mapping
-    
+
     Returns:
         Rewards [B, L] - reward for each frame based on state changes
     """
     B, L, F = X.shape
     device = X.device
     rewards = torch.zeros(B, L, device=device)
-    
+
     # Get config for reward weights
     config = get_config()
-    
+
     # Apply constant per-frame penalty to discourage stalling
     rewards += config.rl.reward_per_frame
-    
+
     # Extract relevant features
-    p1_stock_idx = colmap.feat_names.index("p1_stock") if "p1_stock" in colmap.feat_names else None
-    p2_stock_idx = colmap.feat_names.index("p2_stock") if "p2_stock" in colmap.feat_names else None
-    p1_percent_idx = colmap.feat_names.index("p1_percent") if "p1_percent" in colmap.feat_names else None
-    p2_percent_idx = colmap.feat_names.index("p2_percent") if "p2_percent" in colmap.feat_names else None
-    
+    p1_stock_idx = (
+        colmap.feat_names.index("p1_stock") if "p1_stock" in colmap.feat_names else None
+    )
+    p2_stock_idx = (
+        colmap.feat_names.index("p2_stock") if "p2_stock" in colmap.feat_names else None
+    )
+    p1_percent_idx = (
+        colmap.feat_names.index("p1_percent")
+        if "p1_percent" in colmap.feat_names
+        else None
+    )
+    p2_percent_idx = (
+        colmap.feat_names.index("p2_percent")
+        if "p2_percent" in colmap.feat_names
+        else None
+    )
+
     # Hitlag features
-    p1_in_hitlag_idx = colmap.feat_names.index("p1_in_hitlag") if "p1_in_hitlag" in colmap.feat_names else None
-    p2_in_hitlag_idx = colmap.feat_names.index("p2_in_hitlag") if "p2_in_hitlag" in colmap.feat_names else None
-    p1_in_defender_hitlag_idx = colmap.feat_names.index("p1_in_defender_hitlag") if "p1_in_defender_hitlag" in colmap.feat_names else None
-    p2_in_defender_hitlag_idx = colmap.feat_names.index("p2_in_defender_hitlag") if "p2_in_defender_hitlag" in colmap.feat_names else None
-    
+    p1_in_hitlag_idx = (
+        colmap.feat_names.index("p1_in_hitlag")
+        if "p1_in_hitlag" in colmap.feat_names
+        else None
+    )
+    p2_in_hitlag_idx = (
+        colmap.feat_names.index("p2_in_hitlag")
+        if "p2_in_hitlag" in colmap.feat_names
+        else None
+    )
+    p1_in_defender_hitlag_idx = (
+        colmap.feat_names.index("p1_in_defender_hitlag")
+        if "p1_in_defender_hitlag" in colmap.feat_names
+        else None
+    )
+    p2_in_defender_hitlag_idx = (
+        colmap.feat_names.index("p2_in_defender_hitlag")
+        if "p2_in_defender_hitlag" in colmap.feat_names
+        else None
+    )
+
     # Shield strength features
-    p1_shield_strength_idx = colmap.feat_names.index("p1_shield_strength") if "p1_shield_strength" in colmap.feat_names else None
-    
+    p1_shield_strength_idx = (
+        colmap.feat_names.index("p1_shield_strength")
+        if "p1_shield_strength" in colmap.feat_names
+        else None
+    )
+
     if L > 1:
         # Damage rewards (difference between consecutive frames)
         if p1_percent_idx is not None and p2_percent_idx is not None:
@@ -296,63 +354,83 @@ def _compute_frame_rewards(X: torch.Tensor, colmap: ColumnMap) -> torch.Tensor:
             p1_percent_prev = X[:, :-1, p1_percent_idx]
             p2_percent_curr = X[:, 1:, p2_percent_idx]
             p2_percent_prev = X[:, :-1, p2_percent_idx]
-            
-            damage_dealt = (p2_percent_curr - p2_percent_prev) * 100  # scale back to 0-100 range
+
+            damage_dealt = (
+                p2_percent_curr - p2_percent_prev
+            ) * 100  # scale back to 0-100 range
             damage_taken = (p1_percent_curr - p1_percent_prev) * 100
-            
+
             rewards[:, 1:] += damage_dealt * config.rl.reward_damage_dealt
             rewards[:, 1:] += damage_taken * config.rl.reward_damage_taken
-        
+
         # Stock rewards (when stock changes)
         if p1_stock_idx is not None and p2_stock_idx is not None:
             p1_stock_curr = X[:, 1:, p1_stock_idx]  # [B, L-1]
             p1_stock_prev = X[:, :-1, p1_stock_idx]
             p2_stock_curr = X[:, 1:, p2_stock_idx]
             p2_stock_prev = X[:, :-1, p2_stock_idx]
-            
-            stock_taken = (p2_stock_prev - p2_stock_curr).clamp(min=0)  # opponent lost stock
+
+            stock_taken = (p2_stock_prev - p2_stock_curr).clamp(
+                min=0
+            )  # opponent lost stock
             stock_lost = (p1_stock_prev - p1_stock_curr).clamp(min=0)  # we lost stock
-            
+
             rewards[:, 1:] += stock_taken * config.rl.reward_stock_taken
             rewards[:, 1:] += stock_lost * config.rl.reward_stock_lost
-    
+
     # Hitlag rewards/penalties (apply to all frames, not just differences)
-    if (p1_in_hitlag_idx is not None and p1_in_defender_hitlag_idx is not None and
-        p2_in_hitlag_idx is not None and p2_in_defender_hitlag_idx is not None):
-        
+    if (
+        p1_in_hitlag_idx is not None
+        and p1_in_defender_hitlag_idx is not None
+        and p2_in_hitlag_idx is not None
+        and p2_in_defender_hitlag_idx is not None
+    ):
+
         # Compute hitlag metric for p1 (us): in_hitlag - in_defender_hitlag
-        p1_hitlag_metric = X[:, :, p1_in_hitlag_idx] - X[:, :, p1_in_defender_hitlag_idx]  # [B, L]
+        p1_hitlag_metric = (
+            X[:, :, p1_in_hitlag_idx] - X[:, :, p1_in_defender_hitlag_idx]
+        )  # [B, L]
         # Compute hitlag metric for p2 (opponent): in_hitlag - in_defender_hitlag
-        p2_hitlag_metric = X[:, :, p2_in_hitlag_idx] - X[:, :, p2_in_defender_hitlag_idx]  # [B, L]
-        
+        p2_hitlag_metric = (
+            X[:, :, p2_in_hitlag_idx] - X[:, :, p2_in_defender_hitlag_idx]
+        )  # [B, L]
+
         # Penalty when we're in hitlag (being hit) - when metric = 1
         p1_in_bad_hitlag = (p1_hitlag_metric == 1.0).float()
         rewards += p1_in_bad_hitlag * config.rl.reward_hitlag_self  # negative reward
-        
+
         # Reward when opponent is in hitlag (we're hitting them) - when metric = 1
         p2_in_bad_hitlag = (p2_hitlag_metric == 1.0).float()
-        rewards += p2_in_bad_hitlag * config.rl.reward_hitlag_opponent  # positive reward
-    
+        rewards += (
+            p2_in_bad_hitlag * config.rl.reward_hitlag_opponent
+        )  # positive reward
+
     # Shield strength penalty (apply to all frames)
     if p1_shield_strength_idx is not None:
         p1_shield = X[:, :, p1_shield_strength_idx]  # [B, L], range [0, 1]
-        
+
         # Apply penalty when shield < 0.5
         # Magnify penalty as shield approaches 0: use (0.5 - shield) / 0.5 to get penalty multiplier
         # When shield = 0.5, penalty = 0
         # When shield = 0.25, penalty multiplier = 0.5
         # When shield = 0, penalty multiplier = 1.0
         low_shield_mask = (p1_shield < 0.5).float()  # [B, L]
-        penalty_multiplier = ((0.5 - p1_shield) / 0.5).clamp(min=0, max=1)  # [B, L], 0 to 1
-        shield_penalty = low_shield_mask * penalty_multiplier * config.rl.reward_low_shield  # negative
+        penalty_multiplier = ((0.5 - p1_shield) / 0.5).clamp(
+            min=0, max=1
+        )  # [B, L], 0 to 1
+        shield_penalty = (
+            low_shield_mask * penalty_multiplier * config.rl.reward_low_shield
+        )  # negative
         rewards += shield_penalty
-    
+
     return rewards
 
 
-def _print_extreme_value_frames(enhanced: EnhancedMetrics, colmap: ColumnMap, top_k: int = 1) -> None:
+def _print_extreme_value_frames(
+    enhanced: EnhancedMetrics, colmap: ColumnMap, top_k: int = 1
+) -> None:
     """Print the top and bottom frames by predicted value, with context.
-    
+
     Args:
         enhanced: Enhanced metrics containing frame data
         colmap: Column mapping for feature names
@@ -361,32 +439,38 @@ def _print_extreme_value_frames(enhanced: EnhancedMetrics, colmap: ColumnMap, to
     if not enhanced.value_frame_data:
         print("\nNo value frame data available for analysis.")
         return
-    
+
     # Sort frames by predicted value
-    sorted_frames = sorted(enhanced.value_frame_data, key=lambda x: x[0])  # Sort by value_pred
-    
+    sorted_frames = sorted(
+        enhanced.value_frame_data, key=lambda x: x[0]
+    )  # Sort by value_pred
+
     # Get top and bottom k
     bottom_frames = sorted_frames[:top_k]
     top_frames = sorted_frames[-top_k:][::-1]  # Reverse to show highest first
-    
+
     # Helper to print a frame with context
     def print_frame_with_context(frame_idx: int, label: str):
-        value_pred, value_target, reward, features = enhanced.value_frame_data[frame_idx]
-        
+        value_pred, value_target, reward, features = enhanced.value_frame_data[
+            frame_idx
+        ]
+
         print(f"\n{label}")
         print(f"  Predicted Value: {value_pred:.4f}")
         print(f"  Target Value:    {value_target:.4f}")
         print(f"  Frame Reward:    {reward:.4f}")
         print(f"  Frame Index:     {frame_idx}")
-        
+
         # Get context (30 frames before and 30 frames after)
         context_start = max(0, frame_idx - 30)
-        context_end = min(len(enhanced.value_frame_data), frame_idx + 31)  # +31 to include frame_idx and 30 after
+        context_end = min(
+            len(enhanced.value_frame_data), frame_idx + 31
+        )  # +31 to include frame_idx and 30 after
         context_frames = []
         context_values = []
         context_targets = []
         context_rewards = []
-        
+
         for i in range(context_start, context_end):
             if i < len(enhanced.value_frame_data):
                 v_pred, v_targ, r, feat = enhanced.value_frame_data[i]
@@ -394,28 +478,28 @@ def _print_extreme_value_frames(enhanced: EnhancedMetrics, colmap: ColumnMap, to
                 context_values.append(v_pred)
                 context_targets.append(v_targ)
                 context_rewards.append(r)
-        
+
         if context_frames:
             # Build data array for printing
             context_array = np.array(context_frames)  # [N, F]
             num_context = len(context_frames)
-            
+
             # Add value and reward columns
             extended_array = np.zeros((num_context, context_array.shape[1] + 3))
             extended_array[:, :-3] = context_array
             extended_array[:, -3] = context_values
             extended_array[:, -2] = context_targets
             extended_array[:, -1] = context_rewards
-            
+
             # Extended headers
-            extended_headers = colmap.feat_names + ['val_pred', 'val_targ', 'reward']
-            
+            extended_headers = colmap.feat_names + ["val_pred", "val_targ", "reward"]
+
             # Formatters for actions
             formatters: Dict[str, Callable[[object], str]] = {}
             for key in colmap.feat_names:
                 if key.endswith("_action"):
                     formatters[key] = _format_action
-            
+
             # Print the context frames
             _print_table_block(
                 f"  Context frames ({context_start} to {context_end - 1})",
@@ -424,51 +508,76 @@ def _print_extreme_value_frames(enhanced: EnhancedMetrics, colmap: ColumnMap, to
                 max_columns=10,
                 formatters=formatters,
             )
-    
+
     # Print top frames (highest value predictions)
     print("\n" + "=" * 80)
     print("TOP FRAME BY PREDICTED VALUE (Highest)")
     print("=" * 80)
-    
+
     for i, (v_pred, v_targ, reward, features) in enumerate(top_frames):
         # Find the index of this frame in the original data
         frame_idx = None
         for idx, (vp, vt, r, f) in enumerate(enhanced.value_frame_data):
-            if vp == v_pred and vt == v_targ and r == reward and np.array_equal(f, features):
+            if (
+                vp == v_pred
+                and vt == v_targ
+                and r == reward
+                and np.array_equal(f, features)
+            ):
                 frame_idx = idx
                 break
-        
+
         if frame_idx is not None:
             print_frame_with_context(frame_idx, f"Top #{i+1} Frame")
-    
+
     # Print bottom frames (lowest value predictions)
     print("\n" + "=" * 80)
     print("BOTTOM FRAME BY PREDICTED VALUE (Lowest)")
     print("=" * 80)
-    
+
     for i, (v_pred, v_targ, reward, features) in enumerate(bottom_frames):
         # Find the index of this frame in the original data
         frame_idx = None
         for idx, (vp, vt, r, f) in enumerate(enhanced.value_frame_data):
-            if vp == v_pred and vt == v_targ and r == reward and np.array_equal(f, features):
+            if (
+                vp == v_pred
+                and vt == v_targ
+                and r == reward
+                and np.array_equal(f, features)
+            ):
                 frame_idx = idx
                 break
-        
+
         if frame_idx is not None:
             print_frame_with_context(frame_idx, f"Bottom #{i+1} Frame")
 
 
 # Action state categorization for per-state accuracy
-_IDLE_STATES = {0x0e, 0x27, 0x28, 0x29}  # STANDING, CROUCH_START, CROUCHING, CROUCH_END
+_IDLE_STATES = {0x0E, 0x27, 0x28, 0x29}  # STANDING, CROUCH_START, CROUCHING, CROUCH_END
 _HITSTUN_STATES = {
     0x26,  # TUMBLING
-    0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52, 0x53,  # DAMAGE_HIGH/NEUTRAL/LOW
-    0x54, 0x55, 0x56,  # DAMAGE_AIR
-    0x57, 0x58, 0x59, 0x5a, 0x5b,  # DAMAGE_FLY variants
-    0x9c, 0x9d,  # DAMAGE_SCREW
-    0xc1,  # DAMAGE_GROUND
+    0x4B,
+    0x4C,
+    0x4D,
+    0x4E,
+    0x4F,
+    0x50,
+    0x51,
+    0x52,
+    0x53,  # DAMAGE_HIGH/NEUTRAL/LOW
+    0x54,
+    0x55,
+    0x56,  # DAMAGE_AIR
+    0x57,
+    0x58,
+    0x59,
+    0x5A,
+    0x5B,  # DAMAGE_FLY variants
+    0x9C,
+    0x9D,  # DAMAGE_SCREW
+    0xC1,  # DAMAGE_GROUND
 }
-_ATTACK_STATES = set(range(0x2c, 0x4b))  # Attack actions roughly in this range
+_ATTACK_STATES = set(range(0x2C, 0x4B))  # Attack actions roughly in this range
 
 
 def _categorize_action(action_value: int) -> str:
@@ -507,12 +616,12 @@ def _ensure_absolute(path: Path, anchor: Path) -> Path:
 
 
 def _prepare_dataloader(
-        data_root: Path,
-        batch_size: int,
-        num_workers: int,
-        pin_memory: bool,
-        prefetch_factor: Optional[int],
-        persistent_workers: bool,
+    data_root: Path,
+    batch_size: int,
+    num_workers: int,
+    pin_memory: bool,
+    prefetch_factor: Optional[int],
+    persistent_workers: bool,
 ) -> Tuple[DataLoader, WindowDataset]:
     config = get_config()
     feature_spec = feature_spec_from_config(config.features)
@@ -545,21 +654,21 @@ def _prepare_dataloader(
 
 
 def _update_enhanced_metrics(
-        enhanced: EnhancedMetrics,
-        X: torch.Tensor,
-        target_info: Dict[str, torch.Tensor],
-        pred_main_idx: torch.Tensor,
-        pred_c_idx: torch.Tensor,
-        btn_pred: torch.Tensor,
-        logits_main: torch.Tensor,
-        logits_c: torch.Tensor,
-        logits_shoulder: Optional[torch.Tensor],
-        colmap: ColumnMap,
-        prev_pred_main_coords: Optional[torch.Tensor],
-        prev_pred_c_coords: Optional[torch.Tensor],
-        prev_true_main_coords: Optional[torch.Tensor],
-        prev_true_c_coords: Optional[torch.Tensor],
-        value_pred: Optional[torch.Tensor] = None,
+    enhanced: EnhancedMetrics,
+    X: torch.Tensor,
+    target_info: Dict[str, torch.Tensor],
+    pred_main_idx: torch.Tensor,
+    pred_c_idx: torch.Tensor,
+    btn_pred: torch.Tensor,
+    logits_main: torch.Tensor,
+    logits_c: torch.Tensor,
+    logits_shoulder: Optional[torch.Tensor],
+    colmap: ColumnMap,
+    prev_pred_main_coords: Optional[torch.Tensor],
+    prev_pred_c_coords: Optional[torch.Tensor],
+    prev_true_main_coords: Optional[torch.Tensor],
+    prev_true_c_coords: Optional[torch.Tensor],
+    value_pred: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update enhanced metrics and return current stick coordinates for next iteration."""
     B, L = pred_main_idx.shape
@@ -572,24 +681,36 @@ def _update_enhanced_metrics(
     # Dequantize to get coordinates
     # Need to flatten indices, index, then reshape
     main_pred_idx_flat = pred_main_idx.cpu().numpy().flatten()
-    main_pred_coords = torch.from_numpy(
-        np.array(CONTROL_STICK_QUANTIZED, dtype=np.float32)[main_pred_idx_flat]
-    ).to(device).reshape(B, L, 2)
+    main_pred_coords = (
+        torch.from_numpy(
+            np.array(CONTROL_STICK_QUANTIZED, dtype=np.float32)[main_pred_idx_flat]
+        )
+        .to(device)
+        .reshape(B, L, 2)
+    )
 
     main_true_idx_flat = target_main.cpu().numpy().flatten()
-    main_true_coords = torch.from_numpy(
-        np.array(CONTROL_STICK_QUANTIZED, dtype=np.float32)[main_true_idx_flat]
-    ).to(device).reshape(B, L, 2)
+    main_true_coords = (
+        torch.from_numpy(
+            np.array(CONTROL_STICK_QUANTIZED, dtype=np.float32)[main_true_idx_flat]
+        )
+        .to(device)
+        .reshape(B, L, 2)
+    )
 
     c_pred_idx_flat = pred_c_idx.cpu().numpy().flatten()
-    c_pred_coords = torch.from_numpy(
-        np.array(C_STICK_QUANTIZED, dtype=np.float32)[c_pred_idx_flat]
-    ).to(device).reshape(B, L, 2)
+    c_pred_coords = (
+        torch.from_numpy(np.array(C_STICK_QUANTIZED, dtype=np.float32)[c_pred_idx_flat])
+        .to(device)
+        .reshape(B, L, 2)
+    )
 
     c_true_idx_flat = target_c.cpu().numpy().flatten()
-    c_true_coords = torch.from_numpy(
-        np.array(C_STICK_QUANTIZED, dtype=np.float32)[c_true_idx_flat]
-    ).to(device).reshape(B, L, 2)
+    c_true_coords = (
+        torch.from_numpy(np.array(C_STICK_QUANTIZED, dtype=np.float32)[c_true_idx_flat])
+        .to(device)
+        .reshape(B, L, 2)
+    )
 
     # 1. Mean Stick Error (Euclidean distance)
     main_errors = torch.linalg.norm(main_pred_coords - main_true_coords, dim=-1)
@@ -599,15 +720,17 @@ def _update_enhanced_metrics(
 
     # Track error by change/hold
     main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
-    main_change_mask[:, 1:] = (target_main[:, 1:] != target_main[:, :-1])
+    main_change_mask[:, 1:] = target_main[:, 1:] != target_main[:, :-1]
     main_hold_mask = ~main_change_mask
 
     c_change_mask = torch.zeros_like(target_c, dtype=torch.bool)
-    c_change_mask[:, 1:] = (target_c[:, 1:] != target_c[:, :-1])
+    c_change_mask[:, 1:] = target_c[:, 1:] != target_c[:, :-1]
     c_hold_mask = ~c_change_mask
 
     if main_change_mask.any():
-        enhanced.total_main_stick_error_change += main_errors[main_change_mask].sum().item()
+        enhanced.total_main_stick_error_change += (
+            main_errors[main_change_mask].sum().item()
+        )
     if main_hold_mask.any():
         enhanced.total_main_stick_error_hold += main_errors[main_hold_mask].sum().item()
     if c_change_mask.any():
@@ -618,42 +741,62 @@ def _update_enhanced_metrics(
     # 2. Jitter (frame-to-frame distance)
     if prev_pred_main_coords is not None and prev_pred_main_coords.shape[0] == B:
         # Compute jitter across batch boundaries (only when batch sizes match)
-        pred_jitter_main = torch.linalg.norm(
-            main_pred_coords[:, 0] - prev_pred_main_coords, dim=-1
-        ).sum().item()
-        true_jitter_main = torch.linalg.norm(
-            main_true_coords[:, 0] - prev_true_main_coords, dim=-1
-        ).sum().item()
+        pred_jitter_main = (
+            torch.linalg.norm(main_pred_coords[:, 0] - prev_pred_main_coords, dim=-1)
+            .sum()
+            .item()
+        )
+        true_jitter_main = (
+            torch.linalg.norm(main_true_coords[:, 0] - prev_true_main_coords, dim=-1)
+            .sum()
+            .item()
+        )
         enhanced.total_pred_main_jitter += pred_jitter_main
         enhanced.total_true_main_jitter += true_jitter_main
 
-        pred_jitter_c = torch.linalg.norm(
-            c_pred_coords[:, 0] - prev_pred_c_coords, dim=-1
-        ).sum().item()
-        true_jitter_c = torch.linalg.norm(
-            c_true_coords[:, 0] - prev_true_c_coords, dim=-1
-        ).sum().item()
+        pred_jitter_c = (
+            torch.linalg.norm(c_pred_coords[:, 0] - prev_pred_c_coords, dim=-1)
+            .sum()
+            .item()
+        )
+        true_jitter_c = (
+            torch.linalg.norm(c_true_coords[:, 0] - prev_true_c_coords, dim=-1)
+            .sum()
+            .item()
+        )
         enhanced.total_pred_c_jitter += pred_jitter_c
         enhanced.total_true_c_jitter += true_jitter_c
         enhanced.jitter_frames += B
 
     # Within-batch jitter
     if L > 1:
-        pred_jitter_main = torch.linalg.norm(
-            main_pred_coords[:, 1:] - main_pred_coords[:, :-1], dim=-1
-        ).sum().item()
-        true_jitter_main = torch.linalg.norm(
-            main_true_coords[:, 1:] - main_true_coords[:, :-1], dim=-1
-        ).sum().item()
+        pred_jitter_main = (
+            torch.linalg.norm(
+                main_pred_coords[:, 1:] - main_pred_coords[:, :-1], dim=-1
+            )
+            .sum()
+            .item()
+        )
+        true_jitter_main = (
+            torch.linalg.norm(
+                main_true_coords[:, 1:] - main_true_coords[:, :-1], dim=-1
+            )
+            .sum()
+            .item()
+        )
         enhanced.total_pred_main_jitter += pred_jitter_main
         enhanced.total_true_main_jitter += true_jitter_main
 
-        pred_jitter_c = torch.linalg.norm(
-            c_pred_coords[:, 1:] - c_pred_coords[:, :-1], dim=-1
-        ).sum().item()
-        true_jitter_c = torch.linalg.norm(
-            c_true_coords[:, 1:] - c_true_coords[:, :-1], dim=-1
-        ).sum().item()
+        pred_jitter_c = (
+            torch.linalg.norm(c_pred_coords[:, 1:] - c_pred_coords[:, :-1], dim=-1)
+            .sum()
+            .item()
+        )
+        true_jitter_c = (
+            torch.linalg.norm(c_true_coords[:, 1:] - c_true_coords[:, :-1], dim=-1)
+            .sum()
+            .item()
+        )
         enhanced.total_pred_c_jitter += pred_jitter_c
         enhanced.total_true_c_jitter += true_jitter_c
         enhanced.jitter_frames += B * (L - 1)
@@ -668,7 +811,9 @@ def _update_enhanced_metrics(
 
     if logits_shoulder is not None:
         probs_shoulder = torch.softmax(logits_shoulder, dim=-1)
-        entropy_shoulder = -torch.sum(probs_shoulder * torch.log(probs_shoulder + 1e-9), dim=-1)
+        entropy_shoulder = -torch.sum(
+            probs_shoulder * torch.log(probs_shoulder + 1e-9), dim=-1
+        )
         enhanced.total_shoulder_entropy += entropy_shoulder.sum().item()
 
     enhanced.entropy_frames += B * L
@@ -693,8 +838,16 @@ def _update_enhanced_metrics(
     target_btn_flat = target_btn.cpu().numpy().reshape(-1, target_btn.shape[-1])
 
     for i in range(B * L):
-        pred_state = (pred_main_flat[i], pred_c_flat[i], tuple(btn_pred_flat[i].tolist()))
-        true_state = (target_main_flat[i], target_c_flat[i], tuple(target_btn_flat[i].tolist()))
+        pred_state = (
+            pred_main_flat[i],
+            pred_c_flat[i],
+            tuple(btn_pred_flat[i].tolist()),
+        )
+        true_state = (
+            target_main_flat[i],
+            target_c_flat[i],
+            tuple(target_btn_flat[i].tolist()),
+        )
         enhanced.pred_states.append(pred_state)
         enhanced.true_states.append(true_state)
 
@@ -726,11 +879,17 @@ def _update_enhanced_metrics(
     main_true_flat = main_true_coords.reshape(-1, 2).cpu().numpy()
     c_pred_flat = c_pred_coords.reshape(-1, 2).cpu().numpy()
     c_true_flat = c_true_coords.reshape(-1, 2).cpu().numpy()
-    btn_pred_np = btn_pred.reshape(-1, btn_pred.shape[-1]).cpu().numpy().astype(np.float32)
+    btn_pred_np = (
+        btn_pred.reshape(-1, btn_pred.shape[-1]).cpu().numpy().astype(np.float32)
+    )
     btn_true_np = target_btn.reshape(-1, target_btn.shape[-1]).cpu().numpy()
 
-    pred_vecs = np.concatenate([main_pred_flat, c_pred_flat, btn_pred_np], axis=1)  # [B*L, 2+2+5]
-    true_vecs = np.concatenate([main_true_flat, c_true_flat, btn_true_np], axis=1)  # [B*L, 2+2+5]
+    pred_vecs = np.concatenate(
+        [main_pred_flat, c_pred_flat, btn_pred_np], axis=1
+    )  # [B*L, 2+2+5]
+    true_vecs = np.concatenate(
+        [main_true_flat, c_true_flat, btn_true_np], axis=1
+    )  # [B*L, 2+2+5]
 
     enhanced.all_preds_list.append(pred_vecs)
     enhanced.all_labels_list.append(true_vecs)
@@ -740,7 +899,9 @@ def _update_enhanced_metrics(
     # 8. Value head metrics (if available)
     if value_pred is not None:
         config = get_config()
-        value_target = compute_value_targets(X, colmap, gamma=config.rl.gamma)  # [B, L, 1]
+        value_target = compute_value_targets(
+            X, colmap, gamma=config.rl.gamma
+        )  # [B, L, 1]
         frame_rewards = _compute_frame_rewards(X, colmap)  # [B, L]
 
         # MSE and MAE
@@ -758,22 +919,24 @@ def _update_enhanced_metrics(
         enhanced.value_pred_list.extend(value_pred_flat)
         enhanced.value_target_list.extend(value_target_flat)
         enhanced.value_frames += B * L
-        
+
         # Store frame-level data for detailed analysis (with context)
         # For each frame, store (value_pred, value_target, reward, frame_features)
         value_pred_np = value_pred.squeeze(-1).cpu().numpy()  # [B, L]
         value_target_np = value_target.squeeze(-1).cpu().numpy()  # [B, L]
         frame_rewards_np = frame_rewards.cpu().numpy()  # [B, L]
         X_np = X.cpu().numpy()  # [B, L, F]
-        
+
         for b in range(B):
             for l in range(L):
-                enhanced.value_frame_data.append((
-                    float(value_pred_np[b, l]),
-                    float(value_target_np[b, l]),
-                    float(frame_rewards_np[b, l]),
-                    X_np[b, l, :].copy()  # Store full frame features
-                ))
+                enhanced.value_frame_data.append(
+                    (
+                        float(value_pred_np[b, l]),
+                        float(value_target_np[b, l]),
+                        float(frame_rewards_np[b, l]),
+                        X_np[b, l, :].copy(),  # Store full frame features
+                    )
+                )
 
     # Return last coordinates for next batch
     last_pred_main = main_pred_coords[:, -1]
@@ -785,17 +948,17 @@ def _update_enhanced_metrics(
 
 
 def _update_running_metrics(
-        metrics: RunningMetrics,
-        target_info: Dict[str, torch.Tensor],
-        pred_main_idx: torch.Tensor,
-        pred_c_idx: torch.Tensor,
-        btn_pred: torch.Tensor,
-        btn_probs: torch.Tensor,
-        logits_btn: torch.Tensor,
-        logits_shoulder: Optional[torch.Tensor],
-        change_stats_main: ChangeHoldStats,
-        change_stats_c: ChangeHoldStats,
-        change_stats_buttons: ChangeHoldStats,
+    metrics: RunningMetrics,
+    target_info: Dict[str, torch.Tensor],
+    pred_main_idx: torch.Tensor,
+    pred_c_idx: torch.Tensor,
+    btn_pred: torch.Tensor,
+    btn_probs: torch.Tensor,
+    logits_btn: torch.Tensor,
+    logits_shoulder: Optional[torch.Tensor],
+    change_stats_main: ChangeHoldStats,
+    change_stats_c: ChangeHoldStats,
+    change_stats_buttons: ChangeHoldStats,
 ) -> None:
     B, L = pred_main_idx.shape
 
@@ -804,12 +967,12 @@ def _update_running_metrics(
     target_btn = target_info["buttons"]
 
     main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
-    main_change_mask[:, 1:] = (target_main[:, 1:] != target_main[:, :-1])
+    main_change_mask[:, 1:] = target_main[:, 1:] != target_main[:, :-1]
     main_hold_mask = ~main_change_mask
     main_hold_mask[:, 0] = True
 
     c_change_mask = torch.zeros_like(target_c, dtype=torch.bool)
-    c_change_mask[:, 1:] = (target_c[:, 1:] != target_c[:, :-1])
+    c_change_mask[:, 1:] = target_c[:, 1:] != target_c[:, :-1]
     c_hold_mask = ~c_change_mask
     c_hold_mask[:, 0] = True
 
@@ -846,11 +1009,15 @@ def _update_running_metrics(
     metrics.update_buttons(logits_btn, target_btn, btn_probs)
 
     if logits_shoulder is not None and target_info.get("shoulder_idx") is not None:
-        sh_major = metrics._majority_label(metrics.shoulder_label_counts) if metrics.K_shoulder else None
+        sh_major = (
+            metrics._majority_label(metrics.shoulder_label_counts)
+            if metrics.K_shoulder
+            else None
+        )
         metrics.update_shoulder(logits_shoulder, target_info["shoulder_idx"], sh_major)
 
-    correct_main = (pred_main_idx == target_main)
-    correct_c = (pred_c_idx == target_c)
+    correct_main = pred_main_idx == target_main
+    correct_c = pred_c_idx == target_c
     correct_btn_em = (btn_pred == target_btn).all(dim=-1)
 
     change_stats_main.update(correct_main, main_change_mask, main_hold_mask)
@@ -859,14 +1026,14 @@ def _update_running_metrics(
 
 
 def _evaluate(
-        model: GPT,
-        loader: DataLoader,
-        colmap: ColumnMap,
-        device: torch.device,
-        button_thresholds: torch.Tensor,
-        progress: bool,
-        report_every: int,
-        max_batches: Optional[int] = None,
+    model: GPT,
+    loader: DataLoader,
+    colmap: ColumnMap,
+    device: torch.device,
+    button_thresholds: torch.Tensor,
+    progress: bool,
+    report_every: int,
+    max_batches: Optional[int] = None,
 ) -> Dict[str, object]:
     config = get_config()
     metrics = RunningMetrics(
@@ -877,15 +1044,28 @@ def _evaluate(
         device=device,
     )
 
-    pred_counts_main = torch.zeros(config.model.target_shapes_by_head["main_stick"], dtype=torch.long)
-    pred_counts_c = torch.zeros(config.model.target_shapes_by_head["c_stick"], dtype=torch.long)
-    pred_counts_shoulder = torch.zeros(config.model.target_shapes_by_head["shoulder"], dtype=torch.long) if \
-    config.model.target_shapes_by_head["shoulder"] > 0 else None
-    pred_button_presses = torch.zeros(config.model.target_shapes_by_head["buttons"], dtype=torch.long)
+    pred_counts_main = torch.zeros(
+        config.model.target_shapes_by_head["main_stick"], dtype=torch.long
+    )
+    pred_counts_c = torch.zeros(
+        config.model.target_shapes_by_head["c_stick"], dtype=torch.long
+    )
+    pred_counts_shoulder = (
+        torch.zeros(config.model.target_shapes_by_head["shoulder"], dtype=torch.long)
+        if config.model.target_shapes_by_head["shoulder"] > 0
+        else None
+    )
+    pred_button_presses = torch.zeros(
+        config.model.target_shapes_by_head["buttons"], dtype=torch.long
+    )
 
     raw_counts_main = torch.zeros_like(pred_counts_main)
     raw_counts_c = torch.zeros_like(pred_counts_c)
-    raw_counts_shoulder = torch.zeros_like(pred_counts_shoulder) if pred_counts_shoulder is not None else None
+    raw_counts_shoulder = (
+        torch.zeros_like(pred_counts_shoulder)
+        if pred_counts_shoulder is not None
+        else None
+    )
 
     change_stats_main = ChangeHoldStats()
     change_stats_c = ChangeHoldStats()
@@ -902,7 +1082,9 @@ def _evaluate(
     total_tokens = 0
     total_frames = 0
 
-    loss_sums: Dict[str, float] = {key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder")}
+    loss_sums: Dict[str, float] = {
+        key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder")
+    }
 
     model.eval()
     total_batches = len(loader)
@@ -960,26 +1142,29 @@ def _evaluate(
 
             # Extract value prediction if available
             value_pred = pred.get("value")  # [B, L, 1] or None
-            
+
             # Update enhanced metrics
-            prev_pred_main_coords, prev_pred_c_coords, prev_true_main_coords, prev_true_c_coords = (
-                _update_enhanced_metrics(
-                    enhanced,
-                    X,
-                    target_info,
-                    pred_main_idx,
-                    pred_c_idx,
-                    btn_pred,
-                    logits_main,
-                    logits_c,
-                    logits_shoulder,
-                    colmap,
-                    prev_pred_main_coords,
-                    prev_pred_c_coords,
-                    prev_true_main_coords,
-                    prev_true_c_coords,
-                    value_pred,
-                )
+            (
+                prev_pred_main_coords,
+                prev_pred_c_coords,
+                prev_true_main_coords,
+                prev_true_c_coords,
+            ) = _update_enhanced_metrics(
+                enhanced,
+                X,
+                target_info,
+                pred_main_idx,
+                pred_c_idx,
+                btn_pred,
+                logits_main,
+                logits_c,
+                logits_shoulder,
+                colmap,
+                prev_pred_main_coords,
+                prev_pred_c_coords,
+                prev_true_main_coords,
+                prev_true_c_coords,
+                value_pred,
             )
 
             pred_counts_main += torch.bincount(
@@ -999,17 +1184,27 @@ def _evaluate(
             Y_cpu = batch["Y"].detach().cpu()
             main_vals = Y_cpu[..., colmap.y_main]
             main_idx_raw = _assign_to_palette(main_vals.reshape(-1, 2), _MAIN_PALETTE_T)
-            raw_counts_main += torch.bincount(main_idx_raw.cpu(), minlength=raw_counts_main.shape[0])
+            raw_counts_main += torch.bincount(
+                main_idx_raw.cpu(), minlength=raw_counts_main.shape[0]
+            )
 
             c_vals = Y_cpu[..., colmap.y_c]
             c_idx_raw = _assign_to_palette(c_vals.reshape(-1, 2), _C_PALETTE_T)
-            raw_counts_c += torch.bincount(c_idx_raw.cpu(), minlength=raw_counts_c.shape[0])
+            raw_counts_c += torch.bincount(
+                c_idx_raw.cpu(), minlength=raw_counts_c.shape[0]
+            )
 
             if raw_counts_shoulder is not None and colmap.y_shoulder is not None:
-                s_vals = torch.clamp(Y_cpu[..., colmap.y_shoulder].to(torch.float32), 0.0, 1.0)
-                diffs = (s_vals.reshape(-1, 1) - _SHOULDER_PALETTE_T.reshape(1, -1)).abs()
+                s_vals = torch.clamp(
+                    Y_cpu[..., colmap.y_shoulder].to(torch.float32), 0.0, 1.0
+                )
+                diffs = (
+                    s_vals.reshape(-1, 1) - _SHOULDER_PALETTE_T.reshape(1, -1)
+                ).abs()
                 s_idx = diffs.argmin(dim=-1)
-                raw_counts_shoulder += torch.bincount(s_idx.cpu(), minlength=raw_counts_shoulder.shape[0])
+                raw_counts_shoulder += torch.bincount(
+                    s_idx.cpu(), minlength=raw_counts_shoulder.shape[0]
+                )
 
             total_tokens += int(X.numel())
             total_frames += int(X.shape[0] * X.shape[1])
@@ -1017,7 +1212,11 @@ def _evaluate(
             if progress:
                 running_loss = loss_sums["total"] / batch_idx
                 summary = metrics.summary()
-                pct = (batch_idx / total_batches) * 100.0 if total_batches else float("nan")
+                pct = (
+                    (batch_idx / total_batches) * 100.0
+                    if total_batches
+                    else float("nan")
+                )
                 line = (
                     f"[{batch_idx}/{total_batches if total_batches else '?'} | {pct:5.1f}%] "
                     f"loss {running_loss:.4f} | main acc {summary['acc_main']:.3f} "
@@ -1031,10 +1230,14 @@ def _evaluate(
                 print(line, flush=True)
 
                 if report_every and batch_idx % report_every == 0:
-                    _print_intermediate_summary(metrics, change_stats_main, change_stats_c, change_stats_buttons)
+                    _print_intermediate_summary(
+                        metrics, change_stats_main, change_stats_c, change_stats_buttons
+                    )
 
     elapsed = time.time() - start_time
-    batches_processed = min(total_batches, max_batches) if max_batches is not None else total_batches
+    batches_processed = (
+        min(total_batches, max_batches) if max_batches is not None else total_batches
+    )
 
     results["loss_sums"] = loss_sums
     results["batches"] = batches_processed
@@ -1058,26 +1261,38 @@ def _evaluate(
 
 
 def _print_intermediate_summary(
-        metrics: RunningMetrics,
-        main_stats: ChangeHoldStats,
-        c_stats: ChangeHoldStats,
-        btn_stats: ChangeHoldStats,
+    metrics: RunningMetrics,
+    main_stats: ChangeHoldStats,
+    c_stats: ChangeHoldStats,
+    btn_stats: ChangeHoldStats,
 ) -> None:
     summary = metrics.summary()
     print("Interim summary:")
     print(
-        f"  Main acc {summary['acc_main']:.3f} | maj {summary['acc_main_maj']:.3f} | rep {summary['acc_main_rep']:.3f}")
-    print(f"    change {main_stats.change_acc():.3f} | hold {main_stats.hold_acc():.3f}")
-    print(f"  C acc {summary['acc_c']:.3f} | maj {summary['acc_c_maj']:.3f} | rep {summary['acc_c_rep']:.3f}")
+        f"  Main acc {summary['acc_main']:.3f} | maj {summary['acc_main_maj']:.3f} | rep {summary['acc_main_rep']:.3f}"
+    )
+    print(
+        f"    change {main_stats.change_acc():.3f} | hold {main_stats.hold_acc():.3f}"
+    )
+    print(
+        f"  C acc {summary['acc_c']:.3f} | maj {summary['acc_c_maj']:.3f} | rep {summary['acc_c_rep']:.3f}"
+    )
     print(f"    change {c_stats.change_acc():.3f} | hold {c_stats.hold_acc():.3f}")
     print(
-        f"  Buttons EM {summary['btn_em']:.3f} | F1μ {summary['btn_f1_micro']:.3f} | F1_macro {summary['btn_f1_macro']:.3f}")
-    print(f"    change {btn_stats.change_acc():.3f} | hold {btn_stats.hold_acc():.3f}", flush=True)
+        f"  Buttons EM {summary['btn_em']:.3f} | F1μ {summary['btn_f1_micro']:.3f} | F1_macro {summary['btn_f1_macro']:.3f}"
+    )
+    print(
+        f"    change {btn_stats.change_acc():.3f} | hold {btn_stats.hold_acc():.3f}",
+        flush=True,
+    )
 
 
 def _render_button_metrics(metrics: RunningMetrics) -> str:
-    total_frames = float(metrics.btn_total.item()) if isinstance(metrics.btn_total, torch.Tensor) else float(
-        metrics.btn_total)
+    total_frames = (
+        float(metrics.btn_total.item())
+        if isinstance(metrics.btn_total, torch.Tensor)
+        else float(metrics.btn_total)
+    )
     tp = metrics.btn_tp.detach().cpu().numpy()
     fp = metrics.btn_fp.detach().cpu().numpy()
     fn = metrics.btn_fn.detach().cpu().numpy()
@@ -1087,9 +1302,18 @@ def _render_button_metrics(metrics: RunningMetrics) -> str:
 
     precision = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0)
     recall = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0)
-    f1 = np.divide(2 * precision * recall, precision + recall, out=np.zeros_like(tp), where=(precision + recall) > 0)
-    accuracy = np.divide(tp + tn, total_frames, out=np.zeros_like(tp), where=total_frames > 0)
-    pos_rate = np.divide(pos_counts, total_frames, out=np.zeros_like(tp), where=total_frames > 0)
+    f1 = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(tp),
+        where=(precision + recall) > 0,
+    )
+    accuracy = np.divide(
+        tp + tn, total_frames, out=np.zeros_like(tp), where=total_frames > 0
+    )
+    pos_rate = np.divide(
+        pos_counts, total_frames, out=np.zeros_like(tp), where=total_frames > 0
+    )
 
     lines = ["Per-button metrics:"]
     button_names = CONTROLLER_KEY_GROUPS["buttons"]
@@ -1101,7 +1325,9 @@ def _render_button_metrics(metrics: RunningMetrics) -> str:
     return "\n".join(lines)
 
 
-def _assign_to_palette(values: torch.Tensor, palette: torch.Tensor, *, from_unit_square: bool = False) -> torch.Tensor:
+def _assign_to_palette(
+    values: torch.Tensor, palette: torch.Tensor, *, from_unit_square: bool = False
+) -> torch.Tensor:
     if values.numel() == 0:
         return torch.empty(0, dtype=torch.long, device=values.device)
     vals = values.to(torch.float32)
@@ -1110,19 +1336,19 @@ def _assign_to_palette(values: torch.Tensor, palette: torch.Tensor, *, from_unit
     vals = torch.clamp(vals, -1.0, 1.0)
     radius = torch.linalg.norm(vals, dim=-1, keepdim=True)
     vals = vals / torch.clamp(radius, min=1.0)
-    norms = (vals ** 2).sum(dim=-1, keepdim=True)
+    norms = (vals**2).sum(dim=-1, keepdim=True)
     palette = palette.to(vals.device)
-    palette_norm = (palette ** 2).sum(dim=-1).unsqueeze(0)
+    palette_norm = (palette**2).sum(dim=-1).unsqueeze(0)
     dot = vals @ palette.t()
     d2 = norms - 2.0 * dot + palette_norm
     return d2.argmin(dim=-1)
 
 
 def _format_distribution_comparison(
-        pred_counts: np.ndarray,
-        true_counts: np.ndarray,
-        labels: Optional[Iterable[str]] = None,
-        top_k: Optional[int] = 10,
+    pred_counts: np.ndarray,
+    true_counts: np.ndarray,
+    labels: Optional[Iterable[str]] = None,
+    top_k: Optional[int] = 10,
 ) -> str:
     pred = np.asarray(pred_counts, dtype=np.float64)
     true = np.asarray(true_counts, dtype=np.float64)
@@ -1152,9 +1378,9 @@ def _format_distribution_comparison(
 
 
 def _print_button_press_distribution(
-        pred_press_counts: np.ndarray,
-        true_press_counts: np.ndarray,
-        total_frames: int,
+    pred_press_counts: np.ndarray,
+    true_press_counts: np.ndarray,
+    total_frames: int,
 ) -> None:
     if total_frames <= 0:
         print("  <no frames>")
@@ -1195,15 +1421,26 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
     # We need to track the count of change/hold frames for proper averaging
     # For now, use the total as denominator (this is an approximation)
     print(
-        f"  Main Stick (change frames): {_safe_div(enhanced.total_main_stick_error_change, enhanced.total_frames):.4f}")
-    print(f"  Main Stick (hold frames):   {_safe_div(enhanced.total_main_stick_error_hold, enhanced.total_frames):.4f}")
-    print(f"  C-Stick (change frames):    {_safe_div(enhanced.total_c_stick_error_change, enhanced.total_frames):.4f}")
-    print(f"  C-Stick (hold frames):      {_safe_div(enhanced.total_c_stick_error_hold, enhanced.total_frames):.4f}")
+        f"  Main Stick (change frames): {_safe_div(enhanced.total_main_stick_error_change, enhanced.total_frames):.4f}"
+    )
+    print(
+        f"  Main Stick (hold frames):   {_safe_div(enhanced.total_main_stick_error_hold, enhanced.total_frames):.4f}"
+    )
+    print(
+        f"  C-Stick (change frames):    {_safe_div(enhanced.total_c_stick_error_change, enhanced.total_frames):.4f}"
+    )
+    print(
+        f"  C-Stick (hold frames):      {_safe_div(enhanced.total_c_stick_error_hold, enhanced.total_frames):.4f}"
+    )
 
     # 2. Jitter
     print("\n2. Stick Stability (Jitter - Avg Frame-to-Frame Distance):")
-    avg_pred_main_jitter = _safe_div(enhanced.total_pred_main_jitter, enhanced.jitter_frames)
-    avg_true_main_jitter = _safe_div(enhanced.total_true_main_jitter, enhanced.jitter_frames)
+    avg_pred_main_jitter = _safe_div(
+        enhanced.total_pred_main_jitter, enhanced.jitter_frames
+    )
+    avg_true_main_jitter = _safe_div(
+        enhanced.total_true_main_jitter, enhanced.jitter_frames
+    )
     avg_pred_c_jitter = _safe_div(enhanced.total_pred_c_jitter, enhanced.jitter_frames)
     avg_true_c_jitter = _safe_div(enhanced.total_true_c_jitter, enhanced.jitter_frames)
     print(f"  Main Stick:")
@@ -1220,14 +1457,18 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
     print(f"  Main Stick: {avg_main_entropy:.4f}")
     print(f"  C-Stick:    {avg_c_entropy:.4f}")
     if enhanced.total_shoulder_entropy > 0:
-        avg_shoulder_entropy = _safe_div(enhanced.total_shoulder_entropy, enhanced.entropy_frames)
+        avg_shoulder_entropy = _safe_div(
+            enhanced.total_shoulder_entropy, enhanced.entropy_frames
+        )
         print(f"  Shoulder:   {avg_shoulder_entropy:.4f}")
 
     # 4. Per-action-state accuracy
     print("\n4. Accuracy by Player State:")
     for state_type in ["idle", "hitstun", "attack", "other"]:
         if state_type in enhanced.state_total and enhanced.state_total[state_type] > 0:
-            acc = _safe_div(enhanced.state_correct[state_type], enhanced.state_total[state_type])
+            acc = _safe_div(
+                enhanced.state_correct[state_type], enhanced.state_total[state_type]
+            )
             count = int(enhanced.state_total[state_type])
             print(f"  {state_type.capitalize():<8}: {acc:.3f} ({count:,} frames)")
 
@@ -1256,9 +1497,13 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
         if latencies.size > 0:
             print(f"  Mean Latency: {latencies.mean():.2f} frames")
             print(f"  Std Dev:      {latencies.std():.2f} frames")
-            print(f"  Matched:      {latencies.size}/{len(enhanced.lr_button_changes_true)}")
+            print(
+                f"  Matched:      {latencies.size}/{len(enhanced.lr_button_changes_true)}"
+            )
         else:
-            print(f"  No matched events (total true events: {len(enhanced.lr_button_changes_true)})")
+            print(
+                f"  No matched events (total true events: {len(enhanced.lr_button_changes_true)})"
+            )
     else:
         print("  No L/R button press events detected")
 
@@ -1274,9 +1519,11 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
         true_corr = np.corrcoef(all_labels, rowvar=False)
 
         # Compute Frobenius norm of difference
-        corr_diff = np.linalg.norm(pred_corr - true_corr, ord='fro')
+        corr_diff = np.linalg.norm(pred_corr - true_corr, ord="fro")
         print(f"  Frobenius norm of (Pred - True) correlation: {corr_diff:.4f}")
-        print(f"  (Lower is better - means predicted correlations match true correlations)")
+        print(
+            f"  (Lower is better - means predicted correlations match true correlations)"
+        )
 
         # You could optionally save the matrices for visualization
         # import matplotlib.pyplot as plt
@@ -1290,33 +1537,33 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
     # 8. Value Head Metrics (RL)
     if enhanced.value_frames > 0:
         print("\n8. Value Head Metrics (RL Critic):")
-        
+
         avg_value_mse = _safe_div(enhanced.total_value_mse, enhanced.value_frames)
         avg_value_mae = _safe_div(enhanced.total_value_mae, enhanced.value_frames)
         avg_value_pred = _safe_div(enhanced.total_value_pred, enhanced.value_frames)
         avg_value_target = _safe_div(enhanced.total_value_target, enhanced.value_frames)
-        
+
         print(f"  Mean Squared Error (MSE):     {avg_value_mse:.6f}")
         print(f"  Mean Absolute Error (MAE):    {avg_value_mae:.6f}")
         print(f"  Root Mean Squared Error:      {np.sqrt(avg_value_mse):.6f}")
         print(f"  Average Predicted Value:      {avg_value_pred:.4f}")
         print(f"  Average Target Value:         {avg_value_target:.4f}")
-        
+
         # Compute correlation
         if len(enhanced.value_pred_list) > 1 and len(enhanced.value_target_list) > 1:
             value_preds = np.array(enhanced.value_pred_list)
             value_targets = np.array(enhanced.value_target_list)
-            
+
             # Pearson correlation
             correlation = np.corrcoef(value_preds, value_targets)[0, 1]
             print(f"  Pearson Correlation:          {correlation:.4f}")
-            
+
             # R^2 score
             ss_res = ((value_preds - value_targets) ** 2).sum()
             ss_tot = ((value_targets - value_targets.mean()) ** 2).sum()
             r2_score = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
             print(f"  R² Score:                     {r2_score:.4f}")
-            
+
             # Distribution statistics
             print(f"\n  Prediction Distribution:")
             print(f"    Min:    {value_preds.min():.4f}")
@@ -1325,7 +1572,7 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
             print(f"    75%:    {np.percentile(value_preds, 75):.4f}")
             print(f"    Max:    {value_preds.max():.4f}")
             print(f"    Std:    {value_preds.std():.4f}")
-            
+
             print(f"\n  Target Distribution:")
             print(f"    Min:    {value_targets.min():.4f}")
             print(f"    25%:    {np.percentile(value_targets, 25):.4f}")
@@ -1333,42 +1580,52 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
             print(f"    75%:    {np.percentile(value_targets, 75):.4f}")
             print(f"    Max:    {value_targets.max():.4f}")
             print(f"    Std:    {value_targets.std():.4f}")
-            
+
             # Error analysis by value range
             print(f"\n  Error Analysis by Target Value Range:")
             # Divide into quartiles
             quartiles = np.percentile(value_targets, [25, 50, 75])
             ranges = [
                 (value_targets <= quartiles[0], f"Low (≤{quartiles[0]:.2f})"),
-                ((value_targets > quartiles[0]) & (value_targets <= quartiles[1]), f"Mid-Low ({quartiles[0]:.2f}-{quartiles[1]:.2f})"),
-                ((value_targets > quartiles[1]) & (value_targets <= quartiles[2]), f"Mid-High ({quartiles[1]:.2f}-{quartiles[2]:.2f})"),
+                (
+                    (value_targets > quartiles[0]) & (value_targets <= quartiles[1]),
+                    f"Mid-Low ({quartiles[0]:.2f}-{quartiles[1]:.2f})",
+                ),
+                (
+                    (value_targets > quartiles[1]) & (value_targets <= quartiles[2]),
+                    f"Mid-High ({quartiles[1]:.2f}-{quartiles[2]:.2f})",
+                ),
                 (value_targets > quartiles[2], f"High (>{quartiles[2]:.2f})"),
             ]
-            
+
             for mask, label in ranges:
                 if mask.sum() > 0:
                     range_mae = np.abs(value_preds[mask] - value_targets[mask]).mean()
                     range_mse = ((value_preds[mask] - value_targets[mask]) ** 2).mean()
                     count = mask.sum()
-                    print(f"    {label:<25} MAE: {range_mae:.4f}, MSE: {range_mse:.6f}, Count: {count:,}")
+                    print(
+                        f"    {label:<25} MAE: {range_mae:.4f}, MSE: {range_mse:.6f}, Count: {count:,}"
+                    )
 
     print("===== End Enhanced Metrics =====")
 
 
-def _print_enhanced_metrics_with_colmap(enhanced: EnhancedMetrics, colmap: ColumnMap) -> None:
+def _print_enhanced_metrics_with_colmap(
+    enhanced: EnhancedMetrics, colmap: ColumnMap
+) -> None:
     """Print enhanced metrics and extreme value analysis."""
     _print_enhanced_metrics(enhanced)
-    
+
     # Print extreme value frames if value head is enabled
     if enhanced.value_frame_data:
         _print_extreme_value_frames(enhanced, colmap, top_k=1)
 
 
 def _print_final_summary(
-        results: Dict[str, object],
-        checkpoint: Path,
-        data_root: Path,
-        colmap: ColumnMap,
+    results: Dict[str, object],
+    checkpoint: Path,
+    data_root: Path,
+    colmap: ColumnMap,
 ) -> None:
     batches = results["batches"]
     loss_sums: Dict[str, float] = results["loss_sums"]
@@ -1396,8 +1653,13 @@ def _print_final_summary(
     btn_true_press_counts = metrics.btn_pos_counts.detach().cpu().numpy()
     button_thresholds = results.get("button_thresholds", [])
 
-    avg_loss = {k: (v / batches if batches else float("nan")) for k, v in loss_sums.items()}
-    per_frame_loss = {k: (v / total_frames if total_frames else float("nan")) for k, v in loss_sums.items()}
+    avg_loss = {
+        k: (v / batches if batches else float("nan")) for k, v in loss_sums.items()
+    }
+    per_frame_loss = {
+        k: (v / total_frames if total_frames else float("nan"))
+        for k, v in loss_sums.items()
+    }
 
     summary = metrics.summary()
 
@@ -1407,7 +1669,9 @@ def _print_final_summary(
     print(f"Batches:    {batches}")
     print(f"Frames:     {total_frames:,}")
     print(f"Tokens:     {total_tokens:,}")
-    print(f"Elapsed:    {elapsed:.2f}s | {total_tokens / max(elapsed, 1e-9):,.0f} tokens/s")
+    print(
+        f"Elapsed:    {elapsed:.2f}s | {total_tokens / max(elapsed, 1e-9):,.0f} tokens/s"
+    )
     if button_thresholds:
         formatted_thr = ", ".join(f"{thr:.3f}" for thr in button_thresholds)
         print(f"Button thresholds: [{formatted_thr}]")
@@ -1422,12 +1686,16 @@ def _print_final_summary(
 
     print("\nMain Stick:")
     print(
-        f"  accuracy {summary['acc_main']:.3f} | majority {summary['acc_main_maj']:.3f} | repeat {summary['acc_main_rep']:.3f}")
-    print(f"  change   {main_stats.change_acc():.3f} | hold {main_stats.hold_acc():.3f}")
+        f"  accuracy {summary['acc_main']:.3f} | majority {summary['acc_main_maj']:.3f} | repeat {summary['acc_main_rep']:.3f}"
+    )
+    print(
+        f"  change   {main_stats.change_acc():.3f} | hold {main_stats.hold_acc():.3f}"
+    )
 
     print("\nC-Stick:")
     print(
-        f"  accuracy {summary['acc_c']:.3f} | majority {summary['acc_c_maj']:.3f} | repeat {summary['acc_c_rep']:.3f}")
+        f"  accuracy {summary['acc_c']:.3f} | majority {summary['acc_c_maj']:.3f} | repeat {summary['acc_c_rep']:.3f}"
+    )
     print(f"  change   {c_stats.change_acc():.3f} | hold {c_stats.hold_acc():.3f}")
 
     print("\nButtons:")
@@ -1441,20 +1709,36 @@ def _print_final_summary(
     acc_shoulder = summary.get("acc_shoulder")
     if acc_shoulder is not None:
         print("\nShoulder:")
-        print(f"  accuracy {acc_shoulder:.3f} | majority {summary['acc_shoulder_maj']:.3f}")
+        print(
+            f"  accuracy {acc_shoulder:.3f} | majority {summary['acc_shoulder_maj']:.3f}"
+        )
 
     print("\nPrediction distributions:")
     print("  Main stick (top bins):")
-    print(_format_distribution_comparison(main_pred_counts, main_true_counts, _MAIN_STICK_LABELS, top_k=10))
+    print(
+        _format_distribution_comparison(
+            main_pred_counts, main_true_counts, _MAIN_STICK_LABELS, top_k=10
+        )
+    )
     print("  C-stick:")
-    print(_format_distribution_comparison(c_pred_counts, c_true_counts, _C_STICK_LABELS, top_k=None))
+    print(
+        _format_distribution_comparison(
+            c_pred_counts, c_true_counts, _C_STICK_LABELS, top_k=None
+        )
+    )
 
     if shoulder_pred_counts is not None and shoulder_true_counts is not None:
         print("  Shoulder:")
-        print(_format_distribution_comparison(shoulder_pred_counts, shoulder_true_counts, _SHOULDER_LABELS, top_k=None))
+        print(
+            _format_distribution_comparison(
+                shoulder_pred_counts, shoulder_true_counts, _SHOULDER_LABELS, top_k=None
+            )
+        )
 
     print("  Button press rates:")
-    _print_button_press_distribution(btn_press_counts, btn_true_press_counts, total_frames)
+    _print_button_press_distribution(
+        btn_press_counts, btn_true_press_counts, total_frames
+    )
 
     # Value head summary
     enhanced: EnhancedMetrics = results.get("enhanced")
@@ -1463,7 +1747,7 @@ def _print_final_summary(
         avg_value_mae = _safe_div(enhanced.total_value_mae, enhanced.value_frames)
         avg_value_pred = _safe_div(enhanced.total_value_pred, enhanced.value_frames)
         avg_value_target = _safe_div(enhanced.total_value_target, enhanced.value_frames)
-        
+
         if len(enhanced.value_pred_list) > 1 and len(enhanced.value_target_list) > 1:
             value_preds = np.array(enhanced.value_pred_list)
             value_targets = np.array(enhanced.value_target_list)
@@ -1474,9 +1758,11 @@ def _print_final_summary(
         else:
             correlation = 0.0
             r2_score = 0.0
-        
+
         print("\nValue Head (RL Critic):")
-        print(f"  MSE {avg_value_mse:.6f} | MAE {avg_value_mae:.6f} | RMSE {np.sqrt(avg_value_mse):.6f}")
+        print(
+            f"  MSE {avg_value_mse:.6f} | MAE {avg_value_mae:.6f} | RMSE {np.sqrt(avg_value_mse):.6f}"
+        )
         print(f"  Correlation {correlation:.4f} | R² {r2_score:.4f}")
         print(f"  Avg Pred {avg_value_pred:.4f} | Avg Target {avg_value_target:.4f}")
 
@@ -1489,27 +1775,69 @@ def _print_final_summary(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate the controller model on a validation set.")
-    parser.add_argument("--checkpoint", "-c", type=Path, default=None,
-                        help="Path to a checkpoint; defaults to the latest in train.out_dir.")
-    parser.add_argument("--data-root", type=Path, default=None,
-                        help="Root directory of the validation Zarr dataset (defaults to validation_set under project root).")
-    parser.add_argument("--batch-size", type=int, default=None,
-                        help="Evaluation batch size (defaults to train.batch_size).")
-    parser.add_argument("--num-workers", type=int, default=None,
-                        help="Number of DataLoader workers (defaults to train.num_workers).")
-    parser.add_argument("--prefetch-factor", type=int, default=None,
-                        help="Prefetch factor when num_workers>0 (defaults to train.prefetch_factor).")
-    parser.add_argument("--no-pin-memory", action="store_true",
-                        help="Disable DataLoader pin_memory (enabled by default).")
-    parser.add_argument("--device", default="auto", help="Torch device to run on (auto/cpu/cuda/mps).")
-    parser.add_argument("--report-every", type=int, default=0,
-                        help="Every N batches, emit a richer interim summary (0 disables).")
-    parser.add_argument("--max-batches", type=int, default=None,
-                        help="Optional cap on the number of batches to evaluate.")
-    parser.add_argument("--no-progress", action="store_true", help="Disable per-batch progress output.")
-    parser.add_argument("--thresholds-path", type=Path, default=None,
-                        help="Path to per-button threshold JSON (defaults to button_thresholds.json if present).")
+    parser = argparse.ArgumentParser(
+        description="Evaluate the controller model on a validation set."
+    )
+    parser.add_argument(
+        "--checkpoint",
+        "-c",
+        type=Path,
+        default=None,
+        help="Path to a checkpoint; defaults to the latest in train.out_dir.",
+    )
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=None,
+        help="Root directory of the validation Zarr dataset (defaults to validation_set under project root).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Evaluation batch size (defaults to train.batch_size).",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Number of DataLoader workers (defaults to train.num_workers).",
+    )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=None,
+        help="Prefetch factor when num_workers>0 (defaults to train.prefetch_factor).",
+    )
+    parser.add_argument(
+        "--no-pin-memory",
+        action="store_true",
+        help="Disable DataLoader pin_memory (enabled by default).",
+    )
+    parser.add_argument(
+        "--device", default="auto", help="Torch device to run on (auto/cpu/cuda/mps)."
+    )
+    parser.add_argument(
+        "--report-every",
+        type=int,
+        default=0,
+        help="Every N batches, emit a richer interim summary (0 disables).",
+    )
+    parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="Optional cap on the number of batches to evaluate.",
+    )
+    parser.add_argument(
+        "--no-progress", action="store_true", help="Disable per-batch progress output."
+    )
+    parser.add_argument(
+        "--thresholds-path",
+        type=Path,
+        default=None,
+        help="Path to per-button threshold JSON (defaults to button_thresholds.json if present).",
+    )
     return parser.parse_args()
 
 
@@ -1543,8 +1871,14 @@ def main() -> None:
     device = _resolve_device()
 
     batch_size = args.batch_size or config.train.batch_size
-    num_workers = args.num_workers if args.num_workers is not None else config.train.num_workers
-    prefetch_factor = args.prefetch_factor if args.prefetch_factor is not None else config.train.prefetch_factor
+    num_workers = (
+        args.num_workers if args.num_workers is not None else config.train.num_workers
+    )
+    prefetch_factor = (
+        args.prefetch_factor
+        if args.prefetch_factor is not None
+        else config.train.prefetch_factor
+    )
     pin_memory = config.train.pin_memory and not args.no_pin_memory
     persistent_workers = config.train.persistent_workers and num_workers > 0
 
@@ -1581,7 +1915,9 @@ def main() -> None:
 
     button_thresholds = torch.tensor(threshold_values, dtype=torch.float32)
 
-    print(f"Evaluating on {len(dataset):,} windows with batch size {batch_size} (device={device})")
+    print(
+        f"Evaluating on {len(dataset):,} windows with batch size {batch_size} (device={device})"
+    )
 
     results = _evaluate(
         model,

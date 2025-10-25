@@ -44,7 +44,9 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(n_embd, n_head, n_kv_head, dropout)
         self.mlp = MLP(n_embd)
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> torch.Tensor:
         x = x + self.attn(norm(x), cos, sin)
         x = x + self.mlp(norm(x))
         return x
@@ -62,10 +64,12 @@ class GPT(nn.Module):
         self.proj_down = nn.Linear(self.input_size, self.n_embd, bias=False)
         self.drop = nn.Dropout(cfg.dropout)
 
-        self.blocks = nn.ModuleList([
-            Block(self.n_embd, cfg.n_head, cfg.n_kv_head, cfg.dropout)
-            for _ in range(cfg.n_layer)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                Block(self.n_embd, cfg.n_head, cfg.n_kv_head, cfg.dropout)
+                for _ in range(cfg.n_layer)
+            ]
+        )
 
         self.target_shapes_by_head = cfg.target_shapes_by_head
         self.shoulder_output_size = self.target_shapes_by_head["shoulder"]
@@ -75,22 +79,39 @@ class GPT(nn.Module):
 
         head_hidden_dim = 128
 
-        self.button_head = ButtonHead(self.n_embd, self.button_output_size, hidden=head_hidden_dim)
+        self.button_head = ButtonHead(
+            self.n_embd, self.button_output_size, hidden=head_hidden_dim
+        )
 
         main_stick_input_size = self.n_embd + self.button_output_size
-        self.main_stick_head = SimpleHead(main_stick_input_size, self.main_stick_output_size, hidden=head_hidden_dim)
+        self.main_stick_head = SimpleHead(
+            main_stick_input_size, self.main_stick_output_size, hidden=head_hidden_dim
+        )
 
-        c_stick_input_size = self.n_embd + self.button_output_size + self.main_stick_output_size
-        self.c_stick_head = SimpleHead(c_stick_input_size, self.c_stick_output_size, hidden=head_hidden_dim)
+        c_stick_input_size = (
+            self.n_embd + self.button_output_size + self.main_stick_output_size
+        )
+        self.c_stick_head = SimpleHead(
+            c_stick_input_size, self.c_stick_output_size, hidden=head_hidden_dim
+        )
 
-        shoulder_input_size = self.n_embd + self.button_output_size + self.main_stick_output_size + self.c_stick_output_size
-        self.shoulder_head = SimpleHead(shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim)
+        shoulder_input_size = (
+            self.n_embd
+            + self.button_output_size
+            + self.main_stick_output_size
+            + self.c_stick_output_size
+        )
+        self.shoulder_head = SimpleHead(
+            shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
+        )
         self.value_head = ValueHead(self.n_embd, hidden=head_hidden_dim)
 
         self.rotary_seq_len = self.block_size * 2
         head_dim = cfg.n_embd // cfg.n_head
         rope_base = getattr(cfg, "rope_theta", 10000.0)
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim, rope_base)
+        cos, sin = self._precompute_rotary_embeddings(
+            self.rotary_seq_len, head_dim, rope_base
+        )
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
@@ -123,21 +144,36 @@ class GPT(nn.Module):
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
         cos, sin = cos.bfloat16(), sin.bfloat16()  # keep them in bfloat16
-        cos, sin = cos[None, :, None, :], sin[None, :, None, :]  # add batch and head dims for later broadcasting
+        cos, sin = (
+            cos[None, :, None, :],
+            sin[None, :, None, :],
+        )  # add batch and head dims for later broadcasting
         return cos, sin
 
     def _embed_inputs(self, inputs: TensorDict) -> torch.Tensor:
         """Includes categorical embeddings, one-hot encodings, and numerical features."""
         return torch.cat(
             [
-                F.one_hot(inputs["stage"].squeeze(-1).long(), num_classes=self.config.model.num_stages).float(),
-                F.one_hot(inputs["ego_character"].squeeze(-1).long(),
-                          num_classes=self.config.model.num_characters).float(),
-                F.one_hot(inputs["opponent_character"].squeeze(-1).long(),
-                          num_classes=self.config.model.num_characters).float(),
-                F.one_hot(inputs["ego_action"].squeeze(-1).long(), num_classes=self.config.model.num_actions).float(),
-                F.one_hot(inputs["opponent_action"].squeeze(-1).long(),
-                          num_classes=self.config.model.num_actions).float(),
+                F.one_hot(
+                    inputs["stage"].squeeze(-1).long(),
+                    num_classes=self.config.model.num_stages,
+                ).float(),
+                F.one_hot(
+                    inputs["ego_character"].squeeze(-1).long(),
+                    num_classes=self.config.model.num_characters,
+                ).float(),
+                F.one_hot(
+                    inputs["opponent_character"].squeeze(-1).long(),
+                    num_classes=self.config.model.num_characters,
+                ).float(),
+                F.one_hot(
+                    inputs["ego_action"].squeeze(-1).long(),
+                    num_classes=self.config.model.num_actions,
+                ).float(),
+                F.one_hot(
+                    inputs["opponent_action"].squeeze(-1).long(),
+                    num_classes=self.config.model.num_actions,
+                ).float(),
                 inputs["gamestate"],
                 inputs["controller"],
             ],
@@ -146,7 +182,9 @@ class GPT(nn.Module):
 
     def forward(self, inputs: TensorDict) -> TensorDict:
         B, L, _ = inputs["gamestate"].shape
-        assert L <= self.block_size, f"Cannot forward sequence of length {L}, block size is only {self.block_size}"
+        assert (
+            L <= self.block_size
+        ), f"Cannot forward sequence of length {L}, block size is only {self.block_size}"
 
         combined_inputs = self._embed_inputs(inputs)
         x = self.proj_down(combined_inputs)
@@ -162,14 +200,20 @@ class GPT(nn.Module):
         base = x
         button_logits, button_probs = self.button_head(base)
 
-        main_stick = self.main_stick_head(torch.cat(
-            (base, button_logits.detach()), dim=-1))
+        main_stick = self.main_stick_head(
+            torch.cat((base, button_logits.detach()), dim=-1)
+        )
 
-        c_stick = self.c_stick_head(torch.cat(
-            (base, button_logits.detach(), main_stick.detach()), dim=-1))
+        c_stick = self.c_stick_head(
+            torch.cat((base, button_logits.detach(), main_stick.detach()), dim=-1)
+        )
 
-        shoulder = self.shoulder_head(torch.cat(
-            (base, button_logits.detach(), main_stick.detach(), c_stick.detach()), dim=-1))
+        shoulder = self.shoulder_head(
+            torch.cat(
+                (base, button_logits.detach(), main_stick.detach(), c_stick.detach()),
+                dim=-1,
+            )
+        )
 
         outputs = TensorDict(
             {

@@ -31,7 +31,7 @@ def _latest_checkpoint(directory: Path) -> Optional[Path]:
     directory = directory.expanduser()
     if not directory.exists():
         return None
-    candidates = [p for p in directory.glob('*.pt') if p.is_file()]
+    candidates = [p for p in directory.glob("*.pt") if p.is_file()]
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -39,11 +39,11 @@ def _latest_checkpoint(directory: Path) -> Optional[Path]:
 
 
 def _load_latest_checkpoint(
-        directory: Path,
-        model: torch.nn.Module,
-        optimizer: Optimizer,
-        scaler: GradScaler,
-        device: torch.device,
+    directory: Path,
+    model: torch.nn.Module,
+    optimizer: Optimizer,
+    scaler: GradScaler,
+    device: torch.device,
 ) -> Tuple[int, int, int]:
     checkpoints = _sorted_checkpoint_paths(directory)
     if not checkpoints:
@@ -100,15 +100,16 @@ def _load_latest_checkpoint(
     global_step = int(ckpt.get("global_step", 0))
     return max(start_epoch, 0), max(global_step, 0), start_iter
 
+
 def save_checkpoint(
-        path: Path,
-        model: torch.nn.Module,
-        optimizer: Optional[Optimizer] = None,
-        scaler: Optional[GradScaler] = None,
-        epoch: int = 0,
-        global_step: int = 0,
-        config: Optional[dict] = None,
-        **kwargs
+    path: Path,
+    model: torch.nn.Module,
+    optimizer: Optional[Optimizer] = None,
+    scaler: Optional[GradScaler] = None,
+    epoch: int = 0,
+    global_step: int = 0,
+    config: Optional[dict] = None,
+    **kwargs,
 ) -> None:
     """Save model checkpoint with optional optimizer and scaler state."""
     ckpt = {
@@ -118,18 +119,18 @@ def save_checkpoint(
         "resume_iter": 0,
         "global_step": global_step,
     }
-    
+
     if optimizer is not None:
         ckpt["optimizer"] = optimizer.state_dict()
-    
+
     if scaler is not None:
         ckpt["scaler"] = scaler.state_dict()
-    
+
     if config is not None:
         ckpt["config"] = config
-    
+
     # Add any extra kwargs
     ckpt.update(kwargs)
-    
+
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(ckpt, path)

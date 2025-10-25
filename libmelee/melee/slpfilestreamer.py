@@ -8,6 +8,7 @@ import numpy as np
 
 from libmelee.melee.slippstream import EventType, EVENT_TYPE_BY_BYTE
 
+
 class SLPFileStreamer:
     def __init__(self, path):
         self._path = path
@@ -38,8 +39,7 @@ class SLPFileStreamer:
         return False
 
     def dispatch(self, *args, **kwargs):
-        """Read a single game event off the buffer
-        """
+        """Read a single game event off the buffer"""
         del args, kwargs
 
         if self._index >= len(self._contents):
@@ -48,7 +48,7 @@ class SLPFileStreamer:
         event_type = EVENT_TYPE_BY_BYTE[self._contents[self._index]]
         if event_type is EventType.PAYLOADS:
             cursor = 0x2
-            payload_size = self._contents[self._index+1]
+            payload_size = self._contents[self._index + 1]
             num_commands = (payload_size - 1) // 3
             for i in range(0, num_commands):
                 command = np.ndarray((1,), ">B", self._contents, cursor)[0]
@@ -59,14 +59,18 @@ class SLPFileStreamer:
 
             wrapper = dict()
             wrapper["type"] = "game_event"
-            wrapper["payload"] = self._contents[self._index : self._index+payload_size+1]
+            wrapper["payload"] = self._contents[
+                self._index : self._index + payload_size + 1
+            ]
             self._index += payload_size + 1
             return wrapper
 
         event_size = self.eventsize[self._contents[self._index]]
 
         # Check to see if a new frame has happened for an old file type
-        if event_type and self._is_new_frame(self._contents[self._index : self._index+event_size]):
+        if event_type and self._is_new_frame(
+            self._contents[self._index : self._index + event_size]
+        ):
             wrapper = dict()
             wrapper["type"] = "frame_end"
             wrapper["payload"] = b""
@@ -74,13 +78,13 @@ class SLPFileStreamer:
 
         wrapper = dict()
         wrapper["type"] = "game_event"
-        wrapper["payload"] = self._contents[self._index : self._index+event_size]
+        wrapper["payload"] = self._contents[self._index : self._index + event_size]
         self._index += event_size
 
         return wrapper
 
     def connect(self):
-        with open(self._path, mode='rb') as file:
+        with open(self._path, mode="rb") as file:
             full = ubjson.loadb(file.read())
             raw = full["raw"]
             self._contents = raw

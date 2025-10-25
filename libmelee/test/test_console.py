@@ -38,6 +38,7 @@ def normalized_from_game_float(target_norm: float) -> float:
 
 # --- Fixtures ----------------------------------------------------------------
 
+
 @pytest.fixture
 def console(tmp_path) -> Console:
     """
@@ -56,6 +57,7 @@ def gs() -> GameState:
 
 
 # --- Tests for __pre_frame ---------------------------------------------------
+
 
 def test_pre_frame_sets_controller_state_basic(console: Console, gs: GameState) -> None:
     """
@@ -131,8 +133,8 @@ def test_pre_frame_sets_controller_state_basic(console: Console, gs: GameState) 
 def test_pre_frame_handles_nana_branch(console: Console, gs: GameState) -> None:
     """If Nana flag is set, the values should apply to players[port].nana."""
     buf = make_buf(0x33)  # enough to include button bits at 0x31
-    be_pack_into(buf, 0x5, "B", 0)   # port 1
-    be_pack_into(buf, 0x6, "B", 1)   # Nana
+    be_pack_into(buf, 0x5, "B", 0)  # port 1
+    be_pack_into(buf, 0x6, "B", 1)  # Nana
 
     be_pack_into(buf, 0x19, "f", normalized_from_game_float(0.6))
     be_pack_into(buf, 0x1D, "f", normalized_from_game_float(0.6))
@@ -148,7 +150,9 @@ def test_pre_frame_handles_nana_branch(console: Console, gs: GameState) -> None:
     assert isinstance(ps, PlayerState)
 
 
-def test_pre_frame_gracefully_handles_truncated_payload(console: Console, gs: GameState) -> None:
+def test_pre_frame_gracefully_handles_truncated_payload(
+    console: Console, gs: GameState
+) -> None:
     """
     Omit the raw_main_* bytes and buttonbits to trigger internal TypeError branches and defaults.
     """
@@ -179,6 +183,7 @@ def test_pre_frame_gracefully_handles_truncated_payload(console: Console, gs: Ga
 
 
 # --- Tests for __post_frame --------------------------------------------------
+
 
 def test_post_frame_sets_core_fields_and_flags(console: Console, gs: GameState) -> None:
     """
@@ -239,18 +244,22 @@ def test_post_frame_sets_core_fields_and_flags(console: Console, gs: GameState) 
     be_pack_into(buf, 0x34, "B", 1)
 
     # Speeds & hitlag_left
-    be_pack_into(buf, 0x35, "f", 0.1)   # speed_air_x_self
+    be_pack_into(buf, 0x35, "f", 0.1)  # speed_air_x_self
     be_pack_into(buf, 0x39, "f", -0.2)  # speed_y_self
-    be_pack_into(buf, 0x3D, "f", 0.3)   # speed_x_attack
+    be_pack_into(buf, 0x3D, "f", 0.3)  # speed_x_attack
     be_pack_into(buf, 0x41, "f", -0.4)  # speed_y_attack
-    be_pack_into(buf, 0x45, "f", 0.5)   # speed_ground_x_self
-    be_pack_into(buf, 0x49, "f", 7.0)   # hitlag_left
+    be_pack_into(buf, 0x45, "f", 0.5)  # speed_ground_x_self
+    be_pack_into(buf, 0x49, "f", 7.0)  # hitlag_left
 
     # ECB edges (top, bottom, left, right)
-    be_pack_into(buf, 0x4D, "f",  1.1); be_pack_into(buf, 0x51, "f",  2.2)
-    be_pack_into(buf, 0x55, "f", -3.3); be_pack_into(buf, 0x59, "f", -4.4)
-    be_pack_into(buf, 0x5D, "f", -5.5); be_pack_into(buf, 0x61, "f",  6.6)
-    be_pack_into(buf, 0x65, "f",  7.7); be_pack_into(buf, 0x69, "f", -8.8)
+    be_pack_into(buf, 0x4D, "f", 1.1)
+    be_pack_into(buf, 0x51, "f", 2.2)
+    be_pack_into(buf, 0x55, "f", -3.3)
+    be_pack_into(buf, 0x59, "f", -4.4)
+    be_pack_into(buf, 0x5D, "f", -5.5)
+    be_pack_into(buf, 0x61, "f", 6.6)
+    be_pack_into(buf, 0x65, "f", 7.7)
+    be_pack_into(buf, 0x69, "f", -8.8)
 
     # Manual bookend behavior
     console._use_manual_bookends = True  # type: ignore[attr-defined]
@@ -336,12 +345,12 @@ def test_post_frame_nana_branch(console: Console, gs: GameState) -> None:
 
     buf = make_buf(0x22 + 4)
     be_pack_into(buf, 0x1, "i", 10)
-    be_pack_into(buf, 0x5, "B", 0)     # port 1
-    be_pack_into(buf, 0x6, "B", 1)     # Nana
-    be_pack_into(buf, 0x0A, "f", -1.0) # x
-    be_pack_into(buf, 0x0E, "f",  2.5) # y
-    be_pack_into(buf, 0x21, "B", 2)    # stock
-    be_pack_into(buf, 0x22, "f",  3.0) # action_frame
+    be_pack_into(buf, 0x5, "B", 0)  # port 1
+    be_pack_into(buf, 0x6, "B", 1)  # Nana
+    be_pack_into(buf, 0x0A, "f", -1.0)  # x
+    be_pack_into(buf, 0x0E, "f", 2.5)  # y
+    be_pack_into(buf, 0x21, "B", 2)  # stock
+    be_pack_into(buf, 0x22, "f", 3.0)  # action_frame
 
     console._Console__post_frame(gs, bytes(buf))  # type: ignore[attr-defined]
 
@@ -365,7 +374,7 @@ def test_post_frame_unknown_action_fallback(console: Console, gs: GameState) -> 
     be_pack_into(buf, 0x12, "f", 0.0)  # facing
     be_pack_into(buf, 0x16, "f", 0.0)  # percent
     be_pack_into(buf, 0x1A, "f", 0.0)  # shield
-    be_pack_into(buf, 0x21, "B", 0)    # stock
+    be_pack_into(buf, 0x21, "B", 0)  # stock
     be_pack_into(buf, 0x22, "f", 0.0)  # action_frame
 
     console._Console__post_frame(gs, bytes(buf))  # type: ignore[attr-defined]
@@ -388,12 +397,12 @@ def test_post_frame_truncated_payload_defaults(console: Console, gs: GameState) 
     be_pack_into(buf, 0x8, "H", enums.Action.NEUTRAL_ATTACK_1.value)
     be_pack_into(buf, 0x0A, "f", 0.0)
     be_pack_into(buf, 0x0E, "f", 0.0)
-    be_pack_into(buf, 0x12, "f", -1.0)     # facing False
-    be_pack_into(buf, 0x16, "f", 0.0)      # percent
-    be_pack_into(buf, 0x1A, "f", 0.0)      # shield
+    be_pack_into(buf, 0x12, "f", -1.0)  # facing False
+    be_pack_into(buf, 0x16, "f", 0.0)  # percent
+    be_pack_into(buf, 0x1A, "f", 0.0)  # shield
     be_pack_into(buf, 0x21, "B", 4)
     be_pack_into(buf, 0x22, "f", 1.0)
-    be_pack_into(buf, 0x2F, "B", 0)        # on_ground -> True
+    be_pack_into(buf, 0x2F, "B", 0)  # on_ground -> True
 
     console._Console__post_frame(gs, bytes(buf))  # type: ignore[attr-defined]
     ps = gs.players[1]
@@ -415,7 +424,9 @@ def test_post_frame_truncated_payload_defaults(console: Console, gs: GameState) 
     assert ps.stock == 4
     assert not ps.facing
 
+
 # --- Tests for __handle_slippstream_menu_event --------------------------------
+
 
 def _call_menu_event(console: Console, gs: GameState, buf: bytes) -> None:
     # Name-mangled private method
@@ -430,7 +441,9 @@ def _write_scene(buf: bytearray, scene: int) -> None:
     be_pack_into(buf, 0x1, "H", scene)
 
 
-def test_menu_event_character_select_full(console: Console, gs: GameState, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_menu_event_character_select_full(
+    console: Console, gs: GameState, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Happy-path CHARACTER_SELECT (0x02): statuses, cursors, ready flag, characters, coins, frame, submenu, selection.
     Also verify CPU-level preservation for CPU ports and zeroing for non-CPU ports.
     """
@@ -444,10 +457,14 @@ def test_menu_event_character_select_full(console: Console, gs: GameState, monke
     be_pack_into(buf, 0x28, "B", enums.ControllerStatus.CONTROLLER_HUMAN.value)
 
     # CSS cursors (x,y per port)
-    be_pack_into(buf, 0x03, "f",  1.25); be_pack_into(buf, 0x07, "f", -2.5)
-    be_pack_into(buf, 0x0B, "f", -3.00); be_pack_into(buf, 0x0F, "f",  4.0)
-    be_pack_into(buf, 0x13, "f",  5.50); be_pack_into(buf, 0x17, "f",  6.5)
-    be_pack_into(buf, 0x1B, "f", -7.75); be_pack_into(buf, 0x1F, "f", -8.0)
+    be_pack_into(buf, 0x03, "f", 1.25)
+    be_pack_into(buf, 0x07, "f", -2.5)
+    be_pack_into(buf, 0x0B, "f", -3.00)
+    be_pack_into(buf, 0x0F, "f", 4.0)
+    be_pack_into(buf, 0x13, "f", 5.50)
+    be_pack_into(buf, 0x17, "f", 6.5)
+    be_pack_into(buf, 0x1B, "f", -7.75)
+    be_pack_into(buf, 0x1F, "f", -8.0)
 
     # Ready banner
     be_pack_into(buf, 0x23, "B", 1)
@@ -499,7 +516,6 @@ def test_menu_event_character_select_full(console: Console, gs: GameState, monke
         assert gs.players[p].character == enums.Character.FOX
         assert gs.players[p].character_selected == enums.Character.FOX
 
-
     # Frame & submenu & selection
     assert gs.frame == 4242
     assert gs.submenu == enums.SubMenu.UNKNOWN_SUBMENU
@@ -510,9 +526,11 @@ def test_menu_event_character_select_truncated_defaults(
     console: Console, gs: GameState, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Truncate to trigger TypeError fallbacks for character and coin-down fields."""
+
     # Force enums.to_internal to raise TypeError so UNKNOWN_CHARACTER fallback path is exercised
     def _raise_typeerror(_):  # type: ignore[unused-argument]
         raise TypeError("forced in test")
+
     monkeypatch.setattr(enums, "to_internal", _raise_typeerror)
     # Buffer long enough for statuses/cursors/ready but shorter than char bytes (0x29)
     buf = _mk_event_buf(0x29)
@@ -553,7 +571,7 @@ def test_menu_event_slippi_online_css_costumes_and_nametag(
     for i, off in enumerate((0x25, 0x26, 0x27, 0x28), start=1):
         be_pack_into(buf, off, "B", enums.ControllerStatus.CONTROLLER_HUMAN.value)
     be_pack_into(buf, 0x39, "i", 7)
-    be_pack_into(buf, 0x3F, "B", 3)   # costume value
+    be_pack_into(buf, 0x3F, "B", 3)  # costume value
     be_pack_into(buf, 0x40, "B", 0x05)  # triggers NAME_ENTRY_SUBMENU
 
     _call_menu_event(console, gs, bytes(buf))
@@ -583,10 +601,19 @@ def test_menu_event_slippi_online_css_costumes_and_nametag(
 
     original = np.ndarray
 
-    def missing_css_data(shape, dtype=float, buffer=None, offset=0, strides=None, order=None):
+    def missing_css_data(
+        shape, dtype=float, buffer=None, offset=0, strides=None, order=None
+    ):
         if dtype == ">B" and offset in (0x3F, 0x40):
             raise TypeError("css bytes missing")
-        return original(shape, dtype=dtype, buffer=buffer, offset=offset, strides=strides, order=order)
+        return original(
+            shape,
+            dtype=dtype,
+            buffer=buffer,
+            offset=offset,
+            strides=strides,
+            order=order,
+        )
 
     monkeypatch.setattr(np, "ndarray", missing_css_data)
 
@@ -595,11 +622,16 @@ def test_menu_event_slippi_online_css_costumes_and_nametag(
     assert gs.submenu == enums.SubMenu.ONLINE_CSS
 
 
-@pytest.mark.parametrize("scene, expected", [
-    (0x0102, enums.Menu.STAGE_SELECT),
-    (0x0108, enums.Menu.STAGE_SELECT),
-])
-def test_menu_event_stage_select_valid_and_cursors(console: Console, gs: GameState, scene: int, expected: enums.Menu) -> None:
+@pytest.mark.parametrize(
+    "scene, expected",
+    [
+        (0x0102, enums.Menu.STAGE_SELECT),
+        (0x0108, enums.Menu.STAGE_SELECT),
+    ],
+)
+def test_menu_event_stage_select_valid_and_cursors(
+    console: Console, gs: GameState, scene: int, expected: enums.Menu
+) -> None:
     buf = _mk_event_buf()
     _write_scene(buf, scene)
     # Valid stage and cursors
@@ -617,7 +649,9 @@ def test_menu_event_stage_select_valid_and_cursors(console: Console, gs: GameSta
     assert gs.stage == enums.Stage.BATTLEFIELD
 
 
-def test_menu_event_stage_select_invalid_stage_sets_no_stage(console: Console, gs: GameState) -> None:
+def test_menu_event_stage_select_invalid_stage_sets_no_stage(
+    console: Console, gs: GameState
+) -> None:
     buf = _mk_event_buf()
     _write_scene(buf, 0x0102)
     be_pack_into(buf, 0x24, "B", 0xFF)  # invalid -> ValueError -> NO_STAGE
@@ -631,13 +665,18 @@ def test_menu_event_stage_select_invalid_stage_sets_no_stage(console: Console, g
     assert gs.stage == enums.Stage.NO_STAGE
 
 
-@pytest.mark.parametrize("scene, expected", [
-    (0x0202, enums.Menu.IN_GAME),
-    (0x0001, enums.Menu.MAIN_MENU),
-    (0x0000, enums.Menu.PRESS_START),
-    (0xDEAD, enums.Menu.UNKNOWN_MENU),
-])
-def test_menu_event_other_scenes_and_exceptions(console: Console, gs: GameState, scene: int, expected: enums.Menu) -> None:
+@pytest.mark.parametrize(
+    "scene, expected",
+    [
+        (0x0202, enums.Menu.IN_GAME),
+        (0x0001, enums.Menu.MAIN_MENU),
+        (0x0000, enums.Menu.PRESS_START),
+        (0xDEAD, enums.Menu.UNKNOWN_MENU),
+    ],
+)
+def test_menu_event_other_scenes_and_exceptions(
+    console: Console, gs: GameState, scene: int, expected: enums.Menu
+) -> None:
     # Prepare a GameState with empty players to trigger KeyError path in CPU-level & slider loops
     gs.players.clear()
 
@@ -660,6 +699,7 @@ def test_menu_event_other_scenes_and_exceptions(console: Console, gs: GameState,
 
 # --- Tests for __handle_slippstream_events -----------------------------------
 
+
 def test_handle_slippstream_events_payloads(console: Console, gs: GameState) -> None:
     """Test that PAYLOADS event updates eventsize."""
     buf = bytearray()
@@ -675,9 +715,13 @@ def test_handle_slippstream_events_payloads(console: Console, gs: GameState) -> 
     assert console.eventsize[EventType.GAME_START.value] == 11
     assert console.eventsize[EventType.POST_FRAME.value] == 21
 
-def test_handle_slippstream_events_game_start(console: Console, gs: GameState, monkeypatch) -> None:
+
+def test_handle_slippstream_events_game_start(
+    console: Console, gs: GameState, monkeypatch
+) -> None:
     """Test that GAME_START event calls __game_start."""
     game_start_called = False
+
     def mock_game_start(*args, **kwargs):
         nonlocal game_start_called
         game_start_called = True
@@ -690,6 +734,7 @@ def test_handle_slippstream_events_game_start(console: Console, gs: GameState, m
     console._Console__handle_slippstream_events(bytes(buf), gs)
     assert game_start_called
 
+
 def test_handle_slippstream_events_game_end(console: Console, gs: GameState) -> None:
     """Test that GAME_END event returns correct value."""
     buf = bytearray()
@@ -700,9 +745,13 @@ def test_handle_slippstream_events_game_end(console: Console, gs: GameState) -> 
     console._use_manual_bookends = False
     assert console._Console__handle_slippstream_events(bytes(buf), gs) is False
 
-def test_handle_slippstream_events_pre_frame(console: Console, gs: GameState, monkeypatch) -> None:
+
+def test_handle_slippstream_events_pre_frame(
+    console: Console, gs: GameState, monkeypatch
+) -> None:
     """Test that PRE_FRAME event calls __pre_frame."""
     pre_frame_called = False
+
     def mock_pre_frame(*args, **kwargs):
         nonlocal pre_frame_called
         pre_frame_called = True
@@ -715,9 +764,13 @@ def test_handle_slippstream_events_pre_frame(console: Console, gs: GameState, mo
     console._Console__handle_slippstream_events(bytes(buf), gs)
     assert pre_frame_called
 
-def test_handle_slippstream_events_post_frame(console: Console, gs: GameState, monkeypatch) -> None:
+
+def test_handle_slippstream_events_post_frame(
+    console: Console, gs: GameState, monkeypatch
+) -> None:
     """Test that POST_FRAME event calls __post_frame."""
     post_frame_called = False
+
     def mock_post_frame(*args, **kwargs):
         nonlocal post_frame_called
         post_frame_called = True
@@ -730,9 +783,13 @@ def test_handle_slippstream_events_post_frame(console: Console, gs: GameState, m
     console._Console__handle_slippstream_events(bytes(buf), gs)
     assert post_frame_called
 
-def test_handle_slippstream_events_frame_bookend(console: Console, gs: GameState, monkeypatch) -> None:
+
+def test_handle_slippstream_events_frame_bookend(
+    console: Console, gs: GameState, monkeypatch
+) -> None:
     """Test that FRAME_BOOKEND event returns correct value based on skip_rollback_frames."""
     frame_bookend_called = False
+
     def mock_frame_bookend(*args, **kwargs):
         nonlocal frame_bookend_called
         frame_bookend_called = True
@@ -756,9 +813,13 @@ def test_handle_slippstream_events_frame_bookend(console: Console, gs: GameState
     console._frame = 20
     assert console._Console__handle_slippstream_events(bytes(buf), gs) is True
 
-def test_handle_slippstream_events_item_update(console: Console, gs: GameState, monkeypatch) -> None:
+
+def test_handle_slippstream_events_item_update(
+    console: Console, gs: GameState, monkeypatch
+) -> None:
     """Test that ITEM_UPDATE event calls __item_update."""
     item_update_called = False
+
     def mock_item_update(*args, **kwargs):
         nonlocal item_update_called
         item_update_called = True
@@ -771,22 +832,33 @@ def test_handle_slippstream_events_item_update(console: Console, gs: GameState, 
     console._Console__handle_slippstream_events(bytes(buf), gs)
     assert item_update_called
 
-def test_handle_slippstream_events_invalid_event(console: Console, gs: GameState, caplog) -> None:
+
+def test_handle_slippstream_events_invalid_event(
+    console: Console, gs: GameState, caplog
+) -> None:
     """Test that an invalid event type logs an error."""
     buf = bytearray()
-    buf.append(0xFF) # Invalid event type
+    buf.append(0xFF)  # Invalid event type
     console._Console__handle_slippstream_events(bytes(buf), gs)
     assert "Got invalid event type: 255" in caplog.text
 
-def test_handle_slippstream_events_truncated_event(console: Console, gs: GameState, caplog) -> None:
+
+def test_handle_slippstream_events_truncated_event(
+    console: Console, gs: GameState, caplog
+) -> None:
     """Test that a truncated event logs a warning."""
     buf = bytearray()
     buf.append(EventType.GAME_START.value)
     console.eventsize[EventType.GAME_START.value] = 10
     console._Console__handle_slippstream_events(bytes(buf), gs)
-    assert "Something went wrong unpacking events. Data is probably missing" in caplog.text
+    assert (
+        "Something went wrong unpacking events. Data is probably missing" in caplog.text
+    )
 
-def test_handle_slippstream_menu_event_in_game(console: Console, gs: GameState, caplog) -> None:
+
+def test_handle_slippstream_menu_event_in_game(
+    console: Console, gs: GameState, caplog
+) -> None:
     """Test that a menu event in the middle of a game is handled correctly."""
     buf = make_buf(0x3E)
     be_pack_into(buf, 0, "B", EventType.MENU_EVENT.value)
@@ -794,16 +866,23 @@ def test_handle_slippstream_menu_event_in_game(console: Console, gs: GameState, 
     be_pack_into(buf, 0x39, "i", 1234)
     console.eventsize[EventType.MENU_EVENT.value] = len(buf)
     assert console._Console__handle_slippstream_events(bytes(buf), gs) is True
-    assert "Got a menu event in the middle of a frame. Continuing anyway." in caplog.text
+    assert (
+        "Got a menu event in the middle of a frame. Continuing anyway." in caplog.text
+    )
 
-def test_handle_slippstream_events_frame_bookend_blocking(console: Console, gs: GameState, monkeypatch) -> None:
+
+def test_handle_slippstream_events_frame_bookend_blocking(
+    console: Console, gs: GameState, monkeypatch
+) -> None:
     """Test that FRAME_BOOKEND event flushes controllers when blocking_input is True."""
     frame_bookend_called = False
+
     def mock_frame_bookend(*args, **kwargs):
         nonlocal frame_bookend_called
         frame_bookend_called = True
 
     flush_called = False
+
     class MockController:
         def flush(self):
             nonlocal flush_called
@@ -823,12 +902,18 @@ def test_handle_slippstream_events_frame_bookend_blocking(console: Console, gs: 
     console._Console__handle_slippstream_events(bytes(buf), gs)
     assert flush_called
 
-@pytest.mark.parametrize("event_type, stage", [
-    (EventType.FOD_INFO, enums.Stage.FOUNTAIN_OF_DREAMS),
-    (EventType.DL_INFO, enums.Stage.DREAMLAND),
-    (EventType.PS_INFO, enums.Stage.POKEMON_STADIUM),
-])
-def test_handle_slippstream_events_stage_info(console: Console, gs: GameState, event_type: EventType, stage: enums.Stage, caplog) -> None:
+
+@pytest.mark.parametrize(
+    "event_type, stage",
+    [
+        (EventType.FOD_INFO, enums.Stage.FOUNTAIN_OF_DREAMS),
+        (EventType.DL_INFO, enums.Stage.DREAMLAND),
+        (EventType.PS_INFO, enums.Stage.POKEMON_STADIUM),
+    ],
+)
+def test_handle_slippstream_events_stage_info(
+    console: Console, gs: GameState, event_type: EventType, stage: enums.Stage, caplog
+) -> None:
     """Test that stage info events are handled correctly."""
     buf = bytearray()
     buf.append(event_type.value)
@@ -837,21 +922,30 @@ def test_handle_slippstream_events_stage_info(console: Console, gs: GameState, e
     # Test with matching stage
     console._current_stage = stage
     console._Console__handle_slippstream_events(bytes(buf), gs)
-    assert f"Got stage info for {stage}, but gamestate says {gs.stage}" not in caplog.text
+    assert (
+        f"Got stage info for {stage}, but gamestate says {gs.stage}" not in caplog.text
+    )
 
     # Test with mismatching stage
     console._current_stage = enums.Stage.BATTLEFIELD
     gs.stage = enums.Stage.BATTLEFIELD
     console._Console__handle_slippstream_events(bytes(buf), gs)
-    assert f"Got stage info for {stage}, but gamestate says {enums.Stage.BATTLEFIELD}" in caplog.text
+    assert (
+        f"Got stage info for {stage}, but gamestate says {enums.Stage.BATTLEFIELD}"
+        in caplog.text
+    )
 
-def test_handle_slippstream_events_unhandled_event(console: Console, gs: GameState, caplog) -> None:
+
+def test_handle_slippstream_events_unhandled_event(
+    console: Console, gs: GameState, caplog
+) -> None:
     """Test that an unhandled event type logs an error."""
     buf = bytearray()
     # Use an event type that is not handled in the main if/elif chain
     buf.append(EventType.GECKO_CODES.value)
     console.eventsize[EventType.GECKO_CODES.value] = 1
     console._Console__handle_slippstream_events(bytes(buf), gs)
+
 
 def test_game_start_with_names(console: Console, gs: GameState) -> None:
     """Test that __game_start correctly parses player names and connect codes."""
@@ -861,18 +955,18 @@ def test_game_start_with_names(console: Console, gs: GameState) -> None:
     be_pack_into(buf, 3, "B", 0)
 
     # Player 1
-    name1 = "Player1".encode('shift-jis')
+    name1 = "Player1".encode("shift-jis")
     for i, char in enumerate(name1):
         be_pack_into(buf, 0x1A5 + i, "B", char)
-    code1 = "P1#123".encode('shift-jis').replace(b'#', b'\x81\x94')
+    code1 = "P1#123".encode("shift-jis").replace(b"#", b"\x81\x94")
     for i, char in enumerate(code1):
         be_pack_into(buf, 0x221 + i, "B", char)
 
     # Player 2
-    name2 = "Player2".encode('shift-jis')
+    name2 = "Player2".encode("shift-jis")
     for i, char in enumerate(name2):
         be_pack_into(buf, 0x1A5 + 0x1F + i, "B", char)
-    code2 = "P2#456".encode('shift-jis').replace(b'#', b'\x81\x94')
+    code2 = "P2#456".encode("shift-jis").replace(b"#", b"\x81\x94")
     for i, char in enumerate(code2):
         be_pack_into(buf, 0x221 + 0xA + i, "B", char)
 
@@ -883,6 +977,7 @@ def test_game_start_with_names(console: Console, gs: GameState) -> None:
     assert console._display_names[1] == "Player2"
     assert console._connect_codes[1] == "P2#456"
 
+
 def test_game_start_version_too_low(console: Console, gs: GameState) -> None:
     """Test that SlippiVersionTooLow is raised for old versions."""
     buf = make_buf(600)
@@ -890,6 +985,7 @@ def test_game_start_version_too_low(console: Console, gs: GameState) -> None:
     console._allow_old_version = False
     with pytest.raises(SlippiVersionTooLow):
         console._Console__game_start(gs, bytes(buf))
+
 
 def test_game_start_invalid_stage(console: Console, gs: GameState) -> None:
     """Test that an invalid stage ID is handled correctly."""
@@ -899,6 +995,7 @@ def test_game_start_invalid_stage(console: Console, gs: GameState) -> None:
     console._Console__game_start(gs, bytes(buf))
     assert console._current_stage == enums.Stage.NO_STAGE
 
+
 def test_item_update_unknown_projectile(console: Console, gs: GameState) -> None:
     """Test that an unknown projectile type is handled correctly."""
     buf = make_buf(0x30)
@@ -907,6 +1004,7 @@ def test_item_update_unknown_projectile(console: Console, gs: GameState) -> None
     assert len(gs.projectiles) == 1
     assert gs.projectiles[0].type == enums.ProjectileType.UNKNOWN_PROJECTILE
 
+
 def test_item_update_invalid_owner(console: Console, gs: GameState) -> None:
     """Test that an invalid owner is handled correctly."""
     buf = make_buf(0x30)
@@ -914,6 +1012,7 @@ def test_item_update_invalid_owner(console: Console, gs: GameState) -> None:
     console._Console__item_update(gs, bytes(buf))
     assert len(gs.projectiles) == 1
     assert gs.projectiles[0].owner == -1
+
 
 def test_item_update_frame_value_error(console: Console, gs: GameState) -> None:
     """Test that a ValueError when reading the frame is handled correctly."""
@@ -924,19 +1023,26 @@ def test_item_update_frame_value_error(console: Console, gs: GameState) -> None:
     assert len(gs.projectiles) == 1
     assert gs.projectiles[0].frame == -1
 
-@pytest.mark.parametrize("projectile_type, subtype", [
-    (enums.ProjectileType.SAMUS_BOMB, 3),
-    (enums.ProjectileType.SAMUS_MISSLE, 2),
-    (enums.ProjectileType.SAMUS_MISSLE, 3),
-    (enums.ProjectileType.SAMUS_CHARGE_BEAM, 0),
-])
-def test_item_update_ignored_projectiles(console: Console, gs: GameState, projectile_type: enums.ProjectileType, subtype: int) -> None:
+
+@pytest.mark.parametrize(
+    "projectile_type, subtype",
+    [
+        (enums.ProjectileType.SAMUS_BOMB, 3),
+        (enums.ProjectileType.SAMUS_MISSLE, 2),
+        (enums.ProjectileType.SAMUS_MISSLE, 3),
+        (enums.ProjectileType.SAMUS_CHARGE_BEAM, 0),
+    ],
+)
+def test_item_update_ignored_projectiles(
+    console: Console, gs: GameState, projectile_type: enums.ProjectileType, subtype: int
+) -> None:
     """Test that certain projectiles are ignored."""
     buf = make_buf(0x30)
     be_pack_into(buf, 5, "H", projectile_type.value)
     be_pack_into(buf, 7, "B", subtype)
     console._Console__item_update(gs, bytes(buf))
     assert len(gs.projectiles) == 0
+
 
 # --- Performance evaluation over real replays --------------------------------
 
@@ -964,11 +1070,13 @@ METHODS_TO_TIME: List[str] = [
     "__fixiasa",
 ]
 
+
 def _mangle(name: str) -> str:
     # Python name-mangling for private methods e.g. __pre_frame -> _Console__pre_frame
     if name.startswith("__") and not name.endswith("__"):
         return f"_{Console.__name__}{name}"
     return name
+
 
 @pytest.mark.perf
 def test_console_method_timing_over_replays() -> None:
@@ -1022,6 +1130,7 @@ def test_console_method_timing_over_replays() -> None:
                     finally:
                         totals[method_name] += time.perf_counter() - t1
                         counts[method_name] += 1
+
                 return _wrapped
 
             setattr(c, attr_name, _make_wrapper(fn, public))

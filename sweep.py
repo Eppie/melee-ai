@@ -85,8 +85,12 @@ _SHOULDER_METRIC_KEYS: Tuple[str, ...] = (
     "acc_shoulder_rand",
     "acc_shoulder_maj",
 )
-_RUNNING_METRIC_KEYS = set(_MAIN_METRIC_KEYS) | set(_C_METRIC_KEYS) | set(_BUTTON_METRIC_KEYS) | set(
-    _SHOULDER_METRIC_KEYS)
+_RUNNING_METRIC_KEYS = (
+    set(_MAIN_METRIC_KEYS)
+    | set(_C_METRIC_KEYS)
+    | set(_BUTTON_METRIC_KEYS)
+    | set(_SHOULDER_METRIC_KEYS)
+)
 
 _LOSS_METRIC_KEYS: Tuple[str, ...] = (
     "loss",
@@ -113,10 +117,13 @@ class StoppingObjective:
     threshold: float
     raw: str
 
-    def is_satisfied(self, metrics: Mapping[str, float], *, tol: float = 1e-6) -> Tuple[bool, float]:
+    def is_satisfied(
+        self, metrics: Mapping[str, float], *, tol: float = 1e-6
+    ) -> Tuple[bool, float]:
         if self.metric not in metrics:
             raise KeyError(
-                f"Objective metric '{self.metric}' not available; available metrics: {sorted(metrics.keys())}")
+                f"Objective metric '{self.metric}' not available; available metrics: {sorted(metrics.keys())}"
+            )
         value = float(metrics[self.metric])
         op = self.operator
         if op == ">=":
@@ -196,12 +203,18 @@ def parse_objective(expr: str) -> StoppingObjective:
             metric = metric.strip()
             threshold = threshold.strip()
             if not metric:
-                raise ValueError(f"Objective '{expr}' missing metric name before '{op}'.")
+                raise ValueError(
+                    f"Objective '{expr}' missing metric name before '{op}'."
+                )
             try:
                 value = float(threshold)
             except ValueError as exc:
-                raise ValueError(f"Objective '{expr}' has invalid threshold '{threshold}'.") from exc
-            return StoppingObjective(metric=metric, operator=op, threshold=value, raw=text)
+                raise ValueError(
+                    f"Objective '{expr}' has invalid threshold '{threshold}'."
+                ) from exc
+            return StoppingObjective(
+                metric=metric, operator=op, threshold=value, raw=text
+            )
     raise ValueError(
         f"Objective '{expr}' must contain a comparison operator (one of {' '.join(_OBJECTIVE_OPERATORS)})."
     )
@@ -246,7 +259,9 @@ def expand_search_space(space: Mapping[str, Sequence[str]]) -> Iterator[Dict[str
         yield {k: v for k, v in zip(keys, combo)}
 
 
-def _swiglu_flops(input_dim: int, inner_dim: int, output_dim: int, tokens: int) -> float:
+def _swiglu_flops(
+    input_dim: int, inner_dim: int, output_dim: int, tokens: int
+) -> float:
     if tokens == 0:
         return 0.0
     # swiglu = 2 linear projections + elementwise silu + mul + output linear
@@ -258,11 +273,11 @@ def _swiglu_flops(input_dim: int, inner_dim: int, output_dim: int, tokens: int) 
 
 
 def _activation_ffn_flops(
-        activation: str,
-        input_dim: int,
-        inner_dim: int,
-        output_dim: int,
-        tokens: int,
+    activation: str,
+    input_dim: int,
+    inner_dim: int,
+    output_dim: int,
+    tokens: int,
 ) -> float:
     if tokens <= 0:
         return 0.0
@@ -272,21 +287,18 @@ def _activation_ffn_flops(
     if act == "geglu":
         gelu_cost = 6.0 * tokens * inner_dim
         return (
-                2.0 * tokens * input_dim * inner_dim * 2
-                + 2.0 * tokens * inner_dim * output_dim
-                + gelu_cost
+            2.0 * tokens * input_dim * inner_dim * 2
+            + 2.0 * tokens * inner_dim * output_dim
+            + gelu_cost
         )
     if act == "gelu":
         gelu_cost = 6.0 * tokens * inner_dim
         return (
-                2.0 * tokens * input_dim * inner_dim
-                + gelu_cost
-                + 2.0 * tokens * inner_dim * output_dim
-        )
-    return (
             2.0 * tokens * input_dim * inner_dim
+            + gelu_cost
             + 2.0 * tokens * inner_dim * output_dim
-    )
+        )
+    return 2.0 * tokens * input_dim * inner_dim + 2.0 * tokens * inner_dim * output_dim
 
 
 def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
@@ -323,7 +335,9 @@ def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
     attn_values = 2.0 * batch_size * H * seq_len * seq_len * d_head
     attn_softmax = 4.0 * batch_size * H * seq_len * seq_len
 
-    attn_total = q_proj + k_proj + v_proj + o_proj + attn_scores + attn_values + attn_softmax
+    attn_total = (
+        q_proj + k_proj + v_proj + o_proj + attn_scores + attn_values + attn_softmax
+    )
 
     # QK-Norm cost (approximate: two RMS norms per head/token)
     if model_cfg.qk_norm:
@@ -407,7 +421,9 @@ def _shutdown_loader(loader: Any) -> None:
             pass
 
 
-def _build_profiler_context(cfg: Config, run_id: str, *, verbose: bool) -> Tuple[Any, Optional[Path]]:
+def _build_profiler_context(
+    cfg: Config, run_id: str, *, verbose: bool
+) -> Tuple[Any, Optional[Path]]:
     prof_cfg = cfg.profile
     if not getattr(prof_cfg, "enable", False) or not hasattr(torch, "profiler"):
         return nullcontext(), None
@@ -427,7 +443,9 @@ def _build_profiler_context(cfg: Config, run_id: str, *, verbose: bool) -> Tuple
         active=prof_cfg.active,
         repeat=prof_cfg.repeat,
     )
-    handler = torch.profiler.tensorboard_trace_handler(str(profile_root), worker_name=run_id)
+    handler = torch.profiler.tensorboard_trace_handler(
+        str(profile_root), worker_name=run_id
+    )
 
     if verbose:
         print(f"[{run_id}] Profiling enabled; writing traces to {profile_root}")
@@ -444,21 +462,23 @@ def _build_profiler_context(cfg: Config, run_id: str, *, verbose: bool) -> Tuple
 
 
 def run_training_once(
-        run_id: str,
-        *,
-        base_initial: Optional[Mapping[str, Any]],
-        overrides: Mapping[str, str],
-        target_loss: Optional[float],
-        objectives: Sequence[StoppingObjective],
-        device: torch.device,
-        verbose: bool,
-        time_limit_seconds: Optional[float] = None,
+    run_id: str,
+    *,
+    base_initial: Optional[Mapping[str, Any]],
+    overrides: Mapping[str, str],
+    target_loss: Optional[float],
+    objectives: Sequence[StoppingObjective],
+    device: torch.device,
+    verbose: bool,
+    time_limit_seconds: Optional[float] = None,
 ) -> TrainingRunResult:
     reset_config_for_tests()
     cfg = init_config(initial=base_initial, cli_overrides=overrides, freeze=False)
 
     if time_limit_seconds is not None and time_limit_seconds <= 0:
-        raise ValueError(f"[{run_id}] time limit must be positive; got {time_limit_seconds}")
+        raise ValueError(
+            f"[{run_id}] time limit must be positive; got {time_limit_seconds}"
+        )
 
     user_set_num_workers = any(key.endswith("train.num_workers") for key in overrides)
     user_set_pin_memory = any(key.endswith("train.pin_memory") for key in overrides)
@@ -466,9 +486,17 @@ def run_training_once(
     # Force settings that play nicely with early-stop and requested device.
     if cfg.train.num_workers > 0 and getattr(cfg.train, "persistent_workers", False):
         cfg.train.persistent_workers = False
-    if device.type == "mps" and getattr(cfg.train, "pin_memory", False) and not user_set_pin_memory:
+    if (
+        device.type == "mps"
+        and getattr(cfg.train, "pin_memory", False)
+        and not user_set_pin_memory
+    ):
         cfg.train.pin_memory = False
-    if device.type != "cuda" and cfg.train.num_workers != 0 and not user_set_num_workers:
+    if (
+        device.type != "cuda"
+        and cfg.train.num_workers != 0
+        and not user_set_num_workers
+    ):
         cfg.train.num_workers = 0
     if cfg.train.num_workers == 0:
         cfg.train.prefetch_factor = 2
@@ -482,7 +510,9 @@ def run_training_once(
     need_c_metrics = bool(required_metrics & set(_C_METRIC_KEYS))
     need_button_metrics = bool(required_metrics & set(_BUTTON_METRIC_KEYS))
     need_shoulder_metrics = bool(required_metrics & set(_SHOULDER_METRIC_KEYS))
-    needs_running_metrics = any([need_main_metrics, need_c_metrics, need_button_metrics, need_shoulder_metrics])
+    needs_running_metrics = any(
+        [need_main_metrics, need_c_metrics, need_button_metrics, need_shoulder_metrics]
+    )
     metrics_tracker: Optional[MetricsAccumulator] = None
     latest_metrics: Dict[str, float] = {}
     objectives_met = False
@@ -621,9 +651,15 @@ def run_training_once(
                                 stopped_due_to_time_limit = True
                                 stop_reason = "time_limit"
                                 break
-                        if cfg.train.steps_per_epoch is not None and steps_this_epoch >= cfg.train.steps_per_epoch:
+                        if (
+                            cfg.train.steps_per_epoch is not None
+                            and steps_this_epoch >= cfg.train.steps_per_epoch
+                        ):
                             break
-                        if cfg.train.max_steps is not None and global_step >= cfg.train.max_steps:
+                        if (
+                            cfg.train.max_steps is not None
+                            and global_step >= cfg.train.max_steps
+                        ):
                             break
                         try:
                             batch = next(loader_iter)
@@ -634,7 +670,9 @@ def run_training_once(
                         Y = batch["Y"].to(device, non_blocking=True)
 
                         inputs_td = build_model_inputs(X, colmap)
-                        target_info = quantize_controller_targets(Y, colmap, input_domain="unit11")
+                        target_info = quantize_controller_targets(
+                            Y, colmap, input_domain="unit11"
+                        )
 
                         pred = model(inputs_td)
                         B, L, _ = pred["main_stick"].shape
@@ -642,7 +680,9 @@ def run_training_once(
 
                         logits_main = pred["main_stick"].reshape(B * L, -1)
                         target_main = target_info["main_idx"].reshape(B * L)
-                        main_weights = _compute_ce_weights(target_main, target_info["main_K"])
+                        main_weights = _compute_ce_weights(
+                            target_main, target_info["main_K"]
+                        )
                         loss_main = torch.nn.functional.cross_entropy(
                             logits_main,
                             target_main,
@@ -674,9 +714,9 @@ def run_training_once(
 
                         loss_s = torch.zeros((), device=device)
                         if (
-                                "shoulder" in pred.keys()
-                                and target_info["shoulder_K"] > 0
-                                and target_info["shoulder_idx"] is not None
+                            "shoulder" in pred.keys()
+                            and target_info["shoulder_K"] > 0
+                            and target_info["shoulder_idx"] is not None
                         ):
                             logits_s = pred["shoulder"].reshape(B * L, -1)
                             target_s = target_info["shoulder_idx"].reshape(B * L)
@@ -689,11 +729,14 @@ def run_training_once(
 
                         loss_aux = torch.zeros((), device=device)
                         if cfg.model.use_moe and "moe_aux_loss" in pred.keys():
-                            loss_aux = pred["moe_aux_loss"].mean() * cfg.model.moe_aux_loss_weight
+                            loss_aux = (
+                                pred["moe_aux_loss"].mean()
+                                * cfg.model.moe_aux_loss_weight
+                            )
 
                         loss = loss_main + loss_c + loss_btn + loss_s + loss_aux
 
-                        #lr = cosine_lr_schedule(global_step, total_steps_cap, cfg.train.lr, cfg.train.warmup_steps)
+                        # lr = cosine_lr_schedule(global_step, total_steps_cap, cfg.train.lr, cfg.train.warmup_steps)
                         lr = cfg.train.lr
                         for pg in opt.param_groups:
                             pg["lr"] = lr
@@ -721,7 +764,9 @@ def run_training_once(
                         step_duration = now - last_batch_wall
                         last_batch_wall = now
                         tokens_this_step = int(B * L)
-                        batch_training_flops = batch_forward_flops * TRAINING_FLOP_MULTIPLIER
+                        batch_training_flops = (
+                            batch_forward_flops * TRAINING_FLOP_MULTIPLIER
+                        )
                         inst_token_rate: Optional[float] = None
                         inst_flop_rate: Optional[float] = None
                         if step_duration > 0 and tokens_this_step > 0:
@@ -730,8 +775,8 @@ def run_training_once(
                                 token_rate_ema = inst_token_rate
                             else:
                                 token_rate_ema = (
-                                        TOKEN_RATE_EMA_DECAY * token_rate_ema
-                                        + (1.0 - TOKEN_RATE_EMA_DECAY) * inst_token_rate
+                                    TOKEN_RATE_EMA_DECAY * token_rate_ema
+                                    + (1.0 - TOKEN_RATE_EMA_DECAY) * inst_token_rate
                                 )
                         if step_duration > 0 and batch_training_flops > 0:
                             inst_flop_rate = batch_training_flops / step_duration
@@ -739,13 +784,15 @@ def run_training_once(
                                 flop_rate_ema = inst_flop_rate
                             else:
                                 flop_rate_ema = (
-                                        TOKEN_RATE_EMA_DECAY * flop_rate_ema
-                                        + (1.0 - TOKEN_RATE_EMA_DECAY) * inst_flop_rate
+                                    TOKEN_RATE_EMA_DECAY * flop_rate_ema
+                                    + (1.0 - TOKEN_RATE_EMA_DECAY) * inst_flop_rate
                                 )
 
                         steps_this_epoch += 1
                         token_rate_display = (
-                            f"{token_rate_ema:7.0f}" if token_rate_ema is not None else "   n/a"
+                            f"{token_rate_ema:7.0f}"
+                            if token_rate_ema is not None
+                            else "   n/a"
                         )
                         flop_rate_display = (
                             format_flops(flop_rate_ema, per_second=True)
@@ -755,7 +802,9 @@ def run_training_once(
                         if progress is not None:
                             progress.update(1)
 
-                        objective_status: List[Tuple[StoppingObjective, bool, float]] = []
+                        objective_status: List[
+                            Tuple[StoppingObjective, bool, float]
+                        ] = []
                         current_metrics: Dict[str, float] = {}
 
                         if objectives:
@@ -769,7 +818,11 @@ def run_training_once(
                             loss_c_value = float(loss_c.detach().item())
                             loss_btn_value = float(loss_btn.detach().item())
                             loss_shoulder_value = float(loss_s.detach().item())
-                            loss_aux_value = float(loss_aux.detach().item()) if loss_aux is not None else 0.0
+                            loss_aux_value = (
+                                float(loss_aux.detach().item())
+                                if loss_aux is not None
+                                else 0.0
+                            )
 
                             for key in _LOSS_METRIC_KEYS:
                                 if key == "loss" or key == "loss_total":
@@ -795,7 +848,9 @@ def run_training_once(
                                         if token_rate_ema is not None:
                                             current_metrics[key] = float(token_rate_ema)
                                         elif inst_token_rate is not None:
-                                            current_metrics[key] = float(inst_token_rate)
+                                            current_metrics[key] = float(
+                                                inst_token_rate
+                                            )
                                     elif key == "flops_per_second":
                                         if flop_rate_ema is not None:
                                             current_metrics[key] = float(flop_rate_ema)
@@ -814,7 +869,9 @@ def run_training_once(
 
                                 if need_main_metrics:
                                     pred_main_idx = pred["main_stick"].argmax(dim=-1)
-                                    true_main_idx = target_info["main_idx"].reshape(B, L)
+                                    true_main_idx = target_info["main_idx"].reshape(
+                                        B, L
+                                    )
                                     metrics_tracker.update_stick_metrics(
                                         pred_main_idx.reshape(-1),
                                         true_main_idx.reshape(-1),
@@ -836,24 +893,28 @@ def run_training_once(
                                     btn_probs = pred.get("buttons_probs")
                                     if btn_probs is None:
                                         btn_probs = torch.sigmoid(btn_logits)
-                                    metrics_tracker.update_button_metrics(btn_true, btn_probs > 0.5, btn_logits)
+                                    metrics_tracker.update_button_metrics(
+                                        btn_true, btn_probs > 0.5, btn_logits
+                                    )
 
                                 if need_shoulder_metrics:
                                     shoulder_logits = pred.get("shoulder")
                                     shoulder_idx = target_info.get("shoulder_idx")
                                     if (
-                                            shoulder_logits is not None
-                                            and shoulder_idx is not None
-                                            and int(target_info["shoulder_K"]) > 0
+                                        shoulder_logits is not None
+                                        and shoulder_idx is not None
+                                        and int(target_info["shoulder_K"]) > 0
                                     ):
-                                        shoulder_pred_idx = shoulder_logits.argmax(dim=-1).reshape(-1)
+                                        shoulder_pred_idx = shoulder_logits.argmax(
+                                            dim=-1
+                                        ).reshape(-1)
                                         metrics_tracker.update_shoulder_metrics(
                                             shoulder_pred_idx,
                                             shoulder_idx.reshape(-1),
                                         )
 
                                 summary = metrics_tracker.get_summary()
-                                for key in (required_metrics & _RUNNING_METRIC_KEYS):
+                                for key in required_metrics & _RUNNING_METRIC_KEYS:
                                     if key not in summary:
                                         raise ValueError(
                                             f"[{run_id}] metric '{key}' unavailable; available metrics: {sorted(summary.keys())}"
@@ -879,8 +940,12 @@ def run_training_once(
                                 objectives_met = True
                                 stop_reason = "objective_met"
                                 if verbose:
-                                    objective_str = ", ".join(obj.raw for obj in objectives)
-                                    print(f"[{run_id}] objectives met at step {global_step}: {objective_str}")
+                                    objective_str = ", ".join(
+                                        obj.raw for obj in objectives
+                                    )
+                                    print(
+                                        f"[{run_id}] objectives met at step {global_step}: {objective_str}"
+                                    )
                         else:
                             latest_metrics = {"loss": final_loss}
 
@@ -906,7 +971,9 @@ def run_training_once(
                             reached_target_loss = True
                             stop_reason = "target_met"
                             if verbose:
-                                print(f"[{run_id}] target loss reached at step {global_step}: {final_loss:.4f}")
+                                print(
+                                    f"[{run_id}] target loss reached at step {global_step}: {final_loss:.4f}"
+                                )
                             _shutdown_loader_iter(loader_iter)
                             loader_iter = None
                             break
@@ -920,7 +987,9 @@ def run_training_once(
                             stopped_due_to_cap = True
                             stop_reason = "max_steps_reached"
                             if verbose:
-                                print(f"[{run_id}] max step cap reached at step {global_step}")
+                                print(
+                                    f"[{run_id}] max step cap reached at step {global_step}"
+                                )
                             _shutdown_loader_iter(loader_iter)
                             loader_iter = None
                             break
@@ -940,10 +1009,10 @@ def run_training_once(
                     loader_iter = None
 
                 if (
-                        reached_target_loss
-                        or objectives_met
-                        or global_step >= total_steps_cap
-                        or stopped_due_to_time_limit
+                    reached_target_loss
+                    or objectives_met
+                    or global_step >= total_steps_cap
+                    or stopped_due_to_time_limit
                 ):
                     break
         except KeyboardInterrupt:
@@ -995,7 +1064,9 @@ def run_training_once(
         max_loss=max(loss_history) if loss_history else None,
         per_step_losses=loss_history,
         total_tokens=total_tokens,
-        tokens_per_second=(total_tokens / elapsed) if (elapsed > 0 and total_tokens > 0) else None,
+        tokens_per_second=(
+            (total_tokens / elapsed) if (elapsed > 0 and total_tokens > 0) else None
+        ),
         stop_reason=stop_reason,
         parameter_count=parameter_count,
         config_snapshot=get_config().to_dict(),
@@ -1027,13 +1098,17 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
             status_bits.append("interrupted")
         status = ", ".join(status_bits) if status_bits else "completed"
         target_text = f"{res.target_loss:.4f}" if res.target_loss is not None else "n/a"
-        objective_text = ", ".join(res.target_objectives) if res.target_objectives else "n/a"
+        objective_text = (
+            ", ".join(res.target_objectives) if res.target_objectives else "n/a"
+        )
         flops_rate = res.estimated_training_flops / max(res.time_seconds, 1e-9)
         mean_loss = res.average_loss
         mean_loss_text = f"{mean_loss:.4f}" if mean_loss is not None else "n/a"
         tokens_rate = res.tokens_per_second
         tokens_rate_text = f"{tokens_rate:,.0f}" if tokens_rate is not None else "n/a"
-        reason_text = res.stop_reason.replace("_", " ") if res.stop_reason else "unknown"
+        reason_text = (
+            res.stop_reason.replace("_", " ") if res.stop_reason else "unknown"
+        )
         detail_lines.append(
             (
                 f"{res.run_id}: loss {res.final_loss:.4f} (target {target_text}) | objective {objective_text} | mean {mean_loss_text} | steps {res.steps} | "
@@ -1051,17 +1126,35 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
         per_second=True,
     )
     best_by_flops_tokens = (
-        f"{best_by_flops.tokens_per_second:,.0f}" if best_by_flops.tokens_per_second is not None else "n/a"
+        f"{best_by_flops.tokens_per_second:,.0f}"
+        if best_by_flops.tokens_per_second is not None
+        else "n/a"
     )
     best_by_time_tokens = (
-        f"{best_by_time.tokens_per_second:,.0f}" if best_by_time.tokens_per_second is not None else "n/a"
+        f"{best_by_time.tokens_per_second:,.0f}"
+        if best_by_time.tokens_per_second is not None
+        else "n/a"
     )
     best_by_loss_tokens = (
-        f"{best_by_loss.tokens_per_second:,.0f}" if best_by_loss.tokens_per_second is not None else "n/a"
+        f"{best_by_loss.tokens_per_second:,.0f}"
+        if best_by_loss.tokens_per_second is not None
+        else "n/a"
     )
-    best_by_flops_reason = best_by_flops.stop_reason.replace("_", " ") if best_by_flops.stop_reason else "unknown"
-    best_by_time_reason = best_by_time.stop_reason.replace("_", " ") if best_by_time.stop_reason else "unknown"
-    best_by_loss_reason = best_by_loss.stop_reason.replace("_", " ") if best_by_loss.stop_reason else "unknown"
+    best_by_flops_reason = (
+        best_by_flops.stop_reason.replace("_", " ")
+        if best_by_flops.stop_reason
+        else "unknown"
+    )
+    best_by_time_reason = (
+        best_by_time.stop_reason.replace("_", " ")
+        if best_by_time.stop_reason
+        else "unknown"
+    )
+    best_by_loss_reason = (
+        best_by_loss.stop_reason.replace("_", " ")
+        if best_by_loss.stop_reason
+        else "unknown"
+    )
 
     lines = [
         f"Executed {len(results)} run(s).",
@@ -1090,7 +1183,9 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--config-json", type=Path, default=None, help="Optional base config JSON file.")
+    p.add_argument(
+        "--config-json", type=Path, default=None, help="Optional base config JSON file."
+    )
     p.add_argument(
         "--set",
         action="append",
@@ -1105,7 +1200,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="KEY=V1,V2",
         help="Hyperparameter grid; repeat to define multiple axes.",
     )
-    p.add_argument("--target-loss", type=float, default=1, help="Early-stop when loss <= target.")
+    p.add_argument(
+        "--target-loss", type=float, default=1, help="Early-stop when loss <= target."
+    )
     p.add_argument(
         "--target-objective",
         action="append",
@@ -1122,8 +1219,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional wall-clock time limit (seconds) applied to each run.",
     )
-    p.add_argument("--device", type=str, default=None, help="Device to use (cpu/cuda/mps).")
-    p.add_argument("--report", type=Path, default=None, help="Optional path to save JSON report.")
+    p.add_argument(
+        "--device", type=str, default=None, help="Device to use (cpu/cuda/mps)."
+    )
+    p.add_argument(
+        "--report", type=Path, default=None, help="Optional path to save JSON report."
+    )
     p.add_argument(
         "--results-log",
         type=Path,
@@ -1185,7 +1286,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if results_log_path is not None:
             append_result_jsonl(results_log_path, result)
         if verbose and result.stop_reason != "invalid_config":
-            target_text = f"{result.target_loss:.4f}" if result.target_loss is not None else "n/a"
+            target_text = (
+                f"{result.target_loss:.4f}" if result.target_loss is not None else "n/a"
+            )
             status_bits = []
             if result.reached_target_loss:
                 status_bits.append("target met")
@@ -1196,11 +1299,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             if result.interrupted:
                 status_bits.append("interrupted")
             status = ", ".join(status_bits) if status_bits else "completed"
-            flops_rate = result.estimated_training_flops / max(result.time_seconds, 1e-9)
+            flops_rate = result.estimated_training_flops / max(
+                result.time_seconds, 1e-9
+            )
             overrides_str = format_overrides(result.overrides)
-            mean_loss = f"{result.average_loss:.4f}" if result.average_loss is not None else "n/a"
-            tokens_rate_str = f"{result.tokens_per_second:,.0f}" if result.tokens_per_second is not None else "n/a"
-            reason_text = result.stop_reason.replace("_", " ") if result.stop_reason else "unknown"
+            mean_loss = (
+                f"{result.average_loss:.4f}"
+                if result.average_loss is not None
+                else "n/a"
+            )
+            tokens_rate_str = (
+                f"{result.tokens_per_second:,.0f}"
+                if result.tokens_per_second is not None
+                else "n/a"
+            )
+            reason_text = (
+                result.stop_reason.replace("_", " ")
+                if result.stop_reason
+                else "unknown"
+            )
             objective_parts: List[str] = []
             for expr in result.target_objectives:
                 try:

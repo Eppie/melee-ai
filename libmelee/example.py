@@ -28,28 +28,52 @@ class ProfilerConfig:
 
 if __name__ == "__main__":
     init_config(cli_overrides={"model.num_stages": 6, "model.num_characters": 26})
-    default_dolphin_path = Path("/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu")
-    default_dolphin_path = str(default_dolphin_path) if default_dolphin_path.exists() else None
+    default_dolphin_path = Path(
+        "/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu"
+    )
+    default_dolphin_path = (
+        str(default_dolphin_path) if default_dolphin_path.exists() else None
+    )
     default_dolphin_home = REPO_ROOT / "dolphin-home" / "User"
     default_dolphin_home.mkdir(parents=True, exist_ok=True)
-    parser = argparse.ArgumentParser(description='Example of libmelee in action')
-    parser.add_argument('--debug', '-d', action='store_true',
-                        help='Debug mode. Creates a CSV of all game states')
-    parser.add_argument('--address', '-a', default="127.0.0.1",
-                        help='IP address of Slippi/Wii')
-    parser.add_argument('--dolphin_executable_path', '-e', default=default_dolphin_path,
-                        help='Path to the dolphin-emu-nogui executable')
-    parser.add_argument('--iso', default=None, type=str,
-                        help='Path to melee iso.')
-    parser.add_argument('--checkpoint', '-c', type=Path,
-                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep006_025002.pt'),
-                        help='Path to trained model checkpoint (.pt)')
-    parser.add_argument('--button-threshold', default=0.45, type=float,
-                        help='Sigmoid threshold for button activation')
-    parser.add_argument('--warmup-frames', default=256, type=int,
-                        help='Number of frames to buffer before using the model output')
-    parser.add_argument('--data-root', default=None, type=str,
-                        help='Dataset directory with meta.json; defaults to checkpoint config value')
+    parser = argparse.ArgumentParser(description="Example of libmelee in action")
+    parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        help="Debug mode. Creates a CSV of all game states",
+    )
+    parser.add_argument(
+        "--address", "-a", default="127.0.0.1", help="IP address of Slippi/Wii"
+    )
+    parser.add_argument(
+        "--dolphin_executable_path",
+        "-e",
+        default=default_dolphin_path,
+        help="Path to the dolphin-emu-nogui executable",
+    )
+    parser.add_argument("--iso", default=None, type=str, help="Path to melee iso.")
+    parser.add_argument(
+        "--checkpoint",
+        "-c",
+        type=Path,
+        default=Path(
+            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep013_060001.pt"
+        ),
+        help="Path to trained model checkpoint (.pt)",
+    )
+    parser.add_argument(
+        "--warmup-frames",
+        default=256,
+        type=int,
+        help="Number of frames to buffer before using the model output",
+    )
+    parser.add_argument(
+        "--data-root",
+        default=None,
+        type=str,
+        help="Dataset directory with meta.json; defaults to checkpoint config value",
+    )
 
     args = parser.parse_args()
     engine = GPTInferenceEngine(
@@ -79,19 +103,14 @@ if __name__ == "__main__":
             port=1,
             type=ControllerType.STANDARD,
         ),
-        2: Controller(
-            console=console,
-            port=2,
-            type=ControllerType.STANDARD)
+        2: Controller(console=console, port=2, type=ControllerType.STANDARD),
     }
-
 
     def signal_handler(sig, frame):
         for controller in controllers.values():
             controller.disconnect()
         console.stop()
         sys.exit(0)
-
 
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -124,11 +143,17 @@ if __name__ == "__main__":
         # The console object keeps track of how long your bot is taking to process frames
         #   And can warn you if it's taking too long
         if console.processingtime * 1000 > 12:
-            print("WARNING: Last frame took " + str(console.processingtime * 1000) + "ms to process.")
+            print(
+                "WARNING: Last frame took "
+                + str(console.processingtime * 1000)
+                + "ms to process."
+            )
 
         # What menu are we in?
         if gamestate.menu_state in [Menu.IN_GAME, Menu.SUDDEN_DEATH]:
-            raw_model_inputs = collect_raw_inputs_from_gamestate(gamestate, BOT_PORT, OPP_PORT)
+            raw_model_inputs = collect_raw_inputs_from_gamestate(
+                gamestate, BOT_PORT, OPP_PORT
+            )
             controller_state = engine.predict_from_raw(raw_model_inputs)
             apply_model_outputs_to_game(controllers[BOT_PORT], controller_state)
             previous_gamestate = gamestate
@@ -139,7 +164,7 @@ if __name__ == "__main__":
                 gamestate,
                 controllers[1],
                 Character.FOX,
-                Stage.POKEMON_STADIUM,
+                Stage.FINAL_DESTINATION,
                 costume=1,
                 autostart=False,
                 swag=False,

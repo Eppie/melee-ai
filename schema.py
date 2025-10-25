@@ -33,27 +33,22 @@ PLAYER_SPEC = [
     # Core categorical/ids (stored as ints post-preprocessing)
     ("action", np.int32),
     ("character", np.int32),
-
     # Geometry
     ("position_x", np.float32),
     ("position_y", np.float32),
-
     # Damage/stock & state bits
     ("percent", np.int32),
     ("stock", np.int32),
     ("facing", np.float32),
     ("on_ground", np.float32),
-
     # Buttons
     *BUTTONS,
-
     # Sticks / shoulders
     ("main_stick_x", np.float32),
     ("main_stick_y", np.float32),
     ("c_stick_x", np.float32),
     ("c_stick_y", np.float32),
     ("shoulder_analog", np.float32),  # game treats L/R shoulder identically
-
     # Additional state
     ("shield_strength", np.float32),
     # ("is_powershield", np.float32),
@@ -130,11 +125,21 @@ PLAYER_EXTRACTORS: Dict[str, Callable[[PlayerState], Any]] = {
         bool(_require_controller_state(player).button[enums.Button.BUTTON_L]),
         bool(_require_controller_state(player).button[enums.Button.BUTTON_R]),
     ),
-    "main_stick_x": lambda player: _as_float32(_require_controller_state(player).main_stick[0]),
-    "main_stick_y": lambda player: _as_float32(_require_controller_state(player).main_stick[1]),
-    "c_stick_x": lambda player: _as_float32(_require_controller_state(player).c_stick[0]),
-    "c_stick_y": lambda player: _as_float32(_require_controller_state(player).c_stick[1]),
-    "shoulder_analog": lambda player: _as_float32(_require_controller_state(player).l_shoulder),
+    "main_stick_x": lambda player: _as_float32(
+        _require_controller_state(player).main_stick[0]
+    ),
+    "main_stick_y": lambda player: _as_float32(
+        _require_controller_state(player).main_stick[1]
+    ),
+    "c_stick_x": lambda player: _as_float32(
+        _require_controller_state(player).c_stick[0]
+    ),
+    "c_stick_y": lambda player: _as_float32(
+        _require_controller_state(player).c_stick[1]
+    ),
+    "shoulder_analog": lambda player: _as_float32(
+        _require_controller_state(player).l_shoulder
+    ),
     "shield_strength": lambda player: _as_float32(player.shield_strength),
     "is_fastfalling": lambda player: _as_float32(player.is_fastfalling),
     "is_defender_in_hitlag": lambda player: _as_float32(player.is_defender_in_hitlag),
@@ -174,17 +179,11 @@ if _PLAYER_SPEC_NAMES != set(PLAYER_EXTRACTORS):
 
 
 def extract_common_fields(game_state: GameState) -> dict[str, Any]:
-    return {
-        name: COMMON_EXTRACTORS[name](game_state)
-        for name, _ in COMMON_SPEC
-    }
+    return {name: COMMON_EXTRACTORS[name](game_state) for name, _ in COMMON_SPEC}
 
 
 def extract_player_fields(player: PlayerState) -> dict[str, Any]:
-    return {
-        name: PLAYER_EXTRACTORS[name](player)
-        for name, _ in PLAYER_SPEC
-    }
+    return {name: PLAYER_EXTRACTORS[name](player) for name, _ in PLAYER_SPEC}
 
 
 def extract_row(game_state: GameState) -> "Row":
@@ -219,12 +218,11 @@ def _prefixed(spec, prefix: str):
 
 # Compose all dataclass fields in the final order
 _ROW_FIELDS = (
-        COMMON_SPEC
-        + _prefixed(PLAYER_SPEC, "p1_")
-        + _prefixed(PLAYER_SPEC, "p2_")
-        + [("replay_hash", Optional[np.uint32], dataclasses.field(default=None))]
-        + [("replay_filename", Optional[str], dataclasses.field(default=None))]
-
+    COMMON_SPEC
+    + _prefixed(PLAYER_SPEC, "p1_")
+    + _prefixed(PLAYER_SPEC, "p2_")
+    + [("replay_hash", Optional[np.uint32], dataclasses.field(default=None))]
+    + [("replay_filename", Optional[str], dataclasses.field(default=None))]
 )
 
 
@@ -242,9 +240,16 @@ def get_feature_names() -> list[str]:
 def get_target_names() -> list[str]:
     """Canonical target ordering for model output (P1 controller only)."""
     controller_fields = {
-        "main_stick_x", "main_stick_y", "c_stick_x", "c_stick_y",
-        "shoulder_analog", "button_a", "button_b", "button_xy",
-        "button_z", "button_lr"
+        "main_stick_x",
+        "main_stick_y",
+        "c_stick_x",
+        "c_stick_y",
+        "shoulder_analog",
+        "button_a",
+        "button_b",
+        "button_xy",
+        "button_z",
+        "button_lr",
     }
     return [f"p1_{field}" for field, *_ in PLAYER_SPEC if field in controller_fields]
 

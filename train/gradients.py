@@ -1,4 +1,5 @@
 """Gradient utilities for training."""
+
 from __future__ import annotations
 
 import math
@@ -18,7 +19,9 @@ def _move_optimizer_state_to_device(optimizer: Optimizer, device: torch.device) 
                 state[key] = value.to(device)
 
 
-def collect_gradient_diagnostics(model: torch.nn.Module, eps: float = 1e-12) -> Dict[str, float]:
+def collect_gradient_diagnostics(
+    model: torch.nn.Module, eps: float = 1e-12
+) -> Dict[str, float]:
     """Aggregate gradient statistics for monitoring numerical stability."""
     total_sq = 0.0
     total_abs = 0.0
@@ -66,7 +69,9 @@ def collect_gradient_diagnostics(model: torch.nn.Module, eps: float = 1e-12) -> 
         if param_data.numel():
             max_param_abs = max(max_param_abs, float(param_data.abs().max().item()))
 
-        param_abs_mean = float(param_data.abs().mean().item()) if param_data.numel() else 0.0
+        param_abs_mean = (
+            float(param_data.abs().mean().item()) if param_data.numel() else 0.0
+        )
         grad_abs_mean = float(grad_float.abs().mean().item()) if numel else 0.0
         if param_abs_mean > eps and numel:
             ratio = grad_abs_mean / max(param_abs_mean, eps)
@@ -79,7 +84,7 @@ def collect_gradient_diagnostics(model: torch.nn.Module, eps: float = 1e-12) -> 
     mean_abs = total_abs / max(1, grad_elems)
     mean_val = total_sum / max(1, grad_elems)
     mean_sq = total_sq / max(1, grad_elems)
-    variance = max(mean_sq - mean_val ** 2, 0.0)
+    variance = max(mean_sq - mean_val**2, 0.0)
     std_val = math.sqrt(variance)
     zero_fraction = zero_elems / max(1, grad_elems)
 
@@ -111,42 +116,40 @@ def collect_gradient_diagnostics(model: torch.nn.Module, eps: float = 1e-12) -> 
 
 
 def clip_gradients_with_diagnostics(
-        model: torch.nn.Module,
-        max_norm: float,
-        scaler: Optional[GradScaler] = None
+    model: torch.nn.Module, max_norm: float, scaler: Optional[GradScaler] = None
 ) -> Dict[str, float]:
     """Clip gradients and return diagnostics.
-    
+
     Args:
         model: Model to clip gradients for
         max_norm: Maximum gradient norm
         scaler: Optional GradScaler for AMP training
-        
+
     Returns:
         Dictionary with gradient statistics including clipping info
     """
     stats: Dict[str, float] = {}
-    
+
     # Unscale if using AMP
     if scaler is not None and scaler.is_enabled():
         scaler.unscale_(model.parameters().__iter__().__next__().grad.device)
-    
+
     # Collect stats before clipping
     pre_clip_stats = collect_gradient_diagnostics(model)
     pre_clip_norm = pre_clip_stats["total_norm"]
-    
+
     # Clip gradients
     clip_grad_norm_(model.parameters(), max_norm)
-    
+
     # Compute post-clip norm (actual will be min of pre_clip and max_norm)
     post_clip_norm = min(pre_clip_norm, max_norm)
     was_clipped = pre_clip_norm > max_norm
     clip_coef = max_norm / max(pre_clip_norm, 1e-12) if was_clipped else 1.0
-    
+
     stats.update(pre_clip_stats)
     stats["total_norm_pre_clip"] = pre_clip_norm
     stats["total_norm_post_clip"] = post_clip_norm
     stats["was_clipped"] = float(was_clipped)
     stats["clip_coef"] = clip_coef
-    
+
     return stats

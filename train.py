@@ -3,6 +3,7 @@
 Consolidates train.py and train_wandb.py with optional wandb logging.
 Uses train/ module utilities for all common operations.
 """
+
 from __future__ import annotations
 
 import math
@@ -21,11 +22,18 @@ from config import get_config, init_config
 from controller_utils import CONTROL_STICK_QUANTIZED
 from loss import compute_loss_components
 from model.nano_gpt import GPT
-from train.batch_utils import build_model_inputs, quantize_controller_targets, SampleWeightRatios, \
-    compute_component_sample_weights
+from train.batch_utils import (
+    build_model_inputs,
+    quantize_controller_targets,
+    SampleWeightRatios,
+    compute_component_sample_weights,
+)
+
 # Train module utilities
 from train.checkpoint import (
-    save_checkpoint, _load_latest_checkpoint, _prune_checkpoints,
+    save_checkpoint,
+    _load_latest_checkpoint,
+    _prune_checkpoints,
 )
 from train.display import format_confusion_matrix
 from train.gradients import collect_gradient_diagnostics
@@ -45,7 +53,9 @@ from train.wandb_utils import (
 from utils import print_model_diagram, _resolve_device
 from window_dataset import make_dataloader
 
-_MAIN_STICK_LABELS: List[str] = [f"({x:.2f},{y:.2f})" for x, y in CONTROL_STICK_QUANTIZED]
+_MAIN_STICK_LABELS: List[str] = [
+    f"({x:.2f},{y:.2f})" for x, y in CONTROL_STICK_QUANTIZED
+]
 
 _BUTTON_PRETTY = {
     "button_a": "A",
@@ -81,7 +91,7 @@ def _safe_div(n: float, d: float) -> float:
 
 
 def train_loop(
-        model: GPT,
+    model: GPT,
 ) -> None:
     device = _resolve_device(None)
     model = model.to(device)
@@ -90,11 +100,11 @@ def train_loop(
     # Verify PyTorch version and MPS support for AMP
     if config.train.use_amp:
         print(f"Using PyTorch {torch.__version__}")
-        if device.type == 'mps':
+        if device.type == "mps":
             if not torch.backends.mps.is_available():
                 raise RuntimeError("MPS backend not available, cannot use AMP on MPS")
             print(f"AMP enabled with {config.train.amp_dtype} on MPS backend")
-        elif device.type == 'cuda':
+        elif device.type == "cuda":
             print(f"AMP enabled with {config.train.amp_dtype} on CUDA backend")
         else:
             print(f"Warning: AMP may not be optimized for device type '{device.type}'")
@@ -111,8 +121,12 @@ def train_loop(
         off_stage_idx = None
 
     # Optimizer & (optional) simple cosine LR
-    opt = torch.optim.AdamW(model.parameters(), lr=config.train.lr, betas=config.train.betas,
-                            weight_decay=config.train.weight_decay)
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.train.lr,
+        betas=config.train.betas,
+        weight_decay=config.train.weight_decay,
+    )
 
     # GradScaler for automatic mixed precision (no device arg in torch 2.1)
     scaler = GradScaler(enabled=config.train.use_amp)
@@ -144,7 +158,9 @@ def train_loop(
     )
     logger = WandbLogger(wandb_run, enabled=WANDB_AVAILABLE and wandb_run is not None)
 
-    start_epoch, global_step, start_iter = _load_latest_checkpoint(out_dir, model, opt, scaler, device)
+    start_epoch, global_step, start_iter = _load_latest_checkpoint(
+        out_dir, model, opt, scaler, device
+    )
     # If we have a more recent persisted step, prefer it to keep wandb step increasing
     try:
         if last_step_file.exists():
@@ -154,11 +170,15 @@ def train_loop(
         pass
 
     if start_epoch >= config.train.epochs:
-        print(f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting.")
+        print(
+            f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting."
+        )
         return
 
     if config.train.max_steps and global_step >= config.train.max_steps:
-        print(f"Global step {global_step} reached configured max_steps={config.train.max_steps}; exiting.")
+        print(
+            f"Global step {global_step} reached configured max_steps={config.train.max_steps}; exiting."
+        )
         return
 
     # preview_done = False
@@ -179,14 +199,20 @@ def train_loop(
         if skip_until and hasattr(sampler, "set_start_offset"):
             try:
                 sampler.set_start_offset(skip_until)
-                print(f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches via sampler offset.")
+                print(
+                    f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches via sampler offset."
+                )
                 # preview_done = True
                 skip_remaining = 0
                 skip_until = 0
             except Exception as exc:
-                print(f"Sampler offset failed ({exc}); falling back to loading batches for skip.")
+                print(
+                    f"Sampler offset failed ({exc}); falling back to loading batches for skip."
+                )
         elif skip_until:
-            print(f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches by consuming them (may take time).")
+            print(
+                f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches by consuming them (may take time)."
+            )
             # preview_done = True
 
         iters_processed = 0
@@ -207,23 +233,36 @@ def train_loop(
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)  # [B,L,Yd]
 
             # Determine autocast device type and dtype
-            autocast_device = 'cuda' if device.type in ('cuda', 'mps') else 'cpu'
-            amp_dtype = torch.float16 if config.train.amp_dtype == "float16" else torch.bfloat16
+            autocast_device = "cuda" if device.type in ("cuda", "mps") else "cpu"
+            amp_dtype = (
+                torch.float16 if config.train.amp_dtype == "float16" else torch.bfloat16
+            )
 
             value_pred: Optional[torch.Tensor] = None
             value_target: Optional[torch.Tensor] = None
             loss_value = torch.tensor(0.0, device=device)
 
             # Forward pass and loss computation with automatic mixed precision
-            with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=config.train.use_amp):
+            with autocast(
+                device_type=autocast_device,
+                dtype=amp_dtype,
+                enabled=config.train.use_amp,
+            ):
                 # Build model inputs & target labels
                 inputs_td = build_model_inputs(X, colmap)
-                target_info = quantize_controller_targets(Y, colmap, input_domain="unit11")
+                target_info = quantize_controller_targets(
+                    Y, colmap, input_domain="unit11"
+                )
 
-                pred: TensorDict = model(inputs_td)  # keys: buttons, main_stick, c_stick, (shoulder), optionally value
+                pred: TensorDict = model(
+                    inputs_td
+                )  # keys: buttons, main_stick, c_stick, (shoulder), optionally value
                 B, L, _ = pred["main_stick"].shape
                 weights = compute_component_sample_weights(
-                    target_info, device, ratios=ratios, button_names=CONTROLLER_KEY_GROUPS["buttons"]
+                    target_info,
+                    device,
+                    ratios=ratios,
+                    button_names=CONTROLLER_KEY_GROUPS["buttons"],
                 )
 
                 value_pred = pred.get("value", None)
@@ -246,11 +285,15 @@ def train_loop(
                         X, colmap, gamma=config.rl.gamma, reward_idx=reward_idx
                     )  # [B, L, 1]
                     value_loss_raw = torch.nn.functional.mse_loss(
-                        value_pred, value_target, reduction='none'
-                    ).squeeze(-1)  # [B, L]
+                        value_pred, value_target, reduction="none"
+                    ).squeeze(
+                        -1
+                    )  # [B, L]
 
                     value_w = weights.get("global", weights["main"])  # pick your poison
-                    loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
+                    loss_value = (
+                        value_loss_raw * value_w
+                    ).sum() / value_w.sum().clamp_min(1e-12)
                     loss = loss + config.rl.value_loss_coef * loss_value
 
             logits_main = pred["main_stick"].reshape(B * L, -1)
@@ -271,7 +314,7 @@ def train_loop(
                 pg["lr"] = lr
 
             current_iter = applied_skip + iters_processed
-            log_this_iter = (current_iter % 100 == 0)
+            log_this_iter = current_iter % 100 == 0
             should_collect_grad_stats = logger.enabled and log_this_iter
             grad_stats: Optional[Dict[str, float]] = None
 
@@ -289,13 +332,23 @@ def train_loop(
             # Gradient clipping
             if config.train.grad_clip is not None and config.train.grad_clip > 0:
                 from torch.nn.utils import clip_grad_norm_
-                pre_clip_norm = float(clip_grad_norm_(model.parameters(), config.train.grad_clip))
+
+                pre_clip_norm = float(
+                    clip_grad_norm_(model.parameters(), config.train.grad_clip)
+                )
                 if grad_stats is not None:
                     grad_stats["total_norm_pre_clip"] = pre_clip_norm
-                    grad_stats["total_norm_post_clip"] = min(pre_clip_norm, config.train.grad_clip)
-                    grad_stats["was_clipped"] = float(pre_clip_norm > config.train.grad_clip)
-                    grad_stats["clip_coef"] = config.train.grad_clip / max(pre_clip_norm,
-                                                                           1e-12) if pre_clip_norm > config.train.grad_clip else 1.0
+                    grad_stats["total_norm_post_clip"] = min(
+                        pre_clip_norm, config.train.grad_clip
+                    )
+                    grad_stats["was_clipped"] = float(
+                        pre_clip_norm > config.train.grad_clip
+                    )
+                    grad_stats["clip_coef"] = (
+                        config.train.grad_clip / max(pre_clip_norm, 1e-12)
+                        if pre_clip_norm > config.train.grad_clip
+                        else 1.0
+                    )
 
             scaler.step(opt)
             scaler.update()
@@ -311,24 +364,26 @@ def train_loop(
             btn_true = target_btn  # [B,L,Kb]
             btn_probs = probs_btn
             if off_stage_idx is not None:
-                off_stage_mask = (X[..., off_stage_idx] > 0.5)
+                off_stage_mask = X[..., off_stage_idx] > 0.5
             else:
                 off_stage_mask = torch.zeros((B, L), dtype=torch.bool, device=device)
             off_stage_mask = off_stage_mask.to(device=device)
             off_stage_present = bool(off_stage_mask.any().item())
 
             main_change_mask = torch.zeros_like(true_main_idx, dtype=torch.bool)
-            main_change_mask[:, 1:] = (true_main_idx[:, 1:] != true_main_idx[:, :-1])
+            main_change_mask[:, 1:] = true_main_idx[:, 1:] != true_main_idx[:, :-1]
             main_hold_mask = ~main_change_mask
             main_hold_mask[:, 0] = True
 
             c_change_mask = torch.zeros_like(true_c_idx, dtype=torch.bool)
-            c_change_mask[:, 1:] = (true_c_idx[:, 1:] != true_c_idx[:, :-1])
+            c_change_mask[:, 1:] = true_c_idx[:, 1:] != true_c_idx[:, :-1]
             c_hold_mask = ~c_change_mask
             c_hold_mask[:, 0] = True
 
             btn_change_mask = torch.zeros((B, L), device=device, dtype=torch.bool)
-            btn_change_mask[:, 1:] = torch.any(btn_true[:, 1:] != btn_true[:, :-1], dim=-1)
+            btn_change_mask[:, 1:] = torch.any(
+                btn_true[:, 1:] != btn_true[:, :-1], dim=-1
+            )
             btn_hold_mask = ~btn_change_mask
             btn_hold_mask[:, 0] = True
 
@@ -346,7 +401,11 @@ def train_loop(
                 "c": float(loss_c.detach().item()),
                 "shoulder": float(loss_s.detach().item()),
                 "buttons": float(loss_btn.detach().item()),
-                "value": float(loss_value.detach().item()) if config.model.use_value_head else 0.0,
+                "value": (
+                    float(loss_value.detach().item())
+                    if config.model.use_value_head
+                    else 0.0
+                ),
             }
 
             global_step += 1
@@ -355,7 +414,9 @@ def train_loop(
 
             # Throughput / logs (rank 0)
             if it % 5000 == 0:
-                ckpt_path = out_dir / f"model_ep{epoch + 1:03d}_{completed_batches:06d}.pt"
+                ckpt_path = (
+                    out_dir / f"model_ep{epoch + 1:03d}_{completed_batches:06d}.pt"
+                )
                 save_checkpoint(
                     path=ckpt_path,
                     model=model,
@@ -383,12 +444,30 @@ def train_loop(
                 main_true_flat = true_main_idx.reshape(-1)
                 main_pred_flat = pred_main_idx.reshape(-1)
                 K_main = int(target_info["main_K"])
-                cm_main_b = compute_confusion_matrix(main_true_flat, main_pred_flat, K_main)
-                acc_main_b = float((main_pred_flat == main_true_flat).float().mean().item())
-                main_major_lbl = int(
-                    torch.bincount(main_true_flat.cpu()).argmax().item()) if main_true_flat.numel() else 0
-                acc_main_rep_b = float((main_rep.reshape(-1)[rep_mask.reshape(-1)] == main_true_flat[
-                    rep_mask.reshape(-1)]).float().mean().item()) if rep_mask.any() else 0.0
+                cm_main_b = compute_confusion_matrix(
+                    main_true_flat, main_pred_flat, K_main
+                )
+                acc_main_b = float(
+                    (main_pred_flat == main_true_flat).float().mean().item()
+                )
+                main_major_lbl = (
+                    int(torch.bincount(main_true_flat.cpu()).argmax().item())
+                    if main_true_flat.numel()
+                    else 0
+                )
+                acc_main_rep_b = (
+                    float(
+                        (
+                            main_rep.reshape(-1)[rep_mask.reshape(-1)]
+                            == main_true_flat[rep_mask.reshape(-1)]
+                        )
+                        .float()
+                        .mean()
+                        .item()
+                    )
+                    if rep_mask.any()
+                    else 0.0
+                )
                 main_conf_str = format_confusion_matrix(
                     cm_main_b,
                     max_size=10,
@@ -402,11 +481,28 @@ def train_loop(
                 K_c = int(target_info["c_K"])
                 cm_c_b = compute_confusion_matrix(c_true_flat, c_pred_flat, K_c)
                 acc_c_b = float((c_pred_flat == c_true_flat).float().mean().item())
-                c_major_lbl = int(torch.bincount(c_true_flat.cpu()).argmax().item()) if c_true_flat.numel() else 0
+                c_major_lbl = (
+                    int(torch.bincount(c_true_flat.cpu()).argmax().item())
+                    if c_true_flat.numel()
+                    else 0
+                )
                 acc_c_maj_b = float((c_true_flat == c_major_lbl).float().mean().item())
-                acc_c_rep_b = float((c_rep.reshape(-1)[rep_mask.reshape(-1)] == c_true_flat[
-                    rep_mask.reshape(-1)]).float().mean().item()) if rep_mask.any() else 0.0
-                c_conf_str = format_confusion_matrix(cm_c_b, max_size=12, title="C-STICK confusion")
+                acc_c_rep_b = (
+                    float(
+                        (
+                            c_rep.reshape(-1)[rep_mask.reshape(-1)]
+                            == c_true_flat[rep_mask.reshape(-1)]
+                        )
+                        .float()
+                        .mean()
+                        .item()
+                    )
+                    if rep_mask.any()
+                    else 0.0
+                )
+                c_conf_str = format_confusion_matrix(
+                    cm_c_b, max_size=12, title="C-STICK confusion"
+                )
 
                 # BUTTONS
                 btn_probs = torch.sigmoid(btn_logits)
@@ -428,13 +524,17 @@ def train_loop(
                 # baselines
                 pos_rate = btn_true.float().mean(dim=(0, 1), keepdim=True)  # [1,1,K]
                 btn_maj_pred = (pos_rate >= 0.5).to(btn_true.dtype).expand_as(btn_true)
-                em_maj, p_maj, r_maj, f1_maj, f1_macro_maj = multilabel_prf(btn_true, btn_maj_pred)
+                em_maj, p_maj, r_maj, f1_maj, f1_macro_maj = multilabel_prf(
+                    btn_true, btn_maj_pred
+                )
                 if L > 1:
                     btn_rep[:, 1:, :] = btn_true[:, :-1, :]
                     mask_flat = rep_mask.view(B * L)
                     t_flat = btn_true.reshape(B * L, -1)[mask_flat]
                     p_flat = btn_rep.reshape(B * L, -1)[mask_flat]
-                    em_rep, p_rep, r_rep, f1_rep, f1_macro_rep = multilabel_prf(t_flat, p_flat)
+                    em_rep, p_rep, r_rep, f1_rep, f1_macro_rep = multilabel_prf(
+                        t_flat, p_flat
+                    )
                 else:
                     em_rep = p_rep = r_rep = f1_rep = f1_macro_rep = 0.0
 
@@ -445,29 +545,62 @@ def train_loop(
                 sh_rep = torch.zeros_like(sh_true_idx)
                 acc_sh = float((sh_pred_idx == sh_true_idx).float().mean().item())
                 sh_flat = sh_true_idx.reshape(-1).cpu()
-                sh_major_lbl = int(torch.bincount(sh_flat).argmax().item()) if sh_flat.numel() else 0
+                sh_major_lbl = (
+                    int(torch.bincount(sh_flat).argmax().item())
+                    if sh_flat.numel()
+                    else 0
+                )
                 acc_sh_maj = float((sh_true_idx == sh_major_lbl).float().mean().item())
                 if L > 1:
                     sh_rep[:, 1:] = sh_true_idx[:, :-1]
-                    acc_sh_rep = float((sh_rep[rep_mask] == sh_true_idx[rep_mask]).float().mean().item())
+                    acc_sh_rep = float(
+                        (sh_rep[rep_mask] == sh_true_idx[rep_mask])
+                        .float()
+                        .mean()
+                        .item()
+                    )
                 else:
                     acc_sh_rep = 0.0
 
                 # --- MAIN STICK ---
-                correct_main = (pred_main_idx == true_main_idx)
+                correct_main = pred_main_idx == true_main_idx
                 # Calculate split accuracies
-                acc_main_chg = correct_main[main_change_mask].float().mean().item() if main_change_mask.any() else 0.0
-                acc_main_hold = correct_main[main_hold_mask].float().mean().item() if main_hold_mask.any() else 0.0
+                acc_main_chg = (
+                    correct_main[main_change_mask].float().mean().item()
+                    if main_change_mask.any()
+                    else 0.0
+                )
+                acc_main_hold = (
+                    correct_main[main_hold_mask].float().mean().item()
+                    if main_hold_mask.any()
+                    else 0.0
+                )
 
                 # --- C-STICK ---
-                correct_c = (pred_c_idx == true_c_idx)
-                acc_c_chg = correct_c[c_change_mask].float().mean().item() if c_change_mask.any() else 0.0
-                acc_c_hold = correct_c[c_hold_mask].float().mean().item() if c_hold_mask.any() else 0.0
+                correct_c = pred_c_idx == true_c_idx
+                acc_c_chg = (
+                    correct_c[c_change_mask].float().mean().item()
+                    if c_change_mask.any()
+                    else 0.0
+                )
+                acc_c_hold = (
+                    correct_c[c_hold_mask].float().mean().item()
+                    if c_hold_mask.any()
+                    else 0.0
+                )
 
                 # --- BUTTONS (Exact Match Ratio) ---
                 correct_btn_em = (btn_pred == btn_true).all(dim=-1)
-                em_btn_chg = correct_btn_em[btn_change_mask].float().mean().item() if btn_change_mask.any() else 0.0
-                em_btn_hold = correct_btn_em[btn_hold_mask].float().mean().item() if btn_hold_mask.any() else 0.0
+                em_btn_chg = (
+                    correct_btn_em[btn_change_mask].float().mean().item()
+                    if btn_change_mask.any()
+                    else 0.0
+                )
+                em_btn_hold = (
+                    correct_btn_em[btn_hold_mask].float().mean().item()
+                    if btn_hold_mask.any()
+                    else 0.0
+                )
 
                 # --- Update the log strings ---
 
@@ -476,18 +609,10 @@ def train_loop(
                     f"ep {epoch + 1}/{config.train.epochs} it {completed_batches}/{len(loader)}\n"
                     f"  loss {avg_loss_running:.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | {this_loss}"
                 )
-                main_line = (
-                    f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f}) | rep {acc_main_rep_b:.3f}"
-                )
-                c_line = (
-                    f"  C-STICK:  acc {acc_c_b:.3f} (chg: {acc_c_chg:.3f}, hold: {acc_c_hold:.3f}) | rep {acc_c_rep_b:.3f}"
-                )
-                btn_line1 = (
-                    f"  BUTTONS:  EM {em_b:.3f} (chg: {em_btn_chg:.3f}, hold: {em_btn_hold:.3f}) | F1μ {f1_b:.3f}"
-                )
-                btn_line2 = (
-                    f"            maj F1μ {f1_maj:.3f} | rep F1μ {f1_rep:.3f} | EM_rep {em_rep:.3f}"
-                )
+                main_line = f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f}) | rep {acc_main_rep_b:.3f}"
+                c_line = f"  C-STICK:  acc {acc_c_b:.3f} (chg: {acc_c_chg:.3f}, hold: {acc_c_hold:.3f}) | rep {acc_c_rep_b:.3f}"
+                btn_line1 = f"  BUTTONS:  EM {em_b:.3f} (chg: {em_btn_chg:.3f}, hold: {em_btn_hold:.3f}) | F1μ {f1_b:.3f}"
+                btn_line2 = f"            maj F1μ {f1_maj:.3f} | rep F1μ {f1_rep:.3f} | EM_rep {em_rep:.3f}"
                 per_button = []
                 for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
                     label = _BUTTON_PRETTY.get(name, name)
@@ -497,29 +622,69 @@ def train_loop(
                 btn_line3 = "            " + " | ".join(per_button)
 
                 # --- OFF-STAGE METRICS ---
-                acc_main_off = acc_main_chg_off = acc_main_hold_off = acc_main_rep_off = 0.0
+                acc_main_off = acc_main_chg_off = acc_main_hold_off = (
+                    acc_main_rep_off
+                ) = 0.0
                 acc_c_off = acc_c_chg_off = acc_c_hold_off = acc_c_rep_off = 0.0
                 em_off = p_off = r_off = f1_off = f1_macro_off = 0.0
                 em_btn_chg_off = em_btn_hold_off = 0.0
                 f1_maj_off = f1_rep_off = em_rep_off = 0.0
-                btn_match_off_vals = btn_prec_off_vals = btn_rec_off_vals = btn_f1_off_vals = btn_rate_off_vals = None
+                btn_match_off_vals = btn_prec_off_vals = btn_rec_off_vals = (
+                    btn_f1_off_vals
+                ) = btn_rate_off_vals = None
                 acc_sh_off = acc_sh_maj_off = acc_sh_rep_off = 0.0
                 off_per_button = []
                 if off_stage_present:
                     off_main_change_mask = off_stage_mask & main_change_mask
                     off_main_hold_mask = off_stage_mask & main_hold_mask
                     off_rep_mask = off_stage_mask & rep_mask
-                    acc_main_off = float(correct_main[off_stage_mask].float().mean().item())
-                    acc_main_chg_off = float(correct_main[off_main_change_mask].float().mean().item()) if off_main_change_mask.any() else 0.0
-                    acc_main_hold_off = float(correct_main[off_main_hold_mask].float().mean().item()) if off_main_hold_mask.any() else 0.0
-                    acc_main_rep_off = float((main_rep[off_rep_mask] == true_main_idx[off_rep_mask]).float().mean().item()) if off_rep_mask.any() else 0.0
+                    acc_main_off = float(
+                        correct_main[off_stage_mask].float().mean().item()
+                    )
+                    acc_main_chg_off = (
+                        float(correct_main[off_main_change_mask].float().mean().item())
+                        if off_main_change_mask.any()
+                        else 0.0
+                    )
+                    acc_main_hold_off = (
+                        float(correct_main[off_main_hold_mask].float().mean().item())
+                        if off_main_hold_mask.any()
+                        else 0.0
+                    )
+                    acc_main_rep_off = (
+                        float(
+                            (main_rep[off_rep_mask] == true_main_idx[off_rep_mask])
+                            .float()
+                            .mean()
+                            .item()
+                        )
+                        if off_rep_mask.any()
+                        else 0.0
+                    )
 
                     off_c_change_mask = off_stage_mask & c_change_mask
                     off_c_hold_mask = off_stage_mask & c_hold_mask
                     acc_c_off = float(correct_c[off_stage_mask].float().mean().item())
-                    acc_c_chg_off = float(correct_c[off_c_change_mask].float().mean().item()) if off_c_change_mask.any() else 0.0
-                    acc_c_hold_off = float(correct_c[off_c_hold_mask].float().mean().item()) if off_c_hold_mask.any() else 0.0
-                    acc_c_rep_off = float((c_rep[off_rep_mask] == true_c_idx[off_rep_mask]).float().mean().item()) if off_rep_mask.any() else 0.0
+                    acc_c_chg_off = (
+                        float(correct_c[off_c_change_mask].float().mean().item())
+                        if off_c_change_mask.any()
+                        else 0.0
+                    )
+                    acc_c_hold_off = (
+                        float(correct_c[off_c_hold_mask].float().mean().item())
+                        if off_c_hold_mask.any()
+                        else 0.0
+                    )
+                    acc_c_rep_off = (
+                        float(
+                            (c_rep[off_rep_mask] == true_c_idx[off_rep_mask])
+                            .float()
+                            .mean()
+                            .item()
+                        )
+                        if off_rep_mask.any()
+                        else 0.0
+                    )
 
                     off_btn_change_mask = off_stage_mask & btn_change_mask
                     off_btn_hold_mask = off_stage_mask & btn_hold_mask
@@ -528,19 +693,47 @@ def train_loop(
                     btn_pred_flat = btn_pred.reshape(B * L, -1).float()
                     btn_true_off_flat = btn_true_flat[mask_flat]
                     btn_pred_off_flat = btn_pred_flat[mask_flat]
-                    em_off, p_off, r_off, f1_off, f1_macro_off = multilabel_prf(btn_true_off_flat, btn_pred_off_flat)
+                    em_off, p_off, r_off, f1_off, f1_macro_off = multilabel_prf(
+                        btn_true_off_flat, btn_pred_off_flat
+                    )
 
                     correct_btn_em_off = correct_btn_em & off_stage_mask
-                    em_btn_chg_off = float(correct_btn_em_off[off_btn_change_mask].float().mean().item()) if off_btn_change_mask.any() else 0.0
-                    em_btn_hold_off = float(correct_btn_em_off[off_btn_hold_mask].float().mean().item()) if off_btn_hold_mask.any() else 0.0
+                    em_btn_chg_off = (
+                        float(
+                            correct_btn_em_off[off_btn_change_mask]
+                            .float()
+                            .mean()
+                            .item()
+                        )
+                        if off_btn_change_mask.any()
+                        else 0.0
+                    )
+                    em_btn_hold_off = (
+                        float(
+                            correct_btn_em_off[off_btn_hold_mask].float().mean().item()
+                        )
+                        if off_btn_hold_mask.any()
+                        else 0.0
+                    )
 
-                    btn_match_off = (btn_true_off_flat == btn_pred_off_flat).float().mean(dim=0)
+                    btn_match_off = (
+                        (btn_true_off_flat == btn_pred_off_flat).float().mean(dim=0)
+                    )
                     btn_tp_off = (btn_true_off_flat * btn_pred_off_flat).sum(dim=0)
-                    btn_fp_off = ((1.0 - btn_true_off_flat) * btn_pred_off_flat).sum(dim=0)
-                    btn_fn_off = (btn_true_off_flat * (1.0 - btn_pred_off_flat)).sum(dim=0)
+                    btn_fp_off = ((1.0 - btn_true_off_flat) * btn_pred_off_flat).sum(
+                        dim=0
+                    )
+                    btn_fn_off = (btn_true_off_flat * (1.0 - btn_pred_off_flat)).sum(
+                        dim=0
+                    )
                     btn_prec_off = btn_tp_off / (btn_tp_off + btn_fp_off + eps)
                     btn_rec_off = btn_tp_off / (btn_tp_off + btn_fn_off + eps)
-                    btn_f1_off = 2 * btn_prec_off * btn_rec_off / (btn_prec_off + btn_rec_off + eps)
+                    btn_f1_off = (
+                        2
+                        * btn_prec_off
+                        * btn_rec_off
+                        / (btn_prec_off + btn_rec_off + eps)
+                    )
                     btn_rate_off = btn_true_off_flat.mean(dim=0)
 
                     btn_match_off_vals = [float(v) for v in btn_match_off.cpu()]
@@ -551,14 +744,18 @@ def train_loop(
 
                     btn_maj_pred_flat = btn_maj_pred.reshape(B * L, -1)
                     btn_maj_pred_off_flat = btn_maj_pred_flat[mask_flat]
-                    _, _, _, f1_maj_off, _ = multilabel_prf(btn_true_off_flat, btn_maj_pred_off_flat)
+                    _, _, _, f1_maj_off, _ = multilabel_prf(
+                        btn_true_off_flat, btn_maj_pred_off_flat
+                    )
 
                     off_rep_mask_flat = (off_stage_mask & rep_mask).view(B * L)
                     if L > 1 and off_rep_mask_flat.any():
                         btn_rep_flat = btn_rep.reshape(B * L, -1)
                         btn_rep_off_flat = btn_rep_flat[off_rep_mask_flat]
                         t_rep_off_flat = btn_true.reshape(B * L, -1)[off_rep_mask_flat]
-                        em_rep_off, _, _, f1_rep_off, _ = multilabel_prf(t_rep_off_flat, btn_rep_off_flat)
+                        em_rep_off, _, _, f1_rep_off, _ = multilabel_prf(
+                            t_rep_off_flat, btn_rep_off_flat
+                        )
                     else:
                         em_rep_off = f1_rep_off = 0.0
 
@@ -570,11 +767,29 @@ def train_loop(
 
                     acc_sh_components_mask = off_stage_mask
                     if acc_sh_components_mask.any():
-                        acc_sh_off = float((sh_pred_idx[acc_sh_components_mask] == sh_true_idx[acc_sh_components_mask]).float().mean().item())
-                        acc_sh_maj_off = float((sh_true_idx[acc_sh_components_mask] == sh_major_lbl).float().mean().item())
-                    off_sh_rep_mask = (off_stage_mask & rep_mask)
+                        acc_sh_off = float(
+                            (
+                                sh_pred_idx[acc_sh_components_mask]
+                                == sh_true_idx[acc_sh_components_mask]
+                            )
+                            .float()
+                            .mean()
+                            .item()
+                        )
+                        acc_sh_maj_off = float(
+                            (sh_true_idx[acc_sh_components_mask] == sh_major_lbl)
+                            .float()
+                            .mean()
+                            .item()
+                        )
+                    off_sh_rep_mask = off_stage_mask & rep_mask
                     if L > 1 and off_sh_rep_mask.any():
-                        acc_sh_rep_off = float((sh_rep[off_sh_rep_mask] == sh_true_idx[off_sh_rep_mask]).float().mean().item())
+                        acc_sh_rep_off = float(
+                            (sh_rep[off_sh_rep_mask] == sh_true_idx[off_sh_rep_mask])
+                            .float()
+                            .mean()
+                            .item()
+                        )
                     else:
                         acc_sh_rep_off = 0.0
 
@@ -592,26 +807,18 @@ def train_loop(
                     f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
                 )
                 if off_stage_present:
-                    off_main_line = (
-                        f"  OFF-STAGE MAIN: acc {acc_main_off:.3f} (chg: {acc_main_chg_off:.3f}, hold: {acc_main_hold_off:.3f}) | rep {acc_main_rep_off:.3f}"
-                    )
-                    off_c_line = (
-                        f"  OFF-STAGE C-STICK: acc {acc_c_off:.3f} (chg: {acc_c_chg_off:.3f}, hold: {acc_c_hold_off:.3f}) | rep {acc_c_rep_off:.3f}"
-                    )
-                    off_btn_line1 = (
-                        f"  OFF-STAGE BUTTONS: EM {em_off:.3f} (chg: {em_btn_chg_off:.3f}, hold: {em_btn_hold_off:.3f}) | F1μ {f1_off:.3f}"
-                    )
-                    off_btn_line2 = (
-                        f"                 maj F1μ {f1_maj_off:.3f} | rep F1μ {f1_rep_off:.3f} | EM_rep {em_rep_off:.3f}"
-                    )
+                    off_main_line = f"  OFF-STAGE MAIN: acc {acc_main_off:.3f} (chg: {acc_main_chg_off:.3f}, hold: {acc_main_hold_off:.3f}) | rep {acc_main_rep_off:.3f}"
+                    off_c_line = f"  OFF-STAGE C-STICK: acc {acc_c_off:.3f} (chg: {acc_c_chg_off:.3f}, hold: {acc_c_hold_off:.3f}) | rep {acc_c_rep_off:.3f}"
+                    off_btn_line1 = f"  OFF-STAGE BUTTONS: EM {em_off:.3f} (chg: {em_btn_chg_off:.3f}, hold: {em_btn_hold_off:.3f}) | F1μ {f1_off:.3f}"
+                    off_btn_line2 = f"                 maj F1μ {f1_maj_off:.3f} | rep F1μ {f1_rep_off:.3f} | EM_rep {em_rep_off:.3f}"
                     if off_per_button:
                         off_btn_line3 = "                 " + " | ".join(off_per_button)
                     else:
                         off_btn_line3 = None
-                    off_sh_line = (
-                        f"  OFF-STAGE SHOULDER: acc {acc_sh_off:.3f} | maj {acc_sh_maj_off:.3f} | rep {acc_sh_rep_off:.3f}"
+                    off_sh_line = f"  OFF-STAGE SHOULDER: acc {acc_sh_off:.3f} | maj {acc_sh_maj_off:.3f} | rep {acc_sh_rep_off:.3f}"
+                    log_lines.extend(
+                        [off_main_line, off_c_line, off_btn_line1, off_btn_line2]
                     )
-                    log_lines.extend([off_main_line, off_c_line, off_btn_line1, off_btn_line2])
                     if off_btn_line3:
                         log_lines.append(off_btn_line3)
                     log_lines.append(off_sh_line)
@@ -639,7 +846,8 @@ def train_loop(
                     vp_centered = vp_flat - vp_flat.mean()
                     vt_centered = vt_flat - vt_flat.mean()
                     correlation = (vp_centered * vt_centered).sum() / (
-                            torch.sqrt((vp_centered ** 2).sum() * (vt_centered ** 2).sum()) + 1e-8
+                        torch.sqrt((vp_centered**2).sum() * (vt_centered**2).sum())
+                        + 1e-8
                     )
 
                     log_lines.append(
@@ -687,59 +895,105 @@ def train_loop(
                         grad_elems = grad_stats.get("num_elements", 0.0)
                         nonfinite = grad_stats.get("nonfinite_count", 0.0)
                         if grad_elems:
-                            log_payload["gradients/nonfinite_fraction"] = float(nonfinite / max(grad_elems, 1.0))
+                            log_payload["gradients/nonfinite_fraction"] = float(
+                                nonfinite / max(grad_elems, 1.0)
+                            )
                     try:
                         log_payload["optimizer/loss_scale"] = float(scaler.get_scale())
                     except Exception:
                         pass
                     if off_stage_present:
-                        log_payload.update({
-                            "off_stage_metrics/acc_main": float(acc_main_off),
-                            "off_stage_metrics/acc_main_change": float(acc_main_chg_off),
-                            "off_stage_metrics/acc_main_hold": float(acc_main_hold_off),
-                            "off_stage_metrics/acc_main_rep": float(acc_main_rep_off),
-                            "off_stage_metrics/acc_c": float(acc_c_off),
-                            "off_stage_metrics/acc_c_change": float(acc_c_chg_off),
-                            "off_stage_metrics/acc_c_hold": float(acc_c_hold_off),
-                            "off_stage_metrics/acc_c_rep": float(acc_c_rep_off),
-                            "off_stage_metrics/buttons_em": float(em_off),
-                            "off_stage_metrics/buttons_em_change": float(em_btn_chg_off),
-                            "off_stage_metrics/buttons_em_hold": float(em_btn_hold_off),
-                            "off_stage_metrics/buttons_em_rep": float(em_rep_off),
-                            "off_stage_metrics/buttons_f1_micro": float(f1_off),
-                            "off_stage_metrics/buttons_f1_micro_maj": float(f1_maj_off),
-                            "off_stage_metrics/buttons_f1_micro_rep": float(f1_rep_off),
-                            "off_stage_metrics/acc_shoulder": float(acc_sh_off),
-                            "off_stage_metrics/acc_shoulder_maj": float(acc_sh_maj_off),
-                            "off_stage_metrics/acc_shoulder_rep": float(acc_sh_rep_off),
-                        })
+                        log_payload.update(
+                            {
+                                "off_stage_metrics/acc_main": float(acc_main_off),
+                                "off_stage_metrics/acc_main_change": float(
+                                    acc_main_chg_off
+                                ),
+                                "off_stage_metrics/acc_main_hold": float(
+                                    acc_main_hold_off
+                                ),
+                                "off_stage_metrics/acc_main_rep": float(
+                                    acc_main_rep_off
+                                ),
+                                "off_stage_metrics/acc_c": float(acc_c_off),
+                                "off_stage_metrics/acc_c_change": float(acc_c_chg_off),
+                                "off_stage_metrics/acc_c_hold": float(acc_c_hold_off),
+                                "off_stage_metrics/acc_c_rep": float(acc_c_rep_off),
+                                "off_stage_metrics/buttons_em": float(em_off),
+                                "off_stage_metrics/buttons_em_change": float(
+                                    em_btn_chg_off
+                                ),
+                                "off_stage_metrics/buttons_em_hold": float(
+                                    em_btn_hold_off
+                                ),
+                                "off_stage_metrics/buttons_em_rep": float(em_rep_off),
+                                "off_stage_metrics/buttons_f1_micro": float(f1_off),
+                                "off_stage_metrics/buttons_f1_micro_maj": float(
+                                    f1_maj_off
+                                ),
+                                "off_stage_metrics/buttons_f1_micro_rep": float(
+                                    f1_rep_off
+                                ),
+                                "off_stage_metrics/acc_shoulder": float(acc_sh_off),
+                                "off_stage_metrics/acc_shoulder_maj": float(
+                                    acc_sh_maj_off
+                                ),
+                                "off_stage_metrics/acc_shoulder_rep": float(
+                                    acc_sh_rep_off
+                                ),
+                            }
+                        )
                         if btn_match_off_vals is not None:
-                            for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
+                            for idx, name in enumerate(
+                                CONTROLLER_KEY_GROUPS["buttons"]
+                            ):
                                 label = _BUTTON_PRETTY.get(name, name)
-                                log_payload[f"off_stage_metrics/buttons/{label}_acc"] = float(btn_match_off_vals[idx])
-                                log_payload[f"off_stage_metrics/buttons/{label}_f1"] = float(btn_f1_off_vals[idx])
-                                log_payload[f"off_stage_metrics/buttons/{label}_precision"] = float(btn_prec_off_vals[idx])
-                                log_payload[f"off_stage_metrics/buttons/{label}_recall"] = float(btn_rec_off_vals[idx])
-                                log_payload[f"off_stage_metrics/buttons/{label}_rate"] = float(btn_rate_off_vals[idx])
+                                log_payload[
+                                    f"off_stage_metrics/buttons/{label}_acc"
+                                ] = float(btn_match_off_vals[idx])
+                                log_payload[f"off_stage_metrics/buttons/{label}_f1"] = (
+                                    float(btn_f1_off_vals[idx])
+                                )
+                                log_payload[
+                                    f"off_stage_metrics/buttons/{label}_precision"
+                                ] = float(btn_prec_off_vals[idx])
+                                log_payload[
+                                    f"off_stage_metrics/buttons/{label}_recall"
+                                ] = float(btn_rec_off_vals[idx])
+                                log_payload[
+                                    f"off_stage_metrics/buttons/{label}_rate"
+                                ] = float(btn_rate_off_vals[idx])
                     # Per-button metrics
                     try:
                         for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
                             label = _BUTTON_PRETTY.get(name, name)
-                            log_payload[f"buttons/{label}_acc"] = float(btn_match[idx].item())
-                            log_payload[f"buttons/{label}_f1"] = float(btn_f1[idx].item())
-                            log_payload[f"buttons/{label}_precision"] = float(btn_prec[idx].item())
-                            log_payload[f"buttons/{label}_recall"] = float(btn_rec[idx].item())
-                            log_payload[f"buttons/{label}_rate"] = float(btn_rate[idx].item())
+                            log_payload[f"buttons/{label}_acc"] = float(
+                                btn_match[idx].item()
+                            )
+                            log_payload[f"buttons/{label}_f1"] = float(
+                                btn_f1[idx].item()
+                            )
+                            log_payload[f"buttons/{label}_precision"] = float(
+                                btn_prec[idx].item()
+                            )
+                            log_payload[f"buttons/{label}_recall"] = float(
+                                btn_rec[idx].item()
+                            )
+                            log_payload[f"buttons/{label}_rate"] = float(
+                                btn_rate[idx].item()
+                            )
                     except Exception:
                         pass
-                    if 'value_pred_mean' in locals():
-                        log_payload.update({
-                            "value/pred_mean": value_pred_mean,
-                            "value/target_mean": value_target_mean,
-                            "value/mse": value_mse,
-                            "value/mae": value_mae,
-                            "value/corr": float(correlation.item()),
-                        })
+                    if "value_pred_mean" in locals():
+                        log_payload.update(
+                            {
+                                "value/pred_mean": value_pred_mean,
+                                "value/target_mean": value_target_mean,
+                                "value/mse": value_mse,
+                                "value/mae": value_mae,
+                                "value/corr": float(correlation.item()),
+                            }
+                        )
                     logger.log_metrics(log_payload, step=global_step)
                     # persist latest step for robust resume
                     try:
@@ -753,7 +1007,9 @@ def train_loop(
 
         if (epoch + 1) % config.train.save_every_epochs == 0 and iters_processed:
             avg_epoch_loss = epoch_loss / max(1, iters_processed)
-            print(f"[epoch {epoch + 1}] avg_loss {avg_epoch_loss:.4f} ({iters_processed} iters)")
+            print(
+                f"[epoch {epoch + 1}] avg_loss {avg_epoch_loss:.4f} ({iters_processed} iters)"
+            )
 
         # Save checkpoint
         if (epoch + 1) % config.train.save_every_epochs == 0:

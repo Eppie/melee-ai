@@ -5,18 +5,22 @@ from typing import Dict, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from controller_utils import (
+    CONTROL_STICK_QUANTIZED,
+    C_STICK_QUANTIZED,
+    SHOULDER_QUANTIZED,
+)
 
 
 _MAIN_STICK_PALETTE_CPU = torch.as_tensor(
     np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
 )
-_C_STICK_PALETTE_CPU = torch.as_tensor(
-    np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
+_C_STICK_PALETTE_CPU = torch.as_tensor(np.asarray(C_STICK_QUANTIZED, dtype=np.float32))
+_SHOULDER_PALETTE_CPU = (
+    torch.as_tensor(np.asarray(SHOULDER_QUANTIZED, dtype=np.float32))
+    if SHOULDER_QUANTIZED
+    else None
 )
-_SHOULDER_PALETTE_CPU = torch.as_tensor(
-    np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
-) if SHOULDER_QUANTIZED else None
 
 # Precompute palette norm squared for faster distance calculations
 _MAIN_STICK_NORM_SQ_CPU = (_MAIN_STICK_PALETTE_CPU * _MAIN_STICK_PALETTE_CPU).sum(dim=1)
@@ -40,7 +44,11 @@ def _clamp_unit_circle(xy11: torch.Tensor) -> torch.Tensor:
     # Optimized: use squared norm to avoid sqrt, then only normalize if needed
     radius_sq = (xy11 * xy11).sum(dim=-1, keepdim=True)
     # Only normalize if radius > 1
-    scale = torch.where(radius_sq > 1.0, torch.sqrt(radius_sq.clamp_min(1e-12)), torch.ones_like(radius_sq))
+    scale = torch.where(
+        radius_sq > 1.0,
+        torch.sqrt(radius_sq.clamp_min(1e-12)),
+        torch.ones_like(radius_sq),
+    )
     return xy11 / scale
 
 
@@ -70,8 +78,14 @@ def _palette_for_device(
     return cached
 
 
-def _quantize_stick(xy: torch.Tensor, palette: torch.Tensor, palette_norm_sq: torch.Tensor, 
-                    input_domain: str, B: int, L: int) -> torch.Tensor:
+def _quantize_stick(
+    xy: torch.Tensor,
+    palette: torch.Tensor,
+    palette_norm_sq: torch.Tensor,
+    input_domain: str,
+    B: int,
+    L: int,
+) -> torch.Tensor:
     """Helper to quantize a stick to palette indices. Optimized to reduce redundant code."""
     if input_domain == "unit11":
         xy11 = _clamp_unit_circle(torch.clamp(xy, -1.0, 1.0))
@@ -79,8 +93,12 @@ def _quantize_stick(xy: torch.Tensor, palette: torch.Tensor, palette_norm_sq: to
         xy11 = sticks01_to_unit11(xy)
     else:  # auto
         needs_clamp = torch.any(xy < 0.0) or torch.any(xy > 1.0)
-        xy11 = _clamp_unit_circle(torch.clamp(xy, -1.0, 1.0)) if needs_clamp else sticks01_to_unit11(xy)
-    
+        xy11 = (
+            _clamp_unit_circle(torch.clamp(xy, -1.0, 1.0))
+            if needs_clamp
+            else sticks01_to_unit11(xy)
+        )
+
     # Quantize using squared distance (avoids redundant pow/sum calls)
     V = xy11.reshape(-1, 2)
     # Compute ||V - P||^2 = ||V||^2 - 2*V·P + ||P||^2 (palette norm is precomputed)
@@ -91,10 +109,10 @@ def _quantize_stick(xy: torch.Tensor, palette: torch.Tensor, palette_norm_sq: to
 
 
 def quantize_targets(
-        batch_Y: torch.FloatTensor,
-        colmap,
-        *,
-        input_domain: str = "auto",
+    batch_Y: torch.FloatTensor,
+    colmap,
+    *,
+    input_domain: str = "auto",
 ) -> Dict[str, torch.Tensor]:
     """Convert controller targets to palette indices.
 
@@ -115,7 +133,9 @@ def quantize_targets(
     # Main stick quantization
     main_xy = batch_Y[..., list(colmap.y_main)]
     P_main = _palette_for_device(_MAIN_STICK_PALETTE_CPU, _MAIN_STICK_CACHE, device)
-    P_main_norm_sq = _palette_for_device(_MAIN_STICK_NORM_SQ_CPU, _MAIN_STICK_NORM_CACHE, device)
+    P_main_norm_sq = _palette_for_device(
+        _MAIN_STICK_NORM_SQ_CPU, _MAIN_STICK_NORM_CACHE, device
+    )
     y_main_idx = _quantize_stick(main_xy, P_main, P_main_norm_sq, input_domain, B, L)
 
     # C-stick quantization
@@ -133,7 +153,9 @@ def quantize_targets(
     shoulder_K = 0
     if getattr(colmap, "y_shoulder", None) is not None:
         if _SHOULDER_PALETTE_CPU is None:
-            raise RuntimeError("Shoulder quantization palette requested but not defined.")
+            raise RuntimeError(
+                "Shoulder quantization palette requested but not defined."
+            )
         centers = _palette_for_device(_SHOULDER_PALETTE_CPU, _SHOULDER_CACHE, device)
         s = batch_Y[..., colmap.y_shoulder].unsqueeze(-1)
         d2s = (s - centers) ** 2

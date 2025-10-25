@@ -1,4 +1,5 @@
 """Wandb integration utilities for optional logging."""
+
 from __future__ import annotations
 
 import json
@@ -20,6 +21,7 @@ except ImportError:
 @dataclass
 class WandbConfig:
     """Configuration for wandb initialization."""
+
     project: str = "melee-ai"
     entity: Optional[str] = None
     name: Optional[str] = None
@@ -32,17 +34,17 @@ class WandbConfig:
 
 
 def init_wandb(
-        config: WandbConfig,
-        run_dir: Path,
-        hyperparameters: Optional[Dict[str, Any]] = None,
+    config: WandbConfig,
+    run_dir: Path,
+    hyperparameters: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """Initialize wandb with persistent run ID and resume support.
-    
+
     Args:
         config: Wandb configuration
         run_dir: Directory for run outputs (for storing run ID)
         hyperparameters: Optional hyperparameters to log
-        
+
     Returns:
         wandb run object or None if wandb unavailable/disabled
     """
@@ -88,7 +90,9 @@ def init_wandb(
 
         # 2) Try environment variables
         if not resume_run_id:
-            resume_run_id = os.environ.get("WANDB_RUN_ID") or os.environ.get("WANDB_RESUME_ID")
+            resume_run_id = os.environ.get("WANDB_RUN_ID") or os.environ.get(
+                "WANDB_RESUME_ID"
+            )
 
         # 3) Try to discover from latest-run symlink
         if not resume_run_id:
@@ -140,13 +144,13 @@ def finish_wandb() -> None:
 
 class WandbLogger:
     """Optional wandb logger with no-op behavior when unavailable.
-    
+
     Provides a consistent interface whether wandb is available or not.
     """
 
     def __init__(self, wandb_run: Optional[Any] = None, enabled: bool = True):
         """Initialize logger.
-        
+
         Args:
             wandb_run: Wandb run object (from wandb.init())
             enabled: Whether logging is enabled
@@ -154,9 +158,11 @@ class WandbLogger:
         self.run = wandb_run if WANDB_AVAILABLE else None
         self.enabled = enabled and self.run is not None
 
-    def log_metrics(self, metrics: Dict[str, float], step: int, commit: bool = True) -> None:
+    def log_metrics(
+        self, metrics: Dict[str, float], step: int, commit: bool = True
+    ) -> None:
         """Log metrics to wandb.
-        
+
         Args:
             metrics: Dictionary of metric names to values
             step: Global step number
@@ -172,7 +178,7 @@ class WandbLogger:
 
     def log_gradients(self, grad_stats: Dict[str, float], step: int) -> None:
         """Log gradient statistics to wandb.
-        
+
         Args:
             grad_stats: Dictionary of gradient statistics
             step: Global step number
@@ -186,7 +192,7 @@ class WandbLogger:
 
     def log_loss_components(self, losses: Dict[str, float], step: int) -> None:
         """Log loss components to wandb.
-        
+
         Args:
             losses: Dictionary of loss component names to values
             step: Global step number
@@ -200,7 +206,7 @@ class WandbLogger:
 
     def log_hyperparameters(self, params: Dict[str, Any]) -> None:
         """Log hyperparameters to wandb config.
-        
+
         Args:
             params: Dictionary of hyperparameter names to values
         """
@@ -215,19 +221,21 @@ class WandbLogger:
 
     def should_log_this_step(self, step: int, frequency: int = 10) -> bool:
         """Check if we should log at this step based on frequency.
-        
+
         Args:
             step: Current step number
             frequency: Log every N steps
-            
+
         Returns:
             True if we should log
         """
         return self.enabled and (step % frequency == 0)
 
-    def watch_model(self, model: Any, log: str = "gradients", log_freq: int = 100) -> None:
+    def watch_model(
+        self, model: Any, log: str = "gradients", log_freq: int = 100
+    ) -> None:
         """Watch model for gradient/parameter tracking.
-        
+
         Args:
             model: Model to watch
             log: What to log ("gradients", "parameters", "all")

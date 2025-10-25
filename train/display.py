@@ -1,4 +1,5 @@
 """Logging, formatting, and display utilities."""
+
 from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -30,12 +31,12 @@ def _format_action(value: object) -> str:
 
 
 def _print_table_block(
-        title: str,
-        headers: Sequence[str],
-        data: np.ndarray,
-        *,
-        max_columns: int = 8,
-        formatters: Optional[Dict[str, Callable[[object], str]]] = None,
+    title: str,
+    headers: Sequence[str],
+    data: np.ndarray,
+    *,
+    max_columns: int = 8,
+    formatters: Optional[Dict[str, Callable[[object], str]]] = None,
 ) -> None:
     """Print a table of data with headers and formatted values."""
     if data.size == 0 or not len(headers):
@@ -46,11 +47,13 @@ def _print_table_block(
     num_rows = data.shape[0]
     frame_label = "frame"
     formatters = formatters or {}
-    frame_width = max(len(frame_label), len(str(num_rows - 1)) if num_rows else len(frame_label))
+    frame_width = max(
+        len(frame_label), len(str(num_rows - 1)) if num_rows else len(frame_label)
+    )
 
     for start in range(0, total_cols, max_columns):
-        cols = headers[start:start + max_columns]
-        block = data[:, start:start + len(cols)]
+        cols = headers[start : start + max_columns]
+        block = data[:, start : start + len(cols)]
         formatted_columns: List[List[str]] = []
         col_widths: List[int] = []
         for col_idx, col_name in enumerate(cols):
@@ -79,11 +82,11 @@ def _print_table_block(
 
 
 def print_batch_preview(
-        batch: Dict[str, torch.Tensor],
-        feature_names: Sequence[str],
-        target_names: Sequence[str],
-        *,
-        max_frames: int = 10,
+    batch: Dict[str, torch.Tensor],
+    feature_names: Sequence[str],
+    target_names: Sequence[str],
+    *,
+    max_frames: int = 10,
 ) -> None:
     """Pretty-print the first sequence from the first batch for manual inspection."""
     X = batch["X"].detach().cpu()
@@ -93,7 +96,11 @@ def print_batch_preview(
     num_frames = min(max_frames, first_seq.shape[0])
     feat_slice = first_seq[:num_frames].numpy()
 
-    print("=== First batch preview (sequence 0, first {num_frames} frames) ===".format(num_frames=num_frames))
+    print(
+        "=== First batch preview (sequence 0, first {num_frames} frames) ===".format(
+            num_frames=num_frames
+        )
+    )
     formatters: Dict[str, Callable[[object], str]] = {}
     for key in feature_names:
         if key.endswith("_action"):
@@ -140,19 +147,19 @@ def _top_confusions(cm: torch.Tensor, k: int = 8) -> List[Tuple[int, int, int, f
 
 
 def format_confusion_matrix(
-        cm: torch.Tensor,
-        max_size: int = 12,
-        title: str = "confusion",
-        labels: Optional[Sequence[str]] = None,
+    cm: torch.Tensor,
+    max_size: int = 12,
+    title: str = "confusion",
+    labels: Optional[Sequence[str]] = None,
 ) -> str:
     """Render a confusion matrix or its top confusions in a compact string.
-    
+
     Args:
         cm: [K, K] confusion matrix
         max_size: Maximum size to show full matrix (otherwise show top confusions)
         title: Title for the output
         labels: Optional label names for rows/columns
-        
+
     Returns:
         Formatted string representation
     """
@@ -170,32 +177,46 @@ def format_confusion_matrix(
         if not tops:
             return f"{title}: (no confusions)"
         lines = [f"{title}: top confusions (true->pred: count, %offdiag)"]
-        lines += [f"  {label_list[t]}->{label_list[p]}: {c} ({pct:.1f}%)" for t, p, c, pct in tops]
+        lines += [
+            f"  {label_list[t]}->{label_list[p]}: {c} ({pct:.1f}%)"
+            for t, p, c, pct in tops
+        ]
         return "\n".join(lines)
 
     arr = cm.numpy()
     row_sums = arr.sum(axis=1)
     diag_vals = np.diag(arr).astype(float)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        diag_pct = np.divide(diag_vals * 100.0, row_sums, out=np.zeros_like(diag_vals, dtype=float), where=row_sums > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        diag_pct = np.divide(
+            diag_vals * 100.0,
+            row_sums,
+            out=np.zeros_like(diag_vals, dtype=float),
+            where=row_sums > 0,
+        )
 
     cell_width = max(4, max(len(lbl) for lbl in label_list))
-    header = " " * (cell_width + 1) + " ".join(lbl.rjust(cell_width) for lbl in label_list) + " | sum"
+    header = (
+        " " * (cell_width + 1)
+        + " ".join(lbl.rjust(cell_width) for lbl in label_list)
+        + " | sum"
+    )
     lines = [f"{title}: full {K}x{K}", header]
     for i in range(K):
         row = " ".join(f"{int(v):>{cell_width}d}" for v in arr[i])
-        lines.append(f"{label_list[i].rjust(cell_width)}: {row} | {int(row_sums[i]):>{cell_width}d}")
+        lines.append(
+            f"{label_list[i].rjust(cell_width)}: {row} | {int(row_sums[i]):>{cell_width}d}"
+        )
     lines.append("diag% per row: " + " ".join(f"{p:>5.1f}" for p in diag_pct))
     return "\n".join(lines)
 
 
 def format_metrics_dict(metrics: Dict[str, float], precision: int = 3) -> str:
     """Format a metrics dictionary as a compact string.
-    
+
     Args:
         metrics: Dictionary of metric names to values
         precision: Number of decimal places
-        
+
     Returns:
         Formatted string like "acc=0.950, f1=0.823"
     """
@@ -205,10 +226,10 @@ def format_metrics_dict(metrics: Dict[str, float], precision: int = 3) -> str:
 
 def format_loss_summary(losses: Dict[str, float]) -> str:
     """Format a loss dictionary as a compact string.
-    
+
     Args:
         losses: Dictionary of loss component names to values
-        
+
     Returns:
         Formatted string like "total=1.234 (main=0.5, c=0.3, btn=0.4)"
     """
@@ -221,15 +242,15 @@ def format_loss_summary(losses: Dict[str, float]) -> str:
 
 
 def format_training_progress(
-        epoch: int,
-        total_epochs: int,
-        step: int,
-        total_steps: int,
-        loss: float,
-        metrics: Dict[str, float],
+    epoch: int,
+    total_epochs: int,
+    step: int,
+    total_steps: int,
+    loss: float,
+    metrics: Dict[str, float],
 ) -> str:
     """Format a training progress message.
-    
+
     Args:
         epoch: Current epoch (0-indexed)
         total_epochs: Total number of epochs
@@ -237,7 +258,7 @@ def format_training_progress(
         total_steps: Total steps per epoch
         loss: Current loss value
         metrics: Dictionary of metrics to display
-        
+
     Returns:
         Formatted progress string
     """

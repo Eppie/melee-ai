@@ -10,12 +10,28 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, Union, get_args, get_origin, \
-    get_type_hints, List
+from typing import (
+    Any,
+    Dict,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+    List,
+)
 
 from zarr.codecs import BloscCodec, BloscShuffle
 
-from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from controller_utils import (
+    CONTROL_STICK_QUANTIZED,
+    C_STICK_QUANTIZED,
+    SHOULDER_QUANTIZED,
+)
 from schema import BUTTONS, get_feature_names, get_target_names
 
 
@@ -31,18 +47,21 @@ class _FreezeGuard:
 
 @dataclass
 class ZarrConfig(_FreezeGuard):
-    input_root: str = '/home/eppie/hal/replays'
-    out_root: str = '/home/eppie/melee-ai/processed_data_1000'
-    validation_root: str = '/home/eppie/melee-ai/validation_set'
-    #input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
-    #out_root: str = '/Users/eppie/PycharmProjects/nano-melee/processed_data_1000'
-    #validation_root: str = '/Users/eppie/PycharmProjects/nano-melee/validation_set'
+    input_root: str = "/home/eppie/hal/replays"
+    out_root: str = "/home/eppie/melee-ai/processed_data_1000"
+    validation_root: str = "/home/eppie/melee-ai/validation_set"
+    # input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
+    # out_root: str = '/Users/eppie/PycharmProjects/nano-melee/processed_data_1000'
+    # validation_root: str = '/Users/eppie/PycharmProjects/nano-melee/validation_set'
     episode_count: int = 1000
     validation_count: int = 1000
     shard_size: int = 100
     target_chunk_mb: float = 8.0
     compressor: BloscCodec = field(
-        default_factory=lambda: BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle))
+        default_factory=lambda: BloscCodec(
+            cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle
+        )
+    )
     seed: int = 42
 
 
@@ -226,6 +245,7 @@ class GPTConfig:
         - Reasonable usage: keep close to dataset quantization cardinalities (e.g., FOX sticks 64-way, buttons 5 logits).
 
     """
+
     block_size: int = 512  # DONE
     n_embd: int = 512  # DONE
     n_layer: int = 4  # DONE
@@ -248,12 +268,14 @@ class GPTConfig:
     ffn_mult: float = 2  # DONE
     ffn_activation: str = "geglu"  # DONE
     head_flow: str = "parallel"  # options: sequential, parallel
-    target_shapes_by_head: dict[str, int] = field(default_factory=lambda: {
-        "main_stick": len(CONTROL_STICK_QUANTIZED),
-        "c_stick": len(C_STICK_QUANTIZED),
-        "buttons": len(BUTTONS),
-        "shoulder": len(SHOULDER_QUANTIZED),
-    })
+    target_shapes_by_head: dict[str, int] = field(
+        default_factory=lambda: {
+            "main_stick": len(CONTROL_STICK_QUANTIZED),
+            "c_stick": len(C_STICK_QUANTIZED),
+            "buttons": len(BUTTONS),
+            "shoulder": len(SHOULDER_QUANTIZED),
+        }
+    )
 
     # Value head for RL (outputs state value estimates)
     use_value_head: bool = True  # enable value head for PPO/A2C
@@ -317,18 +339,53 @@ class FeatureConfig(_FreezeGuard):
 @dataclass
 class RLConfig(_FreezeGuard):
     """Reinforcement learning configuration."""
-    gamma: float = 0.99  # discount factor for rewards
+
+    gamma: float = 0.995  # discount factor for rewards
     value_loss_coef: float = 0.5  # coefficient for value loss in total loss
 
-    # Reward weights (customize reward function)
     reward_damage_dealt: float = 0.01  # per % damage
     reward_damage_taken: float = -0.01  # per % damage
     reward_stock_lost: float = -0.3  # when losing a stock
     reward_stock_taken: float = 0.3  # when taking opponent's stock
-    reward_hitlag_opponent: float = 0.02  # reward when opponent is in hitlag (attacking)
+    reward_hitlag_opponent: float = (
+        0.02  # reward when opponent is in hitlag (attacking)
+    )
     reward_hitlag_self: float = -0.02  # penalty when we are in hitlag (being hit)
-    reward_low_shield: float = -0.1  # penalty for low shield strength (magnified as shield -> 0)
-    reward_per_frame: float = -0.001  # small constant penalty per frame to discourage stalling
+    reward_low_shield: float = (
+        -0.1
+    )  # penalty for low shield strength (magnified as shield -> 0)
+    reward_per_frame: float = (
+        -0.001
+    )  # small constant penalty per frame to discourage stalling
+
+
+@dataclass
+class PPOConfig(_FreezeGuard):
+    """PPO (Proximal Policy Optimization) self-play configuration."""
+
+    # Opponent pool
+    pool_size: int = 5  # number of opponent models to maintain
+
+    # PPO hyperparameters
+    clip_ratio: float = 0.2  # clipping range for policy ratio (e.g., [0.8, 1.2])
+    entropy_coef: float = 0.01  # coefficient for entropy bonus
+    gae_lambda: float = 0.95  # lambda for Generalized Advantage Estimation
+
+    # Training
+    ppo_epochs: int = 4  # number of epochs to train on each trajectory
+    minibatch_size: int = 64  # minibatch size for PPO updates
+    max_grad_norm: float = 0.5  # gradient clipping for PPO updates
+
+    # Episode management
+    max_episode_frames: int = 18000  # max frames per episode (~5 minutes at 60fps)
+
+    # Value head training
+    normalize_advantages: bool = (
+        True  # normalize advantages before computing policy loss
+    )
+    value_clip: Optional[float] = (
+        None  # optional value function clipping (None = no clipping)
+    )
 
 
 @dataclass
@@ -341,6 +398,7 @@ class Config(_FreezeGuard):
     profile: ProfileConfig = field(default_factory=ProfileConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     rl: RLConfig = field(default_factory=RLConfig)
+    ppo: PPOConfig = field(default_factory=PPOConfig)
 
     def freeze(self) -> None:
         _freeze_dataclass(self)
@@ -371,7 +429,9 @@ def _player_prefixes(feature_names: Sequence[str]) -> List[str]:
             continue
         prefixes.add(head)
     if not prefixes:
-        raise ValueError("No player-prefixed feature columns found (expected p1_/p2_ entries).")
+        raise ValueError(
+            "No player-prefixed feature columns found (expected p1_/p2_ entries)."
+        )
     return sorted(prefixes)
 
 
@@ -391,7 +451,9 @@ def _compute_model_input_size(cfg: "Config") -> int:
     feature_names = get_feature_names()
 
     if "stage" not in feature_names:
-        raise ValueError("Required feature 'stage' missing; cannot derive model input size.")
+        raise ValueError(
+            "Required feature 'stage' missing; cannot derive model input size."
+        )
 
     prefixes = _player_prefixes(feature_names)
 
@@ -419,11 +481,15 @@ def _compute_model_input_size(cfg: "Config") -> int:
 
     reserved = 1 + len(categorical_names) + len(controller_names)
     if reserved > len(feature_names):
-        raise ValueError("Feature accounting failed; reserved columns exceed available features.")
+        raise ValueError(
+            "Feature accounting failed; reserved columns exceed available features."
+        )
 
     gamestate_count = len(feature_names) - reserved
 
-    onehot_dims = cfg.model.num_stages + (len(prefixes) * (cfg.model.num_characters + cfg.model.num_actions))
+    onehot_dims = cfg.model.num_stages + (
+        len(prefixes) * (cfg.model.num_characters + cfg.model.num_actions)
+    )
     return gamestate_count + len(controller_names) + onehot_dims
 
 
@@ -435,10 +501,10 @@ _GLOBAL_CFG: Optional[Config] = None
 
 
 def init_config(
-        initial: Optional[Mapping[str, Any]] = None,
-        cli_overrides: Optional[Mapping[str, str]] = None,
-        *,
-        freeze: bool = True,
+    initial: Optional[Mapping[str, Any]] = None,
+    cli_overrides: Optional[Mapping[str, str]] = None,
+    *,
+    freeze: bool = True,
 ) -> Config:
     global _GLOBAL_CFG
     cfg = Config.from_dict(initial or {})
@@ -453,7 +519,9 @@ def init_config(
 
 def get_config() -> Config:
     if _GLOBAL_CFG is None:
-        raise RuntimeError("Global config not initialized. Call init_config(...) early in your program.")
+        raise RuntimeError(
+            "Global config not initialized. Call init_config(...) early in your program."
+        )
     return _GLOBAL_CFG
 
 
@@ -476,7 +544,9 @@ def apply_overrides(cfg: Config, overrides: Mapping[str, str]) -> None:
         elif isinstance(parent, MutableMapping):
             parent[attr] = _coerce_best_effort(raw)
         else:
-            raise TypeError(f"Cannot set '{dotted_key}'; parent is neither dataclass nor mapping.")
+            raise TypeError(
+                f"Cannot set '{dotted_key}'; parent is neither dataclass nor mapping."
+            )
 
     _apply_derived_fields(cfg)
 
@@ -715,6 +785,7 @@ def _to_jsonable(obj: Any) -> Any:
     # Numpy: scalars -> Python scalars; arrays -> lists
     try:
         import numpy as np  # optional dependency
+
         if isinstance(obj, np.generic):
             return obj.item()
         if isinstance(obj, np.ndarray):
@@ -725,6 +796,7 @@ def _to_jsonable(obj: Any) -> Any:
     # PyTorch: represent dtypes/devices/sizes as strings/lists; tensors as lists
     try:
         import torch  # optional dependency
+
         if isinstance(obj, torch.dtype) or isinstance(obj, torch.device):
             return str(obj)
         if isinstance(obj, torch.Size):

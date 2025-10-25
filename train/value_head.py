@@ -1,4 +1,5 @@
 """RL/value head utilities for computing rewards and value targets."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from config import get_config
 @dataclass(frozen=True)
 class RewardFeatureIdx:
     """Cached indices for reward computation features."""
+
     p1_stock: Optional[int] = None
     p2_stock: Optional[int] = None
     p1_percent: Optional[int] = None
@@ -45,20 +47,20 @@ def build_reward_feature_index(colmap: ColumnMap) -> RewardFeatureIdx:
 
 
 def compute_frame_rewards(
-        X: torch.Tensor,
-        colmap: ColumnMap,
-        *,
-        idx: Optional[RewardFeatureIdx] = None,
+    X: torch.Tensor,
+    colmap: ColumnMap,
+    *,
+    idx: Optional[RewardFeatureIdx] = None,
 ) -> torch.Tensor:
     """Compute per-frame rewards based on game state changes.
-    
+
     Vectorized & allocation-lean version for efficient computation.
-    
+
     Args:
         X: [B, L, F] input features
         colmap: Column mapping
         idx: Optional pre-computed reward feature indices
-        
+
     Returns:
         [B, L] reward tensor
     """
@@ -71,7 +73,9 @@ def compute_frame_rewards(
         idx = build_reward_feature_index(colmap)
 
     cfg = get_config().rl
-    rw = torch.full((B, L), float(cfg.reward_per_frame), device=device, dtype=dtype)  # base per-frame reward
+    rw = torch.full(
+        (B, L), float(cfg.reward_per_frame), device=device, dtype=dtype
+    )  # base per-frame reward
 
     if L > 1:
         # --- Damage deltas (vectorized with torch.diff) ---
@@ -100,8 +104,10 @@ def compute_frame_rewards(
 
     # --- Hitlag rewards/penalties (no diffs, per-frame) ---
     if (
-            (idx.p1_in_hitlag is not None) and (idx.p1_in_defender_hitlag is not None) and
-            (idx.p2_in_hitlag is not None) and (idx.p2_in_defender_hitlag is not None)
+        (idx.p1_in_hitlag is not None)
+        and (idx.p1_in_defender_hitlag is not None)
+        and (idx.p2_in_hitlag is not None)
+        and (idx.p2_in_defender_hitlag is not None)
     ):
         # metric: in_hitlag - in_defender_hitlag; reward when equals 1
         p1_metric = X[:, :, idx.p1_in_hitlag] - X[:, :, idx.p1_in_defender_hitlag]
@@ -126,7 +132,9 @@ def compute_frame_rewards(
 _GAMMA_POW_CACHE: Dict[Tuple[int, float, torch.dtype, str, int], torch.Tensor] = {}
 
 
-def _gamma_cache_key(length: int, gamma: float, device: torch.device, dtype: torch.dtype) -> Tuple[int, float, torch.dtype, str, int]:
+def _gamma_cache_key(
+    length: int, gamma: float, device: torch.device, dtype: torch.dtype
+) -> Tuple[int, float, torch.dtype, str, int]:
     """Create cache key for gamma powers."""
     dev = torch.device(device)
     return (
@@ -138,7 +146,9 @@ def _gamma_cache_key(length: int, gamma: float, device: torch.device, dtype: tor
     )
 
 
-def _get_gamma_powers(length: int, gamma: float, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+def _get_gamma_powers(
+    length: int, gamma: float, device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
     """Get cached gamma powers or compute and cache them."""
     if length <= 0:
         return torch.empty((0,), device=device, dtype=dtype)
@@ -162,20 +172,20 @@ def _get_gamma_powers(length: int, gamma: float, device: torch.device, dtype: to
 
 
 def compute_value_targets(
-        X: torch.Tensor,
-        colmap: ColumnMap,
-        gamma: float = 0.99,
-        *,
-        reward_idx: Optional[RewardFeatureIdx] = None,
+    X: torch.Tensor,
+    colmap: ColumnMap,
+    gamma: float = 0.995,
+    *,
+    reward_idx: Optional[RewardFeatureIdx] = None,
 ) -> torch.Tensor:
     """Compute discounted returns in O(B·L) using cached gamma powers and fused scans.
-    
+
     Args:
         X: [B, L, F] input features
         colmap: Column mapping
         gamma: Discount factor
         reward_idx: Optional pre-computed reward feature indices
-        
+
     Returns:
         [B, L, 1] value targets (discounted returns)
     """

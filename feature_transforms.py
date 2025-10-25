@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TYPE_CHECKING,
+)
 
 import numpy as np
 
@@ -80,13 +90,15 @@ _PALETTES: Dict[str, np.ndarray] = {
 
 
 def _stick_palette_apply(
-        block: np.ndarray,
-        *,
-        palette: np.ndarray,
-        palette_norm: np.ndarray,
+    block: np.ndarray,
+    *,
+    palette: np.ndarray,
+    palette_norm: np.ndarray,
 ) -> np.ndarray:
     if block.shape[1] != 2:
-        raise ValueError("stick_palette transform expects exactly two feature columns (x, y).")
+        raise ValueError(
+            "stick_palette transform expects exactly two feature columns (x, y)."
+        )
     values = block.astype(np.float32, copy=False)
     if np.any(values < 0.0) or np.any(values > 1.0):
         xy11 = np.clip(values, -1.0, 1.0).copy()
@@ -98,7 +110,7 @@ def _stick_palette_apply(
         xy01 = np.clip(values, 0.0, 1.0)
         xy11 = _sticks01_to_unit11_np(xy01.copy())
     dot = xy11 @ palette.T
-    norm = np.sum(xy11 ** 2, axis=1, keepdims=True)
+    norm = np.sum(xy11**2, axis=1, keepdims=True)
     d2 = norm - 2.0 * dot + palette_norm.T
     idx = np.argmin(d2, axis=1)
     quantized11 = palette[idx]
@@ -113,7 +125,7 @@ def _factory_stick_palette(params: Mapping[str, Any]) -> FeatureFn:
         raise ValueError(f"Unknown stick palette '{palette_key}'.")
 
     palette = palette.astype(np.float32, copy=False)
-    palette_norm = np.sum(palette ** 2, axis=1, keepdims=True)
+    palette_norm = np.sum(palette**2, axis=1, keepdims=True)
 
     return partial(_stick_palette_apply, palette=palette, palette_norm=palette_norm)
 
@@ -183,7 +195,9 @@ def _normalize_features(raw: Any) -> Tuple[str, ...]:
     return out
 
 
-def _extract_params(step: Mapping[str, Any], base_keys: Sequence[str]) -> Mapping[str, Any]:
+def _extract_params(
+    step: Mapping[str, Any], base_keys: Sequence[str]
+) -> Mapping[str, Any]:
     params = step.get("params")
     if params is None:
         params = step.get("parameters")
@@ -223,13 +237,17 @@ def build_transform_spec(transforms: Any) -> Optional[FeatureTransformSpec]:
         return None
     if isinstance(transforms, FeatureTransformSpec):
         return transforms
-    if isinstance(transforms, Sequence) and not isinstance(transforms, (str, bytes, bytearray)):
+    if isinstance(transforms, Sequence) and not isinstance(
+        transforms, (str, bytes, bytearray)
+    ):
         steps = tuple(_parse_step(step, idx) for idx, step in enumerate(transforms))
         return FeatureTransformSpec(steps)
     raise TypeError("Feature transforms must be provided as a sequence of mappings.")
 
 
-def feature_spec_from_config(feature_cfg: "FeatureConfig") -> Optional[FeatureTransformSpec]:
+def feature_spec_from_config(
+    feature_cfg: "FeatureConfig",
+) -> Optional[FeatureTransformSpec]:
     transforms = getattr(feature_cfg, "transforms", None)
     return build_transform_spec(transforms)
 

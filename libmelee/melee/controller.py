@@ -1,8 +1,9 @@
-""" Defines a Clontroller class that manages pressing buttons for your console"""
+"""Defines a Clontroller class that manages pressing buttons for your console"""
 
 import platform
 import copy
 import time
+
 try:
     import win32file
     import pywintypes
@@ -11,6 +12,7 @@ except ImportError:
 
 from libmelee.melee.console import Console
 from libmelee.melee import enums
+
 
 def fix_analog_stick(x: float) -> float:
     """Fixes the analog stick values to match Console.step output."""
@@ -21,6 +23,7 @@ def fix_analog_stick(x: float) -> float:
     raw = round((x - 0.5) * 160)  # Desired raw value in [-80, 80]
     fudged = raw + 0.1  # Go slightly above the threshold to avoid rounding issues
     return (fudged / (127 * 2)) + 0.5  # Desired input value in [0, 1]
+
 
 def fix_analog_trigger(x: float) -> float:
     """Fixes the analog trigger values to match Console.step output."""
@@ -33,10 +36,10 @@ class ControllerState:
     """A snapshot of the state of a virtual controller"""
 
     def __init__(self):
-        __slots__ = ('button', 'main_stick', 'c_stick', 'l_shoulder', 'r_shoulder')
+        __slots__ = ("button", "main_stick", "c_stick", "l_shoulder", "r_shoulder")
         self.button = dict()
         """(dict of enums.Button to bool): For the each Button as key, tells you if the button is pressed."""
-        #Boolean buttons
+        # Boolean buttons
         self.button[enums.Button.BUTTON_A] = False
         self.button[enums.Button.BUTTON_B] = False
         self.button[enums.Button.BUTTON_X] = False
@@ -49,14 +52,14 @@ class ControllerState:
         self.button[enums.Button.BUTTON_D_DOWN] = False
         self.button[enums.Button.BUTTON_D_LEFT] = False
         self.button[enums.Button.BUTTON_D_RIGHT] = False
-        #Analog sticks
-        self.main_stick = (.5, .5)
+        # Analog sticks
+        self.main_stick = (0.5, 0.5)
         """(pair of floats): The main stick's x,y position. Ranges from 0->1, 0.5 is neutral"""
-        self.c_stick = (.5, .5)
+        self.c_stick = (0.5, 0.5)
         """(pair of floats): The C stick's x,y position. Ranges from 0->1, 0.5 is neutral"""
         self.raw_main_stick = (0, 0)
         """(pair of ints): The raw unprocessed main stick coordinates. Ranges from -128 -> 127. 0 is neutral."""
-        #Analog shoulders
+        # Analog shoulders
         self.l_shoulder = 0
         """(float): L shoulder analog press. Ranges from 0 (not pressed) to 1 (fully pressed)"""
         self.r_shoulder = 0
@@ -73,6 +76,7 @@ class ControllerState:
         string += "R_SHOULDER: " + str(self.r_shoulder) + "\n"
         return string
 
+
 class Controller:
     """Manages virtual controller state and button presses
 
@@ -81,12 +85,12 @@ class Controller:
     """
 
     def __init__(
-            self,
-            console: Console,
-            port: int,
-            type: enums.ControllerType = enums.ControllerType.STANDARD,
-            fix_analog_inputs: bool = True,
-            ):
+        self,
+        console: Console,
+        port: int,
+        type: enums.ControllerType = enums.ControllerType.STANDARD,
+        fix_analog_inputs: bool = True,
+    ):
         """Create a new virtual controller
 
         Args:
@@ -123,8 +127,8 @@ class Controller:
     def connect(self):
         """Connect the controller to the console
 
-            Note:
-                Blocks until the other side is ready
+        Note:
+            Blocks until the other side is ready
         """
         if self._type == enums.ControllerType.STANDARD:
             # Add ourselves to the console's controller list
@@ -145,7 +149,7 @@ class Controller:
                                 None,
                                 win32file.OPEN_EXISTING,
                                 0,
-                                None
+                                None,
                             )
                             return True
                         except pywintypes.error:
@@ -169,33 +173,33 @@ class Controller:
 
     def simple_press(self, x, y, button):
         """Here is a simpler representation of a button press, in case
-            you don't want to bother with the tedium of manually doing everything.
-            It isn't capable of doing everything the normal controller press functions
-            can, but probably covers most scenarios.
-            Notably, a difference here is that doing a button press releases all
-            other buttons pressed previously.
+        you don't want to bother with the tedium of manually doing everything.
+        It isn't capable of doing everything the normal controller press functions
+        can, but probably covers most scenarios.
+        Notably, a difference here is that doing a button press releases all
+        other buttons pressed previously.
 
-            Note:
-                Don't call this function twice in the same frame
-                    x = 0 (left) to 1 (right) on the main stick
-                    y = 0 (down) to 1 (up) on the main stick
-                    button = the button to press. Enter None for no button"""
+        Note:
+            Don't call this function twice in the same frame
+                x = 0 (left) to 1 (right) on the main stick
+                y = 0 (down) to 1 (up) on the main stick
+                button = the button to press. Enter None for no button"""
         if self._is_dolphin:
             if not self.pipe:
                 return
-            #Tilt the main stick
+            # Tilt the main stick
             self.tilt_analog(enums.Button.BUTTON_MAIN, x, y)
-            #Release the shoulders
+            # Release the shoulders
             self.press_shoulder(enums.Button.BUTTON_L, 0)
             self.press_shoulder(enums.Button.BUTTON_R, 0)
-            #Press the right button
+            # Press the right button
             for item in enums.Button:
-                #Don't do anything for the main or c-stick
+                # Don't do anything for the main or c-stick
                 if item == enums.Button.BUTTON_MAIN:
                     continue
                 if item == enums.Button.BUTTON_C:
                     continue
-                #Press our button, release all others
+                # Press our button, release all others
                 if item == button:
                     self.press_button(item)
                 else:
@@ -262,7 +266,7 @@ class Controller:
             self._write(command)
 
     def tilt_analog(self, button: enums.Button, x: float, y: float):
-        """ Tilt one of the analog sticks to a given (x,y) value
+        """Tilt one of the analog sticks to a given (x,y) value
 
         Args:
             button (enums.Button): Must be main stick or C stick
@@ -312,7 +316,7 @@ class Controller:
 
         All buttons are released, all sticks set to 0.5, all shoulders set to 0
         """
-        #Set the internal state back to neutral
+        # Set the internal state back to neutral
         self.current.button[enums.Button.BUTTON_A] = False
         self.current.button[enums.Button.BUTTON_B] = False
         self.current.button[enums.Button.BUTTON_X] = False
@@ -325,8 +329,8 @@ class Controller:
         self.current.button[enums.Button.BUTTON_D_DOWN] = False
         self.current.button[enums.Button.BUTTON_D_LEFT] = False
         self.current.button[enums.Button.BUTTON_D_RIGHT] = False
-        self.current.main_stick = (.5, .5)
-        self.current.c_stick = (.5, .5)
+        self.current.main_stick = (0.5, 0.5)
+        self.current.c_stick = (0.5, 0.5)
         self.current.l_shoulder = 0
         self.current.r_shoulder = 0
         if self._is_dolphin:
@@ -348,14 +352,13 @@ class Controller:
             command += "SET C .5 .5" + "\n"
             command += "SET L 0" + "\n"
             command += "SET R 0" + "\n"
-            #Send the presses to dolphin
+            # Send the presses to dolphin
             self._write(command)
             if self.logger:
                 self.logger.log("Buttons Pressed", "Empty Input", concat=True)
 
     def _write(self, command):
-        """ Platform independent button write function.
-        """
+        """Platform independent button write function."""
         if platform.system() == "Windows":
             try:
                 win32file.WriteFile(self.pipe, command.encode())

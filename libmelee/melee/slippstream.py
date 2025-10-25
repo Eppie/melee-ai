@@ -1,4 +1,4 @@
-""" Implementation of a SlippiComm client aka 'Slippstream'
+"""Implementation of a SlippiComm client aka 'Slippstream'
                                                     (I'm calling it that)
 
 This can be used to talk to some server implementing the Slippstream protocol
@@ -16,20 +16,22 @@ from multiprocessing.synchronize import Event
 
 from libmelee.melee.enums import Stage
 
+
 # pylint: disable=too-few-public-methods
 class EventType(Enum):
-    """ Replay event types """
+    """Replay event types"""
+
     GECKO_CODES = 0x10
     PAYLOADS = 0x35
     GAME_START = 0x36
     PRE_FRAME = 0x37
     POST_FRAME = 0x38
     GAME_END = 0x39
-    FRAME_START = 0x3a
-    ITEM_UPDATE = 0x3b
-    FRAME_BOOKEND = 0x3c
-    GECKO_LIST = 0x3d
-    FOD_INFO = 0x3f
+    FRAME_START = 0x3A
+    ITEM_UPDATE = 0x3B
+    FRAME_BOOKEND = 0x3C
+    GECKO_LIST = 0x3D
+    FOD_INFO = 0x3F
     DL_INFO = 0x40
     PS_INFO = 0x41
 
@@ -37,7 +39,8 @@ class EventType(Enum):
 
     # This is not used in-game. All menu events have this type.
     # Due to a bug, dolphin sometimes sends these before the game has ended.
-    MENU_EVENT = 0x3e
+    MENU_EVENT = 0x3E
+
 
 _event_type_lookup = [None] * 0x100
 for _evt in EventType:
@@ -52,8 +55,10 @@ EVENT_TO_STAGE = {
     EventType.PS_INFO: Stage.POKEMON_STADIUM,
 }
 
+
 class CommType(Enum):
-    """ Types of SlippiComm messages """
+    """Types of SlippiComm messages"""
+
     HANDSHAKE = 0x01
     REPLAY = 0x02
     KEEPALIVE = 0x03
@@ -76,10 +81,12 @@ class SlippstreamWorker:
         self._host = enet.Host(None, 1, 0, 0)
         self._peer = None
 
-        self._handshake_data = json.dumps({
-            "type" : "connect_request",
-            "cursor" : 0,
-        }).encode()
+        self._handshake_data = json.dumps(
+            {
+                "type": "connect_request",
+                "cursor": 0,
+            }
+        ).encode()
 
     def _send_handshake(self):
         self._peer.send(0, enet.Packet(self._handshake_data))
@@ -92,7 +99,8 @@ class SlippstreamWorker:
         # Try to connect to the server and send a handshake
         try:
             self._peer = self._host.connect(
-                enet.Address(bytes(self.address, 'utf-8'), self.port), 1)
+                enet.Address(bytes(self.address, "utf-8"), self.port), 1
+            )
         except OSError as e:
             logging.error(e)
             return False
@@ -103,8 +111,9 @@ class SlippstreamWorker:
                     self._send_handshake()
                     return True
             logging.error(
-                'Could not receive CONNECT event at address '
-                f'{self.address}:{self.port}.')
+                "Could not receive CONNECT event at address "
+                f"{self.address}:{self.port}."
+            )
             return False
         except OSError as e:
             logging.error(e)
@@ -134,17 +143,20 @@ class SlippstreamWorker:
                 self._buffer.close()
                 return
 
+
 def _run_worker(**kwargs):
     try:
         SlippstreamWorker(**kwargs).run()
     except KeyboardInterrupt:
         pass  # don't spam the console with stack traces
 
+
 class EnetDisconnected(Exception):
     """Raised when we get an enet disconnection."""
 
+
 class SlippstreamClient:
-    """ Container representing a client to some SlippiComm server """
+    """Container representing a client to some SlippiComm server"""
 
     def __init__(
         self,
@@ -165,7 +177,7 @@ class SlippstreamClient:
                 port=port,
                 buffer=worker_buffer,
                 shutdown=self._shutdown,
-            )
+            ),
         )
 
         # Not yet supported
@@ -175,7 +187,7 @@ class SlippstreamClient:
         self.players = {}
 
     def shutdown(self):
-        """ Close down the socket and connection to the console """
+        """Close down the socket and connection to the console"""
         if self._worker:
             self._shutdown.set()
             self._worker.join()

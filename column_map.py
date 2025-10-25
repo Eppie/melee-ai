@@ -18,7 +18,9 @@ BUTTON_TARGET_NAMES = tuple(f"p1_{name}" for name in CONTROLLER_KEY_GROUPS["butt
 class ColumnMap:
     """Resolves feature/target column names to indices for model inputs/outputs."""
 
-    def __init__(self, feature_names: Sequence[str], target_names: Sequence[str]) -> None:
+    def __init__(
+        self, feature_names: Sequence[str], target_names: Sequence[str]
+    ) -> None:
         self.feat_names: List[str] = list(feature_names)
         self.targ_names: List[str] = list(target_names)
 
@@ -46,13 +48,17 @@ class ColumnMap:
             self.opp_action_idx,
             *self.controller_idxs,
         }
-        self.gamestate_idxs = [i for i in range(len(self.feat_names)) if i not in excluded]
+        self.gamestate_idxs = [
+            i for i in range(len(self.feat_names)) if i not in excluded
+        ]
 
         targ2idx = {n: i for i, n in enumerate(self.targ_names)}
 
         def _tid(name: str) -> int:
             if name not in targ2idx:
-                raise KeyError(f"Target '{name}' not found; available={self.targ_names}")
+                raise KeyError(
+                    f"Target '{name}' not found; available={self.targ_names}"
+                )
             return targ2idx[name]
 
         self.y_main = (_tid("p1_main_stick_x"), _tid("p1_main_stick_y"))
@@ -61,11 +67,14 @@ class ColumnMap:
         self.y_shoulder = targ2idx.get("p1_shoulder_analog")
 
     @classmethod
-    def from_dataset(cls, dataset) -> "ColumnMap":  # dataset typing kept loose to avoid import cycle
-        feature_names = getattr(dataset, "_feature_names_sel", dataset.index.feature_names)
+    def from_dataset(
+        cls, dataset
+    ) -> "ColumnMap":  # dataset typing kept loose to avoid import cycle
+        feature_names = getattr(
+            dataset, "_feature_names_sel", dataset.index.feature_names
+        )
         target_names = getattr(dataset, "_target_names_sel", dataset.index.target_names)
         return cls(feature_names, target_names)
 
 
 __all__ = ["ColumnMap", "CONTROLLER_KEY_GROUPS", "BUTTON_TARGET_NAMES"]
-

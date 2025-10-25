@@ -16,21 +16,35 @@ class CausalSelfAttention(nn.Module):
         self.dropout = dropout
         assert n_embd % n_head == 0
         assert n_kv_head <= n_head and n_head % n_kv_head == 0
-        self.c_q = nn.Linear(n_embd, n_head * self.head_dim, bias=False) # query projection
-        self.c_k = nn.Linear(n_embd, n_kv_head * self.head_dim, bias=False) # key projection
-        self.c_v = nn.Linear(n_embd, n_kv_head * self.head_dim, bias=False) # value projection
-        self.c_proj = nn.Linear(n_embd, n_embd, bias=False) # output projection
+        self.c_q = nn.Linear(
+            n_embd, n_head * self.head_dim, bias=False
+        )  # query projection
+        self.c_k = nn.Linear(
+            n_embd, n_kv_head * self.head_dim, bias=False
+        )  # key projection
+        self.c_v = nn.Linear(
+            n_embd, n_kv_head * self.head_dim, bias=False
+        )  # value projection
+        self.c_proj = nn.Linear(n_embd, n_embd, bias=False)  # output projection
 
         self.attention_dropout = nn.Dropout(dropout)
         self.residual_dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> torch.Tensor:
         batch_size, sequence_length, C = x.size()
 
         # Project the input to get queries, keys, and values
-        query_states = self.c_q(x).view(batch_size, sequence_length, self.num_query_heads, self.head_dim)
-        key_states = self.c_k(x).view(batch_size, sequence_length, self.num_kv_heads, self.head_dim)
-        value_states = self.c_v(x).view(batch_size, sequence_length, self.num_kv_heads, self.head_dim)
+        query_states = self.c_q(x).view(
+            batch_size, sequence_length, self.num_query_heads, self.head_dim
+        )
+        key_states = self.c_k(x).view(
+            batch_size, sequence_length, self.num_kv_heads, self.head_dim
+        )
+        value_states = self.c_v(x).view(
+            batch_size, sequence_length, self.num_kv_heads, self.head_dim
+        )
 
         query_states = apply_rotary_emb(query_states, cos, sin)
         key_states = apply_rotary_emb(key_states, cos, sin)
@@ -48,13 +62,19 @@ class CausalSelfAttention(nn.Module):
         value_states = repeat_kv(value_states, num_repetitions)
 
         attention_output = F.scaled_dot_product_attention(
-            query_states, key_states, value_states,
+            query_states,
+            key_states,
+            value_states,
             attn_mask=None,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=True,
         )
 
-        attention_output = attention_output.transpose(1, 2).contiguous().view(batch_size, sequence_length, C)
+        attention_output = (
+            attention_output.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, sequence_length, C)
+        )
         attention_output = self.residual_dropout(self.c_proj(attention_output))
         return attention_output
 

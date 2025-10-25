@@ -2,7 +2,7 @@
 
 This package provides modular, loosely-coupled utilities for training:
 - checkpoint: Save/load/manage checkpoints
-- metrics: Compute and accumulate training metrics  
+- metrics: Compute and accumulate training metrics
 - lr_schedule: Learning rate schedules
 - gradients: Gradient diagnostics and clipping
 - batch_utils: Batch processing and preparation
@@ -10,6 +10,7 @@ This package provides modular, loosely-coupled utilities for training:
 - display: Logging and formatting
 - wandb_utils: Optional wandb integration
 """
+
 from __future__ import annotations
 
 # Batch processing
@@ -17,6 +18,7 @@ from train.batch_utils import (
     build_model_inputs,
     quantize_controller_targets,
 )
+
 # Checkpoint management
 from train.checkpoint import (
     _sorted_checkpoint_paths as sorted_checkpoint_paths,
@@ -25,6 +27,7 @@ from train.checkpoint import (
     _load_latest_checkpoint as load_latest_checkpoint,
     save_checkpoint,
 )
+
 # Display and formatting
 from train.display import (
     format_confusion_matrix,
@@ -33,12 +36,14 @@ from train.display import (
     format_training_progress,
     print_batch_preview,
 )
+
 # Gradient utilities
 from train.gradients import (
     _move_optimizer_state_to_device as move_optimizer_state_to_device,
     collect_gradient_diagnostics,
     clip_gradients_with_diagnostics,
 )
+
 # Learning rate schedules
 from train.lr_schedule import (
     cosine_lr_schedule,
@@ -46,6 +51,7 @@ from train.lr_schedule import (
     constant_lr,
     get_lr_schedule,
 )
+
 # Metrics
 from train.metrics import (
     MetricsAccumulator,
@@ -53,6 +59,7 @@ from train.metrics import (
     compute_change_hold_accuracy,
     multilabel_prf,
 )
+
 # Value head (RL)
 from train.value_head import (
     RewardFeatureIdx,
@@ -60,6 +67,7 @@ from train.value_head import (
     compute_frame_rewards,
     compute_value_targets,
 )
+
 # Wandb integration (optional)
 from train.wandb_utils import (
     WandbConfig,

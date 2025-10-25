@@ -3,8 +3,19 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections import deque
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import numpy as np
 import torch
@@ -12,7 +23,11 @@ from tensordict import TensorDict
 
 from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
 from config import FeatureConfig, get_config
-from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from controller_utils import (
+    CONTROL_STICK_QUANTIZED,
+    C_STICK_QUANTIZED,
+    SHOULDER_QUANTIZED,
+)
 from feature_transforms import FeatureTransformSpec, build_transform_spec
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
@@ -67,12 +82,55 @@ class ControllerState:
         )
 
 
+@dataclasses.dataclass
+class FrameRecord:
+    """Sliding window entry for inference logging."""
+
+    raw_features: Dict[str, float]
+    transformed_features: Dict[str, float]
+    targets: Dict[str, float]
+    logits: Optional[Dict[str, Any]] = None
+
+
+@dataclasses.dataclass
+class ModelFrameInputs(Mapping[str, float]):
+    """Container bundling raw + transformed feature dicts."""
+
+    raw: Dict[str, float]
+    transformed: Dict[str, float]
+
+    def __getitem__(self, key: str) -> float:
+        return self.transformed[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.transformed)
+
+    def __len__(self) -> int:
+        return len(self.transformed)
+
+    def as_dict(self) -> Dict[str, float]:
+        return dict(self.transformed)
+
+
 def _safe_float(value: object) -> float:
     try:
         return float(value)
     except Exception as e:
         print(f"Failed to convert `{value}`, of type `{type(value)}` to float: {e}")
         raise
+
+
+def _coerce_scalar(value: object) -> float | int | bool:
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    try:
+        return float(value)
+    except Exception as exc:
+        raise TypeError(
+            f"Unable to coerce value {value!r} ({type(value)}) to scalar"
+        ) from exc
 
 
 def set_feature_transforms(transforms: Optional[Any]) -> None:
@@ -151,7 +209,9 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
     return out
 
 
-def _controller_state_to_features(prefix: str, state: ControllerState) -> Dict[str, float]:
+def _controller_state_to_features(
+    prefix: str, state: ControllerState
+) -> Dict[str, float]:
     return {
         f"{prefix}_button_a": float(state.button_a),
         f"{prefix}_button_b": float(state.button_b),
@@ -183,8 +243,8 @@ def _prefixed_player_fields(player, prefix: str) -> Dict[str, float]:
 
 
 def model_to_dolphin01(
-        model_out: np.ndarray,
-        palette11: np.ndarray | None = None,
+    model_out: np.ndarray,
+    palette11: np.ndarray | None = None,
 ) -> np.ndarray:
     arr = np.asarray(model_out)
 
@@ -211,11 +271,11 @@ def model_to_dolphin01(
 
 
 def collect_raw_inputs_from_gamestate(
-        gamestate: GameState,
-        bot_port: int,
-        opp_port: int,
-) -> Dict[str, float]:
-    """Extract the raw feature dictionary expected by the transformer."""
+    gamestate: GameState,
+    bot_port: int,
+    opp_port: int,
+) -> ModelFrameInputs:
+    """Extract both raw + transformed feature dictionaries expected by the model."""
 
     ego_player = gamestate.players.get(bot_port)
     opp_player = gamestate.players.get(opp_port)
@@ -228,29 +288,30 @@ def collect_raw_inputs_from_gamestate(
     player_values.update(_prefixed_player_fields(opp_player, "p2"))
 
     combined = {**prefixed_common, **player_values}
-    combined = _apply_transforms_to_features(combined)
+    combined_raw = {name: _coerce_scalar(val) for name, val in combined.items()}
+    transformed = _apply_transforms_to_features(dict(combined_raw))
 
     feature_names = get_feature_names()
 
     final: Dict[str, float] = {}
     for name in feature_names:
-        if name not in combined:
+        if name not in transformed:
             raise KeyError(f"Feature '{name}' missing from collected inputs.")
-        final[name] = _safe_float(combined[name])
+        final[name] = _safe_float(transformed[name])
 
-    return final
+    return ModelFrameInputs(raw=combined_raw, transformed=final)
 
 
 class GPTInferenceEngine:
     """Online inference helper around the GPT controller model."""
 
     def __init__(
-            self,
-            checkpoint_path: str | Path,
-            *,
-            data_root: Optional[str | Path] = None,
-            history: Optional[int] = None,
-            warmup_frames: int = 128,
+        self,
+        checkpoint_path: str | Path,
+        *,
+        data_root: Optional[str | Path] = None,
+        history: Optional[int] = None,
+        warmup_frames: int = 128,
     ) -> None:
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})
@@ -296,10 +357,12 @@ class GPTInferenceEngine:
         self.model.load_state_dict(ckpt["model"])
         self.model.eval()
 
-        self.feature_names = feature_names
+        self.feature_names = list(feature_names)
+        self.target_names = list(target_names)
         self.colmap = ColumnMap(feature_names, target_names)
         self.feature_dim = len(feature_names)
         self.buffer: deque[torch.Tensor] = deque(maxlen=self.seq_len)
+        self.frame_history: deque[FrameRecord] = deque(maxlen=self.seq_len)
 
         controller_feature_keys: list[str] = []
         for group in CONTROLLER_KEY_GROUPS.values():
@@ -308,12 +371,18 @@ class GPTInferenceEngine:
                 if key in self.feature_names and key not in controller_feature_keys:
                     controller_feature_keys.append(key)
         shoulder_key = "p1_shoulder_analog"
-        if shoulder_key in self.feature_names and shoulder_key not in controller_feature_keys:
+        if (
+            shoulder_key in self.feature_names
+            and shoulder_key not in controller_feature_keys
+        ):
             controller_feature_keys.append(shoulder_key)
         self._controller_feature_keys: Tuple[str, ...] = tuple(controller_feature_keys)
         self._prev_controller_features: Dict[str, float] = {}
         self._update_prev_controller_features(ControllerState.neutral())
         self._frames_seen = 0
+        self._death_log_dir = Path.cwd() / "death_logs"
+        self._death_counter = 0
+        self._prev_stock: Optional[int] = None
 
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
         frame = torch.zeros(self.feature_dim, dtype=torch.float32)
@@ -351,7 +420,9 @@ class GPTInferenceEngine:
             max_columns=10,
         )
 
-    def _override_controller_features(self, features: Mapping[str, float]) -> Dict[str, float]:
+    def _override_controller_features(
+        self, features: Mapping[str, float]
+    ) -> Dict[str, float]:
         updated = dict(features)
         for key in self._controller_feature_keys:
             if key in self._prev_controller_features and key in updated:
@@ -366,7 +437,110 @@ class GPTInferenceEngine:
         else:
             self._prev_controller_features = {k: float(v) for k, v in values.items()}
 
-    def _decode_stick(self, logits: torch.Tensor, palette: np.ndarray, stick_name: str) -> np.ndarray:
+    def _snapshot_features(self, features: Mapping[str, float]) -> Dict[str, float]:
+        snapshot: Dict[str, float] = {}
+        for name in self.feature_names:
+            if name not in features:
+                raise KeyError(f"Feature '{name}' missing from snapshot inputs.")
+            snapshot[name] = float(_safe_float(features[name]))
+        return snapshot
+
+    def _snapshot_raw(self, raw_inputs: Mapping[str, float]) -> Dict[str, float]:
+        return {name: _coerce_scalar(value) for name, value in raw_inputs.items()}
+
+    def _snapshot_targets(self, raw_inputs: Mapping[str, float]) -> Dict[str, float]:
+        targets: Dict[str, float] = {}
+        for name in self.target_names:
+            if name not in raw_inputs:
+                raise KeyError(
+                    f"Target '{name}' missing from raw inputs during logging."
+                )
+            targets[name] = float(_safe_float(raw_inputs[name]))
+        return targets
+
+    def _record_frame(
+        self, model_features: Mapping[str, float], raw_inputs: Mapping[str, float]
+    ) -> FrameRecord:
+        record = FrameRecord(
+            raw_features=self._snapshot_raw(raw_inputs),
+            transformed_features=self._snapshot_features(model_features),
+            targets=self._snapshot_targets(raw_inputs),
+        )
+        self.frame_history.append(record)
+        return record
+
+    def _capture_logits(self, outputs: TensorDict) -> Dict[str, Any]:
+        logits: Dict[str, Any] = {}
+        if "main_stick" in outputs:
+            logits["main_stick"] = outputs["main_stick"][0, -1].detach().cpu().tolist()
+        if "c_stick" in outputs:
+            logits["c_stick"] = outputs["c_stick"][0, -1].detach().cpu().tolist()
+        if "buttons" in outputs:
+            logits["buttons"] = outputs["buttons"][0, -1].detach().cpu().tolist()
+        if "shoulder" in outputs:
+            logits["shoulder"] = outputs["shoulder"][0, -1].detach().cpu().tolist()
+        for key in ("value", "value_head"):
+            if key in outputs:
+                logits[key] = outputs[key][0, -1].detach().cpu().tolist()
+        return logits
+
+    def _persist_death_record(self, stock_after: int) -> None:
+        frames = list(self.frame_history)
+        if not frames:
+            return
+        payload = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "frames_recorded": len(frames),
+            "seq_len": self.seq_len,
+            "warmup_frames": self.warmup_frames,
+            "frames_seen": self._frames_seen,
+            "stock_after_death": stock_after,
+            "feature_names": self.feature_names,
+            "target_names": self.target_names,
+            "frames": [
+                {
+                    "raw_features": record.raw_features,
+                    "transformed_features": record.transformed_features,
+                    "targets": record.targets,
+                    "logits": record.logits,
+                }
+                for record in frames
+            ],
+        }
+        try:
+            self._death_log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            print(
+                f"Failed to create death log directory '{self._death_log_dir}': {exc}"
+            )
+            return
+        filename = f"death_{self._death_counter:04d}_frame{self._frames_seen}.json"
+        output_path = self._death_log_dir / filename
+        try:
+            with output_path.open("w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            print(f"Logged death to {output_path}")
+        except Exception as exc:
+            print(f"Failed to write death log '{output_path}': {exc}")
+            return
+        self._death_counter += 1
+
+    def _maybe_log_death(self, current_stock: Optional[float]) -> None:
+        if current_stock is None:
+            return
+        stock_value = int(current_stock)
+        if self._prev_stock is not None and stock_value < self._prev_stock:
+            if len(self.frame_history) < self.seq_len:
+                print(
+                    "Death detected with only "
+                    f"{len(self.frame_history)} frames buffered; logging truncated history."
+                )
+            self._persist_death_record(stock_value)
+        self._prev_stock = stock_value
+
+    def _decode_stick(
+        self, logits: torch.Tensor, palette: np.ndarray, stick_name: str
+    ) -> np.ndarray:
         # Decode sticks by selecting the most likely quantized bin (argmax).
         idx = torch.argmax(logits.detach(), dim=-1)
         if stick_name == "c_stick":
@@ -392,7 +566,9 @@ class GPTInferenceEngine:
 
         shoulder_logits = outputs.get("shoulder")
 
-        main_xy = self._decode_stick(main_logits, self._main_stick_palette, "main_stick")
+        main_xy = self._decode_stick(
+            main_logits, self._main_stick_palette, "main_stick"
+        )
         c_xy = self._decode_stick(c_logits, self._c_stick_palette, "c_stick")
         buttons_bool = self._decode_buttons(button_probs)
 
@@ -416,7 +592,7 @@ class GPTInferenceEngine:
             button_lr=bool(buttons_bool[4]),
         )
 
-    def prepare_inputs(self, raw_inputs: Dict[str, float]) -> Optional[TensorDict]:
+    def prepare_inputs(self, raw_inputs: Mapping[str, float]) -> Optional[TensorDict]:
         frame = self._frame_to_tensor(raw_inputs)
         self.buffer.append(frame)
         batch = self._stack_frames()
@@ -424,11 +600,26 @@ class GPTInferenceEngine:
             return None
         return self._build_inputs(batch)
 
-    def predict_from_raw(self, raw_inputs: Dict[str, float]) -> ControllerState:
-        features = self._override_controller_features(raw_inputs)
+    def predict_from_raw(
+        self, frame_inputs: Mapping[str, float] | ModelFrameInputs
+    ) -> ControllerState:
+        if isinstance(frame_inputs, ModelFrameInputs):
+            raw_snapshot = dict(frame_inputs.raw)
+            transformed = dict(frame_inputs.transformed)
+        else:
+            raw_snapshot = {k: _coerce_scalar(v) for k, v in frame_inputs.items()}
+            transformed = {k: float(_safe_float(v)) for k, v in frame_inputs.items()}
+
+        features = self._override_controller_features(transformed)
+        record = self._record_frame(features, raw_snapshot)
         inputs_td = self.prepare_inputs(features)
         self._frames_seen += 1
-        if self.buffer and len(self.buffer) >= self.warmup_frames and self._frames_seen % 1000 == 0:
+        self._maybe_log_death(raw_snapshot.get("p1_stock"))
+        if (
+            self.buffer
+            and len(self.buffer) >= self.warmup_frames
+            and self._frames_seen % 1000 == 0
+        ):
             self._preview_recent_frames()
         if inputs_td is None or len(self.buffer) < self.warmup_frames:
             controller = ControllerState.neutral()
@@ -436,6 +627,7 @@ class GPTInferenceEngine:
             return controller
         with torch.inference_mode():
             outputs = self.model(inputs_td)
+        record.logits = self._capture_logits(outputs)
         controller = self._decode_outputs(outputs)
         self._update_prev_controller_features(controller)
         return controller
@@ -444,7 +636,9 @@ class GPTInferenceEngine:
 _ACTIVE_ENGINE: Optional[GPTInferenceEngine] = None
 
 
-def apply_model_outputs_to_game(controller: Controller, model_outputs: ControllerState) -> None:
+def apply_model_outputs_to_game(
+    controller: Controller, model_outputs: ControllerState
+) -> None:
     controller.release_all()
     if model_outputs.button_a:
         controller.press_button(enums.Button.BUTTON_A)
@@ -471,8 +665,12 @@ def apply_model_outputs_to_game(controller: Controller, model_outputs: Controlle
     else:
         controller.release_button(enums.Button.BUTTON_Z)
 
-    controller.tilt_analog(enums.Button.BUTTON_MAIN, model_outputs.main_stick_x, model_outputs.main_stick_y)
-    controller.tilt_analog(enums.Button.BUTTON_C, model_outputs.c_stick_x, model_outputs.c_stick_y)
+    controller.tilt_analog(
+        enums.Button.BUTTON_MAIN, model_outputs.main_stick_x, model_outputs.main_stick_y
+    )
+    controller.tilt_analog(
+        enums.Button.BUTTON_C, model_outputs.c_stick_x, model_outputs.c_stick_y
+    )
 
     controller.press_shoulder(enums.Button.BUTTON_R, 0.0)
     controller.press_shoulder(enums.Button.BUTTON_L, model_outputs.shoulder_analog)

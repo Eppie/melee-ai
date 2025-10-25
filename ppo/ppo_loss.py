@@ -167,39 +167,44 @@ def compute_entropy(action_logits: Dict[str, torch.Tensor]) -> torch.Tensor:
     # Sticks and shoulder (categorical entropy)
     for head in ["main_stick", "c_stick", "shoulder"]:
         if head in action_logits:
-            logits = action_logits[head]  # [B, num_classes]
+            logits = action_logits[head].float()  # [B, num_classes]
             probs = F.softmax(logits, dim=-1)  # [B, num_classes]
             log_probs = F.log_softmax(logits, dim=-1)
 
             # H(X) = -sum(p * log(p))
             entropy = -(probs * log_probs).sum(dim=-1)  # [B]
-            
+
             # Check for NaN in categorical entropy
             if torch.isnan(entropy).any() or torch.isinf(entropy).any():
                 print(f"  [entropy] NaN/Inf in {head} entropy! nan_count={torch.isnan(entropy).sum()}, inf_count={torch.isinf(entropy).sum()}")
                 print(f"    logits range: [{logits.min():.4f}, {logits.max():.4f}]")
-            
+
             entropies.append(entropy)
 
-    # Buttons (Bernoulli entropy)
+    # Buttons (Bernoulli entropy) — numerically stable, compute in float32
     if "buttons" in action_logits:
-        logits = action_logits["buttons"]  # [B, num_buttons]
-        probs = torch.sigmoid(logits)  # [B, num_buttons]
+        logits_in = action_logits["buttons"]  # [B, num_buttons]
+        logits = logits_in.float()  # promote to fp32 to avoid fp16 underflow/overflow
+        # H(Bernoulli) = -p*log p - (1-p)*log(1-p)
+        # Use a stable formulation that avoids log(0) and 0 * -inf in low-precision:
+        # log p = log_sigmoid(x); log(1-p) = log_sigmoid(-x)
+        # Compute p in fp32 to keep multiplications well-behaved even when p≈0 or p≈1.
+        p = torch.sigmoid(logits)  # [B, num_buttons]
+        log_p = F.logsigmoid(logits)       # stable log σ(x)
+        log_one_minus_p = F.logsigmoid(-logits)  # stable log σ(-x) = log(1 - σ(x))
 
-        # H(Bernoulli) = -p*log(p) - (1-p)*log(1-p)
-        # Clamp to prevent log(0) - must clamp both probs and (1-probs) due to floating point
-        probs_safe = torch.clamp(probs, min=1e-8, max=1.0 - 1e-8)
-        button_entropy = -(
-            probs_safe * torch.log(torch.clamp(probs_safe, min=1e-8)) + 
-            (1 - probs_safe) * torch.log(torch.clamp(1 - probs_safe, min=1e-8))
-        )
-        
-        # Check for NaN in button entropy
+        # Entropy per button (fp32): -(p*log p + (1-p)*log(1-p))
+        button_entropy = -(p * log_p + (1.0 - p) * log_one_minus_p)  # [B, num_buttons]
+
+        # Debug guard (should not trigger now, but helpful if upstream produced NaNs/Infs)
         if torch.isnan(button_entropy).any() or torch.isinf(button_entropy).any():
-            print(f"  [entropy] NaN/Inf in button_entropy! nan_count={torch.isnan(button_entropy).sum()}, inf_count={torch.isinf(button_entropy).sum()}")
-            print(f"    probs range: [{probs.min():.8f}, {probs.max():.8f}]")
-        
-        # Sum over buttons
+            sat_hi = (p >= 1.0 - 2**-10).sum().item()  # approx fp16 eps threshold
+            sat_lo = (p <= 2**-10).sum().item()
+            print(f"  [entropy] NaN/Inf in button_entropy (stable path)! "
+                  f"nan_count={torch.isnan(button_entropy).sum()}, inf_count={torch.isinf(button_entropy).sum()}, "
+                  f"saturated_hi={sat_hi}, saturated_lo={sat_lo}, dtype_in={logits_in.dtype}")
+
+        # Sum over buttons to get [B]
         entropies.append(button_entropy.sum(dim=-1))  # [B]
 
     # Sum all entropies

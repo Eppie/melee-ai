@@ -611,7 +611,10 @@ def main():
                 # Sample opponent and save if it exists
                 opponent_temp = None
                 if not opponent_pool.is_empty():
-                    opponent_model = opponent_pool.sample()
+                    opponent_checkpoint_path, _ = opponent_pool.sample_opponent()
+                    # Load opponent model
+                    opponent_model = GPT(config).to(device)
+                    opponent_pool.load_opponent_model(opponent_model, opponent_checkpoint_path)
                     opponent_temp = Path(model_temp).parent / "opponent_model.pt"
                     torch.save(opponent_model.state_dict(), opponent_temp)
                 

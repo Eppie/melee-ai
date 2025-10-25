@@ -103,14 +103,36 @@ def compute_log_probs(
         # Clamp probabilities away from 0 and 1
         probs = torch.clamp(probs_orig, min=1e-7, max=1.0 - 1e-7)
         
+        # Compute log probs safely
+        log_probs_pos = torch.log(probs)
+        log_probs_neg = torch.log(1 - probs)
         
-        button_log_probs = actions * torch.log(probs) + (
-            1 - actions
-        ) * torch.log(1 - probs)
+        # Check for Inf/NaN in log values
+        if torch.isinf(log_probs_pos).any() or torch.isnan(log_probs_pos).any():
+            print(f"  [buttons] Inf/NaN in log(probs)!")
+            print(f"    probs min/max: {probs.min():.10f}, {probs.max():.10f}")
+            print(f"    probs_orig min/max: {probs_orig.min():.10f}, {probs_orig.max():.10f}")
+            print(f"    inf_count: {torch.isinf(log_probs_pos).sum()}, nan_count: {torch.isnan(log_probs_pos).sum()}")
+            # Find which indices have issues
+            bad_idx = (torch.isinf(log_probs_pos) | torch.isnan(log_probs_pos)).nonzero(as_tuple=True)
+            if len(bad_idx[0]) > 0:
+                print(f"    First bad indices (batch, button): {bad_idx[0][0]}, {bad_idx[1][0]}")
+                print(f"    probs value: {probs[bad_idx[0][0], bad_idx[1][0]]}")
+                print(f"    probs_orig value: {probs_orig[bad_idx[0][0], bad_idx[1][0]]}")
+        
+        if torch.isinf(log_probs_neg).any() or torch.isnan(log_probs_neg).any():
+            print(f"  [buttons] Inf/NaN in log(1-probs)!")
+            print(f"    1-probs min/max: {(1-probs).min():.10f}, {(1-probs).max():.10f}")
+            print(f"    inf_count: {torch.isinf(log_probs_neg).sum()}, nan_count: {torch.isnan(log_probs_neg).sum()}")
+        
+        button_log_probs = actions * log_probs_pos + (1 - actions) * log_probs_neg
         
         # Check for NaN in button log probs
         if torch.isnan(button_log_probs).any():
-            print(f"  [buttons] NaN in button_log_probs! probs range: [{probs.min():.6f}, {probs.max():.6f}]")
+            print(f"  [buttons] NaN in button_log_probs!")
+            print(f"    actions min/max: {actions.min():.6f}, {actions.max():.6f}")
+            nan_mask = torch.isnan(button_log_probs)
+            print(f"    NaN positions: {nan_mask.nonzero(as_tuple=True)}")
         
         # Sum over buttons
         log_probs.append(button_log_probs.sum(dim=-1))  # [B]

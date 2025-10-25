@@ -6,7 +6,7 @@
 # Configuration
 DOLPHIN_PATH="${DOLPHIN_PATH:-/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu}"
 ISO_PATH="${ISO_PATH:-/home/eppie/melee-ai/melee.iso}"
-CHECKPOINT="${CHECKPOINT:-checkpoints/model_ep013_060001.pt}"
+CHECKPOINT="${CHECKPOINT:-checkpoints/model_ep010_065002.pt}"
 OUT_DIR="checkpoints/ppo"
 
 # PPO parameters

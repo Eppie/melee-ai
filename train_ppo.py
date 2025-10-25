@@ -322,7 +322,7 @@ def train_on_trajectories(
         metrics[f"train/ppo_epoch_{ppo_epoch}_loss"] = avg_loss
 
     # Log metrics
-    logger.log(metrics, step=episode)
+    logger.log_metrics(metrics, step=episode)
 
     return metrics
 
@@ -445,7 +445,7 @@ def main():
             episode_metrics = run_episode(env)
 
             # Log episode metrics
-            logger.log(episode_metrics, step=episode)
+            logger.log_metrics(episode_metrics, step=episode)
 
             # Get trajectories
             trajectories = env.trajectory_buffer.get_trajectories()
@@ -482,7 +482,7 @@ def main():
 
                 # Log pool stats
                 pool_stats = opponent_pool.get_pool_stats()
-                logger.log(
+                logger.log_metrics(
                     {
                         "pool/size": pool_stats["pool_size"],
                         "pool/total_created": pool_stats["total_opponents_created"],

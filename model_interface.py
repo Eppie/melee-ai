@@ -411,14 +411,14 @@ class GPTInferenceEngine:
             if key.endswith("_action"):
                 formatters[key] = _format_action
 
-        print("=== Inference preview (most recent frames) ===")
-        _print_table_block(
-            "Features",
-            feature_names,
-            data,
-            formatters=formatters,
-            max_columns=10,
-        )
+        # print("=== Inference preview (most recent frames) ===")
+        #_print_table_block(
+        #    "Features",
+        #    feature_names,
+        #    data,
+        #    formatters=formatters,
+        #    max_columns=10,
+        #)
 
     def _override_controller_features(
         self, features: Mapping[str, float]

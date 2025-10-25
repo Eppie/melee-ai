@@ -187,10 +187,11 @@ def compute_entropy(action_logits: Dict[str, torch.Tensor]) -> torch.Tensor:
         probs = torch.sigmoid(logits)  # [B, num_buttons]
 
         # H(Bernoulli) = -p*log(p) - (1-p)*log(1-p)
-        # Clamp to prevent log(0)
+        # Clamp to prevent log(0) - must clamp both probs and (1-probs) due to floating point
         probs_safe = torch.clamp(probs, min=1e-8, max=1.0 - 1e-8)
         button_entropy = -(
-            probs_safe * torch.log(probs_safe) + (1 - probs_safe) * torch.log(1 - probs_safe)
+            probs_safe * torch.log(torch.clamp(probs_safe, min=1e-8)) + 
+            (1 - probs_safe) * torch.log(torch.clamp(1 - probs_safe, min=1e-8))
         )
         
         # Check for NaN in button entropy

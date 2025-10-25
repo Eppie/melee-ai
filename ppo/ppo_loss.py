@@ -38,11 +38,11 @@ def compute_log_probs(
             actions = actions_taken[head].long()  # [B]
 
             # Clamp logits for numerical stability (loose bounds)
-            logits = torch.clamp(logits_orig, min=-3000.0, max=3000.0)
+            logits = torch.clamp(logits_orig, min=-10000.0, max=10000.0)
             
             # Log if clamping occurred
             if not torch.equal(logits, logits_orig):
-                n_clamped = ((logits_orig < -3000.0) | (logits_orig > 3000.0)).sum().item()
+                n_clamped = ((logits_orig < -10000.0) | (logits_orig > 10000.0)).sum().item()
                 print(f"  [{head}] Clamped {n_clamped} logits: "
                       f"range [{logits_orig.min():.2f}, {logits_orig.max():.2f}] "
                       f"-> [{logits.min():.2f}, {logits.max():.2f}]")
@@ -72,11 +72,11 @@ def compute_log_probs(
         actions = actions_taken["buttons"].float()  # [B, num_buttons]
 
         # Clamp logits for numerical stability (loose bounds)
-        logits = torch.clamp(logits_orig, min=-100.0, max=100.0)
+        logits = torch.clamp(logits_orig, min=-200.0, max=200.0)
         
         # Log if clamping occurred
         if not torch.equal(logits, logits_orig):
-            n_clamped = ((logits_orig < -100.0) | (logits_orig > 100.0)).sum().item()
+            n_clamped = ((logits_orig < -200.0) | (logits_orig > 200.0)).sum().item()
             print(f"  [buttons] Clamped {n_clamped} logits: "
                   f"range [{logits_orig.min():.2f}, {logits_orig.max():.2f}] "
                   f"-> [{logits.min():.2f}, {logits.max():.2f}]")

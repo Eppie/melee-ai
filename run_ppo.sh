@@ -2,6 +2,10 @@
 # Example script for running PPO training
 #
 # Usage: ./run_ppo.sh
+#
+# Note: Parallel trajectory collection is configured in config.py (ppo.num_workers)
+# Set num_workers to the number of CPU cores for parallel collection (e.g., 8 for an 8-core machine)
+# Each worker runs a separate Dolphin instance and collects one trajectory in parallel
 
 # Configuration
 DOLPHIN_PATH="${DOLPHIN_PATH:-/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu}"

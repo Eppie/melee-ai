@@ -343,10 +343,10 @@ class RLConfig(_FreezeGuard):
     gamma: float = 0.995  # discount factor for rewards
     value_loss_coef: float = 0.5  # coefficient for value loss in total loss
 
-    reward_damage_dealt: float = 0.01  # per % damage
-    reward_damage_taken: float = -0.01  # per % damage
-    reward_stock_lost: float = -0.3  # when losing a stock
-    reward_stock_taken: float = 0.3  # when taking opponent's stock
+    reward_damage_dealt: float = 0.02  # per % damage
+    reward_damage_taken: float = -0.02  # per % damage
+    reward_stock_lost: float = -1 # when losing a stock
+    reward_stock_taken: float = 1  # when taking opponent's stock
     reward_hitlag_opponent: float = (
         0.02  # reward when opponent is in hitlag (attacking)
     )
@@ -355,7 +355,7 @@ class RLConfig(_FreezeGuard):
         -0.1
     )  # penalty for low shield strength (magnified as shield -> 0)
     reward_per_frame: float = (
-        -0.001
+        0
     )  # small constant penalty per frame to discourage stalling
 
 
@@ -379,7 +379,7 @@ class PPOConfig(_FreezeGuard):
 
     # Episode management
     max_episode_frames: int = 18000  # max frames per episode (~5 minutes at 60fps)
-    num_workers: int = 8  # number of parallel workers for trajectory collection
+    num_workers: int = 1  # number of parallel workers for trajectory collection
                           # 1 = sequential (single game), >1 = parallel (multiple games)
                           # Set to number of CPU cores for max throughput (e.g., 8 for 8-core machine)
                           # Each worker runs a separate Dolphin instance

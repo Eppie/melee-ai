@@ -518,6 +518,7 @@ def main():
 
     # Load initial checkpoint if provided
     start_episode = load_initial_checkpoint(model, args.checkpoint, device)
+    start_episode += 1
 
     # Optimizer (use PPO-specific learning rate)
     optimizer = torch.optim.AdamW(

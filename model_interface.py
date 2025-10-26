@@ -543,6 +543,7 @@ class GPTInferenceEngine:
     ) -> np.ndarray:
         # Decode sticks by selecting the most likely quantized bin (argmax).
         idx = torch.argmax(logits.detach(), dim=-1)
+        # TODO: does the following have side effects? probs is unused so I think we can remove.
         if stick_name == "c_stick":
             probs = torch.softmax(logits.detach(), dim=-1).cpu().numpy()
         idx_np = idx.detach().cpu().numpy().astype(np.int32)

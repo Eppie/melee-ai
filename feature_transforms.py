@@ -55,16 +55,6 @@ def _transform_offset(column: np.ndarray, *, delta: float) -> np.ndarray:
     return column
 
 
-def _transform_clip(column: np.ndarray, *, lo: float, hi: float) -> np.ndarray:
-    np.clip(column, lo, hi, out=column)
-    return column
-
-
-def _transform_log1p(column: np.ndarray) -> np.ndarray:
-    np.log1p(column, out=column)
-    return column
-
-
 TransformFactory = Callable[[Mapping[str, Any]], FeatureFn]
 
 
@@ -150,27 +140,9 @@ def _factory_offset(params: Mapping[str, Any]) -> FeatureFn:
     return partial(_transform_offset, delta=delta)
 
 
-def _factory_clip(params: Mapping[str, Any]) -> FeatureFn:
-    lo_raw = params.get("lo", params.get("min"))
-    hi_raw = params.get("hi", params.get("max"))
-    lo = -np.inf if lo_raw is None else float(lo_raw)
-    hi = np.inf if hi_raw is None else float(hi_raw)
-    if lo > hi:
-        raise ValueError("Clip transform received 'lo' greater than 'hi'.")
-    return partial(_transform_clip, lo=lo, hi=hi)
-
-
-def _factory_log1p(params: Mapping[str, Any]) -> FeatureFn:
-    if params:
-        raise TypeError("log1p transform does not accept parameters.")
-    return _transform_log1p
-
-
 _TRANSFORM_FACTORIES: Dict[str, TransformFactory] = {
     "scale": _factory_scale,
     "offset": _factory_offset,
-    "clip": _factory_clip,
-    "log1p": _factory_log1p,
     "stick_palette": _factory_stick_palette,
 }
 

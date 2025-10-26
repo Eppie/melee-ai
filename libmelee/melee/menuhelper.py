@@ -7,9 +7,14 @@ concentrate on playing the game, not futzing with menus.
 import math
 from typing import Optional
 
-from libmelee.melee import enums
-from libmelee.melee.controller import Controller
-from libmelee.melee.gamestate import GameState
+try:
+    from libmelee.melee import enums
+    from libmelee.melee.controller import Controller
+    from libmelee.melee.gamestate import GameState
+except ModuleNotFoundError:
+    from melee import enums
+    from melee.controller import Controller
+    from melee.gamestate import GameState
 
 
 class MenuHelper:

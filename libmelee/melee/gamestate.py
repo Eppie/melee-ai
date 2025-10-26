@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from libmelee.melee import enums
+try:
+    from libmelee.melee import enums
+except ModuleNotFoundError:
+    from melee import enums
 
 
 @dataclass
@@ -207,8 +210,10 @@ class PlayerState(object):
         self.off_stage = False
         """(bool): Helper variable to say if the character is 'off stage'. """
         self.iasa = 0
-        from libmelee.melee.controller import ControllerState
-
+        try:
+            from libmelee.melee.controller import ControllerState
+        except ModuleNotFoundError:
+            from melee.controller import ControllerState
         self.controller_state = ControllerState()
         """(controller.ControllerState): What buttons were pressed for this character"""
         self.ecb = ECB()

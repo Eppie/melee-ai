@@ -14,7 +14,10 @@ import multiprocessing as mp
 from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event
 
-from libmelee.melee.enums import Stage
+try:
+    from libmelee.melee.enums import Stage
+except ModuleNotFoundError:
+    from melee.enums import Stage
 
 
 # pylint: disable=too-few-public-methods

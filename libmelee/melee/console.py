@@ -26,17 +26,84 @@ from typing import Optional, Final
 import numpy as np
 from packaging import version
 
-from libmelee.melee import enums
-from libmelee.melee import stages
-from libmelee.melee.enums import Action
-from libmelee.melee.gamestate import GameState, Projectile, PlayerState
-from libmelee.melee.slippstream import (
-    SlippstreamClient,
-    EventType,
-    EVENT_TYPE_BY_BYTE,
-    EVENT_TO_STAGE,
-)
-from libmelee.melee.slpfilestreamer import SLPFileStreamer
+# Support both package and direct execution
+try:
+    from libmelee.melee import enums
+    from libmelee.melee import stages
+    from libmelee.melee.enums import Action
+    from libmelee.melee.gamestate import GameState, Projectile, PlayerState
+    from libmelee.melee.slippstream import (
+        SlippstreamClient,
+        EventType,
+        EVENT_TYPE_BY_BYTE,
+        EVENT_TO_STAGE,
+    )
+    from libmelee.melee.slpfilestreamer import SLPFileStreamer
+except ModuleNotFoundError:
+    from melee import enums
+    from melee import stages
+    from melee.enums import Action
+    from melee.gamestate import GameState, Projectile, PlayerState
+    from melee.slippstream import (
+        SlippstreamClient,
+        EventType,
+        EVENT_TYPE_BY_BYTE,
+        EVENT_TO_STAGE,
+    )
+    from melee.slpfilestreamer import SLPFileStreamer
+
+# Try to import Rust acceleration
+try:
+    import melee_rust
+    USE_RUST = os.getenv('LIBMELEE_USE_RUST', '1') == '1'
+    if USE_RUST:
+        logging.info("Rust acceleration enabled")
+except ImportError:
+    USE_RUST = False
+    melee_rust = None
+    logging.info("Rust acceleration not available, using Python implementation")
+
+
+# Helper functions for working with both Python and Rust GameState
+def _is_rust_gamestate(gs):
+    """Check if gamestate is a Rust GameState."""
+    return melee_rust is not None and isinstance(gs, melee_rust.GameState)
+
+
+def _ensure_player(gs, port):
+    """Ensure player exists at port, create if needed. Works with both Python and Rust."""
+    if _is_rust_gamestate(gs):
+        if not gs.has_player(port):
+            gs.set_player(port, melee_rust.PlayerState())
+        return gs.get_player(port)
+    else:
+        if port not in gs.players:
+            gs.players[port] = PlayerState()
+        return gs.players[port]
+
+
+def _get_player(gs, port):
+    """Get player at port. Works with both Python and Rust."""
+    if _is_rust_gamestate(gs):
+        return gs.get_player(port)
+    else:
+        return gs.players.get(port)
+
+
+def _create_player_state():
+    """Create a PlayerState using Rust if available."""
+    if USE_RUST and melee_rust is not None:
+        return melee_rust.PlayerState()
+    else:
+        return PlayerState()
+
+
+def _create_projectile():
+    """Create a Projectile using Rust if available."""
+    if USE_RUST and melee_rust is not None:
+        return melee_rust.Projectile()
+    else:
+        return Projectile()
 
 
 class SlippiVersionTooLow(Exception):
@@ -352,7 +419,11 @@ class Console:
         self.version = ""
         """(str): The Slippi version of the console"""
         self.cursor = 0
-        from libmelee.melee.controller import Controller  # avoid circular import
+        # avoid circular import
+        try:
+            from libmelee.melee.controller import Controller
+        except ModuleNotFoundError:
+            from melee.controller import Controller
 
         self.controllers: list[Controller] = []
         self._current_stage = enums.Stage.NO_STAGE
@@ -770,7 +841,15 @@ class Console:
             controller.flush()
 
         if self._temp_gamestate is None:
-            self._temp_gamestate = GameState()
+            # Use Rust GameState when USE_RUST is enabled
+            # Rust parser handles Rust GameState, Python parser handles Python GameState
+            if USE_RUST and melee_rust is not None:
+                try:
+                    self._temp_gamestate = melee_rust.GameState()
+                except Exception:
+                    self._temp_gamestate = GameState()
+            else:
+                self._temp_gamestate = GameState()
 
         frame_ended = False
         while not frame_ended:
@@ -844,6 +923,15 @@ class Console:
         self, event_bytes: bytes, gamestate: GameState
     ) -> bool:
         """Handle a series of events, provided sequentially in a byte array"""
+        # Use Rust parser if we have a Rust GameState
+        if USE_RUST and _is_rust_gamestate(gamestate):
+            # Create parser on first use
+            if not hasattr(self, '_rust_parser'):
+                self._rust_parser = melee_rust.SlpParser()
+            # Let exceptions bubble up - don't catch them silently
+            return self._rust_parser.parse_events(event_bytes, gamestate)
+        
+        # Python parser (for Python GameState)
         gamestate.menu_state = enums.Menu.IN_GAME
         mv = memoryview(event_bytes)
         while len(mv) > 0:
@@ -988,13 +1076,11 @@ class Console:
         mv = memoryview(event_bytes)
         controller_port = mv[0x5] + 1
 
-        if controller_port not in gamestate.players:
-            gamestate.players[controller_port] = PlayerState()
-        ps = gamestate.players[controller_port]
+        ps = _ensure_player(gamestate, controller_port)
 
         # Nana?
         if mv[0x6] == 1:
-            ps.nana = PlayerState()
+            ps.nana = _create_player_state()
             ps = ps.nana
 
         stick_vals = _S_F4.unpack_from(event_bytes, 0x19)
@@ -1038,13 +1124,11 @@ class Console:
         gs.frame = _S_I.unpack_from(event_bytes, 0x1)[0]
         controller_port = mv[0x5] + 1
 
-        if controller_port not in gs.players:
-            gs.players[controller_port] = PlayerState()
-        ps = gs.players[controller_port]
+        ps = _ensure_player(gs, controller_port)
 
         # Nana?
         if mv[0x6] == 1:
-            ps.nana = PlayerState()
+            ps.nana = _create_player_state()
             ps = ps.nana
 
         # Position

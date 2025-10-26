@@ -6,7 +6,10 @@ Reads Slippi game events from SLP file rather than over network
 import ubjson
 import numpy as np
 
-from libmelee.melee.slippstream import EventType, EVENT_TYPE_BY_BYTE
+try:
+    from libmelee.melee.slippstream import EventType, EVENT_TYPE_BY_BYTE
+except ModuleNotFoundError:
+    from melee.slippstream import EventType, EVENT_TYPE_BY_BYTE
 
 
 class SLPFileStreamer:

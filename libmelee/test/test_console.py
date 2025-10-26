@@ -11,12 +11,20 @@ from typing import Tuple, List, Dict, Optional, Callable
 import numpy as np
 import pytest
 
-from libmelee.melee import enums
-from libmelee.melee import stages
-from libmelee.melee.console import Console, SlippiVersionTooLow
-from libmelee.melee.gamestate import GameState
-from libmelee.melee.gamestate import PlayerState
-from libmelee.melee.slippstream import EventType
+try:
+    from libmelee.melee import enums
+    from libmelee.melee import stages
+    from libmelee.melee.console import Console, SlippiVersionTooLow
+    from libmelee.melee.gamestate import GameState
+    from libmelee.melee.gamestate import PlayerState
+    from libmelee.melee.slippstream import EventType
+except ModuleNotFoundError:
+    from melee import enums
+    from melee import stages
+    from melee.console import Console, SlippiVersionTooLow
+    from melee.gamestate import GameState
+    from melee.gamestate import PlayerState
+    from melee.slippstream import EventType
 
 
 def be_pack_into(buf: bytearray, offset: int, fmt: str, value) -> None:

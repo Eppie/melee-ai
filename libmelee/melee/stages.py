@@ -1,6 +1,9 @@
 """Stages is a collection of helper data for information regarding stages"""
 
-from libmelee.melee import enums
+try:
+    from libmelee.melee import enums
+except ModuleNotFoundError:
+    from melee import enums
 
 """Get the 4 blast zone boundaries for a given stage.  Values are tuples in
 order of (left x boundary, right x boundary, upper y boundary, lower y boundary).

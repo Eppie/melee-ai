@@ -1,6 +1,9 @@
 """Helper functions for with some techskill examples"""
 
-from libmelee.melee import enums
+try:
+    from libmelee.melee import enums
+except ModuleNotFoundError:
+    from melee import enums
 
 
 def multishine(ai_state, controller):

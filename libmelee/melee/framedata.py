@@ -10,8 +10,12 @@ import math
 import os
 from collections import defaultdict
 
-from libmelee.melee import stages
-from libmelee.melee.enums import Action, Character, AttackState
+try:
+    from libmelee.melee import stages
+    from libmelee.melee.enums import Action, Character, AttackState
+except ModuleNotFoundError:
+    from melee import stages
+    from melee.enums import Action, Character, AttackState
 
 
 class FrameData:

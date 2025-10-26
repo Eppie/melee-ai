@@ -10,8 +10,13 @@ try:
 except ImportError:
     pass
 
-from libmelee.melee.console import Console
-from libmelee.melee import enums
+# Support both package and direct execution
+try:
+    from libmelee.melee.console import Console
+    from libmelee.melee import enums
+except ModuleNotFoundError:
+    from melee.console import Console
+    from melee import enums
 
 
 def fix_analog_stick(x: float) -> float:

@@ -58,6 +58,8 @@ def _transform_offset(column: np.ndarray, *, delta: float) -> np.ndarray:
 TransformFactory = Callable[[Mapping[str, Any]], FeatureFn]
 
 
+# TODO: might not need mask or clip
+# TODO: This is duplicated elsewhere
 def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
     xy01_clipped = np.clip(xy01, 0.0, 1.0)
     xy11 = xy01_clipped * 2.0 - 1.0
@@ -78,7 +80,7 @@ _PALETTES: Dict[str, np.ndarray] = {
     "c": _C_PALETTE,
 }
 
-
+# TODO: do we need both paths? should KNOW if [-1,1] or [0,1]
 def _stick_palette_apply(
     block: np.ndarray,
     *,

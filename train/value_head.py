@@ -67,7 +67,7 @@ def compute_frame_rewards(
     B, L, _F = X.shape
     device = X.device
     dtype = X.dtype
-
+    # TODO: Make this mandatory
     if idx is None:
         # Resolve on the fly (still cheap), or pass a cached `idx` from caller for max perf.
         idx = build_reward_feature_index(colmap)
@@ -146,6 +146,7 @@ def _gamma_cache_key(
     )
 
 
+# TODO: Can we pre-compute this and save a branch?
 def _get_gamma_powers(
     length: int, gamma: float, device: torch.device, dtype: torch.dtype
 ) -> torch.Tensor:
@@ -200,6 +201,7 @@ def compute_value_targets(
     gamma_val = float(gamma)
     gamma_powers = _get_gamma_powers(L, gamma_val, device, rewards.dtype)
 
+    # TODO: Do we really need this?
     if abs(gamma_val) < 1e-12:
         returns = rewards.clone()
     else:

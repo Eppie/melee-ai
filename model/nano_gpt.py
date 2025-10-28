@@ -24,7 +24,7 @@ from model.output_head import SimpleHead, ButtonHead
 from model.value_head import ValueHead
 from utils import _resolve_device
 
-
+# TODO: Move to its own file?
 class MLP(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
@@ -37,7 +37,7 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
-
+# TODO: Move to its own file?
 class Block(nn.Module):
     def __init__(self, n_embd, n_head, n_kv_head, dropout):
         super().__init__()
@@ -45,7 +45,7 @@ class Block(nn.Module):
         self.mlp = MLP(n_embd)
 
     def forward(
-        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+            self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
         x = x + self.attn(norm(x), cos, sin)
         x = x + self.mlp(norm(x))
@@ -61,6 +61,7 @@ class GPT(nn.Module):
         self.n_embd: int = cfg.n_embd
         self.input_size: int = cfg.input_size
 
+        # TODO: Might want to enable bias here
         self.proj_down = nn.Linear(self.input_size, self.n_embd, bias=False)
         self.drop = nn.Dropout(cfg.dropout)
 
@@ -77,8 +78,10 @@ class GPT(nn.Module):
         self.main_stick_output_size = self.target_shapes_by_head["main_stick"]
         self.button_output_size = self.target_shapes_by_head["buttons"]
 
+        # TODO: Move this to config
         head_hidden_dim = 128
 
+        # TODO: Is there a way to make the sizes of these heads nicer / more even?
         self.button_head = ButtonHead(
             self.n_embd, self.button_output_size, hidden=head_hidden_dim
         )
@@ -89,17 +92,17 @@ class GPT(nn.Module):
         )
 
         c_stick_input_size = (
-            self.n_embd + self.button_output_size + self.main_stick_output_size
+                self.n_embd + self.button_output_size + self.main_stick_output_size
         )
         self.c_stick_head = SimpleHead(
             c_stick_input_size, self.c_stick_output_size, hidden=head_hidden_dim
         )
 
         shoulder_input_size = (
-            self.n_embd
-            + self.button_output_size
-            + self.main_stick_output_size
-            + self.c_stick_output_size
+                self.n_embd
+                + self.button_output_size
+                + self.main_stick_output_size
+                + self.c_stick_output_size
         )
         self.shoulder_head = SimpleHead(
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
@@ -121,6 +124,7 @@ class GPT(nn.Module):
             torch.nn.init.zeros_(block.mlp.c_proj.weight)
             torch.nn.init.zeros_(block.attn.c_proj.weight)
 
+    # TODO: Check if this is getting applied correctly
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             # https://arxiv.org/pdf/2310.17813
@@ -133,6 +137,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
 
+    # TODO: Lower base since we have shorter sequences?
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000):
         device = _resolve_device()
         # stride the channels
@@ -150,6 +155,7 @@ class GPT(nn.Module):
         )  # add batch and head dims for later broadcasting
         return cos, sin
 
+    # TODO: Is there a way to pre-compute and cache the one-hot results?
     def _embed_inputs(self, inputs: TensorDict) -> torch.Tensor:
         """Includes categorical embeddings, one-hot encodings, and numerical features."""
         return torch.cat(
@@ -183,7 +189,7 @@ class GPT(nn.Module):
     def forward(self, inputs: TensorDict) -> TensorDict:
         B, L, _ = inputs["gamestate"].shape
         assert (
-            L <= self.block_size
+                L <= self.block_size
         ), f"Cannot forward sequence of length {L}, block size is only {self.block_size}"
 
         combined_inputs = self._embed_inputs(inputs)

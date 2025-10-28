@@ -50,8 +50,9 @@ def build_model_inputs(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorD
     )
 
 
+# TODO: What is the point of this?
 def quantize_controller_targets(
-    batch_Y: torch.Tensor, colmap: ColumnMap, input_domain: str = "unit11"
+        batch_Y: torch.Tensor, colmap: ColumnMap, input_domain: str = "unit11"
 ) -> Dict[str, torch.Tensor]:
     """Quantize controller targets for loss computation.
 
@@ -85,12 +86,13 @@ def _normalize(w: Tensor) -> Tensor:
     return w / (w.mean() + 1e-12)
 
 
+# TODO: Make this optional via config
 def compute_component_sample_weights(
-    target_info: Mapping[str, Tensor],
-    device: torch.device,
-    *,
-    ratios: Optional[SampleWeightRatios] = None,
-    button_names: Optional[Sequence[str]] = None,
+        target_info: Mapping[str, Tensor],
+        device: torch.device,
+        *,
+        ratios: Optional[SampleWeightRatios] = None,
+        button_names: Optional[Sequence[str]] = None,
 ) -> Dict[str, Tensor]:
     """
     Build per-component loss weights:
@@ -127,19 +129,17 @@ def compute_component_sample_weights(
     ).to(torch.float32)
     w_c = _normalize(w_c)
 
-    # --- SHOULDER (optional) ---
-    w_shoulder = torch.ones((B, L), device=device, dtype=torch.float32)
     sh_idx = target_info.get("shoulder_idx")
-    if sh_idx is not None and sh_idx.numel() > 0:
-        sh_change = torch.zeros((B, L), device=device, dtype=torch.bool)
-        if L > 1:
-            sh_change[:, 1:] = sh_idx[:, 1:] != sh_idx[:, :-1]
-        w_shoulder = torch.where(
-            sh_change,
-            torch.as_tensor(r.shoulder_change, device=device),
-            torch.as_tensor(r.hold_base, device=device),
-        ).to(torch.float32)
-        w_shoulder = _normalize(w_shoulder)
+
+    sh_change = torch.zeros((B, L), device=device, dtype=torch.bool)
+    if L > 1:
+        sh_change[:, 1:] = sh_idx[:, 1:] != sh_idx[:, :-1]
+    w_shoulder = torch.where(
+        sh_change,
+        torch.as_tensor(r.shoulder_change, device=device),
+        torch.as_tensor(r.hold_base, device=device),
+    ).to(torch.float32)
+    w_shoulder = _normalize(w_shoulder)
 
     # --- BUTTONS (per-button) ---
     btn_t = target_info["buttons"].to(torch.float32)  # [B, L, K], {0,1}
@@ -170,8 +170,7 @@ def compute_component_sample_weights(
 
     # --- GLOBAL (union-of-changes) ---
     union_change = main_change | c_change
-    if sh_idx is not None and sh_idx.numel() > 0:
-        union_change = union_change | sh_change
+    union_change = union_change | sh_change
     union_change = union_change | btn_change.any(dim=-1)
 
     value_ratio = r.value_change if (r.value_change is not None) else r.main_change

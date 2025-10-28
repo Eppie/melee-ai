@@ -41,15 +41,12 @@ from train.display import (
 from train.gradients import (
     _move_optimizer_state_to_device as move_optimizer_state_to_device,
     collect_gradient_diagnostics,
-    clip_gradients_with_diagnostics,
 )
 
 # Learning rate schedules
 from train.lr_schedule import (
     cosine_lr_schedule,
     linear_warmup,
-    constant_lr,
-    get_lr_schedule,
 )
 
 # Metrics
@@ -92,12 +89,9 @@ __all__ = [
     # LR schedules
     "cosine_lr_schedule",
     "linear_warmup",
-    "constant_lr",
-    "get_lr_schedule",
     # Gradients
     "move_optimizer_state_to_device",
     "collect_gradient_diagnostics",
-    "clip_gradients_with_diagnostics",
     # Batch utils
     "build_model_inputs",
     "quantize_controller_targets",

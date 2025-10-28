@@ -1,6 +1,6 @@
 import torch
 
-
+# TODO: type hints
 def apply_rotary_emb(x, cos, sin):
     assert x.ndim == 4  # multihead attention
     d = x.shape[3] // 2

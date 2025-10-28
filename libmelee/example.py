@@ -43,6 +43,7 @@ if __name__ == "__main__":
         help="The directory where dolphin is",
     )
     parser.add_argument("--iso", default=None, type=str, help="Path to melee iso.")
+    # TODO: Default to most recent checkpoint
     parser.add_argument(
         "--checkpoint",
         "-c",
@@ -52,6 +53,7 @@ if __name__ == "__main__":
         ),
         help="Path to trained model checkpoint (.pt)",
     )
+    # TODO: Remove the need for this, just fill with "default" frames
     parser.add_argument(
         "--warmup-frames",
         default=256,
@@ -159,6 +161,7 @@ if __name__ == "__main__":
                 autostart=False,
                 swag=False,
             )
+            # TODO: Make it configurable via CLI param if we are going to to play vs human or CPU or self
             menu_helper.choose_character(
                 character=Character.FOX,
                 gamestate=gamestate,

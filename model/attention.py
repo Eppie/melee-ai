@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from model.norm import norm
 from model.positional_encoding import apply_rotary_emb
 
-
+# TODO: better variable names
 class CausalSelfAttention(nn.Module):
     def __init__(self, n_embd, n_head, n_kv_head, dropout):
         super().__init__()
@@ -46,6 +46,7 @@ class CausalSelfAttention(nn.Module):
             batch_size, sequence_length, self.num_kv_heads, self.head_dim
         )
 
+        # TODO: Can we collapse these calls at all?
         query_states = apply_rotary_emb(query_states, cos, sin)
         key_states = apply_rotary_emb(key_states, cos, sin)
 
@@ -78,7 +79,7 @@ class CausalSelfAttention(nn.Module):
         attention_output = self.residual_dropout(self.c_proj(attention_output))
         return attention_output
 
-
+# TODO: 8 times per frame. torch.repeat_interleave?
 def repeat_kv(x, n_rep):
     """torch.repeat_interleave(x, dim=1, repeats=n_rep)"""
     if n_rep == 1:

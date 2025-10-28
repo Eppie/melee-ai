@@ -3,7 +3,7 @@ from torch import nn as nn
 
 from model.norm import norm
 
-
+# TODO: Might want to enable bias here actually
 class SimpleHead(nn.Module):
     def __init__(self, input_size, output_size, hidden=128):
         super().__init__()

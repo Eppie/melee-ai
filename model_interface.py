@@ -146,7 +146,7 @@ def set_feature_transforms(transforms: Optional[Any]) -> None:
 
 set_feature_transforms(FeatureConfig().transforms)
 
-
+# TODO: overly generic, maybe can cache some?
 def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float]:
     spec = _FEATURE_TRANSFORMS_SPEC
     if not spec or not spec.steps:
@@ -162,6 +162,7 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
         if tail and head.startswith("p") and head[1:].isdigit():
             prefixes.add(head)
 
+    # TODO: Surely we can cache this, or maybe even remove the need for it?
     def _resolve_groups(requested: Sequence[str]) -> List[Tuple[str, ...]]:
         if all(name in key_set for name in requested):
             return [tuple(requested)]
@@ -269,7 +270,7 @@ def model_to_dolphin01(
     xy01 = np.clip(coords11 * 0.5 + 0.5, 0.0, 1.0).astype(np.float32)
     return xy01
 
-
+# TODO: maybe overengineered, maybe can collapse some
 def collect_raw_inputs_from_gamestate(
     gamestate: GameState,
     bot_port: int,
@@ -384,6 +385,8 @@ class GPTInferenceEngine:
         self._death_counter = 0
         self._prev_stock: Optional[int] = None
 
+    # TODO: python loop - maybe vectorize?
+    # TODO: Good candidate for a microbenchmark
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
         frame = torch.zeros(self.feature_dim, dtype=torch.float32)
         for idx, name in enumerate(self.feature_names):
@@ -557,6 +560,7 @@ class GPTInferenceEngine:
         samples = torch.bernoulli(clamped_probs).bool().cpu()
         return samples.tolist()
 
+    # TODO: overly safe. decide on button logits or probs.
     def _decode_outputs(self, outputs: TensorDict) -> ControllerState:
         main_logits = outputs["main_stick"][0, -1]
         c_logits = outputs["c_stick"][0, -1]

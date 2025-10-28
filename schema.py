@@ -72,7 +72,7 @@ PLAYER_SPEC = [
     # ("speed_y_attack", np.float32),
     # ("speed_ground_x_self", np.float32),
     ("off_stage", np.float32),
-    ("l_cancel_status", np.int32),
+    ("l_cancel_status", np.int32), # TODO: Maybe one-hot encode this?
 ]
 
 

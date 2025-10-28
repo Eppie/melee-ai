@@ -258,13 +258,16 @@ def train_loop(
                     inputs_td
                 )  # keys: buttons, main_stick, c_stick, (shoulder), optionally value
                 B, L, _ = pred["main_stick"].shape
+                # TODO: Make doing this configurable
                 weights = compute_component_sample_weights(
                     target_info,
                     device,
                     ratios=ratios,
+                    # TODO: This doesn't need to be a param, just centralize it
                     button_names=CONTROLLER_KEY_GROUPS["buttons"],
                 )
 
+                # TODO: Stop being so careful! Assume that we have these things.
                 value_pred = pred.get("value", None)
                 probs_btn = pred.get("buttons_probs", None)
 
@@ -279,7 +282,8 @@ def train_loop(
                 loss_c = loss_components["c"]
                 loss_btn = loss_components["buttons"]
                 loss_s = loss_components["shoulder"]
-
+                # TODO: Make value_head mandatory
+                # TODO: Move this computation to loss.py
                 if config.model.use_value_head and value_pred is not None:
                     value_target = compute_value_targets(
                         X, colmap, gamma=config.rl.gamma, reward_idx=reward_idx
@@ -302,7 +306,7 @@ def train_loop(
             target_c = target_info["c_idx"].reshape(B * L)
             logits_btn = pred["buttons"]  # [B,L,Kb]
             target_btn = target_info["buttons"]
-
+            # TODO: Consolidate this, remove fallback, stop using getattr
             lr_max = getattr(config.train, "lr_max", None) or config.train.lr
             lr = cosine_lr_schedule(
                 global_step,
@@ -330,6 +334,8 @@ def train_loop(
                 grad_stats = collect_gradient_diagnostics(model)
 
             # Gradient clipping
+            # TODO: Make grad clip mandatory
+            # TODO: Separate out stats collection
             if config.train.grad_clip is not None and config.train.grad_clip > 0:
                 from torch.nn.utils import clip_grad_norm_
 
@@ -355,6 +361,7 @@ def train_loop(
 
             epoch_loss += float(loss.detach().item())
 
+            # TODO: Why do we compute this every step? Shouldn't we only compute it when we are going to log?
             # ---- Per-batch metrics (no running aggregation) ----
             pred_main_idx = logits_main.argmax(dim=-1).view(B, L)
             true_main_idx = target_main.view(B, L)

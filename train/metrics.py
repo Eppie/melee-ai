@@ -7,7 +7,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import torch
 
-
+# TODO: Do we really need this? Check sweep.py.
 class MetricsAccumulator:
     """Stateful metrics tracker for training/validation.
 
@@ -375,6 +375,7 @@ def compute_confusion_matrix(
     return cm.cpu()
 
 
+# TODO: why is this unused?
 def compute_change_hold_accuracy(
     pred: torch.Tensor,
     true: torch.Tensor,
@@ -405,6 +406,8 @@ def compute_change_hold_accuracy(
     return change_acc, hold_acc
 
 
+# TODO: Optimize? are there more useful metrics? expose precision and recall here too?
+# TODO: What is the difference between micro and macro?
 def multilabel_prf(
     true_labels: torch.Tensor, pred_labels: torch.Tensor
 ) -> Tuple[float, float, float, float, float]:

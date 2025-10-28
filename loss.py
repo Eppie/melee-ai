@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from typing import Any, Dict, Mapping, Optional, Union
+
+import torch
+import torch.nn.functional as F
 from torch import Tensor
 
-
+# TODO: Make using this configurable
 def _compute_ce_weights(labels: Tensor, num_classes: int) -> Tensor:
     """Compute class-balanced weights for cross-entropy loss."""
     device = labels.device
@@ -14,7 +18,7 @@ def _compute_ce_weights(labels: Tensor, num_classes: int) -> Tensor:
     weights = counts.sum() / (counts * num_classes)
     return weights.clamp(min=_CE_WEIGHT_MIN, max=_CE_WEIGHT_CLAMP)
 
-
+# TODO: Make using this configurable
 def _compute_pos_weights(targets: Tensor) -> Tensor:
     """Compute positive class weights for multi-label BCE loss."""
     flat = targets.reshape(-1, targets.shape[-1])
@@ -25,17 +29,11 @@ def _compute_pos_weights(targets: Tensor) -> Tensor:
     return pos_weight.clamp(min=1.0, max=_POS_WEIGHT_CLAMP).to(targets.device)
 
 
-from typing import Any, Dict, Mapping, Optional, Union
-
-import torch
-import torch.nn.functional as F
-from torch import Tensor
-
 _CE_WEIGHT_CLAMP = 10.0
 _CE_WEIGHT_MIN = 0.1
 _POS_WEIGHT_CLAMP = 10.0
 
-
+# TODO: Make using this configurable
 def _mean_with_weights(x: Tensor, w: Optional[Tensor]) -> Tensor:
     if w is None:
         return x.mean()
@@ -47,11 +45,11 @@ def _mean_with_weights(x: Tensor, w: Optional[Tensor]) -> Tensor:
 
 
 def compute_loss_components(
-    pred: Mapping[str, Tensor],
-    target_info: Mapping[str, Any],
-    *,
-    label_smoothing: float,
-    sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
+        pred: Mapping[str, Tensor],
+        target_info: Mapping[str, Any],
+        *,
+        label_smoothing: float,
+        sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
 ) -> Dict[str, Tensor]:
     """
     Accepts either:
@@ -76,7 +74,7 @@ def compute_loss_components(
         if w is None:
             return None
         assert (
-            w.ndim == expect_ndim
+                w.ndim == expect_ndim
         ), f"{name} weights must have ndim={expect_ndim}, got {w.shape}"
         return w
 
@@ -125,6 +123,8 @@ def compute_loss_components(
         # original behavior (mean over label dim, then batch/time)
         loss_buttons = loss_btn_all.mean()
 
+
+    # TODO: Shoulder is not optional, we will always have it!
     # --- SHOULDER (optional) ---
     loss_shoulder = torch.zeros((), device=logits_main.device)
     shoulder_idx = target_info.get("shoulder_idx")

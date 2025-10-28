@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-# TODO: Make using this configurable
+# TODO: Make using this configurable via config.py
 def _compute_ce_weights(labels: Tensor, num_classes: int) -> Tensor:
     """Compute class-balanced weights for cross-entropy loss."""
     device = labels.device
@@ -18,7 +18,7 @@ def _compute_ce_weights(labels: Tensor, num_classes: int) -> Tensor:
     weights = counts.sum() / (counts * num_classes)
     return weights.clamp(min=_CE_WEIGHT_MIN, max=_CE_WEIGHT_CLAMP)
 
-# TODO: Make using this configurable
+# TODO: Make using this configurable via config.py
 def _compute_pos_weights(targets: Tensor) -> Tensor:
     """Compute positive class weights for multi-label BCE loss."""
     flat = targets.reshape(-1, targets.shape[-1])
@@ -29,11 +29,12 @@ def _compute_pos_weights(targets: Tensor) -> Tensor:
     return pos_weight.clamp(min=1.0, max=_POS_WEIGHT_CLAMP).to(targets.device)
 
 
+# TODO: Make using these configurable via config.py
 _CE_WEIGHT_CLAMP = 10.0
 _CE_WEIGHT_MIN = 0.1
 _POS_WEIGHT_CLAMP = 10.0
 
-# TODO: Make using this configurable
+# TODO: Make using this configurable via config.py
 def _mean_with_weights(x: Tensor, w: Optional[Tensor]) -> Tensor:
     if w is None:
         return x.mean()
@@ -128,14 +129,13 @@ def compute_loss_components(
     # --- SHOULDER (optional) ---
     loss_shoulder = torch.zeros((), device=logits_main.device)
     shoulder_idx = target_info.get("shoulder_idx")
-    if shoulder_logits is not None and shoulder_idx is not None:
-        sh_vec = F.cross_entropy(
-            shoulder_logits.reshape(B * L, -1),
-            shoulder_idx.reshape(B * L),
-            reduction="none",
-            label_smoothing=label_smoothing,
-        ).reshape(B, L)
-        loss_shoulder = _mean_with_weights(sh_vec, w_shoulder)
+    sh_vec = F.cross_entropy(
+        shoulder_logits.reshape(B * L, -1),
+        shoulder_idx.reshape(B * L),
+        reduction="none",
+        label_smoothing=label_smoothing,
+    ).reshape(B, L)
+    loss_shoulder = _mean_with_weights(sh_vec, w_shoulder)
 
     total_loss = loss_main + loss_c + loss_buttons + loss_shoulder
     return {

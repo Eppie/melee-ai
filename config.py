@@ -47,14 +47,14 @@ class _FreezeGuard:
 
 @dataclass
 class ZarrConfig(_FreezeGuard):
-    input_root: str = "/home/eppie/hal/replays"
-    out_root: str = "/home/eppie/melee-ai/processed_data_1000"
-    validation_root: str = "/home/eppie/melee-ai/validation_set"
-    # input_root: str = '/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX'
-    # out_root: str = '/Users/eppie/PycharmProjects/nano-melee/processed_data_1000'
-    # validation_root: str = '/Users/eppie/PycharmProjects/nano-melee/validation_set'
-    episode_count: int = 1000
-    validation_count: int = 1000
+    # input_root: str = "/home/eppie/hal/replays"
+    # out_root: str = "/home/eppie/melee-ai/processed_data_10"
+    # validation_root: str = "/home/eppie/melee-ai/validation_set"
+    input_root: str = "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX"
+    out_root: str = "/Users/eppie/PycharmProjects/nano-melee/processed_data_10"
+    validation_root: str = "/Users/eppie/PycharmProjects/nano-melee/validation_set"
+    episode_count: int = 10
+    validation_count: int = 10
     shard_size: int = 100
     target_chunk_mb: float = 8.0
     compressor: BloscCodec = field(
@@ -345,7 +345,7 @@ class RLConfig(_FreezeGuard):
 
     reward_damage_dealt: float = 0.02  # per % damage
     reward_damage_taken: float = -0.02  # per % damage
-    reward_stock_lost: float = -1 # when losing a stock
+    reward_stock_lost: float = -1  # when losing a stock
     reward_stock_taken: float = 1  # when taking opponent's stock
     reward_hitlag_opponent: float = (
         0.02  # reward when opponent is in hitlag (attacking)
@@ -355,8 +355,8 @@ class RLConfig(_FreezeGuard):
         -0.1
     )  # penalty for low shield strength (magnified as shield -> 0)
     reward_per_frame: float = (
-        0
-    )  # small constant penalty per frame to discourage stalling
+        0  # small constant penalty per frame to discourage stalling
+    )
 
 
 @dataclass
@@ -372,7 +372,9 @@ class PPOConfig(_FreezeGuard):
     gae_lambda: float = 0.95  # lambda for Generalized Advantage Estimation
 
     # Training
-    lr: float = 1e-5  # learning rate for PPO fine-tuning (lower than supervised training)
+    lr: float = (
+        1e-5  # learning rate for PPO fine-tuning (lower than supervised training)
+    )
     ppo_epochs: int = 4  # number of epochs to train on each trajectory
     minibatch_size: int = 64  # minibatch size for PPO updates
     max_grad_norm: float = 0.5  # gradient clipping for PPO updates
@@ -380,9 +382,9 @@ class PPOConfig(_FreezeGuard):
     # Episode management
     max_episode_frames: int = 18000  # max frames per episode (~5 minutes at 60fps)
     num_workers: int = 1  # number of parallel workers for trajectory collection
-                          # 1 = sequential (single game), >1 = parallel (multiple games)
-                          # Set to number of CPU cores for max throughput (e.g., 8 for 8-core machine)
-                          # Each worker runs a separate Dolphin instance
+    # 1 = sequential (single game), >1 = parallel (multiple games)
+    # Set to number of CPU cores for max throughput (e.g., 8 for 8-core machine)
+    # Each worker runs a separate Dolphin instance
 
     # Value head training
     normalize_advantages: bool = (

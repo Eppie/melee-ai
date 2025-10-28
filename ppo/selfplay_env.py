@@ -104,7 +104,7 @@ class SelfPlayEnvironment:
         self.episode_reward = 0.0
         self.previous_gamestate: Optional[GameState] = None
         self.last_log_frame = 0  # For progress logging
-        
+
         # Track previous state for reward deltas
         self.prev_p1_percent = 0.0
         self.prev_p2_percent = 0.0
@@ -210,7 +210,7 @@ class SelfPlayEnvironment:
         self.episode_reward = 0.0
         self.previous_gamestate = None
         self.last_log_frame = 0
-        
+
         # Reset reward tracking
         self.prev_p1_percent = 0.0
         self.prev_p2_percent = 0.0
@@ -391,36 +391,36 @@ class SelfPlayEnvironment:
         """Compute reward for current frame based on state changes."""
         cfg = get_config().rl
         reward = float(cfg.reward_per_frame)  # Base per-frame penalty
-        
+
         # Get current state
         p1 = gamestate.players.get(self.learner_port)
         p2 = gamestate.players.get(self.opponent_port)
-        
+
         if p1 is None or p2 is None:
             return reward
-        
+
         # Damage rewards (scaled to 0-100 range)
         p1_percent = float(p1.percent)
         p2_percent = float(p2.percent)
-        
+
         damage_dealt = p2_percent - self.prev_p2_percent
         damage_taken = p1_percent - self.prev_p1_percent
-        
+
         reward += damage_dealt * cfg.reward_damage_dealt
         reward += damage_taken * cfg.reward_damage_taken
-        
+
         # Stock rewards
         p1_stock = int(p1.stock)
         p2_stock = int(p2.stock)
-        
+
         stocks_taken = self.prev_p2_stock - p2_stock
         stocks_lost = self.prev_p1_stock - p1_stock
-        
+
         if stocks_taken > 0:
             reward += stocks_taken * cfg.reward_stock_taken
         if stocks_lost > 0:
             reward += stocks_lost * cfg.reward_stock_lost
-        
+
         # Hitlag rewards (attacking vs being hit)
         if p1.hitlag_left > 0 and not p1.is_defender_in_hitlag:
             # We're attacking
@@ -428,19 +428,21 @@ class SelfPlayEnvironment:
         if p1.hitlag_left > 0 and p1.is_defender_in_hitlag:
             # We're being hit
             reward += cfg.reward_hitlag_self
-        
+
         # Shield penalty (scaled based on how low shield is)
         if p1.shield_strength < 30.0:  # Shield strength is 0-60
             shield_ratio = p1.shield_strength / 60.0  # Normalize to [0,1]
-            penalty_mult = max(0.0, 1.0 - 2.0 * shield_ratio)  # Increases as shield depletes
+            penalty_mult = max(
+                0.0, 1.0 - 2.0 * shield_ratio
+            )  # Increases as shield depletes
             reward += penalty_mult * cfg.reward_low_shield
-        
+
         # Update previous state
         self.prev_p1_percent = p1_percent
         self.prev_p2_percent = p2_percent
         self.prev_p1_stock = p1_stock
         self.prev_p2_stock = p2_stock
-        
+
         return reward
 
     def step(self, gamestate: GameState) -> Tuple[bool, Dict[str, float]]:
@@ -566,7 +568,7 @@ class SelfPlayEnvironment:
             metrics["episode/opponent_percent"] = p2.percent
 
         self.previous_gamestate = gamestate
-        
+
         # Progress logging every 1000 frames
         if self.frame_count - self.last_log_frame >= 1000:
             self.last_log_frame = self.frame_count

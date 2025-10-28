@@ -26,22 +26,44 @@ class ProfilerConfig:
 
 if __name__ == "__main__":
     init_config()
-    parser = argparse.ArgumentParser(description='Example of libmelee in action')
-    parser.add_argument('--debug', '-d', action='store_true',
-                        help='Debug mode. Creates a CSV of all game states')
-    parser.add_argument('--address', '-a', default="127.0.0.1",
-                        help='IP address of Slippi/Wii')
-    parser.add_argument('--dolphin_executable_path', '-e', default=None,
-                        help='The directory where dolphin is')
-    parser.add_argument('--iso', default=None, type=str,
-                        help='Path to melee iso.')
-    parser.add_argument('--checkpoint', '-c', type=Path,
-                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep013_060001.pt'),
-                        help='Path to trained model checkpoint (.pt)')
-    parser.add_argument('--warmup-frames', default=256, type=int,
-                        help='Number of frames to buffer before using the model output')
-    parser.add_argument('--data-root', default=None, type=str,
-                        help='Dataset directory with meta.json; defaults to checkpoint config value')
+    parser = argparse.ArgumentParser(description="Example of libmelee in action")
+    parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        help="Debug mode. Creates a CSV of all game states",
+    )
+    parser.add_argument(
+        "--address", "-a", default="127.0.0.1", help="IP address of Slippi/Wii"
+    )
+    parser.add_argument(
+        "--dolphin_executable_path",
+        "-e",
+        default=None,
+        help="The directory where dolphin is",
+    )
+    parser.add_argument("--iso", default=None, type=str, help="Path to melee iso.")
+    parser.add_argument(
+        "--checkpoint",
+        "-c",
+        type=Path,
+        default=Path(
+            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep007_010001.pt"
+        ),
+        help="Path to trained model checkpoint (.pt)",
+    )
+    parser.add_argument(
+        "--warmup-frames",
+        default=256,
+        type=int,
+        help="Number of frames to buffer before using the model output",
+    )
+    parser.add_argument(
+        "--data-root",
+        default=None,
+        type=str,
+        help="Dataset directory with meta.json; defaults to checkpoint config value",
+    )
 
     args = parser.parse_args()
     engine = GPTInferenceEngine(

@@ -25,14 +25,14 @@ from schema import Row, extract_row, get_feature_names, get_target_names
 ROW_FIELDS = tuple(fields(Row))
 
 _MAIN_STICK_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
-_MAIN_STICK_PALETTE_NORM = np.sum(_MAIN_STICK_PALETTE**2, axis=1, keepdims=True)
 _C_STICK_PALETTE = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
+_SHOULDER_PALETTE = np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
+# TODO: Why are these norms needed?
+_MAIN_STICK_PALETTE_NORM = np.sum(_MAIN_STICK_PALETTE**2, axis=1, keepdims=True)
 _C_STICK_PALETTE_NORM = np.sum(_C_STICK_PALETTE**2, axis=1, keepdims=True)
-_SHOULDER_PALETTE = (
-    np.asarray(SHOULDER_QUANTIZED, dtype=np.float32) if SHOULDER_QUANTIZED else None
-)
 
 
+# TODO: this is implemented elsewhere
 def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
     xy01_clipped = np.clip(xy01, 0.0, 1.0)
     xy11 = xy01_clipped * 2.0 - 1.0

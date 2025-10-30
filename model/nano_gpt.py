@@ -24,7 +24,6 @@ from model.output_head import SimpleHead, ButtonHead
 from model.value_head import ValueHead
 from utils import _resolve_device
 
-# TODO: Move to its own file?
 class MLP(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
@@ -37,7 +36,6 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
-# TODO: Move to its own file?
 class Block(nn.Module):
     def __init__(self, n_embd, n_head, n_kv_head, dropout):
         super().__init__()

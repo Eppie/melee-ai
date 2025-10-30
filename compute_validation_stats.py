@@ -22,6 +22,7 @@ from controller_utils import (
 )
 from tqdm import tqdm
 
+# TODO: Review this entire file for duplication -- seems like it re-implements some functions
 
 DEFAULT_PERCENTILES: List[float] = [0.5, 1.0, 10.0, 25.0, 50.0, 90.0, 99.0, 99.5]
 
@@ -145,9 +146,6 @@ class ValidationDatasetIndex:
         X = ep_group["X"]
         Y = ep_group.get("Y")
         return X, Y
-
-
-# --- helpers -----------------------------------------------------------------
 
 
 def _split_into_chunks(

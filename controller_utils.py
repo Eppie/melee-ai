@@ -6,7 +6,7 @@ import numpy as np
 Note that all stick values here are in the domain [-1,1], while the game/libmelee uses [0,1],
 so conversions will be needed.
 """
-
+# TODO: Make all of these the same type
 CONTROL_STICK_QUANTIZED: list[tuple[float, float]] = [
     # --- Essentials ---
     (0.0, -1.0),  # 01 Hard down – ASDI-down, CC, fast-fall
@@ -100,4 +100,5 @@ C_STICK_QUANTIZED: np.ndarray = np.array(
     )
 )
 
+# TODO: Does 0.25 actually do anything? Might need some custom quantization
 SHOULDER_QUANTIZED: list[float] = [0.0, 0.25, 0.5, 0.75, 1.0]

@@ -47,10 +47,12 @@ class _FreezeGuard:
 
 @dataclass
 class ZarrConfig(_FreezeGuard):
+    # TODO: Automatically set these based on if we are on mac or windows
     # input_root: str = "/home/eppie/hal/replays"
     # out_root: str = "/home/eppie/melee-ai/processed_data_10"
     # validation_root: str = "/home/eppie/melee-ai/validation_set"
     input_root: str = "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX"
+    # TODO: automatically match this with episode_count
     out_root: str = "/Users/eppie/PycharmProjects/nano-melee/processed_data_10"
     validation_root: str = "/Users/eppie/PycharmProjects/nano-melee/validation_set"
     episode_count: int = 10
@@ -68,35 +70,34 @@ class ZarrConfig(_FreezeGuard):
 @dataclass
 class TrainConfig:
     batch_size: int = 128
-    epochs: int = 100
+    epochs: int = 100 # TODO: lower to a reasonable number
     lr: float = 1.3e-4  # (DONE)
-    weight_decay: float = 0.002  # (DONE)
-    betas: Tuple[float, float] = (0.9, 0.95)
+    weight_decay: float = 0.002  # TODO: Should this be higher?
+    betas: Tuple[float, float] = (0.9, 0.95) # TODO: never checked these
     warmup_steps: int = 5000
     max_steps: Optional[int] = None
     num_workers: int = 16
     prefetch_factor: int = 4
-    pin_memory: bool = True
+    pin_memory: bool = True # TODO: Automatically set this based on mps vs cuda
     persistent_workers: bool = True
-    stride = 1
+    stride = 1 # TODO: Maybe raise this?
 
     # losses
-    grad_clip: float = 5.0  # (DONE)
-    label_smoothing: float = 0.02  # (DONE)
+    grad_clip: float = 5.0  # TODO: Maybe lower this?
+    label_smoothing: float = 0.02  # TODO: Maybe this should be higher? maybe configurable per output head
 
     # Automatic Mixed Precision (AMP)
     use_amp: bool = True
-    amp_dtype: str = "float16"  # "float16" or "bfloat16" (when MPS supports it)
+    amp_dtype: str = "float16"
 
-    # random_windows sampler knobs
-    num_samples: Optional[int] = None
+    num_samples: Optional[int] = None # TODO: we can just remove this
 
     # epoch sizing
-    windows_per_epoch: Optional[int] = None
+    windows_per_epoch: Optional[int] = None # TODO: We can just remove this
 
     # checkpointing
     out_dir: str = "checkpoints"
-    save_every_epochs: int = 1
+    save_every_epochs: int = 1  # TODO: We can remove this
 
 
 @dataclass
@@ -114,138 +115,6 @@ class ProfileConfig:
 
 @dataclass
 class GPTConfig:
-    """Model hyperparameters controlling GPTv7 architecture.
-
-    Field details
-    -------------
-    block_size (int):
-        - Model size: does not change parameter count but larger contexts increase KV-cache tensors and activation memory linearly.
-        - Training speed: attention complexity grows with block_size^2; bigger windows slow training and increase FLOPs.
-        - Restrictions / requirements: must be >= `Config.seq_len` and match the window length used by `window_dataset`.
-        - Interactions: keep in sync with `Config.seq_len`, dataloader window sizes, and any inference truncation logic.
-        - Reasonable range: 128-1024 for current datasets; 256 is the tuned default.
-
-    n_embd (int):
-        - Model size: primary driver of parameter count (embedding tables, attention projections, MLP layers scale with n_embd^2).
-        - Training speed: compute and memory roughly scale with n_embd^2; doubling often ~4x slower and more memory hungry.
-        - Restrictions: must be divisible by `n_head`; ensure even numbers when `ffn_mult` produces integral hidden sizes.
-        - Interactions: affects head dimension (`n_embd // n_head`), FFN width (`ffn_mult`); adjust learning rate schedules when changing drastically.
-        - Reasonable range: 192-1024 for mid-size models; 512 works well for current hardware.
-
-    n_layer (int):
-        - Model size: linearly increases parameter count and depth; each layer adds attention + MLP weights.
-        - Training speed: slows training proportionally; also increases activation memory.
-        - Restrictions: none, but very deep stacks (>48) require gradient checkpointing; ensure `num_stages` aligns with dataset semantics if tied to gameplay chronology.
-        - Interactions: deeper models benefit from higher dropout or learning rate warmup.
-        - Reasonable range: 4-24 for most experiments; 8 layers selected for balance.
-
-    n_head (int):
-        - Model size: attention projection weights scale with n_head; total params roughly `4 * n_embd * n_embd` independent, but multi-head normalisation changes layout.
-        - Training speed: more heads slightly increase compute; head dimension (`n_embd // n_head`) must remain integer to keep kernels efficient.
-        - Restrictions: must divide `n_embd`; for `attention_type in {"gqa", "mqa"}` additional constraints apply to `n_kv_head`.
-        - Interactions: influences `attention_type`, `n_kv_head`, and rope rotations; extremely high head counts benefit from `qk_norm`.
-        - Reasonable range: 4-32; 8 suits 512 embedding.
-
-    dropout (float):
-        - Model size: no effect on parameter count.
-        - Training speed: incurs slight overhead due to random masking but mainly improves generalisation.
-        - Restrictions: set to 0.0 during inference; must be between 0 and <1.
-        - Interactions: pair with higher `n_layer`/`n_embd` to combat overfitting; raise when dataset is small.
-        - Reasonable range: 0.0-0.2 for current workloads.
-
-    input_size (int):
-        - Model size: scales the input projection matrix (input_size × n_embd) and embedding lookups; direct control over first layer parameters.
-        - Training speed: larger inputs marginally increase first projection FLOPs and data transfer.
-        - Restrictions: must match the concatenated feature vector size produced by dataloader; ensure alignment with `ColumnMap`/dataset schema.
-        - Interactions: changes require updating preprocessing to avoid dimension mismatches.
-        - Reasonable range: dictated by feature engineering (currently 130 for controller state encoding).
-
-    num_stages / num_characters / num_actions (ints):
-        - Model size: control categorical embedding tables; parameter count grows with `embedding_dim × vocab_size`.
-        - Training speed: negligible unless extremely large due to embedding lookups.
-        - Restrictions: must match dataset label vocabularies; modifying requires regeneration of enums.
-        - Interactions: associated embedding dims (`stage_embedding_dim`, `character_embedding_dim`, `action_embedding_dim`) should scale with log of vocab size.
-        - Reasonable range: fixed by game rules (stages≈6, characters≈26, actions≈396).
-
-    gamma (float):
-        - Model size: no effect.
-        - Training speed: only affects loss discounting in RL-style objectives; negligible cost.
-        - Restrictions: value in (0,1]; for purely supervised training keep near 1.0.
-        - Interactions: works with sequence weighting logic in `train.py`; lower gamma emphasises recent frames.
-        - Reasonable range: 0.95-0.999 for long-horizon credit assignment.
-
-    norm_type (str):
-        - Model size: choice (layernorm, rmsnorm, etc.) sets learnable parameters; RMSNorm omits mean subtraction, reducing parameters when paired with `norm_affine=False`.
-        - Training speed: LayerNorm is slower than RMSNorm on GPU. Selecting `fused` implementations can help.
-        - Restrictions: must be supported by implementation; `qk_norm` reuses this when `qk_norm_type` is None.
-        - Interactions: `norm_eps`, `norm_affine`, `norm_placement` must be compatible; RMSNorm typically paired with `norm_affine=True`.
-        - Reasonable options: "layernorm", "rmsnorm", "fused_rmsnorm" (if kernels available).
-
-    norm_eps (float):
-        - Model size: none.
-        - Training speed: trivial cost; stabilises normalisation.
-        - Restrictions: must be positive; too small risks numerical issues.
-        - Interactions: tune alongside norm implementation; RMSNorm often prefers 1e-6 to 1e-5.
-        - Reasonable range: 1e-6 to 1e-4.
-
-    norm_affine (bool):
-        - Model size: adds scale/bias parameters per norm when True.
-        - Training speed: negligible runtime change.
-        - Restrictions: set False to fully eliminate affine terms (for weight-tied inference); ensure downstream layers can absorb scaling.
-        - Interactions: if `bias=False`, enabling `norm_affine` reintroduces per-dim scale/shift; consider lowering LR for stability when toggled.
-        - Reasonable choice: True for flexibility, False for minimal parameter regimes.
-
-    norm_placement (str):
-        - Model size: none.
-        - Training speed: `pre` yields Pre-LN transformer (stable, slightly faster); `post` can be slower; `both` doubles norm ops per block.
-        - Restrictions: `both` requires attention/MLP implementations supporting dual norms.
-        - Interactions: coordinate with residual dropout and `qk_norm`; `both` may need smaller learning rates.
-        - Reasonable options: "pre" (default), "post" for GPT-2 style, "both" for experimental setups.
-
-    qk_norm (bool) and qk_norm_type (Optional[str]):
-        - Model size: adds per-head norm parameters when affine; negligible overall.
-        - Training speed: introduces extra normalisation per attention head; slight overhead but can stabilise large head counts.
-        - Restrictions: requires kernels supporting QK-normalisation; ensure `d_head` >= 16 for benefit.
-        - Interactions: falls back to `norm_type` when `qk_norm_type` None; interacts with `attention_type` (rope works best with qk_norm).
-        - Reasonable usage: enable for models with `n_head >= 8` and long contexts; keep disabled for small models.
-
-    attention_type (str):
-        - Model size: `gqa`/`mqa` share key/value projections reducing parameters compared to `mha` when `n_head` large.
-        - Training speed: grouped attention reduces memory traffic and can speed decoding; `mha` slightly heavier.
-        - Restrictions: `gqa`/`mqa` require setting `n_kv_head`; ensure FlashAttention variant supports selected mode.
-        - Interactions: influences `n_kv_head`
-        - Reasonable options: "mha" default, "gqa" for head counts >=16, "mqa" for streaming inference.
-
-    n_kv_head (Optional[int]):
-        - Model size: sets number of key/value heads when using `gqa`; reduces parameters if < n_head.
-        - Training speed: fewer KV heads reduce FLOPs and memory; must divide `n_head` cleanly.
-        - Restrictions: only used for `gqa`; ignore for `mha`/`mqa` (where it should be None or 1 respectively).
-        - Interactions: ensure `n_head % n_kv_head == 0`; interacts with caching and attention kernels.
-        - Reasonable range: 1-`n_head`; typical `gqa` config uses `n_head // 4`.
-
-    ffn_mult (float) and ffn_activation (str):
-        - Model size: FFN hidden width = `int(ceil(ffn_mult * n_embd))`; scaling multiplier directly affects MLP parameter count (~2× hidden × n_embd).
-        - Training speed: wider FFNs dominate compute; activations influence kernel choice (swiglu/gelu slightly slower than relu).
-        - Restrictions: ensure resulting width divisible by tensor parallel shards if used; `swiglu`/`geglu` expect width multiple of 2.
-        - Interactions: adjust learning rate when increasing mult.
-        - Reasonable range: 2.0-4.0 for dense FFNs; `8/3` suits swiglu gating.
-
-    head_flow (str):
-        - Model size: no impact.
-        - Training speed: `parallel` can reuse trunk outputs but increases memory; `sequential` matches current architecture.
-        - Restrictions: `parallel` variant requires target head modules supporting concatenated inputs.
-        - Interactions: influences `target_shapes_by_head` scheduling and output ordering.
-        - Reasonable options: "sequential" default; "parallel" when targets predicted simultaneously.
-
-    target_shapes_by_head (dict):
-        - Model size: determines output projection sizes for each controller head; parameters scale with sum(product(shape) × hidden width).
-        - Training speed: larger targets increase logits computation but modest compared to trunk.
-        - Restrictions: keys must align with model forward outputs and loss functions; tuple lengths define per-token class counts.
-        - Interactions: `head_flow` dictates ordering; adjusting shapes requires matching quantisation bins in `controller_quantization`.
-        - Reasonable usage: keep close to dataset quantization cardinalities (e.g., FOX sticks 64-way, buttons 5 logits).
-
-    """
-
     block_size: int = 512  # DONE
     n_embd: int = 512  # DONE
     n_layer: int = 4  # DONE
@@ -259,9 +128,7 @@ class GPTConfig:
     norm_type: str = "layernorm"  # (DONE)
     norm_eps: float = 1e-7  # DONE
     norm_affine: bool = True  # (DONE)
-    norm_placement: str = "post"  # options: pre, post, both (DONE)
-    qk_norm: bool = False  # (DONE)
-    qk_norm_type: Optional[str] = None  # defaults to norm_type when None
+    norm_placement: str = "post"  # options: pre, post, both # TODO: Should we try "pre" for stabilization?
     attention_type: str = "gqa"  # TODO: maybe mqa?
     n_kv_head: Optional[int] = 4  # DONE
     rope_theta: float = 10000.0

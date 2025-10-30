@@ -49,29 +49,14 @@ if __name__ == "__main__":
         "-c",
         type=Path,
         default=Path(
-            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep004_000001.pt"
+            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep006_045001.pt"
         ),
         help="Path to trained model checkpoint (.pt)",
-    )
-    # TODO: Remove the need for this, just fill with "default" frames
-    parser.add_argument(
-        "--warmup-frames",
-        default=256,
-        type=int,
-        help="Number of frames to buffer before using the model output",
-    )
-    parser.add_argument(
-        "--data-root",
-        default=None,
-        type=str,
-        help="Dataset directory with meta.json; defaults to checkpoint config value",
     )
 
     args = parser.parse_args()
     engine = GPTInferenceEngine(
         checkpoint_path=args.checkpoint,
-        warmup_frames=args.warmup_frames,
-        data_root=args.data_root,
     )
     console = Console(
         path=args.dolphin_executable_path,

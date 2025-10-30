@@ -11,11 +11,12 @@ from controller_utils import (
     SHOULDER_QUANTIZED,
 )
 
-
+# TODO: can we clean up all of this stuff?
 _MAIN_STICK_PALETTE_CPU = torch.as_tensor(
     np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
 )
 _C_STICK_PALETTE_CPU = torch.as_tensor(np.asarray(C_STICK_QUANTIZED, dtype=np.float32))
+# TODO: We will always have shoulder
 _SHOULDER_PALETTE_CPU = (
     torch.as_tensor(np.asarray(SHOULDER_QUANTIZED, dtype=np.float32))
     if SHOULDER_QUANTIZED
@@ -33,6 +34,7 @@ _MAIN_STICK_NORM_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 _C_STICK_NORM_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 
 
+# TODO: Do we need clamp here?
 def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:
     """Map controller coordinates from [0,1] to [-1,1] and clamp to the unit circle."""
     xy11 = torch.clamp(xy01 * 2.0 - 1.0, -1.0, 1.0)
@@ -78,6 +80,7 @@ def _palette_for_device(
     return cached
 
 
+# TODO: clamp needed? Maybe a better way to do this?
 def _quantize_stick(
     xy: torch.Tensor,
     palette: torch.Tensor,
@@ -86,7 +89,7 @@ def _quantize_stick(
     B: int,
     L: int,
 ) -> torch.Tensor:
-    """Helper to quantize a stick to palette indices. Optimized to reduce redundant code."""
+    """Helper to quantize a stick to palette indices."""
     if input_domain == "unit11":
         xy11 = _clamp_unit_circle(torch.clamp(xy, -1.0, 1.0))
     elif input_domain == "unit01":
@@ -107,7 +110,7 @@ def _quantize_stick(
     d2 = v_norm_sq - 2.0 * dot + palette_norm_sq.unsqueeze(0)
     return torch.argmin(d2, dim=1).view(B, L)
 
-
+# TODO: auto should not be needed. also we shouldn't have to touch buttons.
 def quantize_targets(
     batch_Y: torch.FloatTensor,
     colmap,

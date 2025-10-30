@@ -99,7 +99,6 @@ _LOSS_METRIC_KEYS: Tuple[str, ...] = (
     "loss_c",
     "loss_buttons",
     "loss_shoulder",
-    "loss_aux",
 )
 _OTHER_DIRECT_METRIC_KEYS: Tuple[str, ...] = (
     "lr",
@@ -339,10 +338,6 @@ def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
         q_proj + k_proj + v_proj + o_proj + attn_scores + attn_values + attn_softmax
     )
 
-    # QK-Norm cost (approximate: two RMS norms per head/token)
-    if model_cfg.qk_norm:
-        attn_total += 4.0 * batch_size * H * seq_len * d_head * 2
-
     # Positional encoding overhead
     pe_type = model_cfg.pe_type.lower()
     if pe_type == "rope":
@@ -351,22 +346,10 @@ def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
     elif pe_type == "alibi":
         attn_total += batch_size * H * seq_len * seq_len
 
-    ffn_mult = cfg.model.ffn_mult
+    ffn_mult = 2
     activation = cfg.model.ffn_activation.lower()
     inner_dim = max(1, int(math.ceil(ffn_mult * D)))
-    if cfg.model.use_moe:
-        moe_experts = max(1, cfg.model.moe_num_experts)
-        moe_active = max(1, cfg.model.moe_num_active)
-        router_cost = 2.0 * tokens * D * moe_experts
-        routing_softmax = 4.0 * tokens * moe_active
-        combine_cost = 2.0 * tokens * moe_active * D
-        expert_tokens = tokens * moe_active
-        expert_cost = _activation_ffn_flops(activation, D, inner_dim, D, expert_tokens)
-        if cfg.model.moe_shared_expert:
-            expert_cost += _activation_ffn_flops(activation, D, inner_dim, D, tokens)
-        mlp_total = router_cost + routing_softmax + combine_cost + expert_cost
-    else:
-        mlp_total = _activation_ffn_flops(activation, D, inner_dim, D, tokens)
+    mlp_total = _activation_ffn_flops(activation, D, inner_dim, D, tokens)
 
     residual_cost = 4.0 * tokens * D  # two residual adds per block
     block_total = attn_total + mlp_total + residual_cost
@@ -516,40 +499,6 @@ def run_training_once(
     metrics_tracker: Optional[MetricsAccumulator] = None
     latest_metrics: Dict[str, float] = {}
     objectives_met = False
-
-    if cfg.model.use_moe and cfg.model.moe_num_active > cfg.model.moe_num_experts:
-        if verbose:
-            print(
-                f"Skipping {run_id}: moe_num_active ({cfg.model.moe_num_active}) "
-                f"exceeds moe_num_experts ({cfg.model.moe_num_experts})."
-            )
-        return TrainingRunResult(
-            run_id=run_id,
-            overrides=dict(overrides),
-            target_loss=target_loss,
-            target_objectives=objective_specs,
-            steps=0,
-            epochs_completed=0,
-            final_loss=float("nan"),
-            reached_target_loss=False,
-            reached_target_objectives=False,
-            interrupted=False,
-            stopped_due_to_cap=False,
-            stopped_due_to_time_limit=False,
-            time_seconds=0.0,
-            estimated_forward_flops=0.0,
-            estimated_training_flops=0.0,
-            average_loss=None,
-            min_loss=None,
-            max_loss=None,
-            per_step_losses=[],
-            total_tokens=0,
-            tokens_per_second=None,
-            stop_reason="invalid_config",
-            parameter_count=0,
-            config_snapshot=cfg.to_dict(),
-            metrics_summary={},
-        )
 
     try:
         model = GPT(cfg).to(device)
@@ -727,14 +676,7 @@ def run_training_once(
                                 label_smoothing=cfg.train.label_smoothing,
                             )
 
-                        loss_aux = torch.zeros((), device=device)
-                        if cfg.model.use_moe and "moe_aux_loss" in pred.keys():
-                            loss_aux = (
-                                pred["moe_aux_loss"].mean()
-                                * cfg.model.moe_aux_loss_weight
-                            )
-
-                        loss = loss_main + loss_c + loss_btn + loss_s + loss_aux
+                        loss = loss_main + loss_c + loss_btn + loss_s
 
                         # lr = cosine_lr_schedule(global_step, total_steps_cap, cfg.train.lr, cfg.train.warmup_steps)
                         lr = cfg.train.lr
@@ -818,11 +760,6 @@ def run_training_once(
                             loss_c_value = float(loss_c.detach().item())
                             loss_btn_value = float(loss_btn.detach().item())
                             loss_shoulder_value = float(loss_s.detach().item())
-                            loss_aux_value = (
-                                float(loss_aux.detach().item())
-                                if loss_aux is not None
-                                else 0.0
-                            )
 
                             for key in _LOSS_METRIC_KEYS:
                                 if key == "loss" or key == "loss_total":
@@ -835,8 +772,6 @@ def run_training_once(
                                     _maybe_set_metric(key, loss_btn_value)
                                 elif key == "loss_shoulder":
                                     _maybe_set_metric(key, loss_shoulder_value)
-                                elif key == "loss_aux":
-                                    _maybe_set_metric(key, loss_aux_value)
 
                             for key in _OTHER_DIRECT_METRIC_KEYS:
                                 if key in required_metrics:

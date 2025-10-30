@@ -318,6 +318,7 @@ def train_loop(
                 pg["lr"] = lr
 
             current_iter = applied_skip + iters_processed
+            # TODO: Don't log on the very first iter
             log_this_iter = current_iter % 100 == 0
             should_collect_grad_stats = logger.enabled and log_this_iter
             grad_stats: Optional[Dict[str, float]] = None
@@ -408,6 +409,7 @@ def train_loop(
                 "c": float(loss_c.detach().item()),
                 "shoulder": float(loss_s.detach().item()),
                 "buttons": float(loss_btn.detach().item()),
+                # TODO: We will always use value head
                 "value": (
                     float(loss_value.detach().item())
                     if config.model.use_value_head

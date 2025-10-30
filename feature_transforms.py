@@ -1,5 +1,5 @@
 """Shared feature transform helpers for dataset preprocessing and inference."""
-
+# TODO: This might be a bit over-engineered
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -69,7 +69,7 @@ def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
         xy11[mask] /= norms[mask]
     return xy11
 
-
+# TODO: Are these duplicated elsewhere? better place to put these?
 _MAIN_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
 _C_PALETTE = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
 

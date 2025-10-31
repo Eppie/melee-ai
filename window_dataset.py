@@ -23,7 +23,7 @@ class EpisodeInfo:
     num_windows: int  # = max(frames - seq_len + 1, 0)
 
 
-# TODO: Instrument this to see how many hits/misses we get, and the cost of each
+# keys are randomly distributed, so hit rate is inversely proportional to the number of episodes
 class _LRUEpisodeCache:
     """Tiny per-worker cache for opened episode arrays to cut directory lookups."""
 

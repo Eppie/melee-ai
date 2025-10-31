@@ -219,6 +219,8 @@ def train_loop(
 
         epoch_loss = 0.0
         t0 = time.time()
+        last_log_time = t0
+        frames_since_last_log = 0.0
         skip_until = resume_iter if epoch == resume_epoch else 0
         applied_skip = skip_until if skip_until else 0
         skip_remaining = skip_until
@@ -330,6 +332,7 @@ def train_loop(
             target_c = target_info["c_idx"].reshape(B * L)
             logits_btn = pred["buttons"]  # [B,L,Kb]
             target_btn = target_info["buttons"]
+            frames_since_last_log += float(B * L)
             # TODO: Consolidate this, remove fallback, stop using getattr
             lr_max = getattr(config.train, "lr_max", None) or config.train.lr
             lr = cosine_lr_schedule(
@@ -423,11 +426,9 @@ def train_loop(
                 _prune_checkpoints(out_dir, keep=10)
             if log_this_iter:
 
-                dt = max(1e-9, time.time() - t0)
-                B_cur, L_cur, F_cur = X.shape
-                # frames/s: each frame is a token in [B,L]
-                frames_per_batch = B_cur * L_cur
-                frames_per_s = iters_processed * frames_per_batch / dt
+                now = time.time()
+                dt = max(1e-9, now - last_log_time)
+                frames_per_s = frames_since_last_log / dt
                 avg_loss_running = epoch_loss / max(1, iters_processed)
 
                 # ---- Per-batch metrics (no running aggregation) ----
@@ -1036,6 +1037,9 @@ def train_loop(
                         last_step_file.write_text(str(global_step))
                     except Exception:
                         pass
+
+                last_log_time = now
+                frames_since_last_log = 0.0
 
         if epoch == resume_epoch:
             resume_iter = 0

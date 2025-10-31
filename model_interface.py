@@ -123,21 +123,21 @@ def _safe_float(value: object) -> float:
         print(f"[TRACE:_safe_float] Failed to convert {value} of type {type(value)} to float: {e}")
         raise
 
-
+# TODO: called 63 times per frame, there has to be a better way
 def _coerce_scalar(value: object) -> float | int | bool:
-    print(f"[TRACE:_coerce_scalar] Coercing value of type {type(value)}")
+    # print(f"[TRACE:_coerce_scalar] Coercing value of type {type(value)}")
     if isinstance(value, (bool, int, float)):
-        print("[TRACE:_coerce_scalar] Value is already bool/int/float")
+        # print("[TRACE:_coerce_scalar] Value is already bool/int/float")
         return value
     if isinstance(value, np.generic):
-        print("[TRACE:_coerce_scalar] Value is numpy generic, calling item()")
+        # print("[TRACE:_coerce_scalar] Value is numpy generic, calling item()")
         return value.item()
     try:
         result = float(value)
-        print("[TRACE:_coerce_scalar] Successfully converted to float")
+        # print("[TRACE:_coerce_scalar] Successfully converted to float")
         return result
     except Exception as exc:
-        print(f"[TRACE:_coerce_scalar] Failed to coerce value {value!r}")
+        # print(f"[TRACE:_coerce_scalar] Failed to coerce value {value!r}")
         raise TypeError(
             f"Unable to coerce value {value!r} ({type(value)}) to scalar"
         ) from exc
@@ -162,13 +162,13 @@ set_feature_transforms(FeatureConfig().transforms)
 
 # TODO: overly generic, maybe can cache some?
 def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float]:
-    print(f"[TRACE:_apply_transforms_to_features] Called with {len(features)} features")
+    # print(f"[TRACE:_apply_transforms_to_features] Called with {len(features)} features")
     spec = _FEATURE_TRANSFORMS_SPEC
     if not spec or not spec.steps:
-        print("[TRACE:_apply_transforms_to_features] No transforms to apply, returning original")
+        # print("[TRACE:_apply_transforms_to_features] No transforms to apply, returning original")
         return features
 
-    print(f"[TRACE:_apply_transforms_to_features] Applying {len(spec.steps)} transform steps")
+    # print(f"[TRACE:_apply_transforms_to_features] Applying {len(spec.steps)} transform steps")
     out = dict(features)
     keys = list(out.keys())
     key_set = set(keys)
@@ -178,29 +178,29 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
         head, _, tail = key.partition("_")
         if tail and head.startswith("p") and head[1:].isdigit():
             prefixes.add(head)
-    print(f"[TRACE:_apply_transforms_to_features] Found {len(prefixes)} player prefixes")
+    # print(f"[TRACE:_apply_transforms_to_features] Found {len(prefixes)} player prefixes")
 
     # TODO: Surely we can cache this, or maybe even remove the need for it?
     def _resolve_groups(requested: Sequence[str]) -> List[Tuple[str, ...]]:
-        print(f"[TRACE:_resolve_groups] Resolving {len(requested)} requested features")
+        # print(f"[TRACE:_resolve_groups] Resolving {len(requested)} requested features")
         if all(name in key_set for name in requested):
-            print("[TRACE:_resolve_groups] All features found in key_set, returning single group")
+            # print("[TRACE:_resolve_groups] All features found in key_set, returning single group")
             return [tuple(requested)]
-        print("[TRACE:_resolve_groups] Looking for prefixed groups")
+        # print("[TRACE:_resolve_groups] Looking for prefixed groups")
         groups: List[Tuple[str, ...]] = []
         for prefix in sorted(prefixes):
             group: List[str] = []
             for feature in requested:
                 key = f"{prefix}_{feature}"
                 if key not in key_set:
-                    print(f"[TRACE:_resolve_groups] Key {key} not found, breaking")
+                    # print(f"[TRACE:_resolve_groups] Key {key} not found, breaking")
                     break
                 group.append(key)
             else:
                 if group:
-                    print(f"[TRACE:_resolve_groups] Found complete group with prefix {prefix}")
+                    # print(f"[TRACE:_resolve_groups] Found complete group with prefix {prefix}")
                     groups.append(tuple(group))
-        print(f"[TRACE:_resolve_groups] Returning {len(groups)} groups")
+        # print(f"[TRACE:_resolve_groups] Returning {len(groups)} groups")
         return groups
 
     for step_idx, step in enumerate(spec.steps):
@@ -370,7 +370,8 @@ class GPTInferenceEngine:
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})
 
-        # TODO: train_cfg might actually eb full config
+        # TODO: train_cfg might actually be full config
+        # TODO: Don't load this from meta.json, load it from the checkpoint itself.
         data_root = Path(train_cfg.get("data_root", "dataset_FOX_vs_FOX"))
         meta_path = data_root / "meta.json"
         transforms_spec: Optional[Any] = None

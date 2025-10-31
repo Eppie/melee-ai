@@ -90,11 +90,6 @@ class TrainConfig:
     use_amp: bool = True
     amp_dtype: str = "float16"
 
-    num_samples: Optional[int] = None # TODO: we can just remove this
-
-    # epoch sizing
-    windows_per_epoch: Optional[int] = None # TODO: We can just remove this
-
     # checkpointing
     out_dir: str = "checkpoints"
     save_every_epochs: int = 1  # TODO: We can remove this

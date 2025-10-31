@@ -22,6 +22,7 @@ class EpisodeInfo:
     num_windows: int  # = max(frames - seq_len + 1, 0)
 
 
+# TODO: Instrument this to see how many hits/misses we get, and the cost of each
 class _LRUEpisodeCache:
     """Tiny per-worker cache for opened episode arrays to cut directory lookups."""
 
@@ -56,6 +57,8 @@ class _LRUEpisodeCache:
             self._vals.pop(0)
 
 
+# TODO: Can we do this with a generator? If not, can we compute it at dataset generation time?
+# TODO: O(log E) is good, but can we get constant time?
 class ZarrCorpusIndex:
     """
     Loads your dataset root (with shard_*.zarr, lengths.npy, wins_per_ep.npy, index.jsonl, meta.json).
@@ -117,8 +120,6 @@ class ZarrCorpusIndex:
             sid = int(sdir.stem.split("_")[1])
             self._shard_paths[sid] = sdir
 
-    # -------- mapping helpers --------
-
     def window_to_episode(self, global_win_idx: int) -> Tuple[int, int]:
         """
         Map global window index -> (episode_idx, start_offset).
@@ -139,8 +140,6 @@ class ZarrCorpusIndex:
         if ep_idx == 0:
             return 0
         return int(self._cumulative_windows[ep_idx - 1])
-
-    # -------- zarr access --------
 
     def open_episode_arrays(
         self,
@@ -264,10 +263,13 @@ class WindowDataset(Dataset):
         return_numpy: bool = False,
     ) -> None:
         super().__init__()
+        # TODO: Can we build this index faster? generator?
         self.index = ZarrCorpusIndex(data_dir)
         self.seq_len = self.index.seq_len
         self.transforms = feature_transforms
+        # TODO: How much does this actually help?
         self._cache = _LRUEpisodeCache(max_open=ep_cache_size)
+        # TODO: Why do we have this?
         self._return_numpy = (
             return_numpy  # if True, return np.float32 arrays instead of torch tensors
         )
@@ -342,7 +344,6 @@ class RandomWindowSampler(Sampler[int]):
         self,
         *,
         index: ZarrCorpusIndex,
-        num_samples: Optional[int] = None,
         stride: int = 1,
         generator: Optional[torch.Generator] = None,
     ) -> None:
@@ -350,7 +351,6 @@ class RandomWindowSampler(Sampler[int]):
         if stride < 1:
             raise ValueError("stride must be >= 1")
         self.index = index
-        self.num_samples = int(num_samples) if num_samples is not None else None
         self.stride = int(stride)
         self.generator = generator
         self.epoch = 0
@@ -375,8 +375,6 @@ class RandomWindowSampler(Sampler[int]):
         return total
 
     def __len__(self) -> int:
-        if self.num_samples is not None:
-            return self.num_samples
         return self._count_for_epoch(self.epoch)
 
     def __iter__(self) -> Iterator[int]:
@@ -407,20 +405,9 @@ class RandomWindowSampler(Sampler[int]):
             perm = torch.randperm(len(inds), generator=g).tolist()
             inds = [inds[i] for i in perm]
 
-        if self.num_samples is None:
-            yield from inds
-            return
 
-        # If a fixed number of samples is requested, cap/extend accordingly
-        k = self.num_samples
-        if k <= len(inds):
-            yield from inds[:k]
-        else:
-            out = list(inds)
-            while len(out) < k:
-                perm = torch.randperm(len(inds), generator=g).tolist()
-                out.extend(inds[i] for i in perm)
-            yield from out[:k]
+        yield from inds
+        return
 
 
 def worker_init_fn(worker_id: int) -> None:
@@ -446,17 +433,10 @@ def make_dataloader() -> (
         return_numpy=False,
     )
 
-    target_windows = config.train.windows_per_epoch
-
-    effective_num_samples = config.train.num_samples
-    if target_windows is not None:
-        effective_num_samples = target_windows
-
     stride = config.train.stride
     sampler = RandomWindowSampler(
         index=ds.index,
         stride=stride,
-        num_samples=effective_num_samples,
     )
 
     mp_ctx = None

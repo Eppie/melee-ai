@@ -66,26 +66,6 @@ _BUTTON_PRETTY = {
     "button_lr": "L/R",
 }
 
-button_overrides = {
-    # names must match CONTROLLER_KEY_GROUPS["buttons"]
-    "button_z": 20.0,  # 1.21% active → boost more
-    "button_b": 12.0,  # ~4.15%
-    "button_a": 12.0,  # ~4.43%
-    "button_xy": 10.0,  # ~8.61%
-    "button_lr": 8.0,  # ~11.58%
-}
-
-ratios = SampleWeightRatios(
-    main_change=5.0,
-    c_change=10.0,
-    shoulder_change=5.0,
-    buttons_change_default=10.0,
-    buttons_change_per_key=button_overrides,
-    hold_base=1.0,
-    value_change=8.0,  # critic slightly emphasizes interesting frames too
-)
-
-
 # Local helpers
 def _safe_div(n: float, d: float) -> float:
     return float(n) / float(d) if d else 0.0
@@ -99,6 +79,24 @@ def train_loop(
     device = _resolve_device(None)
     model = model.to(device)
     config = get_config()
+
+    lw_cfg = config.loss_weights
+    button_overrides = {
+        "button_z": lw_cfg.button_z,
+        "button_b": lw_cfg.button_b,
+        "button_a": lw_cfg.button_a,
+        "button_xy": lw_cfg.button_xy,
+        "button_lr": lw_cfg.button_lr,
+    }
+    ratios = SampleWeightRatios(
+        main_change=lw_cfg.main_change,
+        c_change=lw_cfg.c_change,
+        shoulder_change=lw_cfg.shoulder_change,
+        buttons_change_default=lw_cfg.buttons_change_default,
+        buttons_change_per_key=button_overrides,
+        hold_base=lw_cfg.hold_base,
+        value_change=lw_cfg.value_change,
+    )
 
     # Configure AMP support dynamically for CUDA and MPS
     if device.type in ("cuda", "mps") and is_autocast_available(device.type):

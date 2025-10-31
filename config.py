@@ -96,6 +96,21 @@ class TrainConfig:
 
 
 @dataclass
+class LossWeightConfig:
+    main_change: float = 5.0
+    c_change: float = 10.0
+    shoulder_change: float = 5.0
+    buttons_change_default: float = 10.0
+    button_z: float = 20.0
+    button_b: float = 12.0
+    button_a: float = 12.0
+    button_xy: float = 10.0
+    button_lr: float = 8.0
+    hold_base: float = 1.0
+    value_change: float = 8.0
+
+
+@dataclass
 class ProfileConfig:
     enable: bool = False
     out_dir: Optional[str] = None
@@ -268,6 +283,7 @@ class Config(_FreezeGuard):
     features: FeatureConfig = field(default_factory=FeatureConfig)
     rl: RLConfig = field(default_factory=RLConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
+    loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
 
     def freeze(self) -> None:
         _freeze_dataclass(self)

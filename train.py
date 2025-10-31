@@ -6,6 +6,7 @@ Uses train/ module utilities for all common operations.
 
 from __future__ import annotations
 
+import argparse
 import math
 import time
 from pathlib import Path
@@ -14,11 +15,11 @@ from typing import Dict, List, Optional
 
 import torch
 from tensordict import TensorDict
-from torch.amp import autocast
-from torch.cuda.amp import GradScaler
+from torch.amp import autocast, GradScaler
+from torch.amp.autocast_mode import is_autocast_available
 
 from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
-from config import get_config, init_config
+from config import get_config, init_config, parse_cli_overrides
 from controller_utils import CONTROL_STICK_QUANTIZED
 from loss import compute_loss_components
 from model.nano_gpt import GPT
@@ -92,22 +93,42 @@ def _safe_div(n: float, d: float) -> float:
 
 def train_loop(
     model: GPT,
+    *,
+    debug: bool = False,
 ) -> None:
     device = _resolve_device(None)
     model = model.to(device)
     config = get_config()
 
-    # Verify PyTorch version and MPS support for AMP
+    # Configure AMP support dynamically for CUDA and MPS
+    if device.type in ("cuda", "mps") and is_autocast_available(device.type):
+        amp_device_type = device.type
+    else:
+        amp_device_type = "cpu"
+
+    amp_enabled = bool(config.train.use_amp and amp_device_type != "cpu")
+    amp_dtype_cfg = getattr(config.train, "amp_dtype", "float16").lower()
+    if amp_device_type == "mps":
+        autocast_dtype = torch.float16
+        if config.train.use_amp and amp_dtype_cfg != "float16":
+            print(
+                "Warning: MPS AMP only supports float16; overriding amp_dtype to 'float16'."
+            )
+    else:
+        autocast_dtype = (
+            torch.float16 if amp_dtype_cfg == "float16" else torch.bfloat16
+        )
     if config.train.use_amp:
         print(f"Using PyTorch {torch.__version__}")
-        if device.type == "mps":
-            if not torch.backends.mps.is_available():
-                raise RuntimeError("MPS backend not available, cannot use AMP on MPS")
-            print(f"AMP enabled with {config.train.amp_dtype} on MPS backend")
-        elif device.type == "cuda":
-            print(f"AMP enabled with {config.train.amp_dtype} on CUDA backend")
+        if amp_enabled:
+            backend_name = "CUDA" if amp_device_type == "cuda" else "MPS"
+            dtype_name = "float16" if autocast_dtype == torch.float16 else "bfloat16"
+            print(f"AMP enabled with {dtype_name} on {backend_name} backend")
         else:
-            print(f"Warning: AMP may not be optimized for device type '{device.type}'")
+            print(
+                f"AMP requested but disabled for device '{device.type}';"
+                " falling back to full precision."
+            )
 
     # Build loader + sampler
     loader, ds, sampler = make_dataloader()
@@ -128,8 +149,9 @@ def train_loop(
         weight_decay=config.train.weight_decay,
     )
 
-    # GradScaler for automatic mixed precision (no device arg in torch 2.1)
-    scaler = GradScaler(enabled=config.train.use_amp)
+    # GradScaler for automatic mixed precision (only active on supported backends)
+    scaler_device = amp_device_type if amp_enabled else "cpu"
+    scaler = GradScaler(device=scaler_device, enabled=amp_enabled)
 
     steps_per_epoch = math.ceil(len(loader))
     total_steps = config.train.max_steps or (config.train.epochs * steps_per_epoch)
@@ -142,21 +164,25 @@ def train_loop(
     last_step_file = out_dir / "last_step.txt"
 
     # Initialize Weights & Biases if available
-    wandb_cfg = WandbConfig(
-        project=getattr(config.train, "wandb_project", "melee-ai"),
-        name=getattr(config.train, "run_name", None),
-        mode=getattr(config.train, "wandb_mode", "online"),
+    wandb_run = None
+    if not debug:
+        wandb_cfg = WandbConfig(
+            project=getattr(config.train, "wandb_project", "melee-ai"),
+            name=getattr(config.train, "run_name", None),
+            mode=getattr(config.train, "wandb_mode", "online"),
+        )
+        wandb_run = init_wandb(
+            config=wandb_cfg,
+            run_dir=out_dir,
+            hyperparameters={
+                "train": dict(vars(config.train)),
+                "model": dict(vars(config.model)),
+                "seq_len": getattr(config, "seq_len", None),
+            },
+        )
+    logger = WandbLogger(
+        wandb_run, enabled=not debug and WANDB_AVAILABLE and wandb_run is not None
     )
-    wandb_run = init_wandb(
-        config=wandb_cfg,
-        run_dir=out_dir,
-        hyperparameters={
-            "train": dict(vars(config.train)),
-            "model": dict(vars(config.model)),
-            "seq_len": getattr(config, "seq_len", None),
-        },
-    )
-    logger = WandbLogger(wandb_run, enabled=WANDB_AVAILABLE and wandb_run is not None)
 
     start_epoch, global_step, start_iter = _load_latest_checkpoint(
         out_dir, model, opt, scaler, device
@@ -233,10 +259,8 @@ def train_loop(
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)  # [B,L,Yd]
 
             # Determine autocast device type and dtype
-            autocast_device = "cuda" if device.type in ("cuda", "mps") else "cpu"
-            amp_dtype = (
-                torch.float16 if config.train.amp_dtype == "float16" else torch.bfloat16
-            )
+            autocast_device = amp_device_type
+            amp_dtype = autocast_dtype
 
             value_pred: Optional[torch.Tensor] = None
             value_target: Optional[torch.Tensor] = None
@@ -246,7 +270,7 @@ def train_loop(
             with autocast(
                 device_type=autocast_device,
                 dtype=amp_dtype,
-                enabled=config.train.use_amp,
+                enabled=amp_enabled,
             ):
                 # Build model inputs & target labels
                 inputs_td = build_model_inputs(X, colmap)
@@ -319,7 +343,8 @@ def train_loop(
 
             current_iter = applied_skip + iters_processed
             # TODO: Don't log on the very first iter
-            log_this_iter = current_iter % 100 == 0
+            # TODO: Move the `10` to new LoggingConfig
+            log_this_iter = current_iter % 10 == 0
             should_collect_grad_stats = logger.enabled and log_this_iter
             grad_stats: Optional[Dict[str, float]] = None
 
@@ -360,60 +385,17 @@ def train_loop(
             scaler.step(opt)
             scaler.update()
 
-            epoch_loss += float(loss.detach().item())
-
-            # TODO: Why do we compute this every step? Shouldn't we only compute it when we are going to log?
-            # ---- Per-batch metrics (no running aggregation) ----
-            pred_main_idx = logits_main.argmax(dim=-1).view(B, L)
-            true_main_idx = target_main.view(B, L)
-            pred_c_idx = logits_c.argmax(dim=-1).view(B, L)
-            true_c_idx = target_c.view(B, L)
-            btn_logits = logits_btn  # [B,L,Kb]
-            btn_true = target_btn  # [B,L,Kb]
-            btn_probs = probs_btn
-            if off_stage_idx is not None:
-                off_stage_mask = X[..., off_stage_idx] > 0.5
-            else:
-                off_stage_mask = torch.zeros((B, L), dtype=torch.bool, device=device)
-            off_stage_mask = off_stage_mask.to(device=device)
-            off_stage_present = bool(off_stage_mask.any().item())
-
-            main_change_mask = torch.zeros_like(true_main_idx, dtype=torch.bool)
-            main_change_mask[:, 1:] = true_main_idx[:, 1:] != true_main_idx[:, :-1]
-            main_hold_mask = ~main_change_mask
-            main_hold_mask[:, 0] = True
-
-            c_change_mask = torch.zeros_like(true_c_idx, dtype=torch.bool)
-            c_change_mask[:, 1:] = true_c_idx[:, 1:] != true_c_idx[:, :-1]
-            c_hold_mask = ~c_change_mask
-            c_hold_mask[:, 0] = True
-
-            btn_change_mask = torch.zeros((B, L), device=device, dtype=torch.bool)
-            btn_change_mask[:, 1:] = torch.any(
-                btn_true[:, 1:] != btn_true[:, :-1], dim=-1
-            )
-            btn_hold_mask = ~btn_change_mask
-            btn_hold_mask[:, 0] = True
-
-            rep_mask = torch.ones((B, L), dtype=torch.bool, device=device)
-            rep_mask[:, 0] = False
-            main_rep = torch.zeros_like(true_main_idx)
-            c_rep = torch.zeros_like(true_c_idx)
-            if L > 1:
-                main_rep[:, 1:] = true_main_idx[:, :-1]
-                c_rep[:, 1:] = true_c_idx[:, :-1]
+            epoch_loss += loss.item()
 
             # Prepare loss dict safely
-            this_loss = {
-                "main": float(loss_main.detach().item()),
-                "c": float(loss_c.detach().item()),
-                "shoulder": float(loss_s.detach().item()),
-                "buttons": float(loss_btn.detach().item()),
+            this_loss: Dict[str, float] = {
+                "main": loss_main.item(),
+                "c": loss_c.item(),
+                "shoulder": loss_s.item(),
+                "buttons": loss_btn.item(),
                 # TODO: We will always use value head
                 "value": (
-                    float(loss_value.detach().item())
-                    if config.model.use_value_head
-                    else 0.0
+                    loss_value.item() if config.model.use_value_head else 0.0
                 ),
             }
 
@@ -447,6 +429,52 @@ def train_loop(
                 frames_per_batch = B_cur * L_cur
                 frames_per_s = iters_processed * frames_per_batch / dt
                 avg_loss_running = epoch_loss / max(1, iters_processed)
+
+                # ---- Per-batch metrics (no running aggregation) ----
+                pred_main_idx = logits_main.argmax(dim=-1).view(B, L)
+                true_main_idx = target_main.view(B, L)
+                pred_c_idx = logits_c.argmax(dim=-1).view(B, L)
+                true_c_idx = target_c.view(B, L)
+                btn_logits = logits_btn  # [B,L,Kb]
+                btn_true = target_btn  # [B,L,Kb]
+                btn_probs = torch.sigmoid(btn_logits)
+                if off_stage_idx is not None:
+                    off_stage_mask = X[..., off_stage_idx] > 0.5
+                else:
+                    off_stage_mask = torch.zeros(
+                        (B, L), dtype=torch.bool, device=device
+                    )
+                off_stage_mask = off_stage_mask.to(device=device)
+                off_stage_present = bool(off_stage_mask.any().item())
+
+                main_change_mask = torch.zeros_like(true_main_idx, dtype=torch.bool)
+                main_change_mask[:, 1:] = (
+                    true_main_idx[:, 1:] != true_main_idx[:, :-1]
+                )
+                main_hold_mask = ~main_change_mask
+                main_hold_mask[:, 0] = True
+
+                c_change_mask = torch.zeros_like(true_c_idx, dtype=torch.bool)
+                c_change_mask[:, 1:] = true_c_idx[:, 1:] != true_c_idx[:, :-1]
+                c_hold_mask = ~c_change_mask
+                c_hold_mask[:, 0] = True
+
+                btn_change_mask = torch.zeros(
+                    (B, L), device=device, dtype=torch.bool
+                )
+                btn_change_mask[:, 1:] = torch.any(
+                    btn_true[:, 1:] != btn_true[:, :-1], dim=-1
+                )
+                btn_hold_mask = ~btn_change_mask
+                btn_hold_mask[:, 0] = True
+
+                rep_mask = torch.ones((B, L), dtype=torch.bool, device=device)
+                rep_mask[:, 0] = False
+                main_rep = torch.zeros_like(true_main_idx)
+                c_rep = torch.zeros_like(true_c_idx)
+                if L > 1:
+                    main_rep[:, 1:] = true_main_idx[:, :-1]
+                    c_rep[:, 1:] = true_c_idx[:, :-1]
 
                 # ---------- Per-batch metrics & confusions ----------
                 # MAIN
@@ -514,7 +542,6 @@ def train_loop(
                 )
 
                 # BUTTONS
-                btn_probs = torch.sigmoid(btn_logits)
                 btn_pred = (btn_probs > 0.5).to(btn_true.dtype)
                 em_b, p_b, r_b, f1_b, f1_macro_b = multilabel_prf(btn_true, btn_pred)
 
@@ -1042,12 +1069,21 @@ def train_loop(
             except Exception:
                 pass
 
-    # Finish wandb run
-    finish_wandb()
+    # Finish wandb run if logging was enabled
+    if not debug:
+        finish_wandb()
 
 
 if __name__ == "__main__":
-    init_config()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Disable wandb logging for local debugging runs.",
+    )
+    args, remaining = parser.parse_known_args()
+    initial, overrides = parse_cli_overrides(remaining)
+    init_config(initial, overrides)
     model = GPT(get_config())
     print_model_diagram(model)
-    train_loop(model)
+    train_loop(model, debug=args.debug)

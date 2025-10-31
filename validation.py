@@ -1119,7 +1119,7 @@ def _evaluate(
             )
 
             for key, value in loss_components.items():
-                loss_sums[key] += float(value.detach().item())
+                loss_sums[key] += value.item()
 
             pred_main_idx = logits_main.argmax(dim=-1)
             pred_c_idx = logits_c.argmax(dim=-1)

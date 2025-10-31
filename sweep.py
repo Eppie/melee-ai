@@ -756,10 +756,10 @@ def run_training_once(
                                     current_metrics[name] = float(value)
 
                             # Loss metrics (shared aliases)
-                            loss_main_value = float(loss_main.detach().item())
-                            loss_c_value = float(loss_c.detach().item())
-                            loss_btn_value = float(loss_btn.detach().item())
-                            loss_shoulder_value = float(loss_s.detach().item())
+                            loss_main_value: float = loss_main.item()
+                            loss_c_value: float = loss_c.item()
+                            loss_btn_value: float = loss_btn.item()
+                            loss_shoulder_value: float = loss_s.item()
 
                             for key in _LOSS_METRIC_KEYS:
                                 if key == "loss" or key == "loss_total":

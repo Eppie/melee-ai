@@ -11,6 +11,7 @@ import zarr
 from torch.utils.data import Dataset, Sampler
 
 from config import FeatureConfig, get_config
+from utils import _resolve_device
 from feature_transforms import FeatureTransformSpec, feature_spec_from_config
 
 
@@ -446,12 +447,15 @@ def make_dataloader() -> (
         except RuntimeError:
             mp_ctx = None
 
+    device = _resolve_device(None)
+    pin_memory = config.train.pin_memory and device.type == "cuda"
+
     loader = torch.utils.data.DataLoader(
         ds,
         batch_size=config.train.batch_size,
         sampler=sampler,
         num_workers=config.train.num_workers,
-        pin_memory=config.train.pin_memory,
+        pin_memory=pin_memory,
         prefetch_factor=(
             config.train.prefetch_factor if config.train.num_workers > 0 else None
         ),

@@ -38,15 +38,23 @@ def init_wandb(
     run_dir: Path,
     hyperparameters: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
-    """Initialize wandb with persistent run ID and resume support.
+    """Initialise a Weights & Biases run, persisting the run ID for automatic resume.
+
+    Example:
+        Suppose ``run_dir`` already contains ``wandb_run_id.txt`` with the value ``"abc123"``.
+        Calling ``init_wandb`` with ``config.project="demo"`` and ``config.mode="online"`` loads the
+        stored ID, sets ``WANDB_MODE=online`` in the environment, and calls ``wandb.init(project="demo",
+        dir=str(run_dir), id="abc123", resume="allow")``. The returned run object is then cached so
+        subsequent launches reuse the same dashboard entry. If wandb is unavailable, the function
+        simply returns ``None``, illustrating both control-flow branches.
 
     Args:
-        config: Wandb configuration
-        run_dir: Directory for run outputs (for storing run ID)
-        hyperparameters: Optional hyperparameters to log
+        config: Wandb configuration describing project metadata.
+        run_dir: Directory where wandb files (including run ID) are stored.
+        hyperparameters: Optional dictionary logged to wandb's config section.
 
     Returns:
-        wandb run object or None if wandb unavailable/disabled
+        Wandb run object or ``None`` if wandb is unavailable or disabled.
     """
     if not WANDB_AVAILABLE or config.mode == "disabled":
         return None
@@ -134,7 +142,14 @@ def init_wandb(
 
 
 def finish_wandb() -> None:
-    """Finish wandb run gracefully."""
+    """Terminate the active wandb run if logging is enabled.
+
+    Example:
+        After a run created by :func:`init_wandb`, calling ``finish_wandb()`` invokes
+        ``wandb.finish()`` inside a ``try`` block. If wandb was never initialised or raised an
+        exception, the call is skipped, leaving the application unharmed. This demonstrates the
+        defensive behaviour against missing dependencies.
+    """
     if WANDB_AVAILABLE and wandb is not None:
         try:
             wandb.finish()
@@ -149,11 +164,17 @@ class WandbLogger:
     """
 
     def __init__(self, wandb_run: Optional[Any] = None, enabled: bool = True):
-        """Initialize logger.
+        """Wrap a wandb run with convenience methods that degrade to no-ops.
+
+        Example:
+            Creating ``WandbLogger(run, enabled=True)`` stores ``run`` and sets ``self.enabled`` to
+            ``True``. Passing ``enabled=False`` forces ``self.enabled`` to ``False`` even when a run is
+            provided, making subsequent :meth:`log_metrics` calls skip wandb entirely. This example
+            highlights how the constructor decides whether logging should occur.
 
         Args:
-            wandb_run: Wandb run object (from wandb.init())
-            enabled: Whether logging is enabled
+            wandb_run: Wandb run object (from :func:`wandb.init`).
+            enabled: Whether logging should be performed.
         """
         self.run = wandb_run if WANDB_AVAILABLE else None
         self.enabled = enabled and self.run is not None
@@ -161,12 +182,18 @@ class WandbLogger:
     def log_metrics(
         self, metrics: Dict[str, float], step: int, commit: bool = True
     ) -> None:
-        """Log metrics to wandb.
+        """Send scalar metrics to wandb when logging is enabled.
+
+        Example:
+            With ``metrics={"loss": 0.5}`` and ``step=100``, calling ``log_metrics`` executes
+            ``wandb.log({"loss": 0.5}, step=100, commit=True)``. If ``self.enabled`` is ``False`` the
+            function returns immediately, illustrating the guard that prevents wandb usage when the
+            dependency is absent or disabled.
 
         Args:
-            metrics: Dictionary of metric names to values
-            step: Global step number
-            commit: Whether to commit the log (push to server)
+            metrics: Dictionary of metric names to values.
+            step: Global step number associated with the metrics.
+            commit: Whether to commit the log immediately (pushing to the server).
         """
         if not self.enabled or self.run is None:
             return
@@ -177,11 +204,17 @@ class WandbLogger:
             pass
 
     def log_gradients(self, grad_stats: Dict[str, float], step: int) -> None:
-        """Log gradient statistics to wandb.
+        """Prefix gradient statistics with ``gradients/`` and log them via :meth:`log_metrics`.
+
+        Example:
+            Given ``grad_stats={"total_norm": 3.2}`` and ``step=50``, the method first builds
+            ``{"gradients/total_norm": 3.2}`` and then calls ``log_metrics(..., commit=False)`` so the
+            gradient entry is batched with other logs. If logging is disabled the method exits without
+            modification. The example shows the exact transformation of keys and subsequent logging.
 
         Args:
-            grad_stats: Dictionary of gradient statistics
-            step: Global step number
+            grad_stats: Dictionary of gradient statistics.
+            step: Global step number.
         """
         if not self.enabled:
             return
@@ -191,11 +224,17 @@ class WandbLogger:
         self.log_metrics(prefixed, step, commit=False)
 
     def log_loss_components(self, losses: Dict[str, float], step: int) -> None:
-        """Log loss components to wandb.
+        """Record individual loss components under the ``loss/`` namespace.
+
+        Example:
+            For ``losses={"main": 0.3, "buttons": 0.2}`` the method constructs
+            ``{"loss/main": 0.3, "loss/buttons": 0.2}`` and invokes :meth:`log_metrics` with
+            ``commit=False``. This allows callers to combine loss logging with other statistics within
+            the same wandb step.
 
         Args:
-            losses: Dictionary of loss component names to values
-            step: Global step number
+            losses: Dictionary of loss component names to values.
+            step: Global step number.
         """
         if not self.enabled:
             return
@@ -205,10 +244,16 @@ class WandbLogger:
         self.log_metrics(prefixed, step, commit=False)
 
     def log_hyperparameters(self, params: Dict[str, Any]) -> None:
-        """Log hyperparameters to wandb config.
+        """Persist hyperparameters in ``wandb.config`` for reproducibility.
+
+        Example:
+            When ``params={"lr": 0.001, "batch_size": 64}``, the method iterates over the dictionary
+            and assigns ``wandb.config["lr"] = 0.001`` and ``wandb.config["batch_size"] = 64``. If
+            logging is disabled, the loop is skipped entirely. This showcases the mapping from input
+            dictionary to wandb's configuration namespace.
 
         Args:
-            params: Dictionary of hyperparameter names to values
+            params: Dictionary of hyperparameter names to values.
         """
         if not self.enabled or self.run is None:
             return
@@ -220,26 +265,38 @@ class WandbLogger:
             pass
 
     def should_log_this_step(self, step: int, frequency: int = 10) -> bool:
-        """Check if we should log at this step based on frequency.
+        """Return ``True`` when ``step`` is a multiple of ``frequency`` and logging is enabled.
+
+        Example:
+            With ``frequency=5`` and ``self.enabled=True``, calling ``should_log_this_step(10)`` returns
+            ``True`` because ``10 % 5 == 0``. Calling ``should_log_this_step(11)`` returns ``False``.
+            If ``self.enabled`` were ``False`` both calls would return ``False``. This demonstrates the
+            precise boolean condition used to decide whether to log.
 
         Args:
-            step: Current step number
-            frequency: Log every N steps
+            step: Current step number.
+            frequency: Log every ``N`` steps.
 
         Returns:
-            True if we should log
+            ``True`` if logging should happen this step, ``False`` otherwise.
         """
         return self.enabled and (step % frequency == 0)
 
     def watch_model(
         self, model: Any, log: str = "gradients", log_freq: int = 100
     ) -> None:
-        """Watch model for gradient/parameter tracking.
+        """Register a model with wandb's watch API when logging is active.
+
+        Example:
+            ``watch_model(model, log="all", log_freq=50)`` triggers ``wandb.watch`` with the same
+            arguments, enabling parameter and gradient histograms in the UI. If wandb is disabled the
+            method returns without side effects, illustrating the guard that prevents unnecessary API
+            calls.
 
         Args:
-            model: Model to watch
-            log: What to log ("gradients", "parameters", "all")
-            log_freq: How often to log
+            model: Model to watch.
+            log: What to log (``"gradients"``, ``"parameters"``, or ``"all"``).
+            log_freq: Frequency with which wandb should log model statistics.
         """
         if not self.enabled or self.run is None:
             return

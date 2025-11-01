@@ -11,12 +11,40 @@ from train.gradients import _move_optimizer_state_to_device
 
 
 def _sorted_checkpoint_paths(directory: Path) -> List[Path]:
+    """Return checkpoint files ordered from newest to oldest with a concrete example.
+
+    Example:
+        If ``directory`` contains ``[run1.pt, run2.pt]`` where ``run1.pt`` was modified at
+        ``12:00`` and ``run2.pt`` at ``12:05``, calling ``_sorted_checkpoint_paths`` yields the list
+        ``[run2.pt, run1.pt]``. The function gathers every ``*.pt`` file, inspects the modification
+        timestamps via ``Path.stat().st_mtime``, sorts in descending order, and returns the paths in
+        that precise sequence.
+
+    Args:
+        directory: Folder that potentially contains checkpoint ``.pt`` files.
+
+    Returns:
+        List of checkpoint paths sorted by modification time (newest first).
+    """
     checkpoints = [p for p in directory.glob("*.pt") if p.is_file()]
     checkpoints.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return checkpoints
 
 
 def _prune_checkpoints(directory: Path, keep: int = 10) -> None:
+    """Delete older checkpoints once more than ``keep`` files exist.
+
+    Example:
+        When ``directory`` holds ``[epoch1.pt, epoch2.pt, epoch3.pt]`` ordered newest to oldest and
+        ``keep`` is ``2``, the helper first calls :func:`_sorted_checkpoint_paths` to obtain the list
+        ``[epoch3.pt, epoch2.pt, epoch1.pt]``. It then iterates over every entry beyond the first two
+        (in this case ``epoch1.pt``) and unlinks it, leaving only the most recent checkpoints on
+        disk.
+
+    Args:
+        directory: Folder that stores checkpoint ``.pt`` files.
+        keep: Maximum number of recent checkpoints to retain.
+    """
     if keep <= 0:
         return
     checkpoints = _sorted_checkpoint_paths(directory)
@@ -28,6 +56,20 @@ def _prune_checkpoints(directory: Path, keep: int = 10) -> None:
 
 
 def _latest_checkpoint(directory: Path) -> Optional[Path]:
+    """Find the newest checkpoint in ``directory`` if one exists.
+
+    Example:
+        Given a folder containing ``ckpt_10.pt`` and ``ckpt_11.pt`` with modification times of
+        ``10:00`` and ``10:05`` respectively, ``_latest_checkpoint`` expands the path (handling
+        ``~``), filters to files ending in ``.pt``, sorts them by timestamp, and returns the
+        ``Path`` for ``ckpt_11.pt``. If no checkpoint files are present, it returns ``None``.
+
+    Args:
+        directory: Directory to search for checkpoints.
+
+    Returns:
+        Path to the most recent checkpoint or ``None`` if no files are found.
+    """
     directory = directory.expanduser()
     if not directory.exists():
         return None
@@ -45,6 +87,27 @@ def _load_latest_checkpoint(
     scaler: GradScaler,
     device: torch.device,
 ) -> Tuple[int, int, int]:
+    """Load the newest checkpoint and restore model, optimizer, and scaler state.
+
+    Example:
+        Imagine ``directory`` contains ``epoch_10.pt`` representing epoch 10 with
+        ``{"model": ..., "optimizer": ..., "scaler": ..., "global_step": 1280}``. When invoked,
+        the helper selects that file, calls :func:`torch.load`, and feeds the stored state dictionaries
+        into ``model.load_state_dict`` and ``optimizer.load_state_dict``. After adjusting for legacy
+        metadata, it returns ``(10, 1280, 0)`` indicating training should resume at epoch 10,
+        global step 1280, and iteration 0. If the directory is empty, ``(0, 0, 0)`` is returned
+        instead.
+
+    Args:
+        directory: Folder containing checkpoints.
+        model: Model instance whose parameters should be restored.
+        optimizer: Optimizer instance whose state should be restored.
+        scaler: Gradient scaler for mixed precision training.
+        device: Device to move optimizer state tensors onto.
+
+    Returns:
+        Tuple ``(start_epoch, global_step, start_iter)`` describing where to resume training.
+    """
     checkpoints = _sorted_checkpoint_paths(directory)
     if not checkpoints:
         return 0, 0, 0
@@ -111,7 +174,26 @@ def save_checkpoint(
     config: Optional[dict] = None,
     **kwargs,
 ) -> None:
-    """Save model checkpoint with optional optimizer and scaler state."""
+    """Persist the model state and optional training metadata to ``path``.
+
+    Example:
+        Calling ``save_checkpoint(Path("ckpts/epoch_5.pt"), model, optimizer, epoch=5, global_step=640)``
+        produces a dictionary containing at least the keys ``"model"``, ``"epoch"``,
+        ``"resume_epoch"``, ``"resume_iter"``, and ``"global_step"``. The helper ensures the parent
+        directory exists, then uses :func:`torch.save` to serialize the dictionary. Reloading the file
+        later will reproduce the exact state, demonstrating how inputs are collected and written to
+        disk step by step.
+
+    Args:
+        path: Destination path for the checkpoint file.
+        model: Model whose parameters should be saved.
+        optimizer: Optional optimizer whose state should also be serialized.
+        scaler: Optional gradient scaler to persist for mixed precision runs.
+        epoch: Epoch number to record.
+        global_step: Global training step to record.
+        config: Optional configuration dictionary to embed in the checkpoint.
+        **kwargs: Additional key-value pairs to merge into the saved dictionary.
+    """
     ckpt = {
         "model": model.state_dict(),
         "epoch": epoch,

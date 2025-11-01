@@ -37,6 +37,14 @@ _C_STICK_PALETTE_NORM = np.sum(_C_STICK_PALETTE**2, axis=1, keepdims=True)
 
 # TODO: this is implemented elsewhere
 def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
+    """Rescale ``[0, 1]`` stick coordinates to ``[-1, 1]`` while clamping overflow.
+
+    Example
+    -------
+    ``xy01 = [[0.0, 1.0], [0.75, 0.75]]`` becomes ``[[-0.7071, 0.7071], [0.5, 0.5]]``
+    after scaling and unit-circle projection, matching the preprocessing used in
+    dataset creation.
+    """
     xy01_clipped = np.clip(xy01, 0.0, 1.0)
     xy11 = xy01_clipped * 2.0 - 1.0
     norms = np.linalg.norm(xy11, axis=1, keepdims=True)
@@ -52,6 +60,15 @@ def _quantize_stick_block_np(
     palette: np.ndarray,
     palette_norm: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """Snap ``values`` to the nearest stick palette entries with an example.
+
+    Example
+    -------
+    With ``values=[[0.2, 0.9], [1.1, -0.4]]`` and a four-direction palette, the
+    helper clamps the second row, computes squared distances to every palette
+    vector, and returns the closest palette coordinates along with their indices.
+    The result mirrors how controller targets are quantized during dataset build.
+    """
     if values.shape[1] != 2:
         raise ValueError("Stick quantization expects two columns (x, y).")
 
@@ -75,6 +92,14 @@ def _quantize_stick_block_np(
 
 
 def _quantize_shoulder_np(values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Quantize shoulder analog values to the predefined palette.
+
+    Example
+    -------
+    ``values=[0.05, 0.9]`` yields palette values ``[0.0, 1.0]`` with indices
+    ``[0, 2]`` when ``SHOULDER_QUANTIZED=[0.0, 0.5, 1.0]``, showing the nearest
+    discrete shoulder levels stored alongside their indices.
+    """
     if _SHOULDER_PALETTE is None:
         raise RuntimeError("Shoulder quantization requested but no palette is defined.")
     arr = values.astype(np.float32, copy=False).reshape(-1)
@@ -85,11 +110,26 @@ def _quantize_shoulder_np(values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def extract(game_state: GameState) -> Row:
+    """Extract a :class:`Row` of schema-aligned fields from ``game_state``.
+
+    Example
+    -------
+    For a frame where player 1 is at ``30%`` and holding right, the resulting
+    ``Row`` contains ``p1_percent=30`` and ``p1_main_stick_x≈1``. This matches the
+    row objects consumed by :func:`process_one_episode`.
+    """
     return extract_row(game_state)
 
 
 def _row_to_winner_first(rows: List[Row]) -> List[Row]:
-    """Ensure the winner is consistently treated as player 1."""
+    """Reorder ``rows`` so the winner consistently appears as player 1.
+
+    Example
+    -------
+    If the final row shows player 2 with more stocks, every row is swapped so the
+    eventual winner becomes ``p1``. When stocks tie, percent is used as the
+    tiebreaker, mirroring how training expects the protagonist to be indexed.
+    """
     if not rows:
         return rows
 
@@ -113,6 +153,14 @@ def _row_to_winner_first(rows: List[Row]) -> List[Row]:
 
 
 def _swap_row_players(row: Row) -> Row:
+    """Produce a new :class:`Row` with player 1/2 fields swapped.
+
+    Example
+    -------
+    Given ``Row(p1_percent=10, p2_percent=20, stage=1)`` the helper returns a row
+    where ``p1_percent=20`` and ``p2_percent=10`` while ``stage`` remains ``1``.
+    This is used by :func:`_row_to_winner_first` when flipping episode perspective.
+    """
     swap_values: dict[str, object] = {}
     for field in ROW_FIELDS:
         name = field.name
@@ -132,6 +180,15 @@ class Schema:
 
 
 def process_one_episode(raw_path: str) -> List[Row]:
+    """Convert an ``.slp`` replay into a list of schema rows with filtering steps.
+
+    Example
+    -------
+    For a valid two-player match, the function iterates console frames, skips
+    pre-game/invalid frames, extracts rows via :func:`extract`, and returns the
+    list. Errors before any row is collected raise ``ValueError`` so the caller can
+    discard the replay.
+    """
     console = Console(is_dolphin=False, allow_old_version=True, path=raw_path)
 
     if not console.connect():
@@ -170,6 +227,14 @@ def process_one_episode(raw_path: str) -> List[Row]:
 
 
 def _choose_chunk_t(F: int, elem_bytes: int) -> int:
+    """Pick the temporal chunk size ``T`` for Zarr arrays given ``F`` features.
+
+    Example
+    -------
+    With ``F=512`` and ``elem_bytes=4`` the helper approximates how many frames fit
+    in ``config.zarr.target_chunk_mb`` megabytes, then rounds to a multiple of
+    ``config.seq_len`` so sliding windows rarely straddle chunk boundaries.
+    """
     config = get_config()
     approx_t = int((config.zarr.target_chunk_mb * (1024**2)) / (F * elem_bytes))
     approx_t = max(config.seq_len, approx_t)
@@ -181,6 +246,14 @@ def _choose_chunk_t(F: int, elem_bytes: int) -> int:
 
 class EpisodeWriter:
     def __init__(self, schema: Schema, shard_path: str) -> None:
+        """Initialize a shard writer that buffers data in a temporary directory.
+
+        Example
+        -------
+        ``EpisodeWriter(schema, 'shard_00000.zarr')`` creates a temporary directory
+        ``shard_00000.zarr.tmp``. Calls to :meth:`write_episode` populate this temp
+        store until :meth:`finalize` atomically renames it into place.
+        """
         self.schema = schema
         self.shard_path = Path(shard_path)
         # write rows to a temporary dir then rename atomically on finalize
@@ -194,6 +267,14 @@ class EpisodeWriter:
         self._chunk_t_cache: dict[int, int] = {}
 
     def _chunk_t(self, F: int, elem_bytes: int = 4) -> int:
+        """Memoize the chunk length for feature dimension ``F``.
+
+        Example
+        -------
+        The first call with ``F=512`` computes the chunk length via
+        :func:`_choose_chunk_t` and caches it. Subsequent calls with the same ``F``
+        reuse the cached value, avoiding repeated configuration math.
+        """
         if F not in self._chunk_t_cache:
             ct = _choose_chunk_t(
                 F=F,
@@ -203,6 +284,16 @@ class EpisodeWriter:
         return self._chunk_t_cache[F]
 
     def write_episode(self, episode_id: int, X: np.ndarray, Y: np.ndarray) -> str:
+        """Write ``X``/``Y`` arrays for ``episode_id`` into the shard.
+
+        Example
+        -------
+        Given ``X`` with shape ``(300, F)`` and ``Y`` with ``(300, Yd)``, the method
+        creates ``ep_000123/X`` and ``ep_000123/Y`` arrays (chunked along time),
+        fills them with the provided data, and returns the episode group name. If
+        ``Y`` is empty the feature array is still written while the target dataset
+        is omitted.
+        """
         config = get_config()
         assert X.dtype == np.float32 and (Y.size == 0 or Y.dtype == np.float32)
         ep_name = f"ep_{episode_id:06d}"
@@ -233,6 +324,14 @@ class EpisodeWriter:
         return ep_name
 
     def finalize(self) -> None:
+        """Commit the temporary shard directory by renaming it into place.
+
+        Example
+        -------
+        After all episodes are written, :meth:`finalize` removes any existing shard
+        directory and renames ``shard_00000.zarr.tmp`` to ``shard_00000.zarr`` so
+        downstream readers see a consistent snapshot.
+        """
         self.tmp_path.flush() if hasattr(self.tmp_path, "flush") else None
         if self.shard_path.exists():
             shutil.rmtree(self.shard_path)
@@ -253,6 +352,15 @@ class ShardResult:
 def _rows_to_dense(
     rows: Sequence[object], schema: Schema
 ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[str], List[str]]:
+    """Convert a list of :class:`Row` objects into feature/target matrices.
+
+    Example
+    -------
+    For three rows ``r0, r1, r2`` the function builds ``X`` from ``r0`` and ``r1``
+    while ``Y`` uses ``r1`` and ``r2`` (one-step lookahead). It returns
+    ``float32`` arrays alongside the feature/target names and dtypes, matching the
+    tensors written into the final Zarr shards.
+    """
     T = len(rows)
     if T < 2:
         raise ValueError(f"Need at least 2 frames for temporal shifting, got {T}")
@@ -426,6 +534,14 @@ def _process_episode_task(
     raw_path: str,
     schema: Schema,
 ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[str], List[str]]:
+    """Process a single episode path inside the multiprocessing pool.
+
+    Example
+    -------
+    The worker calls :func:`process_one_episode` followed by :func:`_rows_to_dense`
+    and returns the resulting arrays and metadata, exactly as consumed by the main
+    dataset builder loop.
+    """
     rows = process_one_episode(raw_path)
     return _rows_to_dense(rows, schema)
 
@@ -436,6 +552,15 @@ def _merge_and_write_metadata(
     target_names: Sequence[str],
     out_root: str,
 ) -> None:
+    """Write index files, lengths, and ``meta.json`` for the built dataset.
+
+    Example
+    -------
+    Given shard results for two shards, the helper writes ``index.jsonl`` entries
+    referencing each episode/shard pair, saves ``lengths.npy`` and
+    ``wins_per_ep.npy``, and serializes ``meta.json`` with schema names and dtypes,
+    mirroring the artifacts consumed by :class:`ZarrCorpusIndex`.
+    """
     config = get_config()
     out_dir = Path(out_root)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -488,6 +613,16 @@ def _merge_and_write_metadata(
 def build_dataset(
     raw_episode_paths: Sequence[str], schema: Schema, out_root: str
 ) -> None:
+    """Parallelize replay processing and assemble Zarr shards with metadata.
+
+    Example
+    -------
+    When ``raw_episode_paths`` lists 10 files and the shard size is ``4``, the
+    function spins up workers via :func:`_process_episode_task`, streams completed
+    episodes into :class:`EpisodeWriter` instances per shard, and finally writes
+    ``index.jsonl``, ``lengths.npy``, and ``meta.json`` through
+    :func:`_merge_and_write_metadata`.
+    """
     config = get_config()
     N = len(raw_episode_paths)
     if N == 0:
@@ -610,6 +745,14 @@ def build_dataset(
 
 
 def create_melee_schema() -> Schema:
+    """Return a :class:`Schema` populated with default feature/target names.
+
+    Example
+    -------
+    Calling this helper wraps :func:`get_feature_names` and
+    :func:`get_target_names`, producing a schema object ready for
+    :func:`build_dataset`.
+    """
     return Schema(
         features=get_feature_names(),
         targets=get_target_names(),
@@ -617,6 +760,14 @@ def create_melee_schema() -> Schema:
 
 
 def main():
+    """Entry point that builds validation and training datasets from ``.slp`` files.
+
+    Example
+    -------
+    Running ``python zarr_storage.py`` discovers replay files under the configured
+    input root, builds validation then training shards via :func:`build_dataset`,
+    and prints summary statistics such as average frames per episode.
+    """
     import glob
 
     init_config()

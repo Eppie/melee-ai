@@ -69,6 +69,16 @@ class ControllerState:
 
     @staticmethod
     def neutral() -> "ControllerState":
+        """Return a neutral controller state with a concrete illustration.
+
+        Example
+        -------
+        Calling ``ControllerState.neutral()`` yields a state where the analog
+        sticks point to ``0.5`` (the Dolphin neutral value), the shoulder analog
+        is ``0.0``, and all digital buttons are ``False``. Passing this object to
+        :func:`apply_model_outputs_to_game` leaves the character idle, which is
+        exactly what the inference engine emits during warm-up.
+        """
         print("[TRACE:ControllerState.neutral] Creating neutral controller state")
         return ControllerState(
             main_stick_x=0.5,
@@ -102,21 +112,59 @@ class ModelFrameInputs(Mapping[str, float]):
     transformed: Dict[str, float]
 
     def __getitem__(self, key: str) -> float:
+        """Return the transformed value for ``key`` mirroring dict access.
+
+        Example
+        -------
+        With ``inputs = ModelFrameInputs({'foo': 1.0}, {'foo': 3.14})`` the call
+        ``inputs['foo']`` returns ``3.14``. Attempting to access a missing key
+        raises ``KeyError`` the same way as a standard dictionary.
+        """
         return self.transformed[key]
 
     def __iter__(self) -> Iterator[str]:
+        """Iterate over transformed feature names just like a dictionary.
+
+        Example
+        -------
+        ``list(inputs)`` yields ``['foo']`` for the example above, allowing the
+        object to integrate with APIs that expect a mapping view of features.
+        """
         return iter(self.transformed)
 
     def __len__(self) -> int:
+        """Expose the number of transformed features in the mapping.
+
+        Example
+        -------
+        ``len(inputs)`` evaluates to ``1`` for the example, which matches the
+        count of keys returned by ``__iter__``.
+        """
         return len(self.transformed)
 
     def as_dict(self) -> Dict[str, float]:
+        """Copy the transformed mapping into a standalone ``dict``.
+
+        Example
+        -------
+        ``inputs.as_dict()`` returns ``{'foo': 3.14}``. Mutating this dictionary
+        does not alter the underlying ``ModelFrameInputs`` object, making it safe
+        to hand to logging or serialization routines.
+        """
         return dict(self.transformed)
 
 
 # TODO: We probably have other "safe" functions, maybe we can put them all in one place
 # TODO: Why do we even need this, can't we just always know our types?
 def _safe_float(value: object) -> float:
+    """Convert ``value`` to ``float`` while logging failures with an example.
+
+    Example
+    -------
+    ``_safe_float(np.int32(7))`` returns ``7.0``. If ``value='abc'`` the helper
+    prints a trace line and re-raises the ``ValueError`` so callers see which
+    feature failed to coerce during inference.
+    """
     try:
         return float(value)
     except Exception as e:
@@ -125,6 +173,15 @@ def _safe_float(value: object) -> float:
 
 # TODO: called 63 times per frame, there has to be a better way
 def _coerce_scalar(value: object) -> float | int | bool:
+    """Convert arbitrary scalars to Python ``bool``/``int``/``float``.
+
+    Example
+    -------
+    ``_coerce_scalar(np.bool_(True))`` returns ``True`` while
+    ``_coerce_scalar(np.float32(1.5))`` returns ``1.5``. Passing an object such as
+    ``{'not': 'a scalar'}`` raises ``TypeError("Unable to coerce value ...")`` so
+    malformed schema values surface immediately.
+    """
     # print(f"[TRACE:_coerce_scalar] Coercing value of type {type(value)}")
     if isinstance(value, (bool, int, float)):
         # print("[TRACE:_coerce_scalar] Value is already bool/int/float")
@@ -144,7 +201,16 @@ def _coerce_scalar(value: object) -> float | int | bool:
 
 
 def set_feature_transforms(transforms: Optional[Any]) -> None:
-    """Configure per-feature transforms used at inference time."""
+    """Configure per-feature transforms used at inference time with a demo.
+
+    Example
+    -------
+    Passing ``[{'transform': 'scale', 'features': 'foo', 'factor': 0.5}]`` builds a
+    spec via :func:`build_transform_spec` and stores it in the module-level cache.
+    Subsequent calls to :func:`_apply_transforms_to_features` will then halve the
+    ``foo`` feature before inference. Passing ``None`` clears the spec, restoring
+    identity transforms.
+    """
     print(f"[TRACE:set_feature_transforms] Called with transforms={transforms is not None}")
 
     global _FEATURE_TRANSFORMS_SPEC
@@ -162,6 +228,16 @@ set_feature_transforms(FeatureConfig().transforms)
 
 # TODO: overly generic, maybe can cache some?
 def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float]:
+    """Apply the configured transform spec to the ``features`` mapping.
+
+    Example
+    -------
+    Suppose ``features={'foo': 4.0, 'bar': 1.0}`` and the global spec contains two
+    steps: scale ``foo`` by ``0.5`` and add ``1`` to both ``foo`` and ``bar``. The
+    helper copies the mapping, resolves ``foo`` groups, and produces
+    ``{'foo': 3.0, 'bar': 2.0}``, illustrating the same pipeline that runs before
+    every inference call.
+    """
     # print(f"[TRACE:_apply_transforms_to_features] Called with {len(features)} features")
     spec = _FEATURE_TRANSFORMS_SPEC
     if not spec or not spec.steps:
@@ -182,6 +258,16 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
 
     # TODO: Surely we can cache this, or maybe even remove the need for it?
     def _resolve_groups(requested: Sequence[str]) -> List[Tuple[str, ...]]:
+        """Expand ``requested`` feature names to actual keys with prefix handling.
+
+        Example
+        -------
+        With ``requested=('main_stick_x', 'main_stick_y')`` and prefixed keys
+        available, this helper returns groups like
+        ``('p1_main_stick_x', 'p1_main_stick_y')`` and
+        ``('p2_main_stick_x', 'p2_main_stick_y')`` so transforms execute for both
+        players independently.
+        """
         # print(f"[TRACE:_resolve_groups] Resolving {len(requested)} requested features")
         if all(name in key_set for name in requested):
             # print("[TRACE:_resolve_groups] All features found in key_set, returning single group")
@@ -248,6 +334,15 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
 def _controller_state_to_features(
         prefix: str, state: ControllerState
 ) -> Dict[str, float]:
+    """Convert a :class:`ControllerState` into prefixed feature values.
+
+    Example
+    -------
+    ``_controller_state_to_features('p1', ControllerState.neutral())`` produces a
+    dictionary where ``'p1_main_stick_x'`` equals ``0.5`` and all button keys are
+    ``0.0``. The inference engine caches this mapping to seed controller history
+    before live predictions.
+    """
     print(f"[TRACE:_controller_state_to_features] Converting controller state with prefix={prefix}")
     return {
         f"{prefix}_button_a": float(state.button_a),
@@ -264,11 +359,28 @@ def _controller_state_to_features(
 
 
 def _zero_player_fields(prefix: str) -> Dict[str, float]:
+    """Return zero-valued player features for ``prefix``.
+
+    Example
+    -------
+    ``_zero_player_fields('p2')`` yields entries like ``{'p2_stock': 0}`` and
+    ``{'p2_main_stick_x': 0.0}``, matching the neutral placeholders used when an
+    opponent is absent from the gamestate.
+    """
     print(f"[TRACE:_zero_player_fields] Creating zero fields for prefix={prefix}")
     return {f"{prefix}_{name}": dtype(0) for name, dtype in PLAYER_SPEC}
 
 
 def _prefixed_player_fields(player, prefix: str) -> Dict[str, float]:
+    """Extract prefixed player fields or fall back to zeros.
+
+    Example
+    -------
+    If ``player`` has valid stats, the helper returns values such as
+    ``{'p1_percent': 23.0}``. When ``player`` is ``None`` the output equals
+    :func:`_zero_player_fields(prefix)`, ensuring callers receive a complete feature
+    dictionary regardless of the gamestate.
+    """
     print(f"[TRACE:_prefixed_player_fields] Extracting fields for prefix={prefix}")
     if player is None or getattr(player, "controller_state", None) is None:
         print("[TRACE:_prefixed_player_fields] Player is None or has no controller_state, returning zeros")
@@ -288,6 +400,16 @@ def model_to_dolphin01(
         model_out: np.ndarray,
         palette11: np.ndarray | None = None,
 ) -> np.ndarray:
+    """Convert model outputs to Dolphin's ``[0, 1]`` coordinate space.
+
+    Example
+    -------
+    * ``model_out = [[0.0, 1.0]]`` (float inputs) is clamped to the unit circle and
+      mapped to ``[[0.5, 1.0]]`` after scaling to ``[0, 1]``.
+    * ``model_out = [[2]]`` with ``palette11`` equal to the Fox stick palette
+      selects the third palette vector, clamps it if needed, and outputs the
+      corresponding ``[0, 1]`` coordinates.
+    """
     print(f"[TRACE:model_to_dolphin01] Converting model output, palette provided={palette11 is not None}")
     arr = np.asarray(model_out)
 
@@ -326,7 +448,21 @@ def collect_raw_inputs_from_gamestate(
         bot_port: int,
         opp_port: int,
 ) -> ModelFrameInputs:
-    """Extract both raw + transformed feature dictionaries expected by the model."""
+    """Extract both raw and transformed feature dictionaries with an example.
+
+    Example
+    -------
+    Given ``bot_port=1`` and ``opp_port=2`` the helper:
+
+    1. Extracts stage-level stats via :func:`extract_common_fields`.
+    2. Gathers player-specific values for both ports and prefixes them with
+       ``p1_``/``p2_``.
+    3. Coerces scalars, applies configured transforms, and validates that every
+       expected feature is present.
+
+    The returned :class:`ModelFrameInputs` therefore contains the raw mapping used
+    for logging and the transformed mapping used for inference.
+    """
     print(f"[TRACE:collect_raw_inputs_from_gamestate] bot_port={bot_port}, opp_port={opp_port}")
 
     ego_player = gamestate.players.get(bot_port)
@@ -366,6 +502,19 @@ class GPTInferenceEngine:
             self,
             checkpoint_path: str | Path,
     ) -> None:
+        """Load the GPT checkpoint and initialize inference buffers.
+
+        Example
+        -------
+        Constructing ``GPTInferenceEngine('checkpoint.pt')`` performs:
+
+        1. ``torch.load`` to retrieve the saved model state and training config.
+        2. Metadata loading from ``meta.json`` (if present) to recover
+           ``feature_names``, ``target_names``, and ``seq_len``.
+        3. Model instantiation on the resolved device and buffer setup so
+           :meth:`predict_from_raw` can immediately begin warm-up with neutral
+           controller states.
+        """
         print(f"[TRACE:GPTInferenceEngine.__init__] Loading checkpoint from {checkpoint_path}")
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})
@@ -462,6 +611,15 @@ class GPTInferenceEngine:
     # TODO: python loop - maybe vectorize?
     # TODO: Good candidate for a microbenchmark
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
+        """Convert ``raw_inputs`` into an ordered tensor of feature values.
+
+        Example
+        -------
+        With ``self.feature_names = ['foo', 'bar']`` and ``raw_inputs`` containing
+        those keys, the returned tensor is ``tensor([foo_value, bar_value])``.
+        Missing keys raise ``KeyError`` through :func:`_safe_float`, making schema
+        issues visible during inference.
+        """
         print(f"[TRACE:GPTInferenceEngine._frame_to_tensor] Converting {len(raw_inputs)} inputs")
         frame = torch.zeros(self.feature_dim, dtype=torch.float32)
         for idx, name in enumerate(self.feature_names):
@@ -469,6 +627,15 @@ class GPTInferenceEngine:
         return frame
 
     def _stack_frames(self) -> Optional[torch.Tensor]:
+        """Stack buffered frames into a batch tensor when the buffer is non-empty.
+
+        Example
+        -------
+        If ``self.buffer`` holds three ``(F,)`` tensors, the method returns a
+        ``(1, 3, F)`` tensor ready for the model. When the buffer is empty (e.g.,
+        before warm-up completes) the method returns ``None`` to signal that
+        inference should keep emitting neutral actions.
+        """
         print(f"[TRACE:GPTInferenceEngine._stack_frames] Buffer size: {len(self.buffer)}")
         if not self.buffer:
             print("[TRACE:GPTInferenceEngine._stack_frames] Buffer empty, returning None")
@@ -479,12 +646,29 @@ class GPTInferenceEngine:
         return stacked.unsqueeze(0).to(self.device)
 
     def _build_inputs(self, batch_X: torch.Tensor) -> TensorDict:
+        """Wrap ``batch_X`` in the structured :class:`TensorDict` used by the model.
+
+        Example
+        -------
+        ``batch_X`` with shape ``(1, 256, F)`` is forwarded to
+        :func:`build_model_inputs`, which returns a dictionary containing the
+        original tensor plus positional encodings. This mirrors the exact input
+        contract used during training.
+        """
         print(f"[TRACE:GPTInferenceEngine._build_inputs] Building inputs from batch shape {batch_X.shape}")
         return build_model_inputs(batch_X, self.colmap)
 
     def _override_controller_features(
             self, features: Mapping[str, float]
     ) -> Dict[str, float]:
+        """Replace controller-related keys with cached values from prior outputs.
+
+        Example
+        -------
+        If ``features['p1_main_stick_x']`` equals ``0.2`` but the cached previous
+        value is ``0.5``, the returned dictionary substitutes ``0.5`` so the model
+        sees consistent controller history until a fresh prediction is available.
+        """
         print(
             f"[TRACE:GPTInferenceEngine._override_controller_features] Overriding {len(self._controller_feature_keys)} controller features")
         updated = dict(features)
@@ -494,6 +678,14 @@ class GPTInferenceEngine:
         return updated
 
     def _update_prev_controller_features(self, state: ControllerState) -> None:
+        """Cache the transformed controller state for future overrides.
+
+        Example
+        -------
+        After decoding ``state`` with main stick ``(0.7, 0.4)``, the method expands
+        it to feature keys, applies transforms if configured, and stores the result
+        so :meth:`_override_controller_features` can reuse them on the next frame.
+        """
         print("[TRACE:GPTInferenceEngine._update_prev_controller_features] Updating previous controller features")
         values = _controller_state_to_features("p1", state)
         if _FEATURE_TRANSFORMS_SPEC and _FEATURE_TRANSFORMS_SPEC.steps:
@@ -505,6 +697,15 @@ class GPTInferenceEngine:
             self._prev_controller_features = {k: float(v) for k, v in values.items()}
 
     def _snapshot_features(self, features: Mapping[str, float]) -> Dict[str, float]:
+        """Capture transformed feature values in model order.
+
+        Example
+        -------
+        For ``self.feature_names = ['foo', 'bar']`` and ``features`` containing
+        those keys, the returned dictionary is
+        ``{'foo': float(features['foo']), 'bar': float(features['bar'])}``.
+        Missing keys raise ``KeyError`` so logging never silently omits features.
+        """
         print(f"[TRACE:GPTInferenceEngine._snapshot_features] Snapshotting {len(self.feature_names)} features")
         snapshot: Dict[str, float] = {}
         for name in self.feature_names:
@@ -515,10 +716,25 @@ class GPTInferenceEngine:
         return snapshot
 
     def _snapshot_raw(self, raw_inputs: Mapping[str, float]) -> Dict[str, float]:
+        """Normalize raw mapping values into plain Python scalars.
+
+        Example
+        -------
+        ``_snapshot_raw({'foo': np.float32(1.23)})`` yields ``{'foo': 1.23}``,
+        making the snapshot JSON-serializable for death logs.
+        """
         print(f"[TRACE:GPTInferenceEngine._snapshot_raw] Snapshotting {len(raw_inputs)} raw inputs")
         return {name: _coerce_scalar(value) for name, value in raw_inputs.items()}
 
     def _snapshot_targets(self, raw_inputs: Mapping[str, float]) -> Dict[str, float]:
+        """Extract controller targets (sticks/buttons) from ``raw_inputs``.
+
+        Example
+        -------
+        If ``raw_inputs`` provides ``'p1_button_a': 1`` and ``'p1_main_stick_x': 0.6``
+        they appear in the returned dictionary. Missing keys trigger ``KeyError``
+        so controller logs remain aligned with the model schema.
+        """
         print(f"[TRACE:GPTInferenceEngine._snapshot_targets] Snapshotting {len(self.target_names)} targets")
         targets: Dict[str, float] = {}
         for name in self.target_names:
@@ -533,6 +749,15 @@ class GPTInferenceEngine:
     def _record_frame(
             self, model_features: Mapping[str, float], raw_inputs: Mapping[str, float]
     ) -> FrameRecord:
+        """Append the current frame's raw, transformed, and target data to history.
+
+        Example
+        -------
+        The method constructs a :class:`FrameRecord` using
+        :meth:`_snapshot_raw`, :meth:`_snapshot_features`, and
+        :meth:`_snapshot_targets`, appends it to ``self.frame_history``, and returns
+        the record so callers can store logits alongside it.
+        """
         print("[TRACE:GPTInferenceEngine._record_frame] Recording frame")
         record = FrameRecord(
             raw_features=self._snapshot_raw(raw_inputs),
@@ -544,6 +769,14 @@ class GPTInferenceEngine:
         return record
 
     def _capture_logits(self, outputs: TensorDict) -> Dict[str, Any]:
+        """Convert model logits into CPU lists for logging.
+
+        Example
+        -------
+        When ``outputs['buttons']`` is available, the method stores
+        ``outputs['buttons'][0, -1].detach().cpu().tolist()`` under the ``'buttons'``
+        key so the JSON death log records the exact logits that led to an action.
+        """
         print("[TRACE:GPTInferenceEngine._capture_logits] Capturing logits")
         logits: Dict[str, Any] = {}
         if "main_stick" in outputs:
@@ -565,6 +798,15 @@ class GPTInferenceEngine:
         return logits
 
     def _persist_death_record(self, stock_after: int) -> None:
+        """Write the current frame history to disk after a stock loss.
+
+        Example
+        -------
+        If the player goes from three to two stocks, the method dumps
+        ``self.frame_history`` into ``death_logs/death_000001.json`` including raw
+        features, transformed features, targets, and logits for every recorded
+        frame.
+        """
         print(f"[TRACE:GPTInferenceEngine._persist_death_record] Persisting death record, stock_after={stock_after}")
         frames = list(self.frame_history)
         if not frames:
@@ -609,6 +851,14 @@ class GPTInferenceEngine:
         self._death_counter += 1
 
     def _maybe_log_death(self, current_stock: Optional[float]) -> None:
+        """Detect stock drops and trigger :meth:`_persist_death_record`.
+
+        Example
+        -------
+        When ``self._prev_stock`` is ``3`` and ``current_stock`` equals ``2``, the
+        method saves the death log, increments counters, and resets tracking so the
+        next stock loss generates a fresh log.
+        """
         print(
             f"[TRACE:GPTInferenceEngine._maybe_log_death] current_stock={current_stock}, prev_stock={self._prev_stock}")
         if current_stock is None:
@@ -630,6 +880,16 @@ class GPTInferenceEngine:
     def _decode_stick(
             self, logits: torch.Tensor, palette: np.ndarray, stick_name: str
     ) -> np.ndarray:
+        """Convert stick logits into palette coordinates with an example.
+
+        Example
+        -------
+        If ``stick_name='main_stick'`` and ``logits=[2.0, 0.0, -1.0]`` over a
+        palette of three vectors, the method selects the ``argmax`` index ``0`` and
+        looks up the corresponding palette coordinate. When ``stick_name`` equals
+        ``'c_stick'`` it additionally computes ``softmax`` probabilities for
+        logging, mirroring the exact decoding performed during inference.
+        """
         print(f"[TRACE:GPTInferenceEngine._decode_stick] Decoding {stick_name}")
         # Decode sticks by selecting the most likely quantized bin (argmax).
         idx = torch.argmax(logits.detach(), dim=-1)
@@ -643,6 +903,16 @@ class GPTInferenceEngine:
         return xy01.reshape(-1)
 
     def _decode_buttons(self, probs: torch.Tensor) -> List[bool]:
+        """Sample button activations from probabilities using Bernoulli draws.
+
+        Example
+        -------
+        ``_decode_buttons(torch.tensor([[0.7, 0.2, 0.9, 0.1, 0.5]]))`` first clamps
+        probabilities to ``[eps, 1-eps]`` then samples a Bernoulli outcome for each
+        column, returning booleans such as ``[True, False, True, False, True]``.
+        Re-running with the same tensor and manual seed reproduces the same sample,
+        matching the stochastic decoding strategy used during evaluation.
+        """
         print("[TRACE:GPTInferenceEngine._decode_buttons] Decoding buttons")
         # Interpret button activations probabilistically, sampling directly from the model probabilities.
         eps = torch.finfo(probs.dtype).eps
@@ -654,6 +924,17 @@ class GPTInferenceEngine:
 
     # TODO: overly safe. decide on button logits or probs.
     def _decode_outputs(self, outputs: TensorDict) -> ControllerState:
+        """Assemble decoded sticks, buttons, and shoulder into controller output.
+
+        Example
+        -------
+        The method decodes main and C-stick logits via :meth:`_decode_stick`,
+        samples button booleans through :meth:`_decode_buttons`, and chooses the
+        highest-probability shoulder bin. If the shoulder palette is
+        ``[0.0, 0.5, 1.0]`` and logits favor index ``1``, the resulting
+        :class:`ControllerState` has ``shoulder_analog=0.5`` while the sticks hold
+        their decoded coordinates.
+        """
         print("[TRACE:GPTInferenceEngine._decode_outputs] Decoding model outputs")
         main_logits = outputs["main_stick"][0, -1]
         c_logits = outputs["c_stick"][0, -1]
@@ -699,6 +980,16 @@ class GPTInferenceEngine:
         )
 
     def prepare_inputs(self, raw_inputs: Mapping[str, float]) -> Optional[TensorDict]:
+        """Update the frame buffer and return model inputs when enough frames exist.
+
+        Example
+        -------
+        Feeding a new frame appends its tensor to the buffer. Before
+        ``self.warmup_frames`` are collected the method returns ``None``. Once the
+        buffer reaches that length, it stacks the frames and returns the
+        :class:`TensorDict` from :meth:`_build_inputs`, mirroring the workflow used
+        inside :meth:`predict_from_raw`.
+        """
         print("[TRACE:GPTInferenceEngine.prepare_inputs] Preparing inputs")
         frame = self._frame_to_tensor(raw_inputs)
         self.buffer.append(frame)
@@ -712,6 +1003,17 @@ class GPTInferenceEngine:
     def predict_from_raw(
             self, frame_inputs: Mapping[str, float] | ModelFrameInputs
     ) -> ControllerState:
+        """Run inference on raw or preprocessed frame inputs with a full walkthrough.
+
+        Example
+        -------
+        During warm-up, repeated calls buffer frames and return
+        :func:`ControllerState.neutral`. After ``warmup_frames`` are reached, the
+        method constructs inputs (or uses ``frame_inputs.transformed``), executes
+        the GPT model under ``torch.inference_mode()``, logs logits via
+        :meth:`_capture_logits`, decodes the outputs to a controller state, and
+        updates the override cache so the next call sees the latest controls.
+        """
         print(f"[TRACE:GPTInferenceEngine.predict_from_raw] Frame {self._frames_seen}")
         if isinstance(frame_inputs, ModelFrameInputs):
             print("[TRACE:GPTInferenceEngine.predict_from_raw] Input is ModelFrameInputs")
@@ -750,6 +1052,16 @@ _ACTIVE_ENGINE: Optional[GPTInferenceEngine] = None
 def apply_model_outputs_to_game(
         controller: Controller, model_outputs: ControllerState
 ) -> None:
+    """Apply ``model_outputs`` to the Dolphin controller with an example.
+
+    Example
+    -------
+    If ``model_outputs`` has ``button_a=True`` and ``main_stick=(0.8, 0.3)``, the
+    helper presses button A, tilts the main analog stick to ``(0.8, 0.3)``, and
+    releases any buttons marked ``False``. The shoulder analog is set via
+    ``press_shoulder`` using ``model_outputs.shoulder_analog``, reproducing the
+    exact physical controller state encoded in the :class:`ControllerState`.
+    """
     print("[TRACE:apply_model_outputs_to_game] Applying controller state to game")
     controller.release_all()
     if model_outputs.button_a:

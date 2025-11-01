@@ -12,7 +12,19 @@ from torch.optim import Optimizer
 
 
 def _move_optimizer_state_to_device(optimizer: Optimizer, device: torch.device) -> None:
-    """Move optimizer state tensors to specified device."""
+    """Relocate every tensor in an optimizer's state dictionary onto ``device``.
+
+    Example:
+        Consider an ``Adam`` optimizer tracking ``exp_avg`` and ``exp_avg_sq`` on CPU. Calling
+        ``_move_optimizer_state_to_device(optimizer, torch.device("cuda"))`` iterates through every
+        parameter's state, finds the tensors, and replaces them with GPU copies produced by
+        ``tensor.to(device)``. After the function completes, ``optimizer.state[p]["exp_avg"].device``
+        reports ``cuda:0`` for each parameter, showing the step-by-step migration.
+
+    Args:
+        optimizer: Optimizer whose internal state tensors should be moved.
+        device: Destination device.
+    """
     for state in optimizer.state.values():
         for key, value in list(state.items()):
             if isinstance(value, torch.Tensor):
@@ -22,7 +34,23 @@ def _move_optimizer_state_to_device(optimizer: Optimizer, device: torch.device) 
 def collect_gradient_diagnostics(
     model: torch.nn.Module, eps: float = 1e-12
 ) -> Dict[str, float]:
-    """Aggregate gradient statistics for monitoring numerical stability."""
+    """Aggregate gradient statistics for monitoring numerical stability with an explicit example.
+
+    Example:
+        Suppose ``model`` has two parameters with gradients ``tensor([1.0, -2.0])`` and
+        ``tensor([0.0, float('nan')])``. ``collect_gradient_diagnostics`` traverses each gradient,
+        accumulating sums (``total_sq = 1^2 + (-2)^2 = 5``), counting zeros (one element equals
+        ``0.0``), and tracking NaNs (one element). The returned dictionary therefore includes
+        ``{"total_norm": sqrt(5), "zero_count": 1, "nan_count": 1}`` among many other statistics.
+        This walkthrough mirrors the exact sequence of reductions performed by the function.
+
+    Args:
+        model: Module whose gradients will be inspected.
+        eps: Small constant used when computing gradient-to-parameter ratios.
+
+    Returns:
+        Dictionary mapping metric names to floating-point summaries of the gradients.
+    """
     total_sq = 0.0
     total_abs = 0.0
     total_sum = 0.0

@@ -27,7 +27,21 @@ class RewardFeatureIdx:
 
 
 def build_reward_feature_index(colmap: ColumnMap) -> RewardFeatureIdx:
-    """Resolve feature indices once and reuse; avoids per-call .index() overhead."""
+    """Resolve frequently accessed feature indices from a :class:`ColumnMap` in one pass.
+
+    Example:
+        If ``colmap.feat_names`` equals ``["p1_stock", "p2_stock", "p1_percent"]``, calling
+        ``build_reward_feature_index`` returns ``RewardFeatureIdx(p1_stock=0, p2_stock=1,
+        p1_percent=2, ...)`` while any missing names (such as ``p2_percent``) remain ``None``. The
+        example demonstrates how the helper searches each feature name and records the integer
+        position so later reward computations can index into tensors without repeated list lookups.
+
+    Args:
+        colmap: Column mapping that lists feature names in order.
+
+    Returns:
+        :class:`RewardFeatureIdx` populated with index values where available.
+    """
     names = colmap.feat_names
 
     def idx(name: str) -> Optional[int]:
@@ -52,17 +66,29 @@ def compute_frame_rewards(
     *,
     idx: Optional[RewardFeatureIdx] = None,
 ) -> torch.Tensor:
-    """Compute per-frame rewards based on game state changes.
+    """Compute reward signals per frame using stock, damage, hitlag, and shield features.
 
-    Vectorized & allocation-lean version for efficient computation.
+    Example:
+        Consider ``B=1`` and ``L=3`` with stocks ``[4, 4, 3]`` and opponent percent damage
+        ``[0.10, 0.20, 0.25]`` (normalized 0–1). Using configuration weights
+        ``reward_stock_taken = 2`` and ``reward_damage_dealt = 0.5``:
+
+        #. ``torch.diff`` finds a stock drop of ``1`` at frame 2, so ``rw[:, 2]`` gains ``+2``.
+        #. Damage deltas are ``[+0.10, +0.05]``; the second frame adds ``0.10 * 100 * 0.5 = 5`` and
+           the third frame adds ``0.05 * 100 * 0.5 = 2.5``.
+        #. Summing the base reward ``reward_per_frame`` (call it ``r``) with these bonuses yields a
+           reward vector ``[r, r + 5, r + 2 + 2.5]``.
+
+        The example showcases each tensor operation—diffs, clamps, and adds—and how they manipulate
+        the inputs to produce the per-frame rewards.
 
     Args:
-        X: [B, L, F] input features
-        colmap: Column mapping
-        idx: Optional pre-computed reward feature indices
+        X: ``[B, L, F]`` input feature tensor.
+        colmap: Column mapping describing feature positions.
+        idx: Optional cached feature indices from :func:`build_reward_feature_index`.
 
     Returns:
-        [B, L] reward tensor
+        ``[B, L]`` tensor of per-frame rewards.
     """
     B, L, _F = X.shape
     device = X.device
@@ -135,7 +161,23 @@ _GAMMA_POW_CACHE: Dict[Tuple[int, float, torch.dtype, str, int], torch.Tensor] =
 def _gamma_cache_key(
     length: int, gamma: float, device: torch.device, dtype: torch.dtype
 ) -> Tuple[int, float, torch.dtype, str, int]:
-    """Create cache key for gamma powers."""
+    """Produce a hashable key describing the gamma power request for caching.
+
+    Example:
+        For ``length=4``, ``gamma=0.99``, ``device=torch.device('cuda', 0)``, and ``dtype=torch.float32``
+        the function returns ``(4, 0.99, torch.float32, 'cuda', 0)``. Requesting gamma powers with the
+        same inputs later reuses the cached tensor because the key matches exactly. This example shows
+        how each argument contributes to the key tuple.
+
+    Args:
+        length: Number of time steps required.
+        gamma: Discount factor.
+        device: Target device for the cached tensor.
+        dtype: Desired floating-point dtype.
+
+    Returns:
+        Tuple uniquely identifying the gamma power request.
+    """
     dev = torch.device(device)
     return (
         int(length),
@@ -150,7 +192,24 @@ def _gamma_cache_key(
 def _get_gamma_powers(
     length: int, gamma: float, device: torch.device, dtype: torch.dtype
 ) -> torch.Tensor:
-    """Get cached gamma powers or compute and cache them."""
+    """Return the vector ``[1, gamma, gamma^2, ...]`` either from cache or by recomputation.
+
+    Example:
+        Requesting ``_get_gamma_powers(3, 0.9, cpu_device, torch.float32)`` first builds the cache key
+        ``(3, 0.9, torch.float32, 'cpu', -1)``. If absent, it creates the tensor
+        ``tensor([1.0, 0.9, 0.81])`` via ``torch.pow`` and stores it in ``_GAMMA_POW_CACHE``. A second
+        call with the same arguments returns the cached tensor without recomputing. The example
+        highlights the control flow between cache hits and misses.
+
+    Args:
+        length: Number of gamma powers needed.
+        gamma: Discount factor.
+        device: Target device for the returned tensor.
+        dtype: Desired floating-point dtype of the result.
+
+    Returns:
+        Tensor of shape ``[length]`` containing successive gamma powers.
+    """
     if length <= 0:
         return torch.empty((0,), device=device, dtype=dtype)
 
@@ -179,16 +238,29 @@ def compute_value_targets(
     *,
     reward_idx: Optional[RewardFeatureIdx] = None,
 ) -> torch.Tensor:
-    """Compute discounted returns in O(B·L) using cached gamma powers and fused scans.
+    """Compute discounted returns by summing future rewards with geometric decay.
+
+    Example:
+        Suppose ``compute_frame_rewards`` yields ``[[1.0, 2.0, 3.0]]`` with ``gamma=0.9``. The helper
+        obtains gamma powers ``[1.0, 0.9, 0.81]`` and performs a reversed cumulative sum:
+
+        * Weighted rewards become ``[[1.0, 1.8, 2.43]]``.
+        * The reversed ``cumsum`` generates ``[[5.23, 4.23, 2.43]]``.
+        * Dividing by the gamma powers recovers the standard discounted returns
+          ``[[5.23, 4.7, 3.0]]``.
+
+        Finally the method adds the optional terminal bonus (contributing ``[0.81, 0.9, 1.0]`` in this
+        example) and unsqueezes the last dimension to produce ``[[[6.04], [5.6], [4.0]]]``. This
+        detailed walkthrough mirrors the tensor manipulations used in the implementation.
 
     Args:
-        X: [B, L, F] input features
-        colmap: Column mapping
-        gamma: Discount factor
-        reward_idx: Optional pre-computed reward feature indices
+        X: ``[B, L, F]`` input features.
+        colmap: Column mapping describing feature positions.
+        gamma: Discount factor used for future rewards.
+        reward_idx: Optional cached feature indices for faster reward computation.
 
     Returns:
-        [B, L, 1] value targets (discounted returns)
+        ``[B, L, 1]`` tensor of discounted returns.
     """
     B, L, _ = X.shape
     device = X.device

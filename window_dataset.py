@@ -28,6 +28,16 @@ class _LRUEpisodeCache:
     """Tiny per-worker cache for opened episode arrays to cut directory lookups."""
 
     def __init__(self, max_open: int = 8) -> None:
+        """Initialize the cache and show how capacity behaves in practice.
+
+        Example
+        -------
+        ``cache = _LRUEpisodeCache(max_open=2)`` starts empty. After calling
+        ``cache.put((0, 1), (X0, Y0))`` and ``cache.put((0, 2), (X1, Y1))`` both
+        entries remain. Inserting ``cache.put((0, 3), (X2, Y2))`` pushes out the
+        oldest ``(0, 1)`` pair so subsequent ``get`` calls only see the two most
+        recently touched episodes.
+        """
         self.max_open = max_open
         self._keys: List[Tuple[int, int]] = []  # (shard_id, episode_id)
         self._vals: List[Tuple[zarr.Array, Optional[zarr.Array]]] = []
@@ -35,6 +45,15 @@ class _LRUEpisodeCache:
     def get(
         self, key: Tuple[int, int]
     ) -> Optional[Tuple[zarr.Array, Optional[zarr.Array]]]:
+        """Retrieve and mark an entry as recently used with a concrete trace.
+
+        Example
+        -------
+        If ``cache`` already stored ``(0, 5) -> (X5, None)`` and ``(0, 6) -> (X6, Y6)``,
+        calling ``cache.get((0, 5))`` returns ``(X5, None)`` and rotates that key to
+        the end of ``_keys`` so the next eviction would remove ``(0, 6)`` instead.
+        Requesting an unseen key yields ``None`` without mutating the cache.
+        """
         try:
             i = self._keys.index(key)
         except ValueError:
@@ -47,6 +66,17 @@ class _LRUEpisodeCache:
     def put(
         self, key: Tuple[int, int], value: Tuple[zarr.Array, Optional[zarr.Array]]
     ) -> None:
+        """Insert ``key`` while maintaining the maximum cache size.
+
+        Example
+        -------
+        Starting from ``[(0, 1), (0, 2)]`` in ``_keys`` with ``max_open=2``:
+
+        1. ``put((0, 2), v)`` updates the value and moves ``(0, 2)`` to the end so
+           it becomes the most recent entry.
+        2. ``put((0, 3), v3)`` appends ``(0, 3)`` and pops ``(0, 1)`` from the
+           front, ensuring only the two newest handles remain cached.
+        """
         if key in self._keys:
             i = self._keys.index(key)
             self._keys.pop(i)
@@ -67,6 +97,16 @@ class ZarrCorpusIndex:
     """
 
     def __init__(self, data_dir: str | Path) -> None:
+        """Load metadata and build prefix sums for global-window lookups.
+
+        Example
+        -------
+        When ``data_dir`` contains ``meta.json``, ``lengths.npy`` and two episodes
+        with window counts ``[3, 2]``, the constructor builds
+        ``_cumulative_windows=[3, 5]``. Later ``window_to_episode(4)`` uses this
+        array to return ``(1, 1)`` because the fifth global window belongs to
+        episode index ``1`` starting at offset ``1``.
+        """
         self.data_dir = Path(data_dir)
         meta_path = self.data_dir / "meta.json"
         lengths_path = self.data_dir / "lengths.npy"
@@ -122,9 +162,15 @@ class ZarrCorpusIndex:
             self._shard_paths[sid] = sdir
 
     def window_to_episode(self, global_win_idx: int) -> Tuple[int, int]:
-        """
-        Map global window index -> (episode_idx, start_offset).
-        start_offset is in [0, wins_in_episode-1].
+        """Map ``global_win_idx`` to an episode index and start offset.
+
+        Example
+        -------
+        With ``wins_per_ep = [3, 2]`` the cumulative windows are ``[3, 5]``. Calling
+        ``window_to_episode(2)`` returns ``(0, 2)`` because the third window still
+        falls within episode ``0`` at offset ``2``. Calling ``window_to_episode(3)``
+        returns ``(1, 0)`` showing how the search jumps to the next episode when the
+        index crosses a prefix boundary.
         """
         if not (0 <= global_win_idx < self.total_windows):
             raise IndexError(
@@ -138,6 +184,14 @@ class ZarrCorpusIndex:
         return ep_idx, offset
 
     def episode_start_global_index(self, ep_idx: int) -> int:
+        """Return the first global window index owned by ``ep_idx``.
+
+        Example
+        -------
+        Using the same ``wins_per_ep = [3, 2]`` example, ``ep_idx=0`` returns ``0``
+        while ``ep_idx=1`` returns ``3`` so you can offset local window indices by
+        this amount to obtain their global counterparts.
+        """
         if ep_idx == 0:
             return 0
         return int(self._cumulative_windows[ep_idx - 1])
@@ -148,8 +202,15 @@ class ZarrCorpusIndex:
         *,
         cache: Optional[_LRUEpisodeCache] = None,
     ) -> Tuple[zarr.Array, Optional[zarr.Array]]:
-        """
-        Returns (X_array, Y_array|None) for the episode.
+        """Open and optionally cache the ``X``/``Y`` arrays for ``ep``.
+
+        Example
+        -------
+        When ``ep`` describes ``episode_id=7`` in ``shard_00002.zarr``, the method
+        locates the shard directory, opens ``root['ep_000007']``, and returns the
+        ``X`` and ``Y`` arrays. Supplying a cache reuses the same handles when the
+        worker revisits the episode later in the same epoch, saving filesystem
+        round-trips.
         """
         key = (ep.shard_id, ep.episode_id)
         if cache is not None:
@@ -178,6 +239,16 @@ def _resolve_feature_groups(
     feature_names: Sequence[str],
     requested: Sequence[str],
 ) -> List[Tuple[int, ...]]:
+    """Expand requested feature names into column index groups with examples.
+
+    Example
+    -------
+    Suppose ``feature_names`` contains ``('p1_main_stick_x', 'p1_main_stick_y',
+    'p2_main_stick_x', 'p2_main_stick_y')`` and ``requested=('main_stick_x',
+    'main_stick_y')``. The helper first tries the names verbatim (fails) and then
+    matches both ``p1_`` and ``p2_`` prefixes, returning ``[(0, 1), (2, 3)]`` so
+    transforms run on each player slice independently.
+    """
     name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
 
     if all(name in name_to_idx for name in requested):
@@ -208,6 +279,20 @@ def _resolve_feature_groups(
 def _apply_feature_transforms(
     X: np.ndarray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
 ) -> np.ndarray:
+    """Apply configured transforms to every requested column with a trace.
+
+    Example
+    -------
+    ``spec`` contains two steps:
+
+    1. ``('scale', features=('foo',), factor=0.5)``
+    2. ``('offset', features=('foo', 'bar'), delta=1)``
+
+    For input ``X = [[2., 5.], [4., 7.]]`` with feature names ``('foo', 'bar')`` we
+    first scale ``foo`` to ``[1., 2.]`` then add ``1`` to both columns yielding
+    ``[[2., 6.], [3., 8.]]``. The modified array is returned, demonstrating the
+    in-place but staged nature of the transform pipeline.
+    """
     if spec is None or not spec.steps:
         return X
 
@@ -263,6 +348,15 @@ class WindowDataset(Dataset):
         ep_cache_size: int = 8,
         return_numpy: bool = False,
     ) -> None:
+        """Prepare the dataset by indexing shards and wiring transforms.
+
+        Example
+        -------
+        ``WindowDataset('dataset_root', ep_cache_size=1)`` loads corpus metadata,
+        builds an LRU cache that keeps one episode open per worker, and stores the
+        requested transform spec so future ``__getitem__`` calls transparently
+        apply preprocessing before returning tensors.
+        """
         super().__init__()
         # TODO: Can we build this index faster? generator?
         self.index = ZarrCorpusIndex(data_dir)
@@ -281,9 +375,34 @@ class WindowDataset(Dataset):
         self._target_names_sel = list(self._target_names)
 
     def __len__(self) -> int:
+        """Return the total number of sliding windows across the corpus.
+
+        Example
+        -------
+        If the index reports ``total_windows=120_000`` this method simply returns
+        that value, matching how PyTorch uses ``len(dataset)`` to size an epoch.
+        """
         return self.index.total_windows
 
     def __getitem__(self, i: int) -> Dict[str, object]:
+        """Load window ``i`` and show each intermediate tensor transformation.
+
+        Example
+        -------
+        For ``seq_len=3`` and ``i=4``:
+
+        1. ``window_to_episode`` might yield ``(ep_idx=1, offset=1)`` so we slice
+           frames ``[1:4]`` from the episode arrays.
+        2. After copying into contiguous buffers we run feature transforms such as
+           scaling or palette snapping.
+        3. If ``return_numpy`` is ``False`` the arrays are converted to
+           ``torch.float32`` tensors and the target array defaults to shape
+           ``(3, 0)`` when an episode lacks ``Y`` data.
+
+        The method returns a dictionary containing the tensors alongside the
+        ``episode_id`` and the local ``start`` offset, mirroring the exact payload
+        consumed by the training loop.
+        """
         ep_idx, offset = self.index.window_to_episode(i)
         ep = self.index.episodes[ep_idx]
         start = offset  # within episode, window starts at this index
@@ -348,6 +467,15 @@ class RandomWindowSampler(Sampler[int]):
         stride: int = 1,
         generator: Optional[torch.Generator] = None,
     ) -> None:
+        """Create a sampler that enforces a stride across episode windows.
+
+        Example
+        -------
+        With ``stride=2`` and two episodes having window counts ``[3, 4]`` the
+        sampler's ``__iter__`` in epoch ``0`` yields offsets ``[0, 2, 0, 2]`` across
+        episodes, while epoch ``1`` produces ``[1, 3, 1, 3]`` (where valid). The
+        constructor stores the generator so shuffling remains reproducible.
+        """
         super().__init__()
         if stride < 1:
             raise ValueError("stride must be >= 1")
@@ -358,13 +486,39 @@ class RandomWindowSampler(Sampler[int]):
         self._start_offset = 0
 
     def set_epoch(self, epoch: int) -> None:
+        """Record the epoch so future iterations honor ``epoch % stride``.
+
+        Example
+        -------
+        Calling ``set_epoch(3)`` with ``stride=2`` means ``__iter__`` will only
+        visit windows whose local offsets satisfy ``t % 2 == 1`` because the epoch's
+        modulo is ``1``.
+        """
         self.epoch = int(epoch)
 
     def set_start_offset(self, offset: int) -> None:
-        """Skip the first `offset` samples the next time the sampler is iterated."""
+        """Skip the first ``offset`` samples the next time the sampler runs.
+
+        Example
+        -------
+        After drawing the indices ``[10, 20, 30]`` the sampler applies
+        ``set_start_offset(1)`` so the very next ``__iter__`` call discards ``10``
+        and starts yielding from ``20``. The internal counter resets to ``0`` after
+        iteration so future epochs consume the full sequence again.
+        """
         self._start_offset = max(0, int(offset))
 
     def _count_for_epoch(self, epoch: int) -> int:
+        """Count how many windows satisfy the stride for ``epoch``.
+
+        Example
+        -------
+        With ``stride=3`` and an episode containing ``5`` windows, epoch ``0``
+        contributes ``2`` windows (offsets ``0`` and ``3``). Epoch ``1`` contributes
+        offsets ``1`` and ``4`` (also ``2`` windows), while epoch ``2`` contributes
+        just offset ``2``. Summing across episodes produces the number returned by
+        ``__len__``.
+        """
         s = self.stride
         m = epoch % s
         total = 0
@@ -376,9 +530,27 @@ class RandomWindowSampler(Sampler[int]):
         return total
 
     def __len__(self) -> int:
+        """Return the number of indices that ``__iter__`` will generate.
+
+        Example
+        -------
+        For ``stride=2`` with window counts ``[3, 4]`` and ``epoch=0`` the helper
+        reports ``5`` because episode ``0`` contributes offsets ``0`` and ``2``
+        while episode ``1`` contributes ``0``, ``2`` and ``4``.
+        """
         return self._count_for_epoch(self.epoch)
 
     def __iter__(self) -> Iterator[int]:
+        """Yield global window indices for the configured stride with shuffling.
+
+        Example
+        -------
+        Continuing the ``stride=2`` scenario, ``__iter__`` first enumerates all
+        valid offsets that satisfy ``t % 2 == epoch % 2``. It then applies
+        ``torch.randperm`` when a generator is supplied, so two consecutive epochs
+        with the same seed produce identical shuffled orders, ensuring reproducible
+        training batches.
+        """
         s = self.stride
         m = self.epoch % s
 
@@ -412,8 +584,14 @@ class RandomWindowSampler(Sampler[int]):
 
 
 def worker_init_fn(worker_id: int) -> None:
-    """
-    Set distinct NumPy / PyTorch seeds for each worker. Avoids identical shuffles per worker.
+    """Seed NumPy and PyTorch for ``worker_id`` with a short computation trace.
+
+    Example
+    -------
+    When PyTorch assigns base seed ``123`` to the worker, this helper computes
+    ``base_seed = 123 % 2**31`` and seeds NumPy with ``base_seed + worker_id``. For
+    worker ``2`` the resulting NumPy seed is ``125`` so each DataLoader worker
+    shuffles batches differently.
     """
     # Same recipe as PyTorch DistributedSampler docs
     base_seed = torch.initial_seed() % 2**31
@@ -423,8 +601,22 @@ def worker_init_fn(worker_id: int) -> None:
 def make_dataloader() -> (
     Tuple[torch.utils.data.DataLoader, WindowDataset, Sampler[int]]
 ):
-    """
-    Builds dataset + sampler + DataLoader with tuned defaults.
+    """Construct the dataset, sampler, and DataLoader with an explicit example.
+
+    Example
+    -------
+    When configuration specifies ``batch_size=8``, ``stride=4`` and ``num_workers=2``
+    this function:
+
+    1. Builds ``WindowDataset`` with feature transforms from the config.
+    2. Instantiates :class:`RandomWindowSampler` using the dataset's index and the
+       configured stride.
+    3. Creates ``DataLoader`` with two workers, pinned memory (on CUDA), and
+       ``worker_init_fn`` so each worker gets a unique seed.
+
+    The three-tuple ``(loader, dataset, sampler)`` is returned so training scripts
+    can iterate over ``loader`` while still accessing ``dataset`` metadata and the
+    sampler to adjust epochs.
     """
     config = get_config()
     feature_spec = feature_spec_from_config(config.features)

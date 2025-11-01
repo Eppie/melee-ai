@@ -15,14 +15,43 @@ from controller_quantization import quantize_targets
 
 
 def build_model_inputs(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorDict:
-    """Build TensorDict inputs for the model from batch features.
+    """Convert raw feature tensors into the structured ``TensorDict`` expected by the model.
+
+    The function slices the ``batch_X`` tensor using indices stored in ``colmap`` and casts
+    categorical features to ``torch.long`` so they can be consumed by embedding layers. Continuous
+    features (game state and controller values) remain floating point. The resulting dictionary is
+    wrapped in a ``TensorDict`` with the same batch shape as the input so downstream code can rely
+    on consistent key names.
+
+    Example:
+        Suppose ``batch_X`` is shaped ``[2, 3, 6]`` and the column map encodes indices such that
+        stage is at column 0, ego character at column 1, opponent character at column 2, ego action
+        at column 3, opponent action at column 4, and the remaining columns correspond to
+        ``gamestate`` (column 5 onwards) and ``controller`` (the last two columns). The first batch
+        might look like::
+
+            batch_X = torch.tensor([
+                [
+                    [3.0, 10.0, 20.0, 4.0, 12.0, 0.1, 0.2],
+                    [3.0, 10.0, 20.0, 4.0, 12.0, 0.3, 0.4],
+                    [2.0, 11.0, 21.0, 5.0, 13.0, 0.5, 0.6],
+                ]
+            ])
+
+        ``build_model_inputs`` will slice each column group, cast the five categorical columns to
+        integer type, and keep the last two columns as floating point. The returned ``TensorDict``
+        contains entries like ``{"stage": tensor([[[3], [3], [2]]], dtype=torch.long)}`` and
+        ``{"controller": tensor([[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]])}``, demonstrating how each
+        slice of the original tensor is repackaged for the model.
 
     Args:
-        batch_X: [B, L, F] float32 features of current frame
-        colmap: Column mapping for feature indices
+        batch_X: ``[B, L, F]`` float32 features of the current frame sequence.
+        colmap: Column mapping for feature indices.
 
     Returns:
-        TensorDict with keys the model expects (stage, characters, actions, gamestate, controller)
+        ``TensorDict`` with the keys the model expects: ``stage``, ``ego_character``,
+        ``opponent_character``, ``ego_action``, ``opponent_action``, ``gamestate``, and
+        ``controller``.
     """
     B, L, _ = batch_X.shape
 
@@ -54,17 +83,27 @@ def build_model_inputs(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorD
 def quantize_controller_targets(
         batch_Y: torch.Tensor, colmap: ColumnMap, input_domain: str = "unit11"
 ) -> Dict[str, torch.Tensor]:
-    """Quantize controller targets for loss computation.
+    """Quantize controller outputs to the discrete bins used by the loss functions.
 
-    Wrapper around controller_quantization.quantize_targets for consistency.
+    This is a thin wrapper around :func:`controller_quantization.quantize_targets` that provides a
+    consistent entry point for the rest of the training code.
+
+    Example:
+        If ``batch_Y`` contains a single sequence ``[[[0.0, 0.5], [0.2, -0.1]]]`` and the column map
+        reports that the first column is the main stick and the second is the C-stick, the wrapped
+        quantizer will convert those continuous values into categorical indices. With a quantization
+        scheme that maps ``0.0`` to bin ``4`` and ``0.5`` to bin ``7``, the resulting dictionary
+        includes tensors like ``{"main_idx": tensor([[4, 5]]), "c_idx": tensor([[7, 3]])}`` along
+        with masks describing which frames changed. The example shows how continuous values are
+        transformed step by step before being returned.
 
     Args:
-        batch_Y: [B, L, Y] target controller values
-        colmap: Column mapping for target indices
-        input_domain: Domain of input values ("unit11" or "unit01")
+        batch_Y: ``[B, L, Y]`` target controller values to quantize.
+        colmap: Column mapping for the target indices.
+        input_domain: Domain of input values (``"unit11"`` or ``"unit01"``).
 
     Returns:
-        Dictionary with quantized targets and metadata
+        Dictionary with quantized targets and metadata as produced by the underlying quantizer.
     """
     return quantize_targets(batch_Y, colmap, input_domain=input_domain)
 
@@ -83,6 +122,21 @@ class SampleWeightRatios:
 
 
 def _normalize(w: Tensor) -> Tensor:
+    """Scale weights so their mean is exactly one, avoiding degenerate zeros.
+
+    Example:
+        Passing ``w = tensor([[2.0, 4.0], [6.0, 8.0]])`` results in a mean of ``5.0``. The function
+        divides every entry by ``5.0 + 1e-12`` to produce
+        ``tensor([[0.4, 0.8], [1.2, 1.6]])``. The step-by-step scaling ensures that subsequent loss
+        computations treat the average weight as neutral while preserving the relative emphasis of
+        each element.
+
+    Args:
+        w: Tensor of arbitrary shape containing positive sample weights.
+
+    Returns:
+        Tensor with the same shape as ``w`` where the mean value is one (up to numerical precision).
+    """
     return w / (w.mean() + 1e-12)
 
 
@@ -94,13 +148,41 @@ def compute_component_sample_weights(
         ratios: Optional[SampleWeightRatios] = None,
         button_names: Optional[Sequence[str]] = None,
 ) -> Dict[str, Tensor]:
-    """
-    Build per-component loss weights:
-      - 'main':    [B, L]
-      - 'c':       [B, L]
-      - 'shoulder':[B, L] (if present, else ones)
-      - 'buttons': [B, L, K]
-      - 'global':  [B, L] (union-of-changes; can be useful for value head)
+    """Construct dynamic loss weights that emphasize frames where actions change.
+
+    The function inspects quantized controller targets to find frames where each component (main
+    stick, C-stick, shoulders, buttons) differs from the previous frame. Change frames receive the
+    up-weighting factors from :class:`SampleWeightRatios`, while hold frames receive the base weight.
+    The helper then normalizes each component so the average weight stays at one, ensuring the total
+    loss magnitude is stable.
+
+    Example:
+        Consider a tiny batch with ``B=1`` and ``L=4`` where the main stick indices are
+        ``[1, 1, 3, 3]`` and a single button toggles ``[0, 1, 1, 0]``. Using the default ratios,
+        ``compute_component_sample_weights``:
+
+        #. Detects that the main stick only changes at frame 2 (index ``3``) and assigns the
+           ``main_change`` weight ``8.0`` there while giving ``1.0`` to the hold frames.
+        #. For the button, it spots changes at frames 1 and 3, so those frames are weighted ``10.0``
+           while the others remain ``1.0``.
+        #. After normalizing, the returned tensors might look like ``main = tensor([[0.5, 0.5, 2.0, 2.0]])``
+           and ``buttons = tensor([[[0.4], [1.6], [1.6], [0.4]]])``, illustrating how each component
+           is scaled relative to the original ratios yet keeps a mean of one.
+
+    Args:
+        target_info: Mapping containing quantized indices and button states produced by
+            :func:`quantize_controller_targets`.
+        device: Target device for the constructed tensors.
+        ratios: Optional override for the default :class:`SampleWeightRatios`.
+        button_names: Optional list of button names that aligns with the ``buttons`` tensor.
+
+    Returns:
+        Dictionary with per-component weight tensors:
+
+        * ``"main"`` and ``"c"``: ``[B, L]``
+        * ``"shoulder"``: ``[B, L]`` (or ones if shoulders are absent)
+        * ``"buttons"``: ``[B, L, K]``
+        * ``"global"``: ``[B, L]`` union of all change indicators
     """
     r = ratios or SampleWeightRatios()
     B, L = target_info["main_idx"].shape

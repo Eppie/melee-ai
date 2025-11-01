@@ -14,7 +14,20 @@ _ACTION_VALUE_TO_NAME = {action.value: action.name for action in Action}
 
 
 def _format_value(value: object) -> str:
-    """Format numeric values with up to 6 significant figures."""
+    """Format numbers to six significant figures while leaving other objects untouched.
+
+    Example:
+        Calling ``_format_value(0.123456789)`` casts the input to ``float`` and formats it as the
+        string ``"0.123457"``. Passing ``_format_value("noop")`` skips numeric formatting and
+        simply returns ``"noop"``. The example demonstrates how the helper branches between numeric
+        and non-numeric inputs.
+
+    Args:
+        value: Value to format, typically a scalar extracted from a tensor or array.
+
+    Returns:
+        String representation with limited significant figures for numeric inputs.
+    """
     try:
         return f"{float(value):.6g}"
     except (TypeError, ValueError):
@@ -22,7 +35,20 @@ def _format_value(value: object) -> str:
 
 
 def _format_action(value: object) -> str:
-    """Format action enum values to their names."""
+    """Convert action enumeration indices back into descriptive names.
+
+    Example:
+        Suppose ``value`` is ``4`` and ``Action(4).name`` equals ``"JUMP"``. The helper casts the
+        value to ``int`` and looks it up in ``_ACTION_VALUE_TO_NAME``, producing ``"JUMP"``. If the
+        value were ``99`` (not a valid key), it would fall back to ``"99"``. This illustrates how the
+        function either resolves human-friendly labels or echoes the numeric input.
+
+    Args:
+        value: Numeric or string representation of the action index.
+
+    Returns:
+        Action name string if available, otherwise the original value as a string.
+    """
     try:
         idx = int(float(value))
     except (TypeError, ValueError):
@@ -38,7 +64,28 @@ def _print_table_block(
     max_columns: int = 8,
     formatters: Optional[Dict[str, Callable[[object], str]]] = None,
 ) -> None:
-    """Print a table of data with headers and formatted values."""
+    """Render a slice of ``data`` as a human-readable table, respecting ``max_columns``.
+
+    Example:
+        Given ``headers = ["x", "y"]`` and ``data = np.array([[1.0, 2.0], [3.0, 4.0]])``, the
+        helper prints::
+
+            Example (columns 1-2 of 2):
+                 frame      x      y
+                 0          1      2
+                 1          3      4
+
+        It iterates column blocks of size ``max_columns``, formats each cell (using custom
+        ``formatters`` when provided), right-justifies the headers, and prints each row preceded by
+        the frame index. This step-by-step process mirrors how batches are previewed in logs.
+
+    Args:
+        title: Label printed above the table block.
+        headers: Column names corresponding to the last dimension of ``data``.
+        data: Two-dimensional slice to display (``num_rows`` by ``num_cols``).
+        max_columns: Maximum number of columns to display per block.
+        formatters: Optional mapping from column name to custom formatter function.
+    """
     if data.size == 0 or not len(headers):
         print(f"{title}: <empty>")
         return
@@ -88,7 +135,28 @@ def print_batch_preview(
     *,
     max_frames: int = 10,
 ) -> None:
-    """Pretty-print the first sequence from the first batch for manual inspection."""
+    """Preview the first sequence of a batch, showing how tensors map to readable tables.
+
+    Example:
+        Imagine ``batch["X"]`` is shaped ``[2, 4, 3]`` with the first sequence::
+
+            [[0., 10., 0.1],
+             [1., 11., 0.2],
+             [2., 12., 0.3],
+             [3., 13., 0.4]]
+
+        and ``feature_names = ["frame", "action", "value"]``. ``print_batch_preview`` slices the
+        first ``max_frames`` rows (``4`` here), converts them to ``numpy``, and passes them to
+        :func:`_print_table_block`, resulting in a console table where the ``action`` column is
+        formatted via :func:`_format_action` if applicable. The example demonstrates how tensor data
+        becomes a readable summary for quick debugging.
+
+    Args:
+        batch: Dictionary containing ``"X"`` features and optionally ``"Y"`` targets.
+        feature_names: Names corresponding to the feature columns.
+        target_names: Names corresponding to the target columns.
+        max_frames: Maximum number of frames to display.
+    """
     X = batch["X"].detach().cpu()
     Y = batch["Y"].detach().cpu() if batch["Y"].numel() else None
 
@@ -123,7 +191,27 @@ def print_batch_preview(
 
 
 def _top_confusions(cm: torch.Tensor, k: int = 8) -> List[Tuple[int, int, int, float]]:
-    """Return top-k off-diagonal confusions as (true, pred, count, pct_of_offdiag)."""
+    """Extract the ``k`` most common misclassifications from a confusion matrix.
+
+    Example:
+        For a ``3x3`` matrix::
+
+            [[5, 2, 0],
+             [1, 7, 0],
+             [0, 3, 4]]
+
+        The off-diagonal counts sum to ``6``. Calling ``_top_confusions(cm, k=2)`` returns
+        ``[(2, 1, 3, 50.0), (0, 1, 2, 33.3)]`` meaning "class 2 predicted as 1" occurred three times
+        (50% of off-diagonal mistakes) and "class 0 predicted as 1" occurred twice (33.3%). The
+        walkthrough shows how counts are flattened, sorted, and converted back into coordinates.
+
+    Args:
+        cm: ``[K, K]`` confusion matrix.
+        k: Number of top misclassifications to return.
+
+    Returns:
+        List of tuples ``(true_idx, pred_idx, count, percent_of_off_diag)``.
+    """
     cm_np = cm.numpy()
     off = cm_np.copy()
     np.fill_diagonal(off, 0)
@@ -152,16 +240,30 @@ def format_confusion_matrix(
     title: str = "confusion",
     labels: Optional[Sequence[str]] = None,
 ) -> str:
-    """Render a confusion matrix or its top confusions in a compact string.
+    """Format a confusion matrix as text, falling back to top errors for large matrices.
+
+    Example:
+        With the ``3x3`` matrix from :func:`_top_confusions`, ``format_confusion_matrix`` first sees
+        that ``K=3`` is smaller than ``max_size``. It therefore prints the full table::
+
+            confusion: full 3x3
+                     | 00 01 02 | sum
+                 00:   5  2  0 |  7
+                 01:   1  7  0 |  8
+                 02:   0  3  4 |  7
+            diag% per row: 71.4 87.5 57.1
+
+        If ``K`` exceeded ``max_size``, it would call :func:`_top_confusions` and list the top
+        misclassifications instead. This demonstrates both code paths.
 
     Args:
-        cm: [K, K] confusion matrix
-        max_size: Maximum size to show full matrix (otherwise show top confusions)
-        title: Title for the output
-        labels: Optional label names for rows/columns
+        cm: ``[K, K]`` confusion matrix.
+        max_size: Largest matrix dimension that still prints in full.
+        title: Title prefix for the formatted output.
+        labels: Optional human-readable labels for rows and columns.
 
     Returns:
-        Formatted string representation
+        Multi-line string summarizing the confusion matrix or its top confusions.
     """
     K = cm.shape[0]
 
@@ -211,27 +313,39 @@ def format_confusion_matrix(
 
 
 def format_metrics_dict(metrics: Dict[str, float], precision: int = 3) -> str:
-    """Format a metrics dictionary as a compact string.
+    """Serialize metric key-value pairs into a comma-separated string.
+
+    Example:
+        For ``metrics = {"loss": 1.23456, "acc": 0.98765}`` and ``precision=2``, the helper sorts
+        the keys alphabetically, formats each number to two decimals, and joins them to produce
+        ``"acc=0.99, loss=1.23"``. This shows how each metric passes through formatting before being
+        returned.
 
     Args:
-        metrics: Dictionary of metric names to values
-        precision: Number of decimal places
+        metrics: Dictionary of metric names to values.
+        precision: Number of decimal places to display.
 
     Returns:
-        Formatted string like "acc=0.950, f1=0.823"
+        Comma-separated ``key=value`` pairs sorted by key.
     """
     parts = [f"{key}={value:.{precision}f}" for key, value in sorted(metrics.items())]
     return ", ".join(parts)
 
 
 def format_loss_summary(losses: Dict[str, float]) -> str:
-    """Format a loss dictionary as a compact string.
+    """Summarize loss components, highlighting the total and per-component values.
+
+    Example:
+        Given ``{"total": 1.2, "main": 0.5, "btn": 0.7}``, the helper builds the string
+        ``"total=1.2000 (btn=0.7000, main=0.5000)"`` by separating the total from the other keys and
+        formatting each to four decimals. If ``total`` were absent it would sum the components first.
+        The example traces how inputs are reordered and combined into the final message.
 
     Args:
-        losses: Dictionary of loss component names to values
+        losses: Dictionary of loss component names to values.
 
     Returns:
-        Formatted string like "total=1.234 (main=0.5, c=0.3, btn=0.4)"
+        Readable summary string emphasizing the total loss.
     """
     total = losses.get("total", sum(v for k, v in losses.items() if k != "total"))
     components = [f"{k}={v:.4f}" for k, v in sorted(losses.items()) if k != "total"]
@@ -249,18 +363,25 @@ def format_training_progress(
     loss: float,
     metrics: Dict[str, float],
 ) -> str:
-    """Format a training progress message.
+    """Compose a progress string combining epoch, step, loss, and metrics.
+
+    Example:
+        With ``epoch=1``, ``total_epochs=5``, ``step=32``, ``total_steps=100``, ``loss=0.4321``, and
+        ``metrics={"acc": 0.98}``, the helper formats the metrics via :func:`format_metrics_dict`
+        (yielding ``"acc=0.980"``) and returns the message ``"[Epoch 2/5, Step 32/100] loss=0.4321 |
+        acc=0.980"``. The example highlights how values are combined and 0-indexed epochs are
+        converted to human-friendly 1-indexed numbers.
 
     Args:
-        epoch: Current epoch (0-indexed)
-        total_epochs: Total number of epochs
-        step: Current step within epoch
-        total_steps: Total steps per epoch
-        loss: Current loss value
-        metrics: Dictionary of metrics to display
+        epoch: Current 0-indexed epoch.
+        total_epochs: Total number of epochs that will run.
+        step: Current step within the epoch.
+        total_steps: Total steps per epoch.
+        loss: Current loss value.
+        metrics: Dictionary of metrics to display.
 
     Returns:
-        Formatted progress string
+        Formatted progress string suitable for logging.
     """
     metric_str = format_metrics_dict(metrics)
     return f"[Epoch {epoch+1}/{total_epochs}, Step {step}/{total_steps}] loss={loss:.4f} | {metric_str}"

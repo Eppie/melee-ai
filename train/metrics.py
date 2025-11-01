@@ -23,14 +23,22 @@ class MetricsAccumulator:
         K_shoulder: int,
         device: torch.device,
     ):
-        """Initialize metrics accumulator.
+        """Initialize tensors that accumulate accuracy-style statistics.
+
+        Example:
+            Instantiating ``MetricsAccumulator(3, 2, 4, 0, torch.device("cpu"))`` allocates zeroed
+            tensors such as ``self.main_correct`` and ``self.btn_tp`` with shapes derived from the
+            supplied ``K_*`` values. After initialization you can call
+            :meth:`update_stick_metrics` with predicted vs. true indices and the counters increment
+            accordingly, demonstrating how the constructor merely prepares storage while deferring
+            computation to the update methods.
 
         Args:
-            K_main: Number of main stick quantization bins
-            K_c: Number of C-stick quantization bins
-            K_buttons: Number of button outputs
-            K_shoulder: Number of shoulder quantization bins
-            device: Device for tensors
+            K_main: Number of main stick quantization bins.
+            K_c: Number of C-stick quantization bins.
+            K_buttons: Number of button outputs.
+            K_shoulder: Number of shoulder quantization bins.
+            device: Device on which running totals should be stored.
         """
         self.device = device
         self.K_main = K_main
@@ -76,7 +84,20 @@ class MetricsAccumulator:
         self.shoulder_maj_correct = torch.tensor(0, dtype=torch.long, device=device)
 
     def _majority_label(self, label_counts: torch.Tensor) -> int:
-        """Get the majority label from counts."""
+        """Return the index of the largest count, defaulting to zero for empty tensors.
+
+        Example:
+            If ``label_counts`` equals ``tensor([2, 5, 3])`` the method returns ``1`` because index 1
+            has the highest count ``5``. For an empty tensor ``tensor([])`` it immediately returns
+            ``0``. The example mirrors how the helper uses :func:`torch.argmax` to select the most
+            frequent label.
+
+        Args:
+            label_counts: Histogram of observed labels.
+
+        Returns:
+            Integer index of the majority label or ``0`` when ``label_counts`` has no elements.
+        """
         if label_counts.numel() == 0:
             return 0
         return int(torch.argmax(label_counts).item())
@@ -90,15 +111,25 @@ class MetricsAccumulator:
         repeat_baseline: Optional[torch.Tensor] = None,
         repeat_mask: Optional[torch.Tensor] = None,
     ) -> None:
-        """Update stick (main or C-stick) metrics.
+        """Update running accuracy counters for either the main stick or C-stick outputs.
+
+        Example:
+            Suppose the true indices are ``tensor([0, 1, 2])`` and the predictions are
+            ``tensor([0, 0, 2])`` for ``stick_type="main"``. The method increments
+            ``self.main_correct`` by ``2`` (frames 0 and 2 match) and ``self.main_total`` by ``3``.
+            If ``majority_baseline=0`` it also adds ``1`` to ``self.main_maj_correct`` because only
+            the first frame matches the baseline. Passing ``repeat_baseline=tensor([0, 1, 1])`` with a
+            ``repeat_mask`` that marks frames ``[False, True, True]`` adds one extra correct repeat to
+            ``self.main_rep_correct`` (frame 2) and increases ``self.main_rep_total`` by ``2``. The
+            walk-through demonstrates how each argument influences the tracked counters.
 
         Args:
-            pred_idx: Predicted indices [N]
-            true_idx: True indices [N]
-            stick_type: "main" or "c"
-            majority_baseline: Optional majority label for baseline
-            repeat_baseline: Optional repeat prediction [N]
-            repeat_mask: Optional mask for repeat frames [N]
+            pred_idx: Predicted indices ``[N]``.
+            true_idx: True indices ``[N]``.
+            stick_type: ``"main"`` or ``"c"`` selecting which counters to update.
+            majority_baseline: Optional majority label accuracy baseline.
+            repeat_baseline: Optional repeat prediction vector ``[N]``.
+            repeat_mask: Optional boolean mask ``[N]`` for frames eligible for repeat accuracy.
         """
         if stick_type == "main":
             correct_attr = "main_correct"
@@ -155,12 +186,24 @@ class MetricsAccumulator:
         true_buttons: torch.Tensor,
         logits: torch.Tensor,
     ) -> None:
-        """Update button metrics.
+        """Update precision/recall-style counters and exact match for button predictions.
+
+        Example:
+            For a batch with ``B=1``, ``L=2``, ``K=2`` where ``true_buttons`` equals
+            ``[[[1, 0], [0, 1]]]`` and ``pred_buttons`` equals ``[[[1, 0], [1, 1]]]``:
+
+            * The method flattens both tensors to ``[[1, 0], [0, 1]]`` vs. ``[[1, 0], [1, 1]]``.
+            * True positives become ``[1, 1]`` (buttons 0 and 1 each correct once).
+            * False positives become ``[1, 0]`` (button 0 predicted on frame 1 where it should be 0).
+            * Exact match counts only the first frame, so ``self.btn_em_correct`` increases by ``1``
+              while ``self.btn_total`` increases by ``2``.
+
+            The example shows how each accumulation is derived step by step.
 
         Args:
-            pred_buttons: Predicted button states [B, L, K]
-            true_buttons: True button states [B, L, K]
-            logits: Button logits [B, L, K]
+            pred_buttons: Predicted button states ``[B, L, K]``.
+            true_buttons: True button states ``[B, L, K]``.
+            logits: Button logits ``[B, L, K]`` included for interface parity with callers.
         """
         B, L, K = pred_buttons.shape
 
@@ -195,12 +238,21 @@ class MetricsAccumulator:
         true_idx: torch.Tensor,
         majority_baseline: Optional[int] = None,
     ) -> None:
-        """Update shoulder metrics.
+        """Track accuracy for shoulder trigger quantization bins.
+
+        Example:
+            If ``self.K_shoulder`` is ``3`` and ``true_idx`` equals ``[[0, 1]]`` while
+            ``pred_idx`` equals ``[[0, 2]]``, the method increments ``self.shoulder_correct`` by ``1``
+            (only the first frame matches) and ``self.shoulder_total`` by ``2``. When
+            ``majority_baseline=0`` it adds another ``1`` to ``self.shoulder_maj_correct`` because the
+            baseline matches frame 0. The tensor ``self.shoulder_label_counts`` also updates to
+            ``[1, 1, 0]`` to reflect how often each class appears. This example makes the counter
+            updates explicit.
 
         Args:
-            pred_idx: Predicted indices [B, L]
-            true_idx: True indices [B, L]
-            majority_baseline: Optional majority label for baseline
+            pred_idx: Predicted indices ``[B, L]``.
+            true_idx: True indices ``[B, L]``.
+            majority_baseline: Optional majority label for baseline comparisons.
         """
         if self.K_shoulder <= 0:
             return
@@ -224,10 +276,17 @@ class MetricsAccumulator:
             self.shoulder_maj_correct += maj_correct
 
     def get_summary(self) -> Dict[str, float]:
-        """Get summary of all metrics.
+        """Convert accumulated counters into scalar metrics ready for logging.
+
+        Example:
+            After calling :meth:`update_button_metrics` for the example above, where
+            ``self.btn_em_correct == 1`` and ``self.btn_total == 2``, ``get_summary()`` computes
+            ``btn_em = 1 / 2 = 0.5``. Similarly, if ``self.main_correct == 8`` and ``self.main_total == 10``
+            it reports ``acc_main = 0.8``. The method performs these divisions for every component and
+            bundles the results into a dictionary, demonstrating the final aggregation step.
 
         Returns:
-            Dictionary of metric names to values
+            Dictionary of scalar metrics such as ``acc_main`` and ``btn_f1_micro``.
         """
         summary = {}
 
@@ -320,7 +379,14 @@ class MetricsAccumulator:
         return summary
 
     def reset(self) -> None:
-        """Reset all metrics to zero."""
+        """Zero out every counter so the accumulator can be reused for a new epoch.
+
+        Example:
+            After multiple updates the tensor ``self.main_correct`` might equal ``tensor(42)``.
+            Calling ``reset()`` sets it back to ``tensor(0)`` using in-place ``zero_()`` operations on
+            every field, including nested tensors such as ``self.btn_tp``. The example highlights how
+            the method prepares the accumulator for the next round of tracking.
+        """
         # Main stick
         self.main_correct.zero_()
         self.main_total.zero_()
@@ -359,15 +425,27 @@ class MetricsAccumulator:
 def compute_confusion_matrix(
     true_flat: torch.Tensor, pred_flat: torch.Tensor, K: int
 ) -> torch.Tensor:
-    """Compute confusion matrix from flattened integer labels.
+    """Build a confusion matrix by counting ``(true, pred)`` index pairs.
+
+    Example:
+        With ``true_flat = tensor([0, 1, 1, 2])``, ``pred_flat = tensor([0, 2, 1, 2])`` and ``K = 3``,
+        the function forms the combined indices ``true * K + pred`` → ``[0, 5, 4, 8]``. The
+        ``torch.bincount`` call counts each occurrence, reshaping to::
+
+            [[1, 0, 0],
+             [0, 1, 1],
+             [0, 0, 1]]
+
+        representing how often each class was predicted. The example precisely traces the tensor
+        operations used to populate the matrix.
 
     Args:
-        true_flat: True labels [N]
-        pred_flat: Predicted labels [N]
-        K: Number of classes
+        true_flat: True labels ``[N]``.
+        pred_flat: Predicted labels ``[N]``.
+        K: Number of classes.
 
     Returns:
-        [K, K] confusion matrix on CPU
+        ``[K, K]`` confusion matrix on CPU.
     """
     tf = true_flat.to(torch.int64)
     pf = pred_flat.to(torch.int64)
@@ -382,16 +460,24 @@ def compute_change_hold_accuracy(
     change_mask: torch.Tensor,
     hold_mask: torch.Tensor,
 ) -> Tuple[float, float]:
-    """Compute accuracy separately for change and hold frames.
+    """Measure accuracy for frames that changed versus those that stayed the same.
+
+    Example:
+        Suppose ``pred`` and ``true`` are ``[[0, 1, 1, 0]]`` and ``[[0, 0, 1, 0]]`` respectively with
+        ``change_mask = [[False, True, False, False]]`` and ``hold_mask`` as the logical NOT. The
+        helper computes ``correct = [True, False, True, True]``. ``change_accuracy`` averages the
+        single change frame (``False`` → ``0.0``) and ``hold_accuracy`` averages the remaining three
+        frames (``[True, True, True]`` → ``1.0``). The example mirrors the masking and averaging
+        operations exactly.
 
     Args:
-        pred: Predictions [B, L]
-        true: True labels [B, L]
-        change_mask: Boolean mask for change frames [B, L]
-        hold_mask: Boolean mask for hold frames [B, L]
+        pred: Predictions ``[B, L]``.
+        true: True labels ``[B, L]``.
+        change_mask: Boolean mask for change frames ``[B, L]``.
+        hold_mask: Boolean mask for hold frames ``[B, L]``.
 
     Returns:
-        (change_accuracy, hold_accuracy)
+        Tuple ``(change_accuracy, hold_accuracy)``.
     """
     correct = pred == true
 
@@ -411,14 +497,30 @@ def compute_change_hold_accuracy(
 def multilabel_prf(
     true_labels: torch.Tensor, pred_labels: torch.Tensor
 ) -> Tuple[float, float, float, float, float]:
-    """Compute multi-label precision, recall, F1.
+    """Calculate multi-label exact match, micro precision/recall/F1, and macro F1.
+
+    Example:
+        With ``true_labels = tensor([[[1, 0], [0, 1]]])`` and
+        ``pred_labels = tensor([[[1, 1], [0, 1]]])``:
+
+        * Flattening yields two frames with predictions ``[[1, 1], [0, 1]]`` and truths
+          ``[[1, 0], [0, 1]]``.
+        * True positives per class are ``[1, 1]``, false positives ``[0, 1]``, and false negatives
+          ``[0, 0]`` giving micro precision ``2/3`` and micro recall ``2/2 = 1`` → micro F1 ``0.8``.
+        * Macro F1 averages the per-class F1 scores: button 0 has precision ``1`` and recall ``1``
+          (F1 ``1``), button 1 has precision ``0.5`` and recall ``1`` (F1 ``2/3``), averaging to
+          ``0.8333``.
+        * Exact match checks each frame: the first differs because of button 1, so the final value is
+          ``0.5``.
+
+        The example exposes every intermediate count used in the calculations.
 
     Args:
-        true_labels: True labels [B, L, K] or [N, K]
-        pred_labels: Predicted labels [B, L, K] or [N, K]
+        true_labels: True labels ``[B, L, K]`` or ``[N, K]``.
+        pred_labels: Predicted labels ``[B, L, K]`` or ``[N, K]``.
 
     Returns:
-        (exact_match, precision_micro, recall_micro, f1_micro, f1_macro)
+        Tuple ``(exact_match, precision_micro, recall_micro, f1_micro, f1_macro)``.
     """
     # Ensure 3D
     if true_labels.dim() == 2:

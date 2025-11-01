@@ -17,6 +17,7 @@ except ImportError:
     wandb = None  # type: ignore
     WANDB_AVAILABLE = False
 
+
 # TODO: Make proper use of the code here
 @dataclass
 class WandbConfig:

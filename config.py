@@ -23,6 +23,7 @@ from typing import (
     get_origin,
     get_type_hints,
     List,
+    Literal,
 )
 
 from zarr.codecs import BloscCodec, BloscShuffle
@@ -70,21 +71,23 @@ class ZarrConfig(_FreezeGuard):
 @dataclass
 class TrainConfig:
     batch_size: int = 128
-    epochs: int = 100 # TODO: lower to a reasonable number
+    epochs: int = 100  # TODO: lower to a reasonable number
     lr: float = 1.3e-4  # (DONE)
     weight_decay: float = 0.002  # TODO: Should this be higher?
-    betas: Tuple[float, float] = (0.9, 0.95) # TODO: never checked these
+    betas: Tuple[float, float] = (0.9, 0.95)  # TODO: never checked these
     warmup_steps: int = 5000
     max_steps: Optional[int] = None
     num_workers: int = 16
     prefetch_factor: int = 4
-    pin_memory: bool = True # TODO: Automatically set this based on mps vs cuda
+    pin_memory: bool = True  # TODO: Automatically set this based on mps vs cuda
     persistent_workers: bool = True
-    stride = 1 # TODO: Maybe raise this?
+    stride = 1  # TODO: Maybe raise this?
 
     # losses
     grad_clip: float = 5.0  # TODO: Maybe lower this?
-    label_smoothing: float = 0.02  # TODO: Maybe this should be higher? maybe configurable per output head
+    label_smoothing: float = (
+        0.02  # TODO: Maybe this should be higher? maybe configurable per output head
+    )
 
     # Automatic Mixed Precision (AMP)
     use_amp: bool = True
@@ -267,9 +270,67 @@ class PPOConfig(_FreezeGuard):
     normalize_advantages: bool = (
         True  # normalize advantages before computing policy loss
     )
-    value_clip: Optional[float] = (
-        None  # optional value function clipping (None = no clipping)
+    value_clip: Optional[
+        float
+    ] = None  # optional value function clipping (None = no clipping)
+
+
+@dataclass
+class ImitationConfig:
+    """Configuration for imitation learning strategy"""
+
+    # Strategy type
+    strategy: Literal[
+        "uniform", "value_weighted", "value_advantage", "value_filter", "hybrid"
+    ] = "hybrid"
+
+    # Value-weighted parameters
+    value_k: float = 1.0  # scaling factor for value difference
+    value_temperature: float = 1.0  # temperature for sigmoid/softmax
+    value_use_exp: bool = False  # use exp instead of sigmoid
+
+    # Value-advantage parameters
+    advantage_n_steps: int = 5  # look-ahead window
+    advantage_alpha: float = 1.0  # exponent for advantage
+    advantage_use_gae: bool = False  # use GAE instead of simple advantage
+    gae_gamma: float = 0.99
+    gae_lambda: float = 0.95
+
+    # Value-filter parameters
+    filter_percentile: float = 50.0  # percentile threshold (0-100)
+    filter_soft: bool = False  # use soft filtering with sigmoid
+    filter_temperature: float = 1.0
+
+    # Hybrid strategy (if strategy="hybrid")
+    hybrid_strategies: list = field(
+        default_factory=lambda: ["value_weighted", "value_filter"]
     )
+    hybrid_weights: list = field(default_factory=lambda: [0.5, 0.5])
+
+
+@dataclass
+class AuxTaskConfig:
+    """Configuration for auxiliary self-supervised tasks"""
+
+    # Enable/disable tasks
+    enable_opponent_action: bool = True
+    enable_damage_diff: bool = True
+    enable_action_effectiveness: bool = True
+
+    # Opponent action prediction
+    opponent_action_weight: float = 0.5
+
+    # Damage differential prediction
+    damage_diff_weight: float = 0.3
+    damage_diff_n_frames: int = 30  # predict net damage over next N frames
+
+    # Action effectiveness prediction
+    action_effectiveness_weight: float = 0.2
+    action_effectiveness_k_frames: int = 10  # will action cause hitlag within K frames?
+    effectiveness_pos_weight_max: float = 10.0  # clamp pos_weight for class imbalance
+
+    # Overall auxiliary loss weight (multiplied with policy loss)
+    aux_loss_weight: float = 0.1
 
 
 @dataclass
@@ -284,6 +345,9 @@ class Config(_FreezeGuard):
     rl: RLConfig = field(default_factory=RLConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
     loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
+
+    imitation: ImitationConfig = field(default_factory=ImitationConfig)
+    aux_tasks: AuxTaskConfig = field(default_factory=AuxTaskConfig)
 
     def freeze(self) -> None:
         _freeze_dataclass(self)

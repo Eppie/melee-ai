@@ -1,37 +1,24 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Tuple
 
-import numpy as np
 import torch
 
+from constants import (
+    _MAIN_STICK_PALETTE_CPU,
+    _C_STICK_PALETTE_CPU,
+    _SHOULDER_PALETTE_CPU,
+    _MAIN_STICK_NORM_SQ_CPU,
+    _C_STICK_NORM_SQ_CPU,
+    _MAIN_STICK_CACHE,
+    _MAIN_STICK_NORM_CACHE,
+    _C_STICK_CACHE,
+    _C_STICK_NORM_CACHE,
+    _SHOULDER_CACHE,
+)
 from controller_utils import (
-    CONTROL_STICK_QUANTIZED,
-    C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
-
-# TODO: can we clean up all of this stuff?
-_MAIN_STICK_PALETTE_CPU = torch.as_tensor(
-    np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
-)
-_C_STICK_PALETTE_CPU = torch.as_tensor(np.asarray(C_STICK_QUANTIZED, dtype=np.float32))
-# TODO: We will always have shoulder
-_SHOULDER_PALETTE_CPU = (
-    torch.as_tensor(np.asarray(SHOULDER_QUANTIZED, dtype=np.float32))
-    if SHOULDER_QUANTIZED
-    else None
-)
-
-# Precompute palette norm squared for faster distance calculations
-_MAIN_STICK_NORM_SQ_CPU = (_MAIN_STICK_PALETTE_CPU * _MAIN_STICK_PALETTE_CPU).sum(dim=1)
-_C_STICK_NORM_SQ_CPU = (_C_STICK_PALETTE_CPU * _C_STICK_PALETTE_CPU).sum(dim=1)
-
-_MAIN_STICK_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
-_C_STICK_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
-_SHOULDER_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
-_MAIN_STICK_NORM_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
-_C_STICK_NORM_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 
 
 # TODO: Do we need clamp here?
@@ -180,6 +167,7 @@ def _quantize_stick(
     dot = V @ palette.t()
     d2 = v_norm_sq - 2.0 * dot + palette_norm_sq.unsqueeze(0)
     return torch.argmin(d2, dim=1).view(B, L)
+
 
 # TODO: auto should not be needed. also we shouldn't have to touch buttons.
 def quantize_targets(

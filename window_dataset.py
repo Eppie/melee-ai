@@ -578,7 +578,6 @@ class RandomWindowSampler(Sampler[int]):
             perm = torch.randperm(len(inds), generator=g).tolist()
             inds = [inds[i] for i in perm]
 
-
         yield from inds
         return
 

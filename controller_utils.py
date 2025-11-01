@@ -17,7 +17,10 @@ CONTROL_STICK_QUANTIZED: np.ndarray = np.array(
         # --- Shield-drop (engine accepts -0.6875..-0.6625; one precise value suffices) ---
         (0.0, -0.6750),  # 06 Shield-drop Y (canonical pick in the allowed band)
         # --- Wavedash / waveland / ledgedash (down-toward). Keep both shallow (distance) and ~45° (Fox ledgedash) ---
-        (0.9500, -0.2875),  # 07 16.84° down-right – shallowest legal; max slide if grounded
+        (
+            0.9500,
+            -0.2875,
+        ),  # 07 16.84° down-right – shallowest legal; max slide if grounded
         (0.9300, -0.3500),  # 08 ~21° down-right – shallow WD
         (0.8625, -0.5000),  # 09 30° down-right – standard long WD
         (0.8125, -0.5750),  # 10 ~35° down-right – distance/consistency trade
@@ -61,7 +64,10 @@ CONTROL_STICK_QUANTIZED: np.ndarray = np.array(
         (-0.1750, 0.9750),  # 45 ~80° left/up – mirror
         (-0.0875, 0.9875),  # 46 ~85° left/up – mirror
         # --- Universal 45° diagonals (DI/ASDI, drift, recoveries) ---
-        (0.7071, 0.7071),  # 47 45° up-right – survival DI corner (approx; <=1 magnitude)
+        (
+            0.7071,
+            0.7071,
+        ),  # 47 45° up-right – survival DI corner (approx; <=1 magnitude)
         (-0.7071, 0.7071),  # 48 135° up-left – mirror
         (-0.7071, -0.7071),  # 49 225° down-left – combo DI down-away
         (0.7071, -0.7071),  # 50 315° down-right – combo DI down-away

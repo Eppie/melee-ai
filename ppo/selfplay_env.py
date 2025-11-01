@@ -321,6 +321,7 @@ class SelfPlayEnvironment:
 
         log_prob = compute_log_probs(logits_batched, actions_batched)
         return log_prob.squeeze(0)
+
     # TODO: Some of this might be duplicated from model_interface.py
     def _actions_to_controller_state(
         self,

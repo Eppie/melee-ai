@@ -33,13 +33,11 @@ from column_map import ColumnMap
 from config import Config, get_config, init_config, reset_config_for_tests
 from loss import _compute_ce_weights, _compute_pos_weights
 from model.nano_gpt import GPT
-from utils import _resolve_device
-from window_dataset import make_dataloader
-
 # Train module utilities
 from train.batch_utils import build_model_inputs, quantize_controller_targets
-from train.lr_schedule import cosine_lr_schedule
 from train.metrics import MetricsAccumulator
+from utils import _resolve_device
+from window_dataset import make_dataloader
 
 TRAINING_FLOP_MULTIPLIER = 3.0  # forward + backward (approximation)
 TOKEN_RATE_EMA_DECAY = 0.9

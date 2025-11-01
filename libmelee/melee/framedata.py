@@ -678,12 +678,16 @@ class FrameData:
                 Action.TECH_MISS_DOWN,
             ]:
                 # Adjust the position to account for the fact that we can't roll off the platform
-                side_platform_height, side_platform_left, side_platform_right = (
-                    stages.side_platform_position(character_state.position.x > 0, stage)
-                )
-                top_platform_height, top_platform_left, top_platform_right = (
-                    stages.top_platform_position(stage)
-                )
+                (
+                    side_platform_height,
+                    side_platform_left,
+                    side_platform_right,
+                ) = stages.side_platform_position(character_state.position.x > 0, stage)
+                (
+                    top_platform_height,
+                    top_platform_left,
+                    top_platform_right,
+                ) = stages.top_platform_position(stage)
                 if character_state.position.y < 5:
                     position = min(position, stages.EDGE_GROUND_POSITION[stage])
                     position = max(position, -stages.EDGE_GROUND_POSITION[stage])
@@ -1074,9 +1078,9 @@ class FrameData:
         if not alreadythere:
             self.rows.append(row)
 
-        self.prevfacing[gamestate.opponent_state.action] = (
-            gamestate.opponent_state.facing
-        )
+        self.prevfacing[
+            gamestate.opponent_state.action
+        ] = gamestate.opponent_state.facing
         self.prevprojectilecount[gamestate.opponent_state.action] = len(
             gamestate.projectiles
         )

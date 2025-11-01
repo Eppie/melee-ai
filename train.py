@@ -18,18 +18,18 @@ from tensordict import TensorDict
 from torch.amp import autocast, GradScaler
 from torch.amp.autocast_mode import is_autocast_available
 
-from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
+from column_map import ColumnMap
 from config import get_config, init_config, parse_cli_overrides
-from controller_utils import CONTROL_STICK_QUANTIZED
-from loss import compute_loss_components
+from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
+from loss import compute_loss_components, CompositeLossComputer
 from model.nano_gpt import GPT
+from train.aux_targets import compute_imitation_weights, compute_aux_targets
 from train.batch_utils import (
     build_model_inputs,
     quantize_controller_targets,
     SampleWeightRatios,
     compute_component_sample_weights,
 )
-
 # Train module utilities
 from train.checkpoint import (
     save_checkpoint,
@@ -53,22 +53,6 @@ from train.wandb_utils import (
 )
 from utils import print_model_diagram, _resolve_device
 from window_dataset import make_dataloader
-
-_MAIN_STICK_LABELS: List[str] = [
-    f"({x:.2f},{y:.2f})" for x, y in CONTROL_STICK_QUANTIZED
-]
-
-_BUTTON_PRETTY = {
-    "button_a": "A",
-    "button_b": "B",
-    "button_xy": "X/Y",
-    "button_z": "Z",
-    "button_lr": "L/R",
-}
-
-# Local helpers
-def _safe_div(n: float, d: float) -> float:
-    return float(n) / float(d) if d else 0.0
 
 
 def train_loop(
@@ -97,6 +81,7 @@ def train_loop(
         hold_base=lw_cfg.hold_base,
         value_change=lw_cfg.value_change,
     )
+    loss_computer = CompositeLossComputer(config) if model.use_aux_heads else None
 
     # Configure AMP support dynamically for CUDA and MPS
     if device.type in ("cuda", "mps") and is_autocast_available(device.type):
@@ -106,6 +91,7 @@ def train_loop(
 
     amp_enabled = bool(config.train.use_amp and amp_device_type != "cpu")
     amp_dtype_cfg = getattr(config.train, "amp_dtype", "float16").lower()
+    # TODO: We never want to use bfloat16
     if amp_device_type == "mps":
         autocast_dtype = torch.float16
         if config.train.use_amp and amp_dtype_cfg != "float16":
@@ -113,9 +99,7 @@ def train_loop(
                 "Warning: MPS AMP only supports float16; overriding amp_dtype to 'float16'."
             )
     else:
-        autocast_dtype = (
-            torch.float16 if amp_dtype_cfg == "float16" else torch.bfloat16
-        )
+        autocast_dtype = torch.float16 if amp_dtype_cfg == "float16" else torch.bfloat16
     if config.train.use_amp:
         print(f"Using PyTorch {torch.__version__}")
         if amp_enabled:
@@ -205,7 +189,6 @@ def train_loop(
         )
         return
 
-    # preview_done = False
     resume_epoch = start_epoch
     resume_iter = start_iter
 
@@ -228,7 +211,6 @@ def train_loop(
                 print(
                     f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches via sampler offset."
                 )
-                # preview_done = True
                 skip_remaining = 0
                 skip_until = 0
             except Exception as exc:
@@ -239,7 +221,6 @@ def train_loop(
             print(
                 f"Resuming epoch {epoch + 1}: skipping first {skip_until} batches by consuming them (may take time)."
             )
-            # preview_done = True
 
         iters_processed = 0
 
@@ -249,10 +230,6 @@ def train_loop(
                 continue
             if config.train.max_steps and global_step >= config.train.max_steps:
                 break
-
-            # if not preview_done:
-            #     print_batch_preview(batch, colmap.feat_names, colmap.targ_names)
-            #     preview_done = True
 
             # Move to device
             X: torch.Tensor = batch["X"].to(device, non_blocking=True)  # [B,L,F]
@@ -265,6 +242,8 @@ def train_loop(
             value_pred: Optional[torch.Tensor] = None
             value_target: Optional[torch.Tensor] = None
             loss_value = torch.tensor(0.0, device=device)
+            aux_outputs: Dict[str, torch.Tensor] = {}
+            aux_targets: Dict[str, torch.Tensor] = {}
 
             # Forward pass and loss computation with automatic mixed precision
             with autocast(
@@ -293,19 +272,66 @@ def train_loop(
 
                 # TODO: Stop being so careful! Assume that we have these things.
                 value_pred = pred.get("value", None)
+                if value_pred is not None and config.imitation.strategy != "uniform":
+                    imitation_weights = compute_imitation_weights(
+                        value_pred.detach(), config.imitation
+                    )
+                else:
+                    # Fallback: use your existing component weights or uniform
+                    weights = compute_component_sample_weights(
+                        target_info,
+                        device,
+                        ratios=ratios,
+                        button_names=CONTROLLER_KEY_GROUPS["buttons"],
+                    )
+                    # Extract a single [B, L] weight (e.g., use "main" component)
+                    imitation_weights = weights.get(
+                        "main", torch.ones((B, L), device=device)
+                    )
+
+                if model.use_aux_heads:
+                    aux_targets = compute_aux_targets(X, colmap, config)
+                    aux_outputs_td = pred.get("aux_outputs", {})
+                    if isinstance(aux_outputs_td, TensorDict):
+                        aux_outputs = {
+                            key: aux_outputs_td[key] for key in aux_outputs_td.keys()
+                        }
+                    else:
+                        aux_outputs = aux_outputs_td
+
+                    # Use composite loss computer
+                    loss, metrics = loss_computer.compute_loss(
+                        policy_outputs=pred,
+                        policy_targets=target_info,
+                        aux_outputs=aux_outputs,
+                        aux_targets=aux_targets,
+                        imitation_weights=imitation_weights,
+                    )
+                else:
+                    # Fallback: use existing loss computation with imitation weights
+                    loss_components = compute_loss_components(
+                        pred,
+                        target_info,
+                        label_smoothing=config.train.label_smoothing,
+                        sample_weights=imitation_weights,
+                    )
+                    loss = loss_components["total"]
+                    metrics = {k: v.item() for k, v in loss_components.items()}
+
                 probs_btn = pred.get("buttons_probs", None)
 
-                loss_components = compute_loss_components(
+                policy_loss_components = compute_loss_components(
                     pred,
                     target_info,
                     label_smoothing=config.train.label_smoothing,
                     sample_weights=weights,  # <-- dict with per-component weights
                 )
-                loss = loss_components["total"]
-                loss_main = loss_components["main"]
-                loss_c = loss_components["c"]
-                loss_btn = loss_components["buttons"]
-                loss_s = loss_components["shoulder"]
+                if not model.use_aux_heads:
+                    loss = policy_loss_components["total"]
+                loss_main = policy_loss_components["main"]
+                loss_c = policy_loss_components["c"]
+                loss_btn = policy_loss_components["buttons"]
+                loss_s = policy_loss_components["shoulder"]
                 # TODO: Make value_head mandatory
                 # TODO: Move this computation to loss.py
                 if config.model.use_value_head and value_pred is not None:
@@ -395,9 +421,7 @@ def train_loop(
                 "shoulder": loss_s.item(),
                 "buttons": loss_btn.item(),
                 # TODO: We will always use value head
-                "value": (
-                    loss_value.item() if config.model.use_value_head else 0.0
-                ),
+                "value": (loss_value.item() if config.model.use_value_head else 0.0),
             }
 
             global_step += 1
@@ -423,7 +447,6 @@ def train_loop(
                 )
                 _prune_checkpoints(out_dir, keep=10)
             if log_this_iter:
-
                 now = time.time()
                 dt = max(1e-9, now - last_log_time)
                 frames_per_s = frames_since_last_log / dt
@@ -447,9 +470,7 @@ def train_loop(
                 off_stage_present = bool(off_stage_mask.any().item())
 
                 main_change_mask = torch.zeros_like(true_main_idx, dtype=torch.bool)
-                main_change_mask[:, 1:] = (
-                    true_main_idx[:, 1:] != true_main_idx[:, :-1]
-                )
+                main_change_mask[:, 1:] = true_main_idx[:, 1:] != true_main_idx[:, :-1]
                 main_hold_mask = ~main_change_mask
                 main_hold_mask[:, 0] = True
 
@@ -458,9 +479,7 @@ def train_loop(
                 c_hold_mask = ~c_change_mask
                 c_hold_mask[:, 0] = True
 
-                btn_change_mask = torch.zeros(
-                    (B, L), device=device, dtype=torch.bool
-                )
+                btn_change_mask = torch.zeros((B, L), device=device, dtype=torch.bool)
                 btn_change_mask[:, 1:] = torch.any(
                     btn_true[:, 1:] != btn_true[:, :-1], dim=-1
                 )
@@ -657,16 +676,16 @@ def train_loop(
                 btn_line3 = "            " + " | ".join(per_button)
 
                 # --- OFF-STAGE METRICS ---
-                acc_main_off = acc_main_chg_off = acc_main_hold_off = (
-                    acc_main_rep_off
-                ) = 0.0
+                acc_main_off = (
+                    acc_main_chg_off
+                ) = acc_main_hold_off = acc_main_rep_off = 0.0
                 acc_c_off = acc_c_chg_off = acc_c_hold_off = acc_c_rep_off = 0.0
                 em_off = p_off = r_off = f1_off = f1_macro_off = 0.0
                 em_btn_chg_off = em_btn_hold_off = 0.0
                 f1_maj_off = f1_rep_off = em_rep_off = 0.0
-                btn_match_off_vals = btn_prec_off_vals = btn_rec_off_vals = (
-                    btn_f1_off_vals
-                ) = btn_rate_off_vals = None
+                btn_match_off_vals = (
+                    btn_prec_off_vals
+                ) = btn_rec_off_vals = btn_f1_off_vals = btn_rate_off_vals = None
                 acc_sh_off = acc_sh_maj_off = acc_sh_rep_off = 0.0
                 off_per_button = []
                 if off_stage_present:
@@ -890,6 +909,131 @@ def train_loop(
                         f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation.item():.3f}"
                     )
 
+                aux_console_lines: List[str] = []
+                aux_log_values: Dict[str, float] = {}
+                if model.use_aux_heads and aux_outputs:
+                    with torch.no_grad():
+                        if (
+                            "opponent_action" in aux_outputs
+                            and "opponent_action" in aux_targets
+                        ):
+                            opp_logits = aux_outputs["opponent_action"]
+                            opp_targets = aux_targets["opponent_action"].long()
+                            opp_pred = opp_logits.argmax(dim=-1)
+                            opp_acc = (opp_pred == opp_targets).float().mean().item()
+                            opp_ce = torch.nn.functional.cross_entropy(
+                                opp_logits.reshape(-1, opp_logits.shape[-1]),
+                                opp_targets.reshape(-1),
+                                reduction="mean",
+                            ).item()
+                            aux_console_lines.append(
+                                f"  AUX OPP ACTION: acc {opp_acc:.3f} | CE {opp_ce:.4f}"
+                            )
+                            aux_log_values.update(
+                                {
+                                    "aux/opponent_action/acc": opp_acc,
+                                    "aux/opponent_action/cross_entropy": opp_ce,
+                                }
+                            )
+
+                        if (
+                            "damage_diff" in aux_outputs
+                            and "damage_diff" in aux_targets
+                        ):
+                            dmg_pred = aux_outputs["damage_diff"].squeeze(-1)
+                            dmg_target = aux_targets["damage_diff"].squeeze(-1)
+                            dmg_pred_mean = dmg_pred.mean().item()
+                            dmg_target_mean = dmg_target.mean().item()
+                            dmg_mse = ((dmg_pred - dmg_target) ** 2).mean().item()
+                            dmg_mae = (dmg_pred - dmg_target).abs().mean().item()
+                            dmg_pred_flat = dmg_pred.reshape(-1)
+                            dmg_target_flat = dmg_target.reshape(-1)
+                            dmg_corr = 0.0
+                            if dmg_pred_flat.numel() > 1:
+                                dp_center = dmg_pred_flat - dmg_pred_flat.mean()
+                                dt_center = dmg_target_flat - dmg_target_flat.mean()
+                                denom = torch.sqrt(
+                                    (dp_center**2).sum() * (dt_center**2).sum()
+                                ).clamp_min(1e-8)
+                                dmg_corr = float((dp_center * dt_center).sum() / denom)
+                            aux_console_lines.append(
+                                "  AUX DAMAGE DIFF: "
+                                f"pred {dmg_pred_mean:.3f} | targ {dmg_target_mean:.3f} | "
+                                f"MSE {dmg_mse:.4f} | MAE {dmg_mae:.4f} | corr {dmg_corr:.3f}"
+                            )
+                            aux_log_values.update(
+                                {
+                                    "aux/damage_diff/pred_mean": dmg_pred_mean,
+                                    "aux/damage_diff/target_mean": dmg_target_mean,
+                                    "aux/damage_diff/mse": dmg_mse,
+                                    "aux/damage_diff/mae": dmg_mae,
+                                    "aux/damage_diff/corr": dmg_corr,
+                                }
+                            )
+
+                        if (
+                            "action_effectiveness" in aux_outputs
+                            and "action_effectiveness" in aux_targets
+                        ):
+                            eff_logits = aux_outputs["action_effectiveness"].squeeze(-1)
+                            eff_targets = aux_targets["action_effectiveness"].squeeze(
+                                -1
+                            )
+                            eff_probs = torch.sigmoid(eff_logits)
+                            eff_pred = (eff_probs >= 0.5).float()
+                            eff_acc = (eff_pred == eff_targets).float().mean().item()
+                            eff_prob_mean = eff_probs.mean().item()
+                            eff_target_pos = eff_targets.float().mean().item()
+                            eff_pred_pos = eff_pred.mean().item()
+                            tp = (
+                                ((eff_pred == 1.0) & (eff_targets == 1.0)).float().sum()
+                            )
+                            fp = (
+                                ((eff_pred == 1.0) & (eff_targets == 0.0)).float().sum()
+                            )
+                            fn = (
+                                ((eff_pred == 0.0) & (eff_targets == 1.0)).float().sum()
+                            )
+                            eps = 1e-6
+                            prec_tensor = tp / (tp + fp + eps)
+                            rec_tensor = tp / (tp + fn + eps)
+                            eff_precision = float(prec_tensor)
+                            eff_recall = float(rec_tensor)
+                            eff_f1 = 0.0
+                            if eff_precision + eff_recall > 0:
+                                eff_f1 = float(
+                                    2
+                                    * prec_tensor
+                                    * rec_tensor
+                                    / (prec_tensor + rec_tensor + eps)
+                                )
+                            eff_bce = (
+                                torch.nn.functional.binary_cross_entropy_with_logits(
+                                    eff_logits,
+                                    eff_targets,
+                                    reduction="mean",
+                                ).item()
+                            )
+                            aux_console_lines.append(
+                                "  AUX ACTION EFFECT: "
+                                f"acc {eff_acc:.3f} | prec {eff_precision:.3f} | rec {eff_recall:.3f} | "
+                                f"F1 {eff_f1:.3f} | targ_pos {eff_target_pos:.3f} | pred_pos {eff_pred_pos:.3f}"
+                            )
+                            aux_log_values.update(
+                                {
+                                    "aux/action_effectiveness/acc": eff_acc,
+                                    "aux/action_effectiveness/precision": eff_precision,
+                                    "aux/action_effectiveness/recall": eff_recall,
+                                    "aux/action_effectiveness/f1": eff_f1,
+                                    "aux/action_effectiveness/target_pos_rate": eff_target_pos,
+                                    "aux/action_effectiveness/pred_pos_rate": eff_pred_pos,
+                                    "aux/action_effectiveness/prob_mean": eff_prob_mean,
+                                    "aux/action_effectiveness/bce": eff_bce,
+                                }
+                            )
+
+                log_lines.extend(aux_console_lines)
+
                 print("\n".join(log_lines))
 
                 # Log to wandb (mirror console metrics)
@@ -986,9 +1130,9 @@ def train_loop(
                                 log_payload[
                                     f"off_stage_metrics/buttons/{label}_acc"
                                 ] = float(btn_match_off_vals[idx])
-                                log_payload[f"off_stage_metrics/buttons/{label}_f1"] = (
-                                    float(btn_f1_off_vals[idx])
-                                )
+                                log_payload[
+                                    f"off_stage_metrics/buttons/{label}_f1"
+                                ] = float(btn_f1_off_vals[idx])
                                 log_payload[
                                     f"off_stage_metrics/buttons/{label}_precision"
                                 ] = float(btn_prec_off_vals[idx])
@@ -1029,6 +1173,8 @@ def train_loop(
                                 "value/corr": float(correlation.item()),
                             }
                         )
+                    if aux_log_values:
+                        log_payload.update(aux_log_values)
                     logger.log_metrics(log_payload, step=global_step)
                     # persist latest step for robust resume
                     try:

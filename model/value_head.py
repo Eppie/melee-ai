@@ -3,6 +3,7 @@ from torch import nn as nn
 
 from model.norm import norm
 
+
 # TODO: We don't really need this, we can just use a SimpleHead
 class ValueHead(nn.Module):
     def __init__(self, input_dim, hidden=128):

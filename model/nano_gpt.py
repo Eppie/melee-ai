@@ -19,10 +19,16 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 
 from model.attention import CausalSelfAttention
+from model.auxiliary_heads import (
+    OpponentActionHead,
+    DamageDifferentialHead,
+    ActionEffectivenessHead,
+)
 from model.norm import norm
 from model.output_head import SimpleHead, ButtonHead
 from model.value_head import ValueHead
 from utils import _resolve_device
+
 
 class MLP(nn.Module):
     def __init__(self, n_embd):
@@ -36,6 +42,7 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
+
 class Block(nn.Module):
     def __init__(self, n_embd, n_head, n_kv_head, dropout):
         super().__init__()
@@ -43,7 +50,7 @@ class Block(nn.Module):
         self.mlp = MLP(n_embd)
 
     def forward(
-            self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
         x = x + self.attn(norm(x), cos, sin)
         x = x + self.mlp(norm(x))
@@ -90,22 +97,54 @@ class GPT(nn.Module):
         )
 
         c_stick_input_size = (
-                self.n_embd + self.button_output_size + self.main_stick_output_size
+            self.n_embd + self.button_output_size + self.main_stick_output_size
         )
         self.c_stick_head = SimpleHead(
             c_stick_input_size, self.c_stick_output_size, hidden=head_hidden_dim
         )
 
         shoulder_input_size = (
-                self.n_embd
-                + self.button_output_size
-                + self.main_stick_output_size
-                + self.c_stick_output_size
+            self.n_embd
+            + self.button_output_size
+            + self.main_stick_output_size
+            + self.c_stick_output_size
         )
         self.shoulder_head = SimpleHead(
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
         )
         self.value_head = ValueHead(self.n_embd, hidden=head_hidden_dim)
+
+        self.use_aux_heads = (
+            config.aux_tasks.enable_opponent_action
+            or config.aux_tasks.enable_damage_diff
+            or config.aux_tasks.enable_action_effectiveness
+        )
+
+        if self.use_aux_heads:
+            if config.aux_tasks.enable_opponent_action:
+                self.opponent_action_head = OpponentActionHead(
+                    self.n_embd, cfg.num_actions, hidden=head_hidden_dim
+                )
+            else:
+                self.opponent_action_head = None
+
+            if config.aux_tasks.enable_damage_diff:
+                self.damage_diff_head = DamageDifferentialHead(
+                    self.n_embd, hidden=head_hidden_dim
+                )
+            else:
+                self.damage_diff_head = None
+
+            if config.aux_tasks.enable_action_effectiveness:
+                self.action_effectiveness_head = ActionEffectivenessHead(
+                    self.n_embd, hidden=head_hidden_dim
+                )
+            else:
+                self.action_effectiveness_head = None
+        else:
+            self.opponent_action_head = None
+            self.damage_diff_head = None
+            self.action_effectiveness_head = None
 
         self.rotary_seq_len = self.block_size * 2
         head_dim = cfg.n_embd // cfg.n_head
@@ -187,7 +226,7 @@ class GPT(nn.Module):
     def forward(self, inputs: TensorDict) -> TensorDict:
         B, L, _ = inputs["gamestate"].shape
         assert (
-                L <= self.block_size
+            L <= self.block_size
         ), f"Cannot forward sequence of length {L}, block size is only {self.block_size}"
 
         combined_inputs = self._embed_inputs(inputs)
@@ -232,5 +271,21 @@ class GPT(nn.Module):
 
         value = self.value_head(x)
         outputs.set("value", value)
+
+        if self.use_aux_heads:
+            aux_outputs = {}
+
+            if self.opponent_action_head is not None:
+                aux_outputs["opponent_action"] = self.opponent_action_head(base)
+
+            if self.damage_diff_head is not None:
+                aux_outputs["damage_diff"] = self.damage_diff_head(base)
+
+            if self.action_effectiveness_head is not None:
+                aux_outputs["action_effectiveness"] = self.action_effectiveness_head(
+                    base
+                )
+
+            outputs.set("aux_outputs", aux_outputs)
 
         return outputs

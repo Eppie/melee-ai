@@ -1109,6 +1109,7 @@ class Console:
         else:
             ps.invulnerable = False
 
+        # TODO: Verify this processing is correct
         if blen > 0x4C:
             air_x, y_self, x_attack, y_attack, ground_x, hitlag = _S_6F.unpack_from(
                 event_bytes, 0x35
@@ -1139,7 +1140,7 @@ class Console:
                 int(_S_F.unpack_from(event_bytes, 0x49)[0]) if blen > 0x4C else 0
             )
 
-        # Off-stage helper
+        # TODO: Maybe calculate this ourselves in a vectorized way, later?
         edge = stages.EDGE_GROUND_POSITION.get(gs.stage)
         if (
             edge is not None
@@ -1343,33 +1344,33 @@ class Console:
                 gamestate.players[1].character_selected = gamestate.players[1].character
             except TypeError:
                 gamestate.players[1].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[1].character_selected = (
-                    enums.Character.UNKNOWN_CHARACTER
-                )
+                gamestate.players[
+                    1
+                ].character_selected = enums.Character.UNKNOWN_CHARACTER
             try:
                 gamestate.players[2].character = enums.to_internal(_u8(mv, 0x2A))
                 gamestate.players[2].character_selected = gamestate.players[2].character
             except TypeError:
                 gamestate.players[2].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[2].character_selected = (
-                    enums.Character.UNKNOWN_CHARACTER
-                )
+                gamestate.players[
+                    2
+                ].character_selected = enums.Character.UNKNOWN_CHARACTER
             try:
                 gamestate.players[3].character = enums.to_internal(_u8(mv, 0x2B))
                 gamestate.players[3].character_selected = gamestate.players[3].character
             except TypeError:
                 gamestate.players[3].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[3].character_selected = (
-                    enums.Character.UNKNOWN_CHARACTER
-                )
+                gamestate.players[
+                    3
+                ].character_selected = enums.Character.UNKNOWN_CHARACTER
             try:
                 gamestate.players[4].character = enums.to_internal(_u8(mv, 0x2C))
                 gamestate.players[4].character_selected = gamestate.players[4].character
             except TypeError:
                 gamestate.players[4].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[4].character_selected = (
-                    enums.Character.UNKNOWN_CHARACTER
-                )
+                gamestate.players[
+                    4
+                ].character_selected = enums.Character.UNKNOWN_CHARACTER
 
         if gamestate.menu_state == enums.Menu.STAGE_SELECT:
             try:

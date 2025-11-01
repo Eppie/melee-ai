@@ -50,10 +50,6 @@ PLAYER_SPEC = [
     ("shoulder_analog", np.float32),  # game treats L/R shoulder identically
     # Additional state
     ("shield_strength", np.float32),
-    # ("is_powershield", np.float32),
-    # ("action_frame", np.int32),
-    # ("is_reflect_active", np.float32),
-    # ("is_subaction_invulnerable", np.float32),
     ("is_fastfalling", np.float32),
     ("is_defender_in_hitlag", np.float32),
     ("is_in_hitlag", np.float32),
@@ -63,16 +59,15 @@ PLAYER_SPEC = [
     ("is_dead", np.float32),
     ("is_offscreen", np.float32),
     ("is_invulnerable", np.float32),
-    # ("hitlag_left", np.int32),
-    # ("hitstun_frames_left", np.int32),
     ("jumps_left", np.int32),
+    # TODO: It would be great to have these. Do we have replays with these populated? Added in version 3.5.0
     # ("speed_air_x_self", np.float32),
     # ("speed_y_self", np.float32),
     # ("speed_x_attack", np.float32),
     # ("speed_y_attack", np.float32),
     # ("speed_ground_x_self", np.float32),
     ("off_stage", np.float32),
-    ("l_cancel_status", np.int32), # TODO: Maybe one-hot encode this?
+    ("l_cancel_status", np.int32),  # TODO: Maybe one-hot encode this?
 ]
 
 
@@ -215,11 +210,7 @@ def _prefixed(spec, prefix: str):
 
 # Compose all dataclass fields in the final order
 _ROW_FIELDS = (
-    COMMON_SPEC
-    + _prefixed(PLAYER_SPEC, "p1_")
-    + _prefixed(PLAYER_SPEC, "p2_")
-    + [("replay_hash", Optional[np.uint32], dataclasses.field(default=None))]
-    + [("replay_filename", Optional[str], dataclasses.field(default=None))]
+    COMMON_SPEC + _prefixed(PLAYER_SPEC, "p1_") + _prefixed(PLAYER_SPEC, "p2_")
 )
 
 

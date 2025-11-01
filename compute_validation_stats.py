@@ -732,9 +732,13 @@ def _parallel_worker(args: Tuple[str, List[EpisodeInfo], str, object]) -> object
         num_features, limit = processor_args
         processor = ClassifyProcessor(num_features, limit)
     elif processor_type == "stats":
-        feature_names, column_types, unique_values, stick_specs, shoulder_specs = (
-            processor_args
-        )
+        (
+            feature_names,
+            column_types,
+            unique_values,
+            stick_specs,
+            shoulder_specs,
+        ) = processor_args
         processor = StatsProcessor(
             feature_names, column_types, unique_values, stick_specs, shoulder_specs
         )

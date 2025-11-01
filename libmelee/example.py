@@ -49,7 +49,7 @@ if __name__ == "__main__":
         "-c",
         type=Path,
         default=Path(
-            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep011_025001.pt"
+            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep001_000001.pt"
         ),
         help="Path to trained model checkpoint (.pt)",
     )
@@ -136,7 +136,6 @@ if __name__ == "__main__":
             previous_gamestate = gamestate
 
         else:
-
             menu_helper.menu_helper_simple(
                 gamestate,
                 controllers[1],

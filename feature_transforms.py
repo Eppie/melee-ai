@@ -96,11 +96,12 @@ def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
     """
     xy01_clipped = np.clip(xy01, 0.0, 1.0)
     xy11 = xy01_clipped * 2.0 - 1.0
-    norms = np.linalg.norm(xy11, axis=1, keepdims=True)
+    norms = np.linalg.norm(xy11, axis=1)
     mask = norms > 1.0
     if np.any(mask):
-        xy11[mask] /= norms[mask]
+        xy11[mask] /= norms[mask, np.newaxis]
     return xy11
+
 
 # TODO: Are these duplicated elsewhere? better place to put these?
 _MAIN_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
@@ -112,6 +113,7 @@ _PALETTES: Dict[str, np.ndarray] = {
     "c_stick": _C_PALETTE,
     "c": _C_PALETTE,
 }
+
 
 # TODO: do we need both paths? should KNOW if [-1,1] or [0,1]
 def _stick_palette_apply(
@@ -145,10 +147,10 @@ def _stick_palette_apply(
     values = block.astype(np.float32, copy=False)
     if np.any(values < 0.0) or np.any(values > 1.0):
         xy11 = np.clip(values, -1.0, 1.0).copy()
-        norms = np.linalg.norm(xy11, axis=1, keepdims=True)
+        norms = np.linalg.norm(xy11, axis=1)
         mask = norms > 1.0
         if np.any(mask):
-            xy11[mask] /= norms[mask]
+            xy11[mask] /= norms[mask, np.newaxis]
     else:
         xy01 = np.clip(values, 0.0, 1.0)
         xy11 = _sticks01_to_unit11_np(xy01.copy())

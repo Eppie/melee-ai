@@ -9,7 +9,7 @@ import torch
 from tensordict import TensorDict
 from torch import Tensor
 
-from column_map import CONTROLLER_KEY_GROUPS
+from constants import CONTROLLER_KEY_GROUPS
 from column_map import ColumnMap
 from controller_quantization import quantize_targets
 
@@ -81,7 +81,7 @@ def build_model_inputs(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorD
 
 # TODO: What is the point of this?
 def quantize_controller_targets(
-        batch_Y: torch.Tensor, colmap: ColumnMap, input_domain: str = "unit11"
+    batch_Y: torch.Tensor, colmap: ColumnMap, input_domain: str = "unit11"
 ) -> Dict[str, torch.Tensor]:
     """Quantize controller outputs to the discrete bins used by the loss functions.
 
@@ -142,11 +142,11 @@ def _normalize(w: Tensor) -> Tensor:
 
 # TODO: Make this optional via config
 def compute_component_sample_weights(
-        target_info: Mapping[str, Tensor],
-        device: torch.device,
-        *,
-        ratios: Optional[SampleWeightRatios] = None,
-        button_names: Optional[Sequence[str]] = None,
+    target_info: Mapping[str, Tensor],
+    device: torch.device,
+    *,
+    ratios: Optional[SampleWeightRatios] = None,
+    button_names: Optional[Sequence[str]] = None,
 ) -> Dict[str, Tensor]:
     """Construct dynamic loss weights that emphasize frames where actions change.
 

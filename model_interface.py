@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     Dict,
     Iterator,
     List,
@@ -21,14 +20,16 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
-from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
+import constants
+from column_map import ColumnMap
 from config import FeatureConfig, get_config
+from constants import CONTROLLER_KEY_GROUPS, _FEATURE_TRANSFORMS_SPEC
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
-from feature_transforms import FeatureTransformSpec, build_transform_spec
+from feature_transforms import build_transform_spec
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
@@ -37,20 +38,23 @@ from schema import (
     PLAYER_SPEC,
     extract_common_fields,
     extract_player_fields,
-    get_feature_names,
-    get_target_names,
+    get_feature_names, get_target_names,
 )
 from train import build_model_inputs
-from train.display import _format_action
 from utils import _resolve_device
 
-# TODO: Are these required to be module-level?
 _DEFAULT_FEATURE_NAMES = get_feature_names()
-
 _DEFAULT_TARGET_NAMES = get_target_names()
 
-_FEATURE_TRANSFORMS_SPEC: Optional[FeatureTransformSpec] = None
+_PRINT_CACHE: dict[str, int] = {}
 
+def print_cached(s: str) -> None:
+    if s not in _PRINT_CACHE:
+        _PRINT_CACHE[s] = 1
+    else:
+        _PRINT_CACHE[s] += 1
+    if _PRINT_CACHE[s] % 100 == 0:
+        print(s, _PRINT_CACHE[s])
 
 @dataclasses.dataclass
 class ControllerState:
@@ -79,7 +83,7 @@ class ControllerState:
         :func:`apply_model_outputs_to_game` leaves the character idle, which is
         exactly what the inference engine emits during warm-up.
         """
-        print("[TRACE:ControllerState.neutral] Creating neutral controller state")
+        print_cached("[TRACE:ControllerState.neutral] Creating neutral controller state")
         return ControllerState(
             main_stick_x=0.5,
             main_stick_y=0.5,
@@ -168,8 +172,11 @@ def _safe_float(value: object) -> float:
     try:
         return float(value)
     except Exception as e:
-        print(f"[TRACE:_safe_float] Failed to convert {value} of type {type(value)} to float: {e}")
+        print_cached(
+            f"[TRACE:_safe_float] Failed to convert {value} of type {type(value)} to float: {e}"
+        )
         raise
+
 
 # TODO: called 63 times per frame, there has to be a better way
 def _coerce_scalar(value: object) -> float | int | bool:
@@ -182,19 +189,19 @@ def _coerce_scalar(value: object) -> float | int | bool:
     ``{'not': 'a scalar'}`` raises ``TypeError("Unable to coerce value ...")`` so
     malformed schema values surface immediately.
     """
-    # print(f"[TRACE:_coerce_scalar] Coercing value of type {type(value)}")
+    # print_cached(f"[TRACE:_coerce_scalar] Coercing value of type {type(value)}")
     if isinstance(value, (bool, int, float)):
-        # print("[TRACE:_coerce_scalar] Value is already bool/int/float")
+        # print_cached("[TRACE:_coerce_scalar] Value is already bool/int/float")
         return value
     if isinstance(value, np.generic):
-        # print("[TRACE:_coerce_scalar] Value is numpy generic, calling item()")
+        # print_cached("[TRACE:_coerce_scalar] Value is numpy generic, calling item()")
         return value.item()
     try:
         result = float(value)
-        # print("[TRACE:_coerce_scalar] Successfully converted to float")
+        # print_cached("[TRACE:_coerce_scalar] Successfully converted to float")
         return result
     except Exception as exc:
-        # print(f"[TRACE:_coerce_scalar] Failed to coerce value {value!r}")
+        # print_cached(f"[TRACE:_coerce_scalar] Failed to coerce value {value!r}")
         raise TypeError(
             f"Unable to coerce value {value!r} ({type(value)}) to scalar"
         ) from exc
@@ -211,16 +218,17 @@ def set_feature_transforms(transforms: Optional[Any]) -> None:
     ``foo`` feature before inference. Passing ``None`` clears the spec, restoring
     identity transforms.
     """
-    print(f"[TRACE:set_feature_transforms] Called with transforms={transforms is not None}")
+    print_cached(
+        f"[TRACE:set_feature_transforms] Called with transforms={transforms is not None}"
+    )
 
-    global _FEATURE_TRANSFORMS_SPEC
     if not transforms:
-        print("[TRACE:set_feature_transforms] No transforms provided, setting to None")
-        _FEATURE_TRANSFORMS_SPEC = None
+        print_cached("[TRACE:set_feature_transforms] No transforms provided, setting to None")
+        constants._FEATURE_TRANSFORMS_SPEC = None
         return
 
-    print("[TRACE:set_feature_transforms] Building transform spec")
-    _FEATURE_TRANSFORMS_SPEC = build_transform_spec(transforms)
+    print_cached("[TRACE:set_feature_transforms] Building transform spec")
+    constants._FEATURE_TRANSFORMS_SPEC = build_transform_spec(transforms)
 
 
 set_feature_transforms(FeatureConfig().transforms)
@@ -238,13 +246,13 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
     ``{'foo': 3.0, 'bar': 2.0}``, illustrating the same pipeline that runs before
     every inference call.
     """
-    # print(f"[TRACE:_apply_transforms_to_features] Called with {len(features)} features")
+    # print_cached(f"[TRACE:_apply_transforms_to_features] Called with {len(features)} features")
     spec = _FEATURE_TRANSFORMS_SPEC
     if not spec or not spec.steps:
-        # print("[TRACE:_apply_transforms_to_features] No transforms to apply, returning original")
+        # print_cached("[TRACE:_apply_transforms_to_features] No transforms to apply, returning original")
         return features
 
-    # print(f"[TRACE:_apply_transforms_to_features] Applying {len(spec.steps)} transform steps")
+    # print_cached(f"[TRACE:_apply_transforms_to_features] Applying {len(spec.steps)} transform steps")
     out = dict(features)
     keys = list(out.keys())
     key_set = set(keys)
@@ -254,7 +262,7 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
         head, _, tail = key.partition("_")
         if tail and head.startswith("p") and head[1:].isdigit():
             prefixes.add(head)
-    # print(f"[TRACE:_apply_transforms_to_features] Found {len(prefixes)} player prefixes")
+    # print_cached(f"[TRACE:_apply_transforms_to_features] Found {len(prefixes)} player prefixes")
 
     # TODO: Surely we can cache this, or maybe even remove the need for it?
     def _resolve_groups(requested: Sequence[str]) -> List[Tuple[str, ...]]:
@@ -268,71 +276,85 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
         ``('p2_main_stick_x', 'p2_main_stick_y')`` so transforms execute for both
         players independently.
         """
-        # print(f"[TRACE:_resolve_groups] Resolving {len(requested)} requested features")
+        # print_cached(f"[TRACE:_resolve_groups] Resolving {len(requested)} requested features")
         if all(name in key_set for name in requested):
-            # print("[TRACE:_resolve_groups] All features found in key_set, returning single group")
+            # print_cached("[TRACE:_resolve_groups] All features found in key_set, returning single group")
             return [tuple(requested)]
-        # print("[TRACE:_resolve_groups] Looking for prefixed groups")
+        # print_cached("[TRACE:_resolve_groups] Looking for prefixed groups")
         groups: List[Tuple[str, ...]] = []
         for prefix in sorted(prefixes):
             group: List[str] = []
             for feature in requested:
                 key = f"{prefix}_{feature}"
                 if key not in key_set:
-                    # print(f"[TRACE:_resolve_groups] Key {key} not found, breaking")
+                    # print_cached(f"[TRACE:_resolve_groups] Key {key} not found, breaking")
                     break
                 group.append(key)
             else:
                 if group:
-                    # print(f"[TRACE:_resolve_groups] Found complete group with prefix {prefix}")
+                    # print_cached(f"[TRACE:_resolve_groups] Found complete group with prefix {prefix}")
                     groups.append(tuple(group))
-        # print(f"[TRACE:_resolve_groups] Returning {len(groups)} groups")
+        # print_cached(f"[TRACE:_resolve_groups] Returning {len(groups)} groups")
         return groups
 
     for step_idx, step in enumerate(spec.steps):
-        print(f"[TRACE:_apply_transforms_to_features] Processing step {step_idx}: {step.transform}")
+        print_cached(
+            f"[TRACE:_apply_transforms_to_features] Processing step {step_idx}: {step.transform}"
+        )
         groups = _resolve_groups(step.features)
         if not groups:
-            print(f"[TRACE:_apply_transforms_to_features] No groups found for step {step_idx}, continuing")
+            print_cached(
+                f"[TRACE:_apply_transforms_to_features] No groups found for step {step_idx}, continuing"
+            )
             continue
         for group_idx, group in enumerate(groups):
             if len(group) == 1:
-                print(f"[TRACE:_apply_transforms_to_features] Step {step_idx} group {group_idx}: single feature")
+                print_cached(
+                    f"[TRACE:_apply_transforms_to_features] Step {step_idx} group {group_idx}: single feature"
+                )
                 key = group[0]
                 value = np.array(out[key], dtype=np.float32)
                 result = step.fn(value.copy())
                 if result is None:
-                    print(f"[TRACE:_apply_transforms_to_features] Transform returned None, using original")
+                    print_cached(
+                        f"[TRACE:_apply_transforms_to_features] Transform returned None, using original"
+                    )
                     result = value
                 if result.shape != value.shape:
-                    print(
-                        f"[TRACE:_apply_transforms_to_features] ERROR: Shape mismatch {value.shape} vs {result.shape}")
+                    print_cached(
+                        f"[TRACE:_apply_transforms_to_features] ERROR: Shape mismatch {value.shape} vs {result.shape}"
+                    )
                     raise ValueError(
                         f"Transform '{step.transform}' expected output shape {value.shape}, got {result.shape}."
                     )
                 out[key] = float(result)
             else:
-                print(f"[TRACE:_apply_transforms_to_features] Step {step_idx} group {group_idx}: {len(group)} features")
+                print_cached(
+                    f"[TRACE:_apply_transforms_to_features] Step {step_idx} group {group_idx}: {len(group)} features"
+                )
                 block = np.array([[float(out[k]) for k in group]], dtype=np.float32)
                 result = step.fn(block.copy())
                 if result is None:
-                    print(f"[TRACE:_apply_transforms_to_features] Transform returned None, using original")
+                    print_cached(
+                        f"[TRACE:_apply_transforms_to_features] Transform returned None, using original"
+                    )
                     result = block
                 if result.shape != block.shape:
-                    print(
-                        f"[TRACE:_apply_transforms_to_features] ERROR: Shape mismatch {block.shape} vs {result.shape}")
+                    print_cached(
+                        f"[TRACE:_apply_transforms_to_features] ERROR: Shape mismatch {block.shape} vs {result.shape}"
+                    )
                     raise ValueError(
                         f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
                     )
                 for idx, key in enumerate(group):
                     out[key] = float(result[0, idx])
 
-    print("[TRACE:_apply_transforms_to_features] All transforms applied successfully")
+    print_cached("[TRACE:_apply_transforms_to_features] All transforms applied successfully")
     return out
 
 
 def _controller_state_to_features(
-        prefix: str, state: ControllerState
+    prefix: str, state: ControllerState
 ) -> Dict[str, float]:
     """Convert a :class:`ControllerState` into prefixed feature values.
 
@@ -343,7 +365,9 @@ def _controller_state_to_features(
     ``0.0``. The inference engine caches this mapping to seed controller history
     before live predictions.
     """
-    print(f"[TRACE:_controller_state_to_features] Converting controller state with prefix={prefix}")
+    print_cached(
+        f"[TRACE:_controller_state_to_features] Converting controller state with prefix={prefix}"
+    )
     return {
         f"{prefix}_button_a": float(state.button_a),
         f"{prefix}_button_b": float(state.button_b),
@@ -367,7 +391,7 @@ def _zero_player_fields(prefix: str) -> Dict[str, float]:
     ``{'p2_main_stick_x': 0.0}``, matching the neutral placeholders used when an
     opponent is absent from the gamestate.
     """
-    print(f"[TRACE:_zero_player_fields] Creating zero fields for prefix={prefix}")
+    print_cached(f"[TRACE:_zero_player_fields] Creating zero fields for prefix={prefix}")
     return {f"{prefix}_{name}": dtype(0) for name, dtype in PLAYER_SPEC}
 
 
@@ -381,24 +405,30 @@ def _prefixed_player_fields(player, prefix: str) -> Dict[str, float]:
     :func:`_zero_player_fields(prefix)`, ensuring callers receive a complete feature
     dictionary regardless of the gamestate.
     """
-    print(f"[TRACE:_prefixed_player_fields] Extracting fields for prefix={prefix}")
+    print_cached(f"[TRACE:_prefixed_player_fields] Extracting fields for prefix={prefix}")
     if player is None or getattr(player, "controller_state", None) is None:
-        print("[TRACE:_prefixed_player_fields] Player is None or has no controller_state, returning zeros")
+        print_cached(
+            "[TRACE:_prefixed_player_fields] Player is None or has no controller_state, returning zeros"
+        )
         return _zero_player_fields(prefix)
 
     try:
         extracted = extract_player_fields(player)
-        print(f"[TRACE:_prefixed_player_fields] Successfully extracted {len(extracted)} fields")
+        print_cached(
+            f"[TRACE:_prefixed_player_fields] Successfully extracted {len(extracted)} fields"
+        )
     except ValueError:
-        print("[TRACE:_prefixed_player_fields] ValueError during extraction, returning zeros")
+        print_cached(
+            "[TRACE:_prefixed_player_fields] ValueError during extraction, returning zeros"
+        )
         return _zero_player_fields(prefix)
 
     return {f"{prefix}_{name}": value for name, value in extracted.items()}
 
 
 def model_to_dolphin01(
-        model_out: np.ndarray,
-        palette11: np.ndarray | None = None,
+    model_out: np.ndarray,
+    palette11: np.ndarray | None = None,
 ) -> np.ndarray:
     """Convert model outputs to Dolphin's ``[0, 1]`` coordinate space.
 
@@ -410,32 +440,40 @@ def model_to_dolphin01(
       selects the third palette vector, clamps it if needed, and outputs the
       corresponding ``[0, 1]`` coordinates.
     """
-    print(f"[TRACE:model_to_dolphin01] Converting model output, palette provided={palette11 is not None}")
+    print_cached(
+        f"[TRACE:model_to_dolphin01] Converting model output, palette provided={palette11 is not None}"
+    )
     arr = np.asarray(model_out)
 
     if np.issubdtype(arr.dtype, np.integer):
-        print("[TRACE:model_to_dolphin01] Array is integer type, using palette")
+        print_cached("[TRACE:model_to_dolphin01] Array is integer type, using palette")
         if palette11 is None:
-            print("[TRACE:model_to_dolphin01] ERROR: palette11 is None for integer array")
+            print_cached(
+                "[TRACE:model_to_dolphin01] ERROR: palette11 is None for integer array"
+            )
             raise ValueError("palette11 must be provided when converting indices")
         P = np.asarray(palette11, dtype=np.float32)
         coords11 = P[arr]
     else:
-        print("[TRACE:model_to_dolphin01] Array is float type, using directly")
+        print_cached("[TRACE:model_to_dolphin01] Array is float type, using directly")
         coords11 = np.asarray(model_out, dtype=np.float32)
         if coords11.shape[-1] != 2:
-            print(f"[TRACE:model_to_dolphin01] ERROR: Last dimension is {coords11.shape[-1]}, expected 2")
+            print_cached(
+                f"[TRACE:model_to_dolphin01] ERROR: Last dimension is {coords11.shape[-1]}, expected 2"
+            )
             raise ValueError("model_out must have last dimension size 2")
 
     # Clamp to unit circle to be safe.
     r2 = np.einsum("...i,...i->...", coords11, coords11)
     over = r2 > 1.0
     if np.any(over):
-        print(f"[TRACE:model_to_dolphin01] Clamping {np.sum(over)} values outside unit circle")
+        print_cached(
+            f"[TRACE:model_to_dolphin01] Clamping {np.sum(over)} values outside unit circle"
+        )
         coords11 = coords11.copy()
         coords11[over] /= np.sqrt(r2[over])[..., None]
     else:
-        print("[TRACE:model_to_dolphin01] All values within unit circle")
+        print_cached("[TRACE:model_to_dolphin01] All values within unit circle")
 
     # Map [-1,1] -> [0,1]
     xy01 = np.clip(coords11 * 0.5 + 0.5, 0.0, 1.0).astype(np.float32)
@@ -444,9 +482,9 @@ def model_to_dolphin01(
 
 # TODO: maybe overengineered, maybe can collapse some. just be careful to keep in sync with what was done in training.
 def collect_raw_inputs_from_gamestate(
-        gamestate: GameState,
-        bot_port: int,
-        opp_port: int,
+    gamestate: GameState,
+    bot_port: int,
+    opp_port: int,
 ) -> ModelFrameInputs:
     """Extract both raw and transformed feature dictionaries with an example.
 
@@ -463,12 +501,15 @@ def collect_raw_inputs_from_gamestate(
     The returned :class:`ModelFrameInputs` therefore contains the raw mapping used
     for logging and the transformed mapping used for inference.
     """
-    print(f"[TRACE:collect_raw_inputs_from_gamestate] bot_port={bot_port}, opp_port={opp_port}")
+    print_cached(
+        f"[TRACE:collect_raw_inputs_from_gamestate] bot_port={bot_port}, opp_port={opp_port}"
+    )
 
     ego_player = gamestate.players.get(bot_port)
     opp_player = gamestate.players.get(opp_port)
-    print(
-        f"[TRACE:collect_raw_inputs_from_gamestate] ego_player found={ego_player is not None}, opp_player found={opp_player is not None}")
+    print_cached(
+        f"[TRACE:collect_raw_inputs_from_gamestate] ego_player found={ego_player is not None}, opp_player found={opp_player is not None}"
+    )
 
     values: Dict[str, float] = extract_common_fields(gamestate)
     prefixed_common = {name: val for name, val in values.items()}
@@ -478,7 +519,9 @@ def collect_raw_inputs_from_gamestate(
     player_values.update(_prefixed_player_fields(opp_player, "p2"))
 
     combined = {**prefixed_common, **player_values}
-    print(f"[TRACE:collect_raw_inputs_from_gamestate] Combined {len(combined)} raw fields")
+    print_cached(
+        f"[TRACE:collect_raw_inputs_from_gamestate] Combined {len(combined)} raw fields"
+    )
     combined_raw = {name: _coerce_scalar(val) for name, val in combined.items()}
     transformed = _apply_transforms_to_features(dict(combined_raw))
 
@@ -487,11 +530,15 @@ def collect_raw_inputs_from_gamestate(
     final: Dict[str, float] = {}
     for name in feature_names:
         if name not in transformed:
-            print(f"[TRACE:collect_raw_inputs_from_gamestate] ERROR: Feature {name} missing")
+            print_cached(
+                f"[TRACE:collect_raw_inputs_from_gamestate] ERROR: Feature {name} missing"
+            )
             raise KeyError(f"Feature '{name}' missing from collected inputs.")
         final[name] = _safe_float(transformed[name])
 
-    print(f"[TRACE:collect_raw_inputs_from_gamestate] Returning {len(final)} final features")
+    print_cached(
+        f"[TRACE:collect_raw_inputs_from_gamestate] Returning {len(final)} final features"
+    )
     return ModelFrameInputs(raw=combined_raw, transformed=final)
 
 
@@ -499,8 +546,8 @@ class GPTInferenceEngine:
     """Online inference helper around the GPT controller model."""
 
     def __init__(
-            self,
-            checkpoint_path: str | Path,
+        self,
+        checkpoint_path: str | Path,
     ) -> None:
         """Load the GPT checkpoint and initialize inference buffers.
 
@@ -515,7 +562,9 @@ class GPTInferenceEngine:
            :meth:`predict_from_raw` can immediately begin warm-up with neutral
            controller states.
         """
-        print(f"[TRACE:GPTInferenceEngine.__init__] Loading checkpoint from {checkpoint_path}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine.__init__] Loading checkpoint from {checkpoint_path}"
+        )
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})
 
@@ -525,7 +574,7 @@ class GPTInferenceEngine:
         meta_path = data_root / "meta.json"
         transforms_spec: Optional[Any] = None
         if meta_path.exists():
-            print(f"[TRACE:GPTInferenceEngine.__init__] Loading meta from {meta_path}")
+            print_cached(f"[TRACE:GPTInferenceEngine.__init__] Loading meta from {meta_path}")
             with meta_path.open("r") as f:
                 meta = json.load(f)
 
@@ -534,22 +583,26 @@ class GPTInferenceEngine:
             self.seq_len = int(meta.get("seq_len", 256))
             build_cfg = meta.get("build_config")
             if isinstance(build_cfg, Mapping):
-                print("[TRACE:GPTInferenceEngine.__init__] build_config found in meta")
+                print_cached("[TRACE:GPTInferenceEngine.__init__] build_config found in meta")
                 features_cfg = build_cfg.get("features")
                 if isinstance(features_cfg, Mapping):
-                    print("[TRACE:GPTInferenceEngine.__init__] features config found")
+                    print_cached("[TRACE:GPTInferenceEngine.__init__] features config found")
                     transforms_cfg = features_cfg.get("transforms")
                     if transforms_cfg:
-                        print("[TRACE:GPTInferenceEngine.__init__] transforms config found in meta")
+                        print_cached(
+                            "[TRACE:GPTInferenceEngine.__init__] transforms config found in meta"
+                        )
                         transforms_spec = transforms_cfg
         else:
-            print("[TRACE:GPTInferenceEngine.__init__] No meta.json found, using defaults")
+            print_cached(
+                "[TRACE:GPTInferenceEngine.__init__] No meta.json found, using defaults"
+            )
             feature_names = list(_DEFAULT_FEATURE_NAMES)
             target_names = list(_DEFAULT_TARGET_NAMES)
             self.seq_len = 256
 
         self.device = _resolve_device()
-        print(f"[TRACE:GPTInferenceEngine.__init__] Device: {self.device}")
+        print_cached(f"[TRACE:GPTInferenceEngine.__init__] Device: {self.device}")
         self.shoulder_centers = SHOULDER_QUANTIZED
         self.warmup_frames = 256
         self._main_stick_palette = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
@@ -557,22 +610,28 @@ class GPTInferenceEngine:
         self._c_stick_palette = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
 
         if transforms_spec is None and isinstance(train_cfg, Mapping):
-            print("[TRACE:GPTInferenceEngine.__init__] Checking train_cfg for transforms")
+            print_cached(
+                "[TRACE:GPTInferenceEngine.__init__] Checking train_cfg for transforms"
+            )
             features_cfg = train_cfg.get("features")
             if isinstance(features_cfg, Mapping):
-                print("[TRACE:GPTInferenceEngine.__init__] features config found in train_cfg")
+                print_cached(
+                    "[TRACE:GPTInferenceEngine.__init__] features config found in train_cfg"
+                )
                 transforms_cfg = features_cfg.get("transforms")
                 if transforms_cfg:
-                    print("[TRACE:GPTInferenceEngine.__init__] transforms config found in train_cfg")
+                    print_cached(
+                        "[TRACE:GPTInferenceEngine.__init__] transforms config found in train_cfg"
+                    )
                     transforms_spec = transforms_cfg
 
         if transforms_spec is not None:
-            print("[TRACE:GPTInferenceEngine.__init__] Setting feature transforms")
+            print_cached("[TRACE:GPTInferenceEngine.__init__] Setting feature transforms")
             set_feature_transforms(transforms_spec)
         else:
-            print("[TRACE:GPTInferenceEngine.__init__] No transforms spec found")
+            print_cached("[TRACE:GPTInferenceEngine.__init__] No transforms spec found")
 
-        print("[TRACE:GPTInferenceEngine.__init__] Creating model")
+        print_cached("[TRACE:GPTInferenceEngine.__init__] Creating model")
         self.model = GPT(get_config()).to(self.device)
         self.model.load_state_dict(ckpt["model"])
         self.model.eval()
@@ -593,20 +652,24 @@ class GPTInferenceEngine:
         shoulder_key = "p1_shoulder_analog"
         # TODO: We will always have shoulder, what is this check actually for?
         if (
-                shoulder_key in self.feature_names
-                and shoulder_key not in controller_feature_keys
+            shoulder_key in self.feature_names
+            and shoulder_key not in controller_feature_keys
         ):
-            print("[TRACE:GPTInferenceEngine.__init__] Adding shoulder_analog to controller keys")
+            print_cached(
+                "[TRACE:GPTInferenceEngine.__init__] Adding shoulder_analog to controller keys"
+            )
             controller_feature_keys.append(shoulder_key)
         self._controller_feature_keys: Tuple[str, ...] = tuple(controller_feature_keys)
-        print(f"[TRACE:GPTInferenceEngine.__init__] Tracking {len(self._controller_feature_keys)} controller keys")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine.__init__] Tracking {len(self._controller_feature_keys)} controller keys"
+        )
         self._prev_controller_features: Dict[str, float] = {}
         self._update_prev_controller_features(ControllerState.neutral())
         self._frames_seen = 0
         self._death_log_dir = Path.cwd() / "death_logs"
         self._death_counter = 0
         self._prev_stock: Optional[int] = None
-        print("[TRACE:GPTInferenceEngine.__init__] Initialization complete")
+        print_cached("[TRACE:GPTInferenceEngine.__init__] Initialization complete")
 
     # TODO: python loop - maybe vectorize?
     # TODO: Good candidate for a microbenchmark
@@ -620,7 +683,9 @@ class GPTInferenceEngine:
         Missing keys raise ``KeyError`` through :func:`_safe_float`, making schema
         issues visible during inference.
         """
-        print(f"[TRACE:GPTInferenceEngine._frame_to_tensor] Converting {len(raw_inputs)} inputs")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._frame_to_tensor] Converting {len(raw_inputs)} inputs"
+        )
         frame = torch.zeros(self.feature_dim, dtype=torch.float32)
         for idx, name in enumerate(self.feature_names):
             frame[idx] = _safe_float(raw_inputs.get(name))
@@ -636,13 +701,19 @@ class GPTInferenceEngine:
         before warm-up completes) the method returns ``None`` to signal that
         inference should keep emitting neutral actions.
         """
-        print(f"[TRACE:GPTInferenceEngine._stack_frames] Buffer size: {len(self.buffer)}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._stack_frames] Buffer size: {len(self.buffer)}"
+        )
         if not self.buffer:
-            print("[TRACE:GPTInferenceEngine._stack_frames] Buffer empty, returning None")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._stack_frames] Buffer empty, returning None"
+            )
             return None
         frames = list(self.buffer)
         stacked = torch.stack(frames, dim=0)
-        print(f"[TRACE:GPTInferenceEngine._stack_frames] Stacked shape: {stacked.shape}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._stack_frames] Stacked shape: {stacked.shape}"
+        )
         return stacked.unsqueeze(0).to(self.device)
 
     def _build_inputs(self, batch_X: torch.Tensor) -> TensorDict:
@@ -655,11 +726,13 @@ class GPTInferenceEngine:
         original tensor plus positional encodings. This mirrors the exact input
         contract used during training.
         """
-        print(f"[TRACE:GPTInferenceEngine._build_inputs] Building inputs from batch shape {batch_X.shape}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._build_inputs] Building inputs from batch shape {batch_X.shape}"
+        )
         return build_model_inputs(batch_X, self.colmap)
 
     def _override_controller_features(
-            self, features: Mapping[str, float]
+        self, features: Mapping[str, float]
     ) -> Dict[str, float]:
         """Replace controller-related keys with cached values from prior outputs.
 
@@ -669,8 +742,9 @@ class GPTInferenceEngine:
         value is ``0.5``, the returned dictionary substitutes ``0.5`` so the model
         sees consistent controller history until a fresh prediction is available.
         """
-        print(
-            f"[TRACE:GPTInferenceEngine._override_controller_features] Overriding {len(self._controller_feature_keys)} controller features")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._override_controller_features] Overriding {len(self._controller_feature_keys)} controller features"
+        )
         updated = dict(features)
         for key in self._controller_feature_keys:
             if key in self._prev_controller_features and key in updated:
@@ -686,14 +760,20 @@ class GPTInferenceEngine:
         it to feature keys, applies transforms if configured, and stores the result
         so :meth:`_override_controller_features` can reuse them on the next frame.
         """
-        print("[TRACE:GPTInferenceEngine._update_prev_controller_features] Updating previous controller features")
+        print_cached(
+            "[TRACE:GPTInferenceEngine._update_prev_controller_features] Updating previous controller features"
+        )
         values = _controller_state_to_features("p1", state)
         if _FEATURE_TRANSFORMS_SPEC and _FEATURE_TRANSFORMS_SPEC.steps:
-            print("[TRACE:GPTInferenceEngine._update_prev_controller_features] Applying transforms")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._update_prev_controller_features] Applying transforms"
+            )
             transformed = _apply_transforms_to_features(dict(values))
             self._prev_controller_features = {k: float(transformed[k]) for k in values}
         else:
-            print("[TRACE:GPTInferenceEngine._update_prev_controller_features] No transforms to apply")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._update_prev_controller_features] No transforms to apply"
+            )
             self._prev_controller_features = {k: float(v) for k, v in values.items()}
 
     def _snapshot_features(self, features: Mapping[str, float]) -> Dict[str, float]:
@@ -706,11 +786,15 @@ class GPTInferenceEngine:
         ``{'foo': float(features['foo']), 'bar': float(features['bar'])}``.
         Missing keys raise ``KeyError`` so logging never silently omits features.
         """
-        print(f"[TRACE:GPTInferenceEngine._snapshot_features] Snapshotting {len(self.feature_names)} features")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._snapshot_features] Snapshotting {len(self.feature_names)} features"
+        )
         snapshot: Dict[str, float] = {}
         for name in self.feature_names:
             if name not in features:
-                print(f"[TRACE:GPTInferenceEngine._snapshot_features] ERROR: Feature {name} missing")
+                print_cached(
+                    f"[TRACE:GPTInferenceEngine._snapshot_features] ERROR: Feature {name} missing"
+                )
                 raise KeyError(f"Feature '{name}' missing from snapshot inputs.")
             snapshot[name] = float(_safe_float(features[name]))
         return snapshot
@@ -723,7 +807,9 @@ class GPTInferenceEngine:
         ``_snapshot_raw({'foo': np.float32(1.23)})`` yields ``{'foo': 1.23}``,
         making the snapshot JSON-serializable for death logs.
         """
-        print(f"[TRACE:GPTInferenceEngine._snapshot_raw] Snapshotting {len(raw_inputs)} raw inputs")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._snapshot_raw] Snapshotting {len(raw_inputs)} raw inputs"
+        )
         return {name: _coerce_scalar(value) for name, value in raw_inputs.items()}
 
     def _snapshot_targets(self, raw_inputs: Mapping[str, float]) -> Dict[str, float]:
@@ -735,11 +821,15 @@ class GPTInferenceEngine:
         they appear in the returned dictionary. Missing keys trigger ``KeyError``
         so controller logs remain aligned with the model schema.
         """
-        print(f"[TRACE:GPTInferenceEngine._snapshot_targets] Snapshotting {len(self.target_names)} targets")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._snapshot_targets] Snapshotting {len(self.target_names)} targets"
+        )
         targets: Dict[str, float] = {}
         for name in self.target_names:
             if name not in raw_inputs:
-                print(f"[TRACE:GPTInferenceEngine._snapshot_targets] ERROR: Target {name} missing")
+                print_cached(
+                    f"[TRACE:GPTInferenceEngine._snapshot_targets] ERROR: Target {name} missing"
+                )
                 raise KeyError(
                     f"Target '{name}' missing from raw inputs during logging."
                 )
@@ -747,7 +837,7 @@ class GPTInferenceEngine:
         return targets
 
     def _record_frame(
-            self, model_features: Mapping[str, float], raw_inputs: Mapping[str, float]
+        self, model_features: Mapping[str, float], raw_inputs: Mapping[str, float]
     ) -> FrameRecord:
         """Append the current frame's raw, transformed, and target data to history.
 
@@ -758,14 +848,16 @@ class GPTInferenceEngine:
         :meth:`_snapshot_targets`, appends it to ``self.frame_history``, and returns
         the record so callers can store logits alongside it.
         """
-        print("[TRACE:GPTInferenceEngine._record_frame] Recording frame")
+        print_cached("[TRACE:GPTInferenceEngine._record_frame] Recording frame")
         record = FrameRecord(
             raw_features=self._snapshot_raw(raw_inputs),
             transformed_features=self._snapshot_features(model_features),
             targets=self._snapshot_targets(raw_inputs),
         )
         self.frame_history.append(record)
-        print(f"[TRACE:GPTInferenceEngine._record_frame] Frame history size: {len(self.frame_history)}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._record_frame] Frame history size: {len(self.frame_history)}"
+        )
         return record
 
     def _capture_logits(self, outputs: TensorDict) -> Dict[str, Any]:
@@ -777,23 +869,27 @@ class GPTInferenceEngine:
         ``outputs['buttons'][0, -1].detach().cpu().tolist()`` under the ``'buttons'``
         key so the JSON death log records the exact logits that led to an action.
         """
-        print("[TRACE:GPTInferenceEngine._capture_logits] Capturing logits")
+        print_cached("[TRACE:GPTInferenceEngine._capture_logits] Capturing logits")
         logits: Dict[str, Any] = {}
         if "main_stick" in outputs:
-            print("[TRACE:GPTInferenceEngine._capture_logits] Capturing main_stick logits")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._capture_logits] Capturing main_stick logits"
+            )
             logits["main_stick"] = outputs["main_stick"][0, -1].detach().cpu().tolist()
         if "c_stick" in outputs:
-            print("[TRACE:GPTInferenceEngine._capture_logits] Capturing c_stick logits")
+            print_cached("[TRACE:GPTInferenceEngine._capture_logits] Capturing c_stick logits")
             logits["c_stick"] = outputs["c_stick"][0, -1].detach().cpu().tolist()
         if "buttons" in outputs:
-            print("[TRACE:GPTInferenceEngine._capture_logits] Capturing buttons logits")
+            print_cached("[TRACE:GPTInferenceEngine._capture_logits] Capturing buttons logits")
             logits["buttons"] = outputs["buttons"][0, -1].detach().cpu().tolist()
         if "shoulder" in outputs:
-            print("[TRACE:GPTInferenceEngine._capture_logits] Capturing shoulder logits")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._capture_logits] Capturing shoulder logits"
+            )
             logits["shoulder"] = outputs["shoulder"][0, -1].detach().cpu().tolist()
         for key in ("value", "value_head"):
             if key in outputs:
-                print(f"[TRACE:GPTInferenceEngine._capture_logits] Capturing {key}")
+                print_cached(f"[TRACE:GPTInferenceEngine._capture_logits] Capturing {key}")
                 logits[key] = outputs[key][0, -1].detach().cpu().tolist()
         return logits
 
@@ -807,10 +903,14 @@ class GPTInferenceEngine:
         features, transformed features, targets, and logits for every recorded
         frame.
         """
-        print(f"[TRACE:GPTInferenceEngine._persist_death_record] Persisting death record, stock_after={stock_after}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._persist_death_record] Persisting death record, stock_after={stock_after}"
+        )
         frames = list(self.frame_history)
         if not frames:
-            print("[TRACE:GPTInferenceEngine._persist_death_record] No frames to persist")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._persist_death_record] No frames to persist"
+            )
             return
         payload = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -833,9 +933,11 @@ class GPTInferenceEngine:
         }
         try:
             self._death_log_dir.mkdir(parents=True, exist_ok=True)
-            print(f"[TRACE:GPTInferenceEngine._persist_death_record] Created death log directory")
+            print_cached(
+                f"[TRACE:GPTInferenceEngine._persist_death_record] Created death log directory"
+            )
         except Exception as exc:
-            print(
+            print_cached(
                 f"[TRACE:GPTInferenceEngine._persist_death_record] ERROR: Failed to create directory: {exc}"
             )
             return
@@ -844,9 +946,13 @@ class GPTInferenceEngine:
         try:
             with output_path.open("w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
-            print(f"[TRACE:GPTInferenceEngine._persist_death_record] Logged death to {output_path}")
+            print_cached(
+                f"[TRACE:GPTInferenceEngine._persist_death_record] Logged death to {output_path}"
+            )
         except Exception as exc:
-            print(f"[TRACE:GPTInferenceEngine._persist_death_record] ERROR: Failed to write log: {exc}")
+            print_cached(
+                f"[TRACE:GPTInferenceEngine._persist_death_record] ERROR: Failed to write log: {exc}"
+            )
             return
         self._death_counter += 1
 
@@ -859,26 +965,30 @@ class GPTInferenceEngine:
         method saves the death log, increments counters, and resets tracking so the
         next stock loss generates a fresh log.
         """
-        print(
-            f"[TRACE:GPTInferenceEngine._maybe_log_death] current_stock={current_stock}, prev_stock={self._prev_stock}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._maybe_log_death] current_stock={current_stock}, prev_stock={self._prev_stock}"
+        )
         if current_stock is None:
-            print("[TRACE:GPTInferenceEngine._maybe_log_death] current_stock is None, returning")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._maybe_log_death] current_stock is None, returning"
+            )
             return
         stock_value = int(current_stock)
         if self._prev_stock is not None and stock_value < self._prev_stock:
-            print(
-                f"[TRACE:GPTInferenceEngine._maybe_log_death] Death detected! Stock decreased from {self._prev_stock} to {stock_value}")
+            print_cached(
+                f"[TRACE:GPTInferenceEngine._maybe_log_death] Death detected! Stock decreased from {self._prev_stock} to {stock_value}"
+            )
             if len(self.frame_history) < self.seq_len:
-                print(
+                print_cached(
                     f"[TRACE:GPTInferenceEngine._maybe_log_death] Only {len(self.frame_history)} frames buffered (truncated history)"
                 )
             self._persist_death_record(stock_value)
         else:
-            print("[TRACE:GPTInferenceEngine._maybe_log_death] No death detected")
+            print_cached("[TRACE:GPTInferenceEngine._maybe_log_death] No death detected")
         self._prev_stock = stock_value
 
     def _decode_stick(
-            self, logits: torch.Tensor, palette: np.ndarray, stick_name: str
+        self, logits: torch.Tensor, palette: np.ndarray, stick_name: str
     ) -> np.ndarray:
         """Convert stick logits into palette coordinates with an example.
 
@@ -890,15 +1000,17 @@ class GPTInferenceEngine:
         ``'c_stick'`` it additionally computes ``softmax`` probabilities for
         logging, mirroring the exact decoding performed during inference.
         """
-        print(f"[TRACE:GPTInferenceEngine._decode_stick] Decoding {stick_name}")
+        print_cached(f"[TRACE:GPTInferenceEngine._decode_stick] Decoding {stick_name}")
         # Decode sticks by selecting the most likely quantized bin (argmax).
         idx = torch.argmax(logits.detach(), dim=-1)
         # TODO: does the following have side effects? probs is unused so I think we can remove.
         if stick_name == "c_stick":
-            print("[TRACE:GPTInferenceEngine._decode_stick] Computing probs for c_stick")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._decode_stick] Computing probs for c_stick"
+            )
             probs = torch.softmax(logits.detach(), dim=-1).cpu().numpy()
         idx_np = idx.detach().cpu().numpy().astype(np.int32)
-        print(f"[TRACE:GPTInferenceEngine._decode_stick] Selected index: {idx_np}")
+        print_cached(f"[TRACE:GPTInferenceEngine._decode_stick] Selected index: {idx_np}")
         xy01 = model_to_dolphin01(idx_np, palette11=palette)
         return xy01.reshape(-1)
 
@@ -913,13 +1025,13 @@ class GPTInferenceEngine:
         Re-running with the same tensor and manual seed reproduces the same sample,
         matching the stochastic decoding strategy used during evaluation.
         """
-        print("[TRACE:GPTInferenceEngine._decode_buttons] Decoding buttons")
+        print_cached("[TRACE:GPTInferenceEngine._decode_buttons] Decoding buttons")
         # Interpret button activations probabilistically, sampling directly from the model probabilities.
         eps = torch.finfo(probs.dtype).eps
         clamped_probs = torch.clamp(probs.detach(), eps, 1 - eps)
         samples = torch.bernoulli(clamped_probs).bool().cpu()
         result = samples.tolist()
-        print(f"[TRACE:GPTInferenceEngine._decode_buttons] Button states: {result}")
+        print_cached(f"[TRACE:GPTInferenceEngine._decode_buttons] Button states: {result}")
         return result
 
     # TODO: overly safe. decide on button logits or probs.
@@ -935,15 +1047,19 @@ class GPTInferenceEngine:
         :class:`ControllerState` has ``shoulder_analog=0.5`` while the sticks hold
         their decoded coordinates.
         """
-        print("[TRACE:GPTInferenceEngine._decode_outputs] Decoding model outputs")
+        print_cached("[TRACE:GPTInferenceEngine._decode_outputs] Decoding model outputs")
         main_logits = outputs["main_stick"][0, -1]
         c_logits = outputs["c_stick"][0, -1]
         button_probs = outputs.get("buttons_probs")
         if button_probs is None:
-            print("[TRACE:GPTInferenceEngine._decode_outputs] buttons_probs not found, using sigmoid of buttons")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._decode_outputs] buttons_probs not found, using sigmoid of buttons"
+            )
             button_probs = torch.sigmoid(outputs["buttons"])
         else:
-            print("[TRACE:GPTInferenceEngine._decode_outputs] Using buttons_probs from outputs")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._decode_outputs] Using buttons_probs from outputs"
+            )
         button_probs = button_probs[0, -1]
 
         shoulder_logits = outputs.get("shoulder")
@@ -955,17 +1071,27 @@ class GPTInferenceEngine:
         buttons_bool = self._decode_buttons(button_probs)
 
         if shoulder_logits is not None:
-            print("[TRACE:GPTInferenceEngine._decode_outputs] Decoding shoulder from logits")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._decode_outputs] Decoding shoulder from logits"
+            )
             s_idx = int(torch.argmax(shoulder_logits[0, -1]).item())
             s_idx = max(0, min(s_idx, len(self.shoulder_centers) - 1))
             shoulder_val = float(self.shoulder_centers[s_idx])
-            print(f"[TRACE:GPTInferenceEngine._decode_outputs] Shoulder index={s_idx}, value={shoulder_val}")
+            print_cached(
+                f"[TRACE:GPTInferenceEngine._decode_outputs] Shoulder index={s_idx}, value={shoulder_val}"
+            )
         else:
-            print("[TRACE:GPTInferenceEngine._decode_outputs] No shoulder logits, using 0.0")
+            print_cached(
+                "[TRACE:GPTInferenceEngine._decode_outputs] No shoulder logits, using 0.0"
+            )
             shoulder_val = 0.0
 
-        print(f"[TRACE:GPTInferenceEngine._decode_outputs] main_stick=({main_xy[0]:.3f}, {main_xy[1]:.3f})")
-        print(f"[TRACE:GPTInferenceEngine._decode_outputs] c_stick=({c_xy[0]:.3f}, {c_xy[1]:.3f})")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._decode_outputs] main_stick=({main_xy[0]:.3f}, {main_xy[1]:.3f})"
+        )
+        print_cached(
+            f"[TRACE:GPTInferenceEngine._decode_outputs] c_stick=({c_xy[0]:.3f}, {c_xy[1]:.3f})"
+        )
         return ControllerState(
             main_stick_x=float(main_xy[0]),
             main_stick_y=float(main_xy[1]),
@@ -990,18 +1116,22 @@ class GPTInferenceEngine:
         :class:`TensorDict` from :meth:`_build_inputs`, mirroring the workflow used
         inside :meth:`predict_from_raw`.
         """
-        print("[TRACE:GPTInferenceEngine.prepare_inputs] Preparing inputs")
+        print_cached("[TRACE:GPTInferenceEngine.prepare_inputs] Preparing inputs")
         frame = self._frame_to_tensor(raw_inputs)
         self.buffer.append(frame)
-        print(f"[TRACE:GPTInferenceEngine.prepare_inputs] Buffer now has {len(self.buffer)} frames")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine.prepare_inputs] Buffer now has {len(self.buffer)} frames"
+        )
         batch = self._stack_frames()
         if batch is None:
-            print("[TRACE:GPTInferenceEngine.prepare_inputs] Batch is None, returning None")
+            print_cached(
+                "[TRACE:GPTInferenceEngine.prepare_inputs] Batch is None, returning None"
+            )
             return None
         return self._build_inputs(batch)
 
     def predict_from_raw(
-            self, frame_inputs: Mapping[str, float] | ModelFrameInputs
+        self, frame_inputs: Mapping[str, float] | ModelFrameInputs
     ) -> ControllerState:
         """Run inference on raw or preprocessed frame inputs with a full walkthrough.
 
@@ -1014,13 +1144,17 @@ class GPTInferenceEngine:
         :meth:`_capture_logits`, decodes the outputs to a controller state, and
         updates the override cache so the next call sees the latest controls.
         """
-        print(f"[TRACE:GPTInferenceEngine.predict_from_raw] Frame {self._frames_seen}")
+        print_cached(f"[TRACE:GPTInferenceEngine.predict_from_raw] Frame {self._frames_seen}")
         if isinstance(frame_inputs, ModelFrameInputs):
-            print("[TRACE:GPTInferenceEngine.predict_from_raw] Input is ModelFrameInputs")
+            print_cached(
+                "[TRACE:GPTInferenceEngine.predict_from_raw] Input is ModelFrameInputs"
+            )
             raw_snapshot = dict(frame_inputs.raw)
             transformed = dict(frame_inputs.transformed)
         else:
-            print("[TRACE:GPTInferenceEngine.predict_from_raw] Input is mapping, coercing")
+            print_cached(
+                "[TRACE:GPTInferenceEngine.predict_from_raw] Input is mapping, coercing"
+            )
             raw_snapshot = {k: _coerce_scalar(v) for k, v in frame_inputs.items()}
             transformed = {k: float(_safe_float(v)) for k, v in frame_inputs.items()}
 
@@ -1030,19 +1164,20 @@ class GPTInferenceEngine:
         self._frames_seen += 1
         self._maybe_log_death(raw_snapshot.get("p1_stock"))
         if inputs_td is None or len(self.buffer) < self.warmup_frames:
-            print(
-                f"[TRACE:GPTInferenceEngine.predict_from_raw] Warmup phase (buffer={len(self.buffer)}, warmup={self.warmup_frames}), returning neutral")
+            print_cached(
+                f"[TRACE:GPTInferenceEngine.predict_from_raw] Warmup phase (buffer={len(self.buffer)}, warmup={self.warmup_frames}), returning neutral"
+            )
             controller = ControllerState.neutral()
             self._update_prev_controller_features(controller)
             return controller
-        print("[TRACE:GPTInferenceEngine.predict_from_raw] Running model inference")
+        print_cached("[TRACE:GPTInferenceEngine.predict_from_raw] Running model inference")
         with torch.inference_mode():
             outputs = self.model(inputs_td)
-        print("[TRACE:GPTInferenceEngine.predict_from_raw] Model inference complete")
+        print_cached("[TRACE:GPTInferenceEngine.predict_from_raw] Model inference complete")
         record.logits = self._capture_logits(outputs)
         controller = self._decode_outputs(outputs)
         self._update_prev_controller_features(controller)
-        print("[TRACE:GPTInferenceEngine.predict_from_raw] Prediction complete")
+        print_cached("[TRACE:GPTInferenceEngine.predict_from_raw] Prediction complete")
         return controller
 
 
@@ -1050,7 +1185,7 @@ _ACTIVE_ENGINE: Optional[GPTInferenceEngine] = None
 
 
 def apply_model_outputs_to_game(
-        controller: Controller, model_outputs: ControllerState
+    controller: Controller, model_outputs: ControllerState
 ) -> None:
     """Apply ``model_outputs`` to the Dolphin controller with an example.
 
@@ -1062,50 +1197,54 @@ def apply_model_outputs_to_game(
     ``press_shoulder`` using ``model_outputs.shoulder_analog``, reproducing the
     exact physical controller state encoded in the :class:`ControllerState`.
     """
-    print("[TRACE:apply_model_outputs_to_game] Applying controller state to game")
+    print_cached("[TRACE:apply_model_outputs_to_game] Applying controller state to game")
     controller.release_all()
     if model_outputs.button_a:
-        print("[TRACE:apply_model_outputs_to_game] Pressing button A")
+        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button A")
         controller.press_button(enums.Button.BUTTON_A)
     else:
         controller.release_button(enums.Button.BUTTON_A)
 
     if model_outputs.button_b:
-        print("[TRACE:apply_model_outputs_to_game] Pressing button B")
+        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button B")
         controller.press_button(enums.Button.BUTTON_B)
     else:
         controller.release_button(enums.Button.BUTTON_B)
 
     if model_outputs.button_xy:
-        print("[TRACE:apply_model_outputs_to_game] Pressing button X")
+        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button X")
         controller.press_button(enums.Button.BUTTON_X)
     else:
         controller.release_button(enums.Button.BUTTON_X)
 
     if model_outputs.button_lr:
-        print("[TRACE:apply_model_outputs_to_game] Pressing button L")
+        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button L")
         controller.press_button(enums.Button.BUTTON_L)
     else:
         controller.release_button(enums.Button.BUTTON_L)
 
     if model_outputs.button_z:
-        print("[TRACE:apply_model_outputs_to_game] Pressing button Z")
+        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button Z")
         controller.press_button(enums.Button.BUTTON_Z)
     else:
         controller.release_button(enums.Button.BUTTON_Z)
 
-    print(
-        f"[TRACE:apply_model_outputs_to_game] Setting main_stick to ({model_outputs.main_stick_x:.3f}, {model_outputs.main_stick_y:.3f})")
+    print_cached(
+        f"[TRACE:apply_model_outputs_to_game] Setting main_stick to ({model_outputs.main_stick_x:.3f}, {model_outputs.main_stick_y:.3f})"
+    )
     controller.tilt_analog(
         enums.Button.BUTTON_MAIN, model_outputs.main_stick_x, model_outputs.main_stick_y
     )
-    print(
-        f"[TRACE:apply_model_outputs_to_game] Setting c_stick to ({model_outputs.c_stick_x:.3f}, {model_outputs.c_stick_y:.3f})")
+    print_cached(
+        f"[TRACE:apply_model_outputs_to_game] Setting c_stick to ({model_outputs.c_stick_x:.3f}, {model_outputs.c_stick_y:.3f})"
+    )
     controller.tilt_analog(
         enums.Button.BUTTON_C, model_outputs.c_stick_x, model_outputs.c_stick_y
     )
 
     controller.press_shoulder(enums.Button.BUTTON_R, 0.0)
-    print(f"[TRACE:apply_model_outputs_to_game] Setting L shoulder to {model_outputs.shoulder_analog:.3f}")
+    print_cached(
+        f"[TRACE:apply_model_outputs_to_game] Setting L shoulder to {model_outputs.shoulder_analog:.3f}"
+    )
     controller.press_shoulder(enums.Button.BUTTON_L, model_outputs.shoulder_analog)
-    print("[TRACE:apply_model_outputs_to_game] Controller state applied")
+    print_cached("[TRACE:apply_model_outputs_to_game] Controller state applied")

@@ -12,27 +12,17 @@ import numpy as np
 import tqdm
 import zarr
 
-from controller_utils import (
-    CONTROL_STICK_QUANTIZED,
-    C_STICK_QUANTIZED,
-    SHOULDER_QUANTIZED,
-)
+from constants import _SHOULDER_PALETTE
 from config import init_config, get_config
 from libmelee.melee.console import Console
 from libmelee.melee.gamestate import GameState
 from schema import Row, extract_row, get_feature_names, get_target_names
 
-# TODO: Rename this file
-# TODO: exclude too-short and too-long replays
 
 ROW_FIELDS = tuple(fields(Row))
 
-_MAIN_STICK_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
-_C_STICK_PALETTE = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
-_SHOULDER_PALETTE = np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
-# TODO: Why are these norms needed?
-_MAIN_STICK_PALETTE_NORM = np.sum(_MAIN_STICK_PALETTE**2, axis=1, keepdims=True)
-_C_STICK_PALETTE_NORM = np.sum(_C_STICK_PALETTE**2, axis=1, keepdims=True)
+# TODO: Rename this file
+# TODO: exclude too-short and too-long replays
 
 
 # TODO: this is implemented elsewhere
@@ -669,9 +659,14 @@ def build_dataset(
             for future in as_completed(futures):
                 shard_idx, local_idx = futures[future]
                 try:
-                    X, Y, feat_dtypes, targ_dtypes, feature_names, target_names = (
-                        future.result()
-                    )
+                    (
+                        X,
+                        Y,
+                        feat_dtypes,
+                        targ_dtypes,
+                        feature_names,
+                        target_names,
+                    ) = future.result()
                 except (
                     Exception
                 ) as exc:  # pragma: no cover - include episode context when bubbling

@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 
+from constants import MAX_FRAMES
 from libmelee.melee import enums
 from libmelee.melee.enums import Action
-
-MAX_FRAMES: int = (60 * 60 * 8) + 123  # Full 8 minute replay
 
 
 def _preprocess_frame(frame: int) -> np.int32:
     processed_frame = frame + 123
     assert (
-        0 <= processed_frame <= MAX_FRAMES
+            0 <= processed_frame <= MAX_FRAMES
     ), f"Processed frame {processed_frame} is out of range (0, {MAX_FRAMES})"
     return np.int32(processed_frame)
 

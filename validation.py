@@ -14,7 +14,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
 
-from column_map import ColumnMap, CONTROLLER_KEY_GROUPS
+from column_map import ColumnMap
+from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
 from config import get_config, init_config
 from controller_quantization import quantize_targets
 from controller_utils import (
@@ -28,8 +29,6 @@ from model.nano_gpt import GPT
 from train import (
     RunningMetrics,
     build_inputs_for_gpt,
-    _BUTTON_PRETTY,
-    _MAIN_STICK_LABELS,
     compute_value_targets,
 )
 from train.checkpoint import _latest_checkpoint
@@ -385,7 +384,6 @@ def _compute_frame_rewards(X: torch.Tensor, colmap: ColumnMap) -> torch.Tensor:
         and p2_in_hitlag_idx is not None
         and p2_in_defender_hitlag_idx is not None
     ):
-
         # Compute hitlag metric for p1 (us): in_hitlag - in_defender_hitlag
         p1_hitlag_metric = (
             X[:, :, p1_in_hitlag_idx] - X[:, :, p1_in_defender_hitlag_idx]

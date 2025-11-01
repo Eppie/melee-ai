@@ -4,15 +4,7 @@ from __future__ import annotations
 
 from typing import List, Sequence
 
-# TODO: Is this duplicated anywhere? Is there a better place to put it?
-CONTROLLER_KEY_GROUPS = {
-    "main": ("main_stick_x", "main_stick_y"),
-    "c": ("c_stick_x", "c_stick_y"),
-    "buttons": ("button_a", "button_b", "button_xy", "button_z", "button_lr"),
-    "shoulder": ("shoulder_analog",),
-}
-# TODO: Is this duplicated anywhere? Is there a better place to put it?
-BUTTON_TARGET_NAMES = tuple(f"p1_{name}" for name in CONTROLLER_KEY_GROUPS["buttons"])
+from constants import CONTROLLER_KEY_GROUPS, BUTTON_TARGET_NAMES
 
 
 class ColumnMap:
@@ -77,4 +69,4 @@ class ColumnMap:
         return cls(feature_names, target_names)
 
 
-__all__ = ["ColumnMap", "CONTROLLER_KEY_GROUPS", "BUTTON_TARGET_NAMES"]
+__all__ = ["ColumnMap"]

@@ -6,7 +6,7 @@ import math
 
 
 def cosine_lr_schedule(
-        step: int, total_steps: int, base_lr: float, warmup: int = 0
+    step: int, total_steps: int, base_lr: float, warmup: int = 0
 ) -> float:
     """Compute the cosine-annealed learning rate for a specific training step.
 

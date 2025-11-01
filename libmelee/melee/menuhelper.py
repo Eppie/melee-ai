@@ -13,7 +13,6 @@ from libmelee.melee.gamestate import GameState
 
 
 class MenuHelper:
-
     def __init__(self) -> None:
         # State for entering a direct code.
         self.name_tag_index: int = 0
@@ -271,7 +270,6 @@ class MenuHelper:
             and (cpu_level != ai_state.cpu_level)
             or ai_state.is_holding_cpu_slider
         ):
-
             assert not isSlippiCSS
 
             # Is our controller type correct?

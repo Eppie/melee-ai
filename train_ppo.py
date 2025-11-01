@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 import multiprocessing as mp
 import tempfile
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch.amp import autocast

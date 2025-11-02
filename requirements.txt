@@ -1,0 +1,14 @@
+numpy==1.26.4
+torch==2.9.0
+tensordict==0.9.1
+tqdm==4.67.1
+zarr==3.1.2
+pytest==8.4.1
+py-ubjson==0.16.1
+packaging==25.0
+py-slippi==1.6.2
+pyenet
+# For the melee_rust subproject, please see libmelee/melee_rust/README.md for instructions on how to build it.
+pydantic==2.8.2
+pydantic-settings==2.4.0
+pyyaml==6.0.1

@@ -2,3 +2,4 @@
 *.pt
 __pycache__
 FOX_vs_FOX_parquet/
+.coverage

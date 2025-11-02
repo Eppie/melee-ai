@@ -49,7 +49,7 @@ if __name__ == "__main__":
         "-c",
         type=Path,
         default=Path(
-            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep001_000001.pt"
+            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep002_045002.pt"
         ),
         help="Path to trained model checkpoint (.pt)",
     )

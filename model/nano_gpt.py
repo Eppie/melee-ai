@@ -66,8 +66,7 @@ class GPT(nn.Module):
         self.n_embd: int = cfg.n_embd
         self.input_size: int = cfg.input_size
 
-        # TODO: Might want to enable bias here
-        self.proj_down = nn.Linear(self.input_size, self.n_embd, bias=False)
+        self.proj_down = nn.Linear(self.input_size, self.n_embd, bias=True)
         self.drop = nn.Dropout(cfg.dropout)
 
         self.blocks = nn.ModuleList(
@@ -169,7 +168,7 @@ class GPT(nn.Module):
             fan_in = module.weight.size(1)
             std = 1.0 / math.sqrt(fan_in) * min(1.0, math.sqrt(fan_out / fan_in))
             torch.nn.init.normal_(module.weight, mean=0.0, std=std)
-            if module.bias is not None:  # TODO: confirm unused then remove
+            if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
@@ -185,7 +184,7 @@ class GPT(nn.Module):
         # calculate the rotation frequencies at each (time, channel) pair
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
-        cos, sin = cos.bfloat16(), sin.bfloat16()  # keep them in bfloat16
+        cos, sin = cos.to(torch.float32), sin.to(torch.float32)
         cos, sin = (
             cos[None, :, None, :],
             sin[None, :, None, :],

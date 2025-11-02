@@ -13,8 +13,8 @@ class OpponentActionHead(nn.Module):
     def __init__(self, n_embd, num_actions, hidden=128):
         super().__init__()
         self.num_actions = num_actions
-        self.fc1 = nn.Linear(n_embd, hidden, bias=False)
-        self.fc2 = nn.Linear(hidden, num_actions, bias=False)
+        self.fc1 = nn.Linear(n_embd, hidden, bias=True)
+        self.fc2 = nn.Linear(hidden, num_actions, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -33,8 +33,8 @@ class DamageDifferentialHead(nn.Module):
 
     def __init__(self, n_embd, hidden=128):
         super().__init__()
-        self.fc1 = nn.Linear(n_embd, hidden, bias=False)
-        self.fc2 = nn.Linear(hidden, 1, bias=False)
+        self.fc1 = nn.Linear(n_embd, hidden, bias=True)
+        self.fc2 = nn.Linear(hidden, 1, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -53,8 +53,8 @@ class ActionEffectivenessHead(nn.Module):
 
     def __init__(self, n_embd, hidden=128):
         super().__init__()
-        self.fc1 = nn.Linear(n_embd, hidden, bias=False)
-        self.fc2 = nn.Linear(hidden, 1, bias=False)
+        self.fc1 = nn.Linear(n_embd, hidden, bias=True)
+        self.fc2 = nn.Linear(hidden, 1, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

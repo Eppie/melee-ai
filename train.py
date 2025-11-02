@@ -955,6 +955,25 @@ def train_loop(
                                 }
                             )
 
+                            if off_stage_present and off_stage_mask.any():
+                                opp_acc_off = (
+                                    (
+                                        opp_pred[off_stage_mask]
+                                        == opp_targets[off_stage_mask]
+                                    )
+                                    .float()
+                                    .mean()
+                                    .item()
+                                )
+                                aux_console_lines.append(
+                                    f"    OFF-STAGE: acc {opp_acc_off:.3f}"
+                                )
+                                aux_log_values.update(
+                                    {
+                                        "aux/opponent_action/acc_off_stage": opp_acc_off,
+                                    }
+                                )
+
                         if (
                             "damage_diff" in aux_outputs
                             and "damage_diff" in aux_targets
@@ -989,6 +1008,27 @@ def train_loop(
                                     "aux/damage_diff/corr": dmg_corr,
                                 }
                             )
+
+                            if off_stage_present and off_stage_mask.any():
+                                dmg_pred_off = dmg_pred[off_stage_mask]
+                                dmg_target_off = dmg_target[off_stage_mask]
+                                dmg_mse_off = (
+                                    ((dmg_pred_off - dmg_target_off) ** 2)
+                                    .mean()
+                                    .item()
+                                )
+                                dmg_mae_off = (
+                                    (dmg_pred_off - dmg_target_off).abs().mean().item()
+                                )
+                                aux_console_lines.append(
+                                    f"    OFF-STAGE: MSE {dmg_mse_off:.4f} | MAE {dmg_mae_off:.4f}"
+                                )
+                                aux_log_values.update(
+                                    {
+                                        "aux/damage_diff/mse_off_stage": dmg_mse_off,
+                                        "aux/damage_diff/mae_off_stage": dmg_mae_off,
+                                    }
+                                )
 
                         if (
                             "action_effectiveness" in aux_outputs
@@ -1050,6 +1090,48 @@ def train_loop(
                                     "aux/action_effectiveness/bce": eff_bce,
                                 }
                             )
+
+                            if off_stage_present and off_stage_mask.any():
+                                eff_pred_off = eff_pred[off_stage_mask]
+                                eff_targets_off = eff_targets[off_stage_mask]
+                                eff_acc_off = (
+                                    (eff_pred_off == eff_targets_off)
+                                    .float()
+                                    .mean()
+                                    .item()
+                                )
+                                tp_off = (
+                                    ((eff_pred_off == 1.0) & (eff_targets_off == 1.0))
+                                    .float()
+                                    .sum()
+                                )
+                                fp_off = (
+                                    ((eff_pred_off == 1.0) & (eff_targets_off == 0.0))
+                                    .float()
+                                    .sum()
+                                )
+                                fn_off = (
+                                    ((eff_pred_off == 0.0) & (eff_targets_off == 1.0))
+                                    .float()
+                                    .sum()
+                                )
+                                prec_off = tp_off / (tp_off + fp_off + eps)
+                                rec_off = tp_off / (tp_off + fn_off + eps)
+                                f1_off = (
+                                    2
+                                    * prec_off
+                                    * rec_off
+                                    / (prec_off + rec_off + eps)
+                                )
+                                aux_console_lines.append(
+                                    f"    OFF-STAGE: acc {eff_acc_off:.3f} | F1 {f1_off:.3f}"
+                                )
+                                aux_log_values.update(
+                                    {
+                                        "aux/action_effectiveness/acc_off_stage": eff_acc_off,
+                                        "aux/action_effectiveness/f1_off_stage": f1_off.item(),
+                                    }
+                                )
 
                 log_lines.extend(aux_console_lines)
 

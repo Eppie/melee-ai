@@ -38,7 +38,8 @@ from schema import (
     PLAYER_SPEC,
     extract_common_fields,
     extract_player_fields,
-    get_feature_names, get_target_names,
+    get_feature_names,
+    get_target_names,
 )
 from train import build_model_inputs
 from utils import _resolve_device
@@ -48,6 +49,7 @@ _DEFAULT_TARGET_NAMES = get_target_names()
 
 _PRINT_CACHE: dict[str, int] = {}
 
+
 def print_cached(s: str) -> None:
     if s not in _PRINT_CACHE:
         _PRINT_CACHE[s] = 1
@@ -55,6 +57,7 @@ def print_cached(s: str) -> None:
         _PRINT_CACHE[s] += 1
     if _PRINT_CACHE[s] % 100 == 0:
         print(s, _PRINT_CACHE[s])
+
 
 @dataclasses.dataclass
 class ControllerState:
@@ -83,7 +86,9 @@ class ControllerState:
         :func:`apply_model_outputs_to_game` leaves the character idle, which is
         exactly what the inference engine emits during warm-up.
         """
-        print_cached("[TRACE:ControllerState.neutral] Creating neutral controller state")
+        print_cached(
+            "[TRACE:ControllerState.neutral] Creating neutral controller state"
+        )
         return ControllerState(
             main_stick_x=0.5,
             main_stick_y=0.5,
@@ -223,7 +228,9 @@ def set_feature_transforms(transforms: Optional[Any]) -> None:
     )
 
     if not transforms:
-        print_cached("[TRACE:set_feature_transforms] No transforms provided, setting to None")
+        print_cached(
+            "[TRACE:set_feature_transforms] No transforms provided, setting to None"
+        )
         constants._FEATURE_TRANSFORMS_SPEC = None
         return
 
@@ -349,7 +356,9 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
                 for idx, key in enumerate(group):
                     out[key] = float(result[0, idx])
 
-    print_cached("[TRACE:_apply_transforms_to_features] All transforms applied successfully")
+    print_cached(
+        "[TRACE:_apply_transforms_to_features] All transforms applied successfully"
+    )
     return out
 
 
@@ -391,7 +400,9 @@ def _zero_player_fields(prefix: str) -> Dict[str, float]:
     ``{'p2_main_stick_x': 0.0}``, matching the neutral placeholders used when an
     opponent is absent from the gamestate.
     """
-    print_cached(f"[TRACE:_zero_player_fields] Creating zero fields for prefix={prefix}")
+    print_cached(
+        f"[TRACE:_zero_player_fields] Creating zero fields for prefix={prefix}"
+    )
     return {f"{prefix}_{name}": dtype(0) for name, dtype in PLAYER_SPEC}
 
 
@@ -405,7 +416,9 @@ def _prefixed_player_fields(player, prefix: str) -> Dict[str, float]:
     :func:`_zero_player_fields(prefix)`, ensuring callers receive a complete feature
     dictionary regardless of the gamestate.
     """
-    print_cached(f"[TRACE:_prefixed_player_fields] Extracting fields for prefix={prefix}")
+    print_cached(
+        f"[TRACE:_prefixed_player_fields] Extracting fields for prefix={prefix}"
+    )
     if player is None or getattr(player, "controller_state", None) is None:
         print_cached(
             "[TRACE:_prefixed_player_fields] Player is None or has no controller_state, returning zeros"
@@ -574,7 +587,9 @@ class GPTInferenceEngine:
         meta_path = data_root / "meta.json"
         transforms_spec: Optional[Any] = None
         if meta_path.exists():
-            print_cached(f"[TRACE:GPTInferenceEngine.__init__] Loading meta from {meta_path}")
+            print_cached(
+                f"[TRACE:GPTInferenceEngine.__init__] Loading meta from {meta_path}"
+            )
             with meta_path.open("r") as f:
                 meta = json.load(f)
 
@@ -583,10 +598,14 @@ class GPTInferenceEngine:
             self.seq_len = int(meta.get("seq_len", 256))
             build_cfg = meta.get("build_config")
             if isinstance(build_cfg, Mapping):
-                print_cached("[TRACE:GPTInferenceEngine.__init__] build_config found in meta")
+                print_cached(
+                    "[TRACE:GPTInferenceEngine.__init__] build_config found in meta"
+                )
                 features_cfg = build_cfg.get("features")
                 if isinstance(features_cfg, Mapping):
-                    print_cached("[TRACE:GPTInferenceEngine.__init__] features config found")
+                    print_cached(
+                        "[TRACE:GPTInferenceEngine.__init__] features config found"
+                    )
                     transforms_cfg = features_cfg.get("transforms")
                     if transforms_cfg:
                         print_cached(
@@ -626,7 +645,9 @@ class GPTInferenceEngine:
                     transforms_spec = transforms_cfg
 
         if transforms_spec is not None:
-            print_cached("[TRACE:GPTInferenceEngine.__init__] Setting feature transforms")
+            print_cached(
+                "[TRACE:GPTInferenceEngine.__init__] Setting feature transforms"
+            )
             set_feature_transforms(transforms_spec)
         else:
             print_cached("[TRACE:GPTInferenceEngine.__init__] No transforms spec found")
@@ -869,12 +890,13 @@ class GPTInferenceEngine:
         ``outputs['buttons'][0, -1].detach().cpu().tolist()`` under the ``'buttons'``
         key so the JSON death log records the exact logits that led to an action.
         """
-        logits: Dict[str, Any] = {"main_stick": outputs["main_stick"][0, -1].detach().cpu().tolist(),
-                                  "c_stick": outputs["c_stick"][0, -1].detach().cpu().tolist(),
-                                  "buttons": outputs["buttons"][0, -1].detach().cpu().tolist(),
-                                  "shoulder": outputs["shoulder"][0, -1].detach().cpu().tolist(),
-                                  "value": outputs["value"][0, -1].detach().cpu().tolist()
-                                  }
+        logits: Dict[str, Any] = {
+            "main_stick": outputs["main_stick"][0, -1].detach().cpu().tolist(),
+            "c_stick": outputs["c_stick"][0, -1].detach().cpu().tolist(),
+            "buttons": outputs["buttons"][0, -1].detach().cpu().tolist(),
+            "shoulder": outputs["shoulder"][0, -1].detach().cpu().tolist(),
+            "value": outputs["value"][0, -1].detach().cpu().tolist(),
+        }
         return logits
 
     def _persist_death_record(self, stock_after: int) -> None:
@@ -988,7 +1010,9 @@ class GPTInferenceEngine:
         :class:`ControllerState` has ``shoulder_analog=0.5`` while the sticks hold
         their decoded coordinates.
         """
-        print_cached("[TRACE:GPTInferenceEngine._decode_outputs] Decoding model outputs")
+        print_cached(
+            "[TRACE:GPTInferenceEngine._decode_outputs] Decoding model outputs"
+        )
         main_logits = outputs["main_stick"][0, -1]
         c_logits = outputs["c_stick"][0, -1]
         button_probs = outputs.get("buttons_probs")
@@ -1085,7 +1109,9 @@ class GPTInferenceEngine:
         :meth:`_capture_logits`, decodes the outputs to a controller state, and
         updates the override cache so the next call sees the latest controls.
         """
-        print_cached(f"[TRACE:GPTInferenceEngine.predict_from_raw] Frame {self._frames_seen}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine.predict_from_raw] Frame {self._frames_seen}"
+        )
         if isinstance(frame_inputs, ModelFrameInputs):
             print_cached(
                 "[TRACE:GPTInferenceEngine.predict_from_raw] Input is ModelFrameInputs"
@@ -1111,10 +1137,14 @@ class GPTInferenceEngine:
             controller = ControllerState.neutral()
             self._update_prev_controller_features(controller)
             return controller
-        print_cached("[TRACE:GPTInferenceEngine.predict_from_raw] Running model inference")
+        print_cached(
+            "[TRACE:GPTInferenceEngine.predict_from_raw] Running model inference"
+        )
         with torch.inference_mode():
             outputs = self.model(inputs_td)
-        print_cached("[TRACE:GPTInferenceEngine.predict_from_raw] Model inference complete")
+        print_cached(
+            "[TRACE:GPTInferenceEngine.predict_from_raw] Model inference complete"
+        )
         record.logits = self._capture_logits(outputs)
         controller = self._decode_outputs(outputs)
         self._update_prev_controller_features(controller)

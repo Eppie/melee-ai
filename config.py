@@ -42,56 +42,45 @@ class ZarrConfig(BaseModel):
     model_config = SettingsConfigDict(
         validate_assignment=True,
         frozen=False,
-        extra='forbid',
+        extra="forbid",
         str_strip_whitespace=True,
         arbitrary_types_allowed=True,  # Allow BloscCodec
     )
 
     input_root: str = Field(
         default_factory=lambda: _get_default_paths()[0],
-        description="Root directory for input replay files (auto-detected by OS)"
+        description="Root directory for input replay files (auto-detected by OS)",
     )
     out_root: str = Field(
         default_factory=lambda: _get_default_paths()[1],
-        description="Root directory for processed output data (auto-detected by OS)"
+        description="Root directory for processed output data (auto-detected by OS)",
     )
     validation_root: str = Field(
         default_factory=lambda: _get_default_paths()[2],
-        description="Root directory for validation data (auto-detected by OS)"
+        description="Root directory for validation data (auto-detected by OS)",
     )
     episode_count: int = Field(
-        default=10,
-        ge=1,
-        description="Number of episodes to process"
+        default=10, ge=1, description="Number of episodes to process"
     )
     validation_count: int = Field(
         default=10,
         ge=1,
-        description="Number of validation episodes (automatically matches episode_count by default)"
+        description="Number of validation episodes (automatically matches episode_count by default)",
     )
     shard_size: int = Field(
-        default=100,
-        ge=1,
-        description="Number of episodes per shard"
+        default=100, ge=1, description="Number of episodes per shard"
     )
     target_chunk_mb: float = Field(
-        default=8.0,
-        gt=0,
-        description="Target chunk size in megabytes"
+        default=8.0, gt=0, description="Target chunk size in megabytes"
     )
-    seed: int = Field(
-        default=42,
-        description="Random seed for reproducibility"
-    )
+    seed: int = Field(default=42, description="Random seed for reproducibility")
 
     # Blosc compressor - must always be a valid codec
     compressor: BloscCodec = Field(
         default_factory=lambda: BloscCodec(
-            cname="zstd",
-            clevel=7,
-            shuffle=BloscShuffle.bitshuffle
+            cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle
         ),
-        description="Blosc compressor configuration"
+        description="Blosc compressor configuration",
     )
 
     def __init__(self, **data):
@@ -100,39 +89,40 @@ class ZarrConfig(BaseModel):
         # Debug: Check if compressor got set
         if self.compressor is None:
             import warnings
+
             warnings.warn(
                 "Compressor is None after __init__, this indicates field_validator "
                 "or model_validator is setting it to None. Check validators!",
-                UserWarning
+                UserWarning,
             )
 
     @classmethod
-    @field_validator('compressor', mode='before')
+    @field_validator("compressor", mode="before")
     def validate_compressor(cls, v):
         """Ensure compressor is always a valid BloscCodec."""
         # If None, create default
         if v is None:
-            return BloscCodec(
-                cname="zstd",
-                clevel=7,
-                shuffle=BloscShuffle.bitshuffle
-            )
+            return BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle)
 
         # If it's a dict (from JSON), reconstruct the BloscCodec
         if isinstance(v, dict):
             # Handle Zarr v3 codec dict format
-            if 'configuration' in v:
-                config = v['configuration']
-                cname = config.get('cname', 'zstd')
-                clevel = config.get('clevel', 7)
-                shuffle_str = config.get('shuffle', 'bitshuffle')
-                shuffle = BloscShuffle[shuffle_str] if isinstance(shuffle_str, str) else shuffle_str
+            if "configuration" in v:
+                config = v["configuration"]
+                cname = config.get("cname", "zstd")
+                clevel = config.get("clevel", 7)
+                shuffle_str = config.get("shuffle", "bitshuffle")
+                shuffle = (
+                    BloscShuffle[shuffle_str]
+                    if isinstance(shuffle_str, str)
+                    else shuffle_str
+                )
                 return BloscCodec(cname=cname, clevel=clevel, shuffle=shuffle)
 
             # Handle simple dict format
-            cname = v.get('cname', 'zstd')
-            clevel = v.get('clevel', 7)
-            shuffle_val = v.get('shuffle', BloscShuffle.bitshuffle)
+            cname = v.get("cname", "zstd")
+            clevel = v.get("clevel", 7)
+            shuffle_val = v.get("shuffle", BloscShuffle.bitshuffle)
 
             # Handle shuffle as string or enum
             if isinstance(shuffle_val, str):
@@ -147,49 +137,48 @@ class ZarrConfig(BaseModel):
         if isinstance(v, BloscCodec):
             return v
 
-        return BloscCodec(
-            cname="zstd",
-            clevel=7,
-            shuffle=BloscShuffle.bitshuffle
-        )
+        return BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle)
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_paths_and_sharding(self):
         """Validate paths exist and sharding makes sense."""
         if self.compressor is None:
             import warnings
+
             warnings.warn(
                 "Compressor was None in model_validator (after field validation). "
                 "This suggests an issue with Pydantic field initialization order.",
-                UserWarning
+                UserWarning,
             )
             # Use object.__setattr__ to bypass frozen config if needed
             object.__setattr__(
                 self,
-                'compressor',
-                BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle)
+                "compressor",
+                BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle),
             )
 
         # Double-check it's a valid BloscCodec instance
         if not isinstance(self.compressor, BloscCodec):
             import warnings
+
             warnings.warn(
                 f"Compressor is type {type(self.compressor)}, converting to BloscCodec",
-                UserWarning
+                UserWarning,
             )
             object.__setattr__(
                 self,
-                'compressor',
-                BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle)
+                "compressor",
+                BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle),
             )
 
         # Warn if episode_count < shard_size (not an error, just inefficient)
         if self.episode_count < self.shard_size:
             import warnings
+
             warnings.warn(
                 f"episode_count ({self.episode_count}) < shard_size ({self.shard_size}). "
                 f"Consider reducing shard_size for efficiency.",
-                UserWarning
+                UserWarning,
             )
 
         return self
@@ -203,7 +192,8 @@ class ZarrConfig(BaseModel):
         base_path = str(self.out_root)
         # Remove any existing _N suffix
         import re
-        base_path = re.sub(r'_\d+', '', base_path)
+
+        base_path = re.sub(r"_\d+", "", base_path)
         # Add new episode count
         self.out_root = f"{base_path}_{self.episode_count}"
 
@@ -213,7 +203,7 @@ class TrainConfig(BaseModel):
 
     model_config = SettingsConfigDict(
         validate_assignment=True,
-        extra='forbid',
+        extra="forbid",
     )
 
     batch_size: int = Field(default=128, ge=1)
@@ -227,7 +217,7 @@ class TrainConfig(BaseModel):
     prefetch_factor: int = Field(default=4, ge=1)
     pin_memory: bool = Field(
         default_factory=lambda: _should_pin_memory(),
-        description="Pin memory for faster data transfer (auto-detected based on device)"
+        description="Pin memory for faster data transfer (auto-detected based on device)",
     )
     persistent_workers: bool = True
     stride: int = Field(default=1, ge=1)
@@ -239,18 +229,18 @@ class TrainConfig(BaseModel):
     # AMP - auto-detect optimal dtype based on hardware
     use_amp: bool = Field(
         default_factory=lambda: _should_use_amp(),
-        description="Use Automatic Mixed Precision (auto-detected based on hardware)"
+        description="Use Automatic Mixed Precision (auto-detected based on hardware)",
     )
     amp_dtype: str = Field(
         default_factory=lambda: _get_optimal_amp_dtype(),
-        description="AMP dtype (auto-detected: bfloat16 for modern GPUs, float16 for older)"
+        description="AMP dtype (auto-detected: bfloat16 for modern GPUs, float16 for older)",
     )
 
     # Checkpointing
     out_dir: str = "checkpoints"
     save_every_epochs: int = Field(default=1, ge=1)
 
-    @field_validator('betas')
+    @field_validator("betas")
     @classmethod
     def validate_betas(cls, v):
         """Ensure beta values are in valid range."""
@@ -258,7 +248,7 @@ class TrainConfig(BaseModel):
             raise ValueError("Beta values must be in [0, 1)")
         return v
 
-    @field_validator('amp_dtype')
+    @field_validator("amp_dtype")
     @classmethod
     def validate_amp_dtype(cls, v):
         """Ensure amp_dtype is valid."""
@@ -275,10 +265,11 @@ def _should_pin_memory() -> bool:
     """
     try:
         import torch
+
         if torch.cuda.is_available():
             return True
         # MPS (Apple Silicon) doesn't benefit from pinning
-        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return False
     except ImportError:
         pass
@@ -292,13 +283,14 @@ def _should_use_amp() -> bool:
     """
     try:
         import torch
+
         # Check for CUDA with compute capability >= 7.0 (Volta+, has tensor cores)
         if torch.cuda.is_available():
             # Get compute capability of first GPU
             major, minor = torch.cuda.get_device_capability(0)
             return major >= 7  # Volta (7.0) and newer
         # Apple Silicon supports AMP well
-        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return True
     except (ImportError, RuntimeError):
         pass
@@ -314,6 +306,7 @@ def _get_optimal_amp_dtype() -> str:
     """
     try:
         import torch
+
         if torch.cuda.is_available():
             # Get compute capability
             major, minor = torch.cuda.get_device_capability(0)
@@ -324,7 +317,7 @@ def _get_optimal_amp_dtype() -> str:
             elif major >= 7:
                 return "float16"
         # Apple Silicon supports float16 well
-        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "float16"
     except (ImportError, RuntimeError):
         pass
@@ -334,7 +327,7 @@ def _get_optimal_amp_dtype() -> str:
 class LossWeightConfig(BaseModel):
     """Pydantic version of LossWeightConfig."""
 
-    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     main_change: float = Field(default=5.0, gt=0)
     c_change: float = Field(default=10.0, gt=0)
@@ -352,7 +345,7 @@ class LossWeightConfig(BaseModel):
 class ProfileConfig(BaseModel):
     """Pydantic version of ProfileConfig."""
 
-    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     enable: bool = False
     out_dir: Optional[str] = None
@@ -376,7 +369,7 @@ from controller_utils import (
 class GPTConfig(BaseModel):
     """Pydantic version of GPTConfig."""
 
-    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     block_size: int = Field(default=512, ge=1)
     n_embd: int = Field(default=512, ge=1)
@@ -408,25 +401,25 @@ class GPTConfig(BaseModel):
     )
     use_value_head: bool = True
 
-    @model_validator(mode='before')
+    @model_validator(mode="before")
     def compute_input_size(cls, values):
         """Dynamically compute input_size if dimensions are provided in context."""
-        if 'context' in values and values['context']:
-            context = values['context']
-            gamestate_dim = context.get('gamestate_dim')
-            controller_dim = context.get('controller_dim')
+        if "context" in values and values["context"]:
+            context = values["context"]
+            gamestate_dim = context.get("gamestate_dim")
+            controller_dim = context.get("controller_dim")
 
             if gamestate_dim is not None and controller_dim is not None:
-                values['input_size'] = (
-                    values.get('num_stages', 6) +
-                    values.get('num_characters', 26) * 2 +
-                    values.get('num_actions', 396) * 2 +
-                    gamestate_dim +
-                    controller_dim
+                values["input_size"] = (
+                    values.get("num_stages", 6)
+                    + values.get("num_characters", 26) * 2
+                    + values.get("num_actions", 396) * 2
+                    + gamestate_dim
+                    + controller_dim
                 )
         return values
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_attention_heads(self):
         """Ensure n_kv_head is compatible with n_head."""
         if self.attention_type in ("gqa", "mqa"):
@@ -442,7 +435,7 @@ class GPTConfig(BaseModel):
 class FeatureConfig(BaseModel):
     """Pydantic version of FeatureConfig."""
 
-    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     transforms: list[Dict[str, Any]] = Field(
         default_factory=lambda: [
@@ -498,7 +491,7 @@ class FeatureConfig(BaseModel):
 class RLConfig(BaseModel):
     """Pydantic version of RLConfig."""
 
-    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     gamma: float = Field(default=0.995, ge=0, le=1)
     value_loss_coef: float = Field(default=0.5, ge=0)
@@ -515,7 +508,7 @@ class RLConfig(BaseModel):
 class PPOConfig(BaseModel):
     """Pydantic version of PPOConfig."""
 
-    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     pool_size: int = Field(default=5, ge=1)
     clip_ratio: float = Field(default=0.2, gt=0)
@@ -534,7 +527,7 @@ class PPOConfig(BaseModel):
 class ImitationConfig(BaseModel):
     """Pydantic version of ImitationConfig."""
 
-    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     strategy: Literal[
         "uniform", "value_weighted", "value_advantage", "value_filter", "hybrid"
@@ -555,7 +548,7 @@ class ImitationConfig(BaseModel):
     )
     hybrid_weights: list[float] = Field(default_factory=lambda: [0.5, 0.5])
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_hybrid(self):
         """Ensure hybrid strategies and weights are consistent."""
         if self.strategy == "hybrid":
@@ -571,7 +564,7 @@ class ImitationConfig(BaseModel):
 class AuxTaskConfig(BaseModel):
     """Pydantic version of AuxTaskConfig."""
 
-    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     enable_opponent_action: bool = True
     enable_damage_diff: bool = True
@@ -590,7 +583,7 @@ class Config(BaseModel):
 
     model_config = SettingsConfigDict(
         validate_assignment=True,
-        extra='forbid',
+        extra="forbid",
         frozen=False,  # Can be frozen after initialization
     )
 
@@ -608,7 +601,7 @@ class Config(BaseModel):
 
     def freeze(self) -> None:
         """Make config immutable."""
-        self.model_config['frozen'] = True
+        self.model_config["frozen"] = True
 
     def to_json(self, indent: int = 2) -> str:
         """Serialize to JSON string."""
@@ -630,7 +623,6 @@ class Config(BaseModel):
     def load(cls, path: Union[str, Path]) -> "Config":
         """Load config from JSON file."""
         return cls.from_json(Path(path).read_text(encoding="utf-8"))
-
 
 
 def apply_overrides_(cfg: Config, overrides: Dict[str, str]) -> None:
@@ -660,7 +652,9 @@ def apply_overrides_(cfg: Config, overrides: Dict[str, str]) -> None:
                 value = raw_value.lower() == "true"
             elif "." in raw_value or "e" in raw_value.lower():
                 value = float(raw_value)
-            elif raw_value.isdigit() or (raw_value[0] == "-" and raw_value[1:].isdigit()):
+            elif raw_value.isdigit() or (
+                raw_value[0] == "-" and raw_value[1:].isdigit()
+            ):
                 value = int(raw_value)
             else:
                 value = raw_value
@@ -674,11 +668,11 @@ _GLOBAL_CONFIG: Optional[Config] = None
 
 
 def init_config(
-        config_path: Optional[Union[str, Path]] = None,
-        overrides: Optional[Dict[str, str]] = None,
-        gamestate_dim: Optional[int] = None,
-        controller_dim: Optional[int] = None,
-        freeze: bool = True,
+    config_path: Optional[Union[str, Path]] = None,
+    overrides: Optional[Dict[str, str]] = None,
+    gamestate_dim: Optional[int] = None,
+    controller_dim: Optional[int] = None,
+    freeze: bool = True,
 ) -> Config:
     """
     Initialize global config singleton. Replaces old init_config().
@@ -705,8 +699,8 @@ def init_config(
 
     context = {}
     if gamestate_dim is not None and controller_dim is not None:
-        context['gamestate_dim'] = gamestate_dim
-        context['controller_dim'] = controller_dim
+        context["gamestate_dim"] = gamestate_dim
+        context["controller_dim"] = controller_dim
 
     # Load from file or create with defaults
     if config_path:
@@ -719,14 +713,13 @@ def init_config(
     # Debug: verify compressor is valid after creation
     if cfg.zarr.compressor is None:
         import warnings
+
         warnings.warn(
             "CRITICAL: compressor is None after Config creation! Creating default.",
-            UserWarning
+            UserWarning,
         )
         cfg.zarr.compressor = BloscCodec(
-            cname="zstd",
-            clevel=7,
-            shuffle=BloscShuffle.bitshuffle
+            cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle
         )
 
     # Apply CLI overrides if provided
@@ -742,10 +735,11 @@ def init_config(
 
     # Optionally freeze to prevent modifications
     if freeze:
-        cfg.model_config['frozen'] = True
+        cfg.model_config["frozen"] = True
 
     _GLOBAL_CONFIG = cfg
     return cfg
+
 
 def get_config() -> Config:
     """
@@ -766,9 +760,7 @@ def get_config() -> Config:
         print(cfg.train.lr)
     """
     if _GLOBAL_CONFIG is None:
-        raise RuntimeError(
-            "Global config not initialized. Call init_config() first."
-        )
+        raise RuntimeError("Global config not initialized. Call init_config() first.")
     return _GLOBAL_CONFIG
 
 

@@ -53,6 +53,5 @@ _BUTTON_PRETTY = {
 _MAIN_STICK_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
 _C_STICK_PALETTE = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
 _SHOULDER_PALETTE = np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
-_MAIN_STICK_PALETTE_NORM = np.sum(_MAIN_STICK_PALETTE ** 2, axis=1, keepdims=True)
-_C_STICK_PALETTE_NORM = np.sum(_C_STICK_PALETTE ** 2, axis=1, keepdims=True)
-
+_MAIN_STICK_PALETTE_NORM = np.sum(_MAIN_STICK_PALETTE**2, axis=1, keepdims=True)
+_C_STICK_PALETTE_NORM = np.sum(_C_STICK_PALETTE**2, axis=1, keepdims=True)

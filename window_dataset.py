@@ -598,10 +598,8 @@ def worker_init_fn(worker_id: int) -> None:
 
 
 def make_dataloader(
-    config: 'Config',
-) -> (
-    Tuple[torch.utils.data.DataLoader, WindowDataset, Sampler[int]]
-):
+    config: "Config",
+) -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampler[int]]:
     """Construct the dataset, sampler, and DataLoader with an explicit example.
 
     Example

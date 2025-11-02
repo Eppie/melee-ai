@@ -30,6 +30,7 @@ from train.batch_utils import (
     SampleWeightRatios,
     compute_component_sample_weights,
 )
+
 # Train module utilities
 from train.checkpoint import (
     save_checkpoint,
@@ -53,7 +54,7 @@ from train.wandb_utils import (
 )
 from utils import print_model_diagram, _resolve_device
 from window_dataset import make_dataloader
-from typing import Sequence # Added for parse_cli_overrides
+from typing import Sequence  # Added for parse_cli_overrides
 
 
 def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
@@ -132,7 +133,6 @@ def train_loop(
                 f"AMP requested but disabled for device '{device.type}';"
                 " falling back to full precision."
             )
-
 
     # Column map built from dataset metadata (only once)
     colmap = ColumnMap.from_dataset(ds)

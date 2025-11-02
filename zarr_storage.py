@@ -590,7 +590,7 @@ def _merge_and_write_metadata(
     meta = {
         "version": 1,
         "created_at_unix": int(time.time()),
-        "build_config": config.model_dump(mode='json'),
+        "build_config": config.model_dump(mode="json"),
         "schema": {"features": list(feature_names), "targets": list(target_names)},
         "feat_dtypes": feat_dtypes,
         "targ_dtypes": targ_dtypes,

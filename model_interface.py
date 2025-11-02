@@ -869,28 +869,12 @@ class GPTInferenceEngine:
         ``outputs['buttons'][0, -1].detach().cpu().tolist()`` under the ``'buttons'``
         key so the JSON death log records the exact logits that led to an action.
         """
-        print_cached("[TRACE:GPTInferenceEngine._capture_logits] Capturing logits")
-        logits: Dict[str, Any] = {}
-        if "main_stick" in outputs:
-            print_cached(
-                "[TRACE:GPTInferenceEngine._capture_logits] Capturing main_stick logits"
-            )
-            logits["main_stick"] = outputs["main_stick"][0, -1].detach().cpu().tolist()
-        if "c_stick" in outputs:
-            print_cached("[TRACE:GPTInferenceEngine._capture_logits] Capturing c_stick logits")
-            logits["c_stick"] = outputs["c_stick"][0, -1].detach().cpu().tolist()
-        if "buttons" in outputs:
-            print_cached("[TRACE:GPTInferenceEngine._capture_logits] Capturing buttons logits")
-            logits["buttons"] = outputs["buttons"][0, -1].detach().cpu().tolist()
-        if "shoulder" in outputs:
-            print_cached(
-                "[TRACE:GPTInferenceEngine._capture_logits] Capturing shoulder logits"
-            )
-            logits["shoulder"] = outputs["shoulder"][0, -1].detach().cpu().tolist()
-        for key in ("value", "value_head"):
-            if key in outputs:
-                print_cached(f"[TRACE:GPTInferenceEngine._capture_logits] Capturing {key}")
-                logits[key] = outputs[key][0, -1].detach().cpu().tolist()
+        logits: Dict[str, Any] = {"main_stick": outputs["main_stick"][0, -1].detach().cpu().tolist(),
+                                  "c_stick": outputs["c_stick"][0, -1].detach().cpu().tolist(),
+                                  "buttons": outputs["buttons"][0, -1].detach().cpu().tolist(),
+                                  "shoulder": outputs["shoulder"][0, -1].detach().cpu().tolist(),
+                                  "value": outputs["value"][0, -1].detach().cpu().tolist()
+                                  }
         return logits
 
     def _persist_death_record(self, stock_after: int) -> None:
@@ -903,14 +887,8 @@ class GPTInferenceEngine:
         features, transformed features, targets, and logits for every recorded
         frame.
         """
-        print_cached(
-            f"[TRACE:GPTInferenceEngine._persist_death_record] Persisting death record, stock_after={stock_after}"
-        )
         frames = list(self.frame_history)
         if not frames:
-            print_cached(
-                "[TRACE:GPTInferenceEngine._persist_death_record] No frames to persist"
-            )
             return
         payload = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -933,26 +911,14 @@ class GPTInferenceEngine:
         }
         try:
             self._death_log_dir.mkdir(parents=True, exist_ok=True)
-            print_cached(
-                f"[TRACE:GPTInferenceEngine._persist_death_record] Created death log directory"
-            )
-        except Exception as exc:
-            print_cached(
-                f"[TRACE:GPTInferenceEngine._persist_death_record] ERROR: Failed to create directory: {exc}"
-            )
+        except Exception:
             return
         filename = f"death_{self._death_counter:04d}_frame{self._frames_seen}.json"
         output_path = self._death_log_dir / filename
         try:
             with output_path.open("w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
-            print_cached(
-                f"[TRACE:GPTInferenceEngine._persist_death_record] Logged death to {output_path}"
-            )
-        except Exception as exc:
-            print_cached(
-                f"[TRACE:GPTInferenceEngine._persist_death_record] ERROR: Failed to write log: {exc}"
-            )
+        except Exception:
             return
         self._death_counter += 1
 
@@ -965,26 +931,11 @@ class GPTInferenceEngine:
         method saves the death log, increments counters, and resets tracking so the
         next stock loss generates a fresh log.
         """
-        print_cached(
-            f"[TRACE:GPTInferenceEngine._maybe_log_death] current_stock={current_stock}, prev_stock={self._prev_stock}"
-        )
         if current_stock is None:
-            print_cached(
-                "[TRACE:GPTInferenceEngine._maybe_log_death] current_stock is None, returning"
-            )
             return
         stock_value = int(current_stock)
         if self._prev_stock is not None and stock_value < self._prev_stock:
-            print_cached(
-                f"[TRACE:GPTInferenceEngine._maybe_log_death] Death detected! Stock decreased from {self._prev_stock} to {stock_value}"
-            )
-            if len(self.frame_history) < self.seq_len:
-                print_cached(
-                    f"[TRACE:GPTInferenceEngine._maybe_log_death] Only {len(self.frame_history)} frames buffered (truncated history)"
-                )
             self._persist_death_record(stock_value)
-        else:
-            print_cached("[TRACE:GPTInferenceEngine._maybe_log_death] No death detected")
         self._prev_stock = stock_value
 
     def _decode_stick(
@@ -1000,17 +951,9 @@ class GPTInferenceEngine:
         ``'c_stick'`` it additionally computes ``softmax`` probabilities for
         logging, mirroring the exact decoding performed during inference.
         """
-        print_cached(f"[TRACE:GPTInferenceEngine._decode_stick] Decoding {stick_name}")
         # Decode sticks by selecting the most likely quantized bin (argmax).
         idx = torch.argmax(logits.detach(), dim=-1)
-        # TODO: does the following have side effects? probs is unused so I think we can remove.
-        if stick_name == "c_stick":
-            print_cached(
-                "[TRACE:GPTInferenceEngine._decode_stick] Computing probs for c_stick"
-            )
-            probs = torch.softmax(logits.detach(), dim=-1).cpu().numpy()
         idx_np = idx.detach().cpu().numpy().astype(np.int32)
-        print_cached(f"[TRACE:GPTInferenceEngine._decode_stick] Selected index: {idx_np}")
         xy01 = model_to_dolphin01(idx_np, palette11=palette)
         return xy01.reshape(-1)
 
@@ -1025,13 +968,11 @@ class GPTInferenceEngine:
         Re-running with the same tensor and manual seed reproduces the same sample,
         matching the stochastic decoding strategy used during evaluation.
         """
-        print_cached("[TRACE:GPTInferenceEngine._decode_buttons] Decoding buttons")
         # Interpret button activations probabilistically, sampling directly from the model probabilities.
         eps = torch.finfo(probs.dtype).eps
         clamped_probs = torch.clamp(probs.detach(), eps, 1 - eps)
         samples = torch.bernoulli(clamped_probs).bool().cpu()
         result = samples.tolist()
-        print_cached(f"[TRACE:GPTInferenceEngine._decode_buttons] Button states: {result}")
         return result
 
     # TODO: overly safe. decide on button logits or probs.
@@ -1197,54 +1138,38 @@ def apply_model_outputs_to_game(
     ``press_shoulder`` using ``model_outputs.shoulder_analog``, reproducing the
     exact physical controller state encoded in the :class:`ControllerState`.
     """
-    print_cached("[TRACE:apply_model_outputs_to_game] Applying controller state to game")
     controller.release_all()
     if model_outputs.button_a:
-        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button A")
         controller.press_button(enums.Button.BUTTON_A)
     else:
         controller.release_button(enums.Button.BUTTON_A)
 
     if model_outputs.button_b:
-        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button B")
         controller.press_button(enums.Button.BUTTON_B)
     else:
         controller.release_button(enums.Button.BUTTON_B)
 
     if model_outputs.button_xy:
-        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button X")
         controller.press_button(enums.Button.BUTTON_X)
     else:
         controller.release_button(enums.Button.BUTTON_X)
 
     if model_outputs.button_lr:
-        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button L")
         controller.press_button(enums.Button.BUTTON_L)
     else:
         controller.release_button(enums.Button.BUTTON_L)
 
     if model_outputs.button_z:
-        print_cached("[TRACE:apply_model_outputs_to_game] Pressing button Z")
         controller.press_button(enums.Button.BUTTON_Z)
     else:
         controller.release_button(enums.Button.BUTTON_Z)
 
-    print_cached(
-        f"[TRACE:apply_model_outputs_to_game] Setting main_stick to ({model_outputs.main_stick_x:.3f}, {model_outputs.main_stick_y:.3f})"
-    )
     controller.tilt_analog(
         enums.Button.BUTTON_MAIN, model_outputs.main_stick_x, model_outputs.main_stick_y
-    )
-    print_cached(
-        f"[TRACE:apply_model_outputs_to_game] Setting c_stick to ({model_outputs.c_stick_x:.3f}, {model_outputs.c_stick_y:.3f})"
     )
     controller.tilt_analog(
         enums.Button.BUTTON_C, model_outputs.c_stick_x, model_outputs.c_stick_y
     )
 
     controller.press_shoulder(enums.Button.BUTTON_R, 0.0)
-    print_cached(
-        f"[TRACE:apply_model_outputs_to_game] Setting L shoulder to {model_outputs.shoulder_analog:.3f}"
-    )
     controller.press_shoulder(enums.Button.BUTTON_L, model_outputs.shoulder_analog)
-    print_cached("[TRACE:apply_model_outputs_to_game] Controller state applied")

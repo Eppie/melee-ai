@@ -597,7 +597,9 @@ def worker_init_fn(worker_id: int) -> None:
     np.random.seed(base_seed + worker_id)
 
 
-def make_dataloader() -> (
+def make_dataloader(
+    config: 'Config',
+) -> (
     Tuple[torch.utils.data.DataLoader, WindowDataset, Sampler[int]]
 ):
     """Construct the dataset, sampler, and DataLoader with an explicit example.
@@ -617,7 +619,6 @@ def make_dataloader() -> (
     can iterate over ``loader`` while still accessing ``dataset`` metadata and the
     sampler to adjust epochs.
     """
-    config = get_config()
     feature_spec = feature_spec_from_config(config.features)
     ds = WindowDataset(
         config.zarr.out_root,

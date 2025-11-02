@@ -1,171 +1,450 @@
-# global_config.py
 from __future__ import annotations
 
-import argparse
-import ast
-import copy
-import json
-from dataclasses import dataclass, field, fields, is_dataclass, replace
-from enum import Enum
-from functools import lru_cache
+import platform
 from pathlib import Path
-from types import MappingProxyType
-from typing import (
-    Any,
-    Dict,
-    Mapping,
-    MutableMapping,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
-    get_args,
-    get_origin,
-    get_type_hints,
-    List,
-    Literal,
-)
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_settings import SettingsConfigDict
 from zarr.codecs import BloscCodec, BloscShuffle
 
+from constants import BUTTON_TARGET_NAMES
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
-from schema import BUTTONS, get_feature_names, get_target_names
 
 
-@dataclass
-class _FreezeGuard:
-    _frozen: bool = field(default=False, init=False, repr=False, compare=False)
+def _get_default_paths() -> tuple[str, str, str]:
+    """
+    Automatically determine default paths based on operating system.
+    Returns (input_root, out_root, validation_root)
+    """
+    system = platform.system()
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        if getattr(self, "_frozen", False) and name != "_frozen":
-            raise AttributeError(f"Config is frozen; cannot modify '{name}'.")
-        object.__setattr__(self, name, value)
-
-
-@dataclass
-class ZarrConfig(_FreezeGuard):
-    # TODO: Automatically set these based on if we are on mac or windows
-    # input_root: str = "/home/eppie/hal/replays"
-    # out_root: str = "/home/eppie/melee-ai/processed_data_10"
-    # validation_root: str = "/home/eppie/melee-ai/validation_set"
-    input_root: str = "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX"
-    # TODO: automatically match this with episode_count
-    out_root: str = "/Users/eppie/PycharmProjects/nano-melee/processed_data_10"
-    validation_root: str = "/Users/eppie/PycharmProjects/nano-melee/validation_set"
-    episode_count: int = 10
-    validation_count: int = 10
-    shard_size: int = 100
-    target_chunk_mb: float = 8.0
-    compressor: BloscCodec = field(
-        default_factory=lambda: BloscCodec(
-            cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle
+    if system == "Darwin":
+        return (
+            "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX",
+            "/Users/eppie/PycharmProjects/nano-melee/processed_data_10",
+            "/Users/eppie/PycharmProjects/nano-melee/validation_set",
         )
+    elif system == "Linux":
+        return (
+            "/home/eppie/hal/replays",
+            "/home/eppie/melee-ai/processed_data_10",
+            "/home/eppie/melee-ai/validation_set",
+        )
+    raise ValueError(f"Unknown operating system: {system}")
+
+
+class ZarrConfig(BaseModel):
+    model_config = SettingsConfigDict(
+        validate_assignment=True,
+        frozen=False,
+        extra='forbid',
+        str_strip_whitespace=True,
+        arbitrary_types_allowed=True,  # Allow BloscCodec
     )
-    seed: int = 42
+
+    input_root: str = Field(
+        default_factory=lambda: _get_default_paths()[0],
+        description="Root directory for input replay files (auto-detected by OS)"
+    )
+    out_root: str = Field(
+        default_factory=lambda: _get_default_paths()[1],
+        description="Root directory for processed output data (auto-detected by OS)"
+    )
+    validation_root: str = Field(
+        default_factory=lambda: _get_default_paths()[2],
+        description="Root directory for validation data (auto-detected by OS)"
+    )
+    episode_count: int = Field(
+        default=10,
+        ge=1,
+        description="Number of episodes to process"
+    )
+    validation_count: int = Field(
+        default=10,
+        ge=1,
+        description="Number of validation episodes (automatically matches episode_count by default)"
+    )
+    shard_size: int = Field(
+        default=100,
+        ge=1,
+        description="Number of episodes per shard"
+    )
+    target_chunk_mb: float = Field(
+        default=8.0,
+        gt=0,
+        description="Target chunk size in megabytes"
+    )
+    seed: int = Field(
+        default=42,
+        description="Random seed for reproducibility"
+    )
+
+    # Blosc compressor - must always be a valid codec
+    compressor: BloscCodec = Field(
+        default_factory=lambda: BloscCodec(
+            cname="zstd",
+            clevel=7,
+            shuffle=BloscShuffle.bitshuffle
+        ),
+        description="Blosc compressor configuration"
+    )
+
+    def __init__(self, **data):
+        """Override init to debug compressor initialization."""
+        super().__init__(**data)
+        # Debug: Check if compressor got set
+        if self.compressor is None:
+            import warnings
+            warnings.warn(
+                "Compressor is None after __init__, this indicates field_validator "
+                "or model_validator is setting it to None. Check validators!",
+                UserWarning
+            )
+
+    @classmethod
+    @field_validator('compressor', mode='before')
+    def validate_compressor(cls, v):
+        """Ensure compressor is always a valid BloscCodec."""
+        # If None, create default
+        if v is None:
+            return BloscCodec(
+                cname="zstd",
+                clevel=7,
+                shuffle=BloscShuffle.bitshuffle
+            )
+
+        # If it's a dict (from JSON), reconstruct the BloscCodec
+        if isinstance(v, dict):
+            # Handle Zarr v3 codec dict format
+            if 'configuration' in v:
+                config = v['configuration']
+                cname = config.get('cname', 'zstd')
+                clevel = config.get('clevel', 7)
+                shuffle_str = config.get('shuffle', 'bitshuffle')
+                shuffle = BloscShuffle[shuffle_str] if isinstance(shuffle_str, str) else shuffle_str
+                return BloscCodec(cname=cname, clevel=clevel, shuffle=shuffle)
+
+            # Handle simple dict format
+            cname = v.get('cname', 'zstd')
+            clevel = v.get('clevel', 7)
+            shuffle_val = v.get('shuffle', BloscShuffle.bitshuffle)
+
+            # Handle shuffle as string or enum
+            if isinstance(shuffle_val, str):
+                shuffle = BloscShuffle[shuffle_val]
+            elif isinstance(shuffle_val, int):
+                shuffle = BloscShuffle(shuffle_val)
+            else:
+                shuffle = shuffle_val
+
+            return BloscCodec(cname=cname, clevel=clevel, shuffle=shuffle)
+
+        if isinstance(v, BloscCodec):
+            return v
+
+        return BloscCodec(
+            cname="zstd",
+            clevel=7,
+            shuffle=BloscShuffle.bitshuffle
+        )
+
+    @model_validator(mode='after')
+    def validate_paths_and_sharding(self):
+        """Validate paths exist and sharding makes sense."""
+        if self.compressor is None:
+            import warnings
+            warnings.warn(
+                "Compressor was None in model_validator (after field validation). "
+                "This suggests an issue with Pydantic field initialization order.",
+                UserWarning
+            )
+            # Use object.__setattr__ to bypass frozen config if needed
+            object.__setattr__(
+                self,
+                'compressor',
+                BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle)
+            )
+
+        # Double-check it's a valid BloscCodec instance
+        if not isinstance(self.compressor, BloscCodec):
+            import warnings
+            warnings.warn(
+                f"Compressor is type {type(self.compressor)}, converting to BloscCodec",
+                UserWarning
+            )
+            object.__setattr__(
+                self,
+                'compressor',
+                BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle)
+            )
+
+        # Warn if episode_count < shard_size (not an error, just inefficient)
+        if self.episode_count < self.shard_size:
+            import warnings
+            warnings.warn(
+                f"episode_count ({self.episode_count}) < shard_size ({self.shard_size}). "
+                f"Consider reducing shard_size for efficiency.",
+                UserWarning
+            )
+
+        return self
+
+    def update_out_root_for_episode_count(self) -> None:
+        """
+        Update out_root to include episode_count in the path.
+        Call this after setting episode_count to keep paths in sync.
+        """
+        # Extract base path without episode count suffix
+        base_path = str(self.out_root)
+        # Remove any existing _N suffix
+        import re
+        base_path = re.sub(r'_\d+', '', base_path)
+        # Add new episode count
+        self.out_root = f"{base_path}_{self.episode_count}"
 
 
-@dataclass
-class TrainConfig:
-    batch_size: int = 128
-    epochs: int = 100  # TODO: lower to a reasonable number
-    lr: float = 1.3e-4  # (DONE)
-    weight_decay: float = 0.002  # TODO: Should this be higher?
-    betas: Tuple[float, float] = (0.9, 0.95)  # TODO: never checked these
-    warmup_steps: int = 5000
-    max_steps: Optional[int] = None
-    num_workers: int = 16
-    prefetch_factor: int = 4
-    pin_memory: bool = True  # TODO: Automatically set this based on mps vs cuda
+class TrainConfig(BaseModel):
+    """Pydantic version of TrainConfig with validation."""
+
+    model_config = SettingsConfigDict(
+        validate_assignment=True,
+        extra='forbid',
+    )
+
+    batch_size: int = Field(default=128, ge=1)
+    epochs: int = Field(default=100, ge=1)
+    lr: float = Field(default=1.3e-4, gt=0)
+    weight_decay: float = Field(default=0.002, ge=0)
+    betas: Tuple[float, float] = Field(default=(0.9, 0.95))
+    warmup_steps: int = Field(default=5000, ge=0)
+    max_steps: Optional[int] = Field(default=None, ge=1)
+    num_workers: int = Field(default=16, ge=0)
+    prefetch_factor: int = Field(default=4, ge=1)
+    pin_memory: bool = Field(
+        default_factory=lambda: _should_pin_memory(),
+        description="Pin memory for faster data transfer (auto-detected based on device)"
+    )
     persistent_workers: bool = True
-    stride = 1  # TODO: Maybe raise this?
+    stride: int = Field(default=1, ge=1)
 
-    # losses
-    grad_clip: float = 5.0  # TODO: Maybe lower this?
-    label_smoothing: float = (
-        0.02  # TODO: Maybe this should be higher? maybe configurable per output head
+    # Losses
+    grad_clip: float = Field(default=5.0, gt=0)
+    label_smoothing: float = Field(default=0.02, ge=0, le=1)
+
+    # AMP - auto-detect optimal dtype based on hardware
+    use_amp: bool = Field(
+        default_factory=lambda: _should_use_amp(),
+        description="Use Automatic Mixed Precision (auto-detected based on hardware)"
+    )
+    amp_dtype: str = Field(
+        default_factory=lambda: _get_optimal_amp_dtype(),
+        description="AMP dtype (auto-detected: bfloat16 for modern GPUs, float16 for older)"
     )
 
-    # Automatic Mixed Precision (AMP)
-    use_amp: bool = True
-    amp_dtype: str = "float16"
-
-    # checkpointing
+    # Checkpointing
     out_dir: str = "checkpoints"
-    save_every_epochs: int = 1  # TODO: We can remove this
+    save_every_epochs: int = Field(default=1, ge=1)
+
+    @field_validator('betas')
+    @classmethod
+    def validate_betas(cls, v):
+        """Ensure beta values are in valid range."""
+        if not (0 <= v[0] < 1 and 0 <= v[1] < 1):
+            raise ValueError("Beta values must be in [0, 1)")
+        return v
+
+    @field_validator('amp_dtype')
+    @classmethod
+    def validate_amp_dtype(cls, v):
+        """Ensure amp_dtype is valid."""
+        valid_dtypes = ["float16", "bfloat16", "float32"]
+        if v not in valid_dtypes:
+            raise ValueError(f"amp_dtype must be one of {valid_dtypes}, got {v}")
+        return v
 
 
-@dataclass
-class LossWeightConfig:
-    main_change: float = 5.0
-    c_change: float = 10.0
-    shoulder_change: float = 5.0
-    buttons_change_default: float = 10.0
-    button_z: float = 20.0
-    button_b: float = 12.0
-    button_a: float = 12.0
-    button_xy: float = 10.0
-    button_lr: float = 8.0
-    hold_base: float = 1.0
-    value_change: float = 8.0
+def _should_pin_memory() -> bool:
+    """
+    Auto-detect if memory pinning should be enabled.
+    Pin memory is beneficial for CUDA but not for MPS or CPU.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return True
+        # MPS (Apple Silicon) doesn't benefit from pinning
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return False
+    except ImportError:
+        pass
+    return False
 
 
-@dataclass
-class ProfileConfig:
+def _should_use_amp() -> bool:
+    """
+    Auto-detect if Automatic Mixed Precision should be enabled.
+    AMP is beneficial for modern GPUs with tensor cores.
+    """
+    try:
+        import torch
+        # Check for CUDA with compute capability >= 7.0 (Volta+, has tensor cores)
+        if torch.cuda.is_available():
+            # Get compute capability of first GPU
+            major, minor = torch.cuda.get_device_capability(0)
+            return major >= 7  # Volta (7.0) and newer
+        # Apple Silicon supports AMP well
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return True
+    except (ImportError, RuntimeError):
+        pass
+    return False
+
+
+def _get_optimal_amp_dtype() -> str:
+    """
+    Auto-detect optimal AMP dtype based on hardware.
+    - bfloat16: Ampere (A100, RTX 30xx) and newer, better numerical stability
+    - float16: Older GPUs (V100, RTX 20xx), wider support
+    - float32: CPU or unsupported hardware
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # Get compute capability
+            major, minor = torch.cuda.get_device_capability(0)
+            # Ampere (8.0) and newer support bfloat16 natively
+            if major >= 8:
+                return "bfloat16"
+            # Volta/Turing support float16
+            elif major >= 7:
+                return "float16"
+        # Apple Silicon supports float16 well
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return "float16"
+    except (ImportError, RuntimeError):
+        pass
+    return "float16"  # Safe default
+
+
+class LossWeightConfig(BaseModel):
+    """Pydantic version of LossWeightConfig."""
+
+    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+
+    main_change: float = Field(default=5.0, gt=0)
+    c_change: float = Field(default=10.0, gt=0)
+    shoulder_change: float = Field(default=5.0, gt=0)
+    buttons_change_default: float = Field(default=10.0, gt=0)
+    button_z: float = Field(default=20.0, gt=0)
+    button_b: float = Field(default=12.0, gt=0)
+    button_a: float = Field(default=12.0, gt=0)
+    button_xy: float = Field(default=10.0, gt=0)
+    button_lr: float = Field(default=8.0, gt=0)
+    hold_base: float = Field(default=1.0, gt=0)
+    value_change: float = Field(default=8.0, gt=0)
+
+
+class ProfileConfig(BaseModel):
+    """Pydantic version of ProfileConfig."""
+
+    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+
     enable: bool = False
     out_dir: Optional[str] = None
-    wait: int = 1
-    warmup: int = 1
-    active: int = 10
-    repeat: int = 1
+    wait: int = Field(default=1, ge=0)
+    warmup: int = Field(default=1, ge=0)
+    active: int = Field(default=10, ge=1)
+    repeat: int = Field(default=1, ge=1)
     record_shapes: bool = True
     with_stack: bool = False
     profile_memory: bool = False
 
 
-@dataclass
-class GPTConfig:
-    block_size: int = 512  # DONE
-    n_embd: int = 512  # DONE
-    n_layer: int = 4  # DONE
-    n_head: int = 8  # DONE
-    dropout: float = 0.03  # (DONE)
-    input_size: int = -1  # populated dynamically based on dataset schema
-    num_stages: int = 6
-    num_characters: int = 26
-    num_actions: int = 396
-    gamma: float = 0.999  # (DONE)
-    norm_type: str = "layernorm"  # (DONE)
-    norm_eps: float = 1e-7  # DONE
-    norm_affine: bool = True  # (DONE)
-    norm_placement: str = "post"  # options: pre, post, both # TODO: Should we try "pre" for stabilization?
-    attention_type: str = "gqa"  # TODO: maybe mqa?
-    n_kv_head: Optional[int] = 4  # DONE
-    rope_theta: float = 10000.0
-    ffn_mult: float = 2  # DONE
-    ffn_activation: str = "geglu"  # DONE
-    head_flow: str = "parallel"  # options: sequential, parallel
-    target_shapes_by_head: dict[str, int] = field(
+from constants import BUTTON_TARGET_NAMES
+from controller_utils import (
+    CONTROL_STICK_QUANTIZED,
+    C_STICK_QUANTIZED,
+    SHOULDER_QUANTIZED,
+)
+
+
+class GPTConfig(BaseModel):
+    """Pydantic version of GPTConfig."""
+
+    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+
+    block_size: int = Field(default=512, ge=1)
+    n_embd: int = Field(default=512, ge=1)
+    n_layer: int = Field(default=4, ge=1)
+    n_head: int = Field(default=8, ge=1)
+    dropout: float = Field(default=0.03, ge=0, le=1)
+    input_size: int = Field(default=-1, description="Computed dynamically")
+    num_stages: int = Field(default=6, ge=1)
+    num_characters: int = Field(default=26, ge=1)
+    num_actions: int = Field(default=396, ge=1)
+    gamma: float = Field(default=0.999, ge=0, le=1)
+    norm_type: Literal["layernorm", "rmsnorm"] = "layernorm"
+    norm_eps: float = Field(default=1e-7, gt=0)
+    norm_affine: bool = True
+    norm_placement: Literal["pre", "post", "both"] = "post"
+    attention_type: Literal["mha", "gqa", "mqa"] = "gqa"
+    n_kv_head: Optional[int] = Field(default=4, ge=1)
+    rope_theta: float = Field(default=10000.0, gt=0)
+    ffn_mult: float = Field(default=2, gt=0)
+    ffn_activation: Literal["gelu", "geglu", "swiglu", "relu"] = "geglu"
+    head_flow: Literal["sequential", "parallel"] = "parallel"
+    target_shapes_by_head: Dict[str, int] = Field(
         default_factory=lambda: {
             "main_stick": len(CONTROL_STICK_QUANTIZED),
             "c_stick": len(C_STICK_QUANTIZED),
-            "buttons": len(BUTTONS),
+            "buttons": len(BUTTON_TARGET_NAMES),
             "shoulder": len(SHOULDER_QUANTIZED),
         }
     )
+    use_value_head: bool = True
 
-    # Value head for RL (outputs state value estimates)
-    use_value_head: bool = True  # enable value head for PPO/A2C
+    @model_validator(mode='before')
+    def compute_input_size(cls, values):
+        """Dynamically compute input_size if dimensions are provided in context."""
+        if 'context' in values and values['context']:
+            context = values['context']
+            gamestate_dim = context.get('gamestate_dim')
+            controller_dim = context.get('controller_dim')
+
+            if gamestate_dim is not None and controller_dim is not None:
+                values['input_size'] = (
+                    values.get('num_stages', 6) +
+                    values.get('num_characters', 26) * 2 +
+                    values.get('num_actions', 396) * 2 +
+                    gamestate_dim +
+                    controller_dim
+                )
+        return values
+
+    @model_validator(mode='after')
+    def validate_attention_heads(self):
+        """Ensure n_kv_head is compatible with n_head."""
+        if self.attention_type in ("gqa", "mqa"):
+            if self.n_kv_head is None:
+                raise ValueError(f"{self.attention_type} requires n_kv_head to be set")
+            if self.n_head % self.n_kv_head != 0:
+                raise ValueError(
+                    f"n_head ({self.n_head}) must be divisible by n_kv_head ({self.n_kv_head})"
+                )
+        return self
 
 
-@dataclass
-class FeatureConfig(_FreezeGuard):
-    """Feature preprocessing configuration."""
+class FeatureConfig(BaseModel):
+    """Pydantic version of FeatureConfig."""
 
-    transforms: List[Dict[str, Any]] = field(
+    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+
+    transforms: list[Dict[str, Any]] = Field(
         default_factory=lambda: [
             {
                 "transform": "stick_palette",
@@ -216,544 +495,316 @@ class FeatureConfig(_FreezeGuard):
     )
 
 
-@dataclass
-class RLConfig(_FreezeGuard):
-    """Reinforcement learning configuration."""
+class RLConfig(BaseModel):
+    """Pydantic version of RLConfig."""
 
-    gamma: float = 0.995  # discount factor for rewards
-    value_loss_coef: float = 0.5  # coefficient for value loss in total loss
+    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
 
-    reward_damage_dealt: float = 0.02  # per % damage
-    reward_damage_taken: float = -0.02  # per % damage
-    reward_stock_lost: float = -1  # when losing a stock
-    reward_stock_taken: float = 1  # when taking opponent's stock
-    reward_hitlag_opponent: float = (
-        0.02  # reward when opponent is in hitlag (attacking)
-    )
-    reward_hitlag_self: float = -0.02  # penalty when we are in hitlag (being hit)
-    reward_low_shield: float = (
-        -0.1
-    )  # penalty for low shield strength (magnified as shield -> 0)
-    reward_per_frame: float = (
-        0  # small constant penalty per frame to discourage stalling
-    )
+    gamma: float = Field(default=0.995, ge=0, le=1)
+    value_loss_coef: float = Field(default=0.5, ge=0)
+    reward_damage_dealt: float = 0.02
+    reward_damage_taken: float = -0.02
+    reward_stock_lost: float = -1
+    reward_stock_taken: float = 1
+    reward_hitlag_opponent: float = 0.02
+    reward_hitlag_self: float = -0.02
+    reward_low_shield: float = -0.1
+    reward_per_frame: float = 0
 
 
-@dataclass
-class PPOConfig(_FreezeGuard):
-    """PPO (Proximal Policy Optimization) self-play configuration."""
+class PPOConfig(BaseModel):
+    """Pydantic version of PPOConfig."""
 
-    # Opponent pool
-    pool_size: int = 5  # number of opponent models to maintain
+    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
 
-    # PPO hyperparameters
-    clip_ratio: float = 0.2  # clipping range for policy ratio (e.g., [0.8, 1.2])
-    entropy_coef: float = 0.01  # coefficient for entropy bonus
-    gae_lambda: float = 0.95  # lambda for Generalized Advantage Estimation
-
-    # Training
-    lr: float = (
-        1e-5  # learning rate for PPO fine-tuning (lower than supervised training)
-    )
-    ppo_epochs: int = 4  # number of epochs to train on each trajectory
-    minibatch_size: int = 64  # minibatch size for PPO updates
-    max_grad_norm: float = 0.5  # gradient clipping for PPO updates
-
-    # Episode management
-    max_episode_frames: int = 18000  # max frames per episode (~5 minutes at 60fps)
-    num_workers: int = 1  # number of parallel workers for trajectory collection
-    # 1 = sequential (single game), >1 = parallel (multiple games)
-    # Set to number of CPU cores for max throughput (e.g., 8 for 8-core machine)
-    # Each worker runs a separate Dolphin instance
-
-    # Value head training
-    normalize_advantages: bool = (
-        True  # normalize advantages before computing policy loss
-    )
-    value_clip: Optional[
-        float
-    ] = None  # optional value function clipping (None = no clipping)
+    pool_size: int = Field(default=5, ge=1)
+    clip_ratio: float = Field(default=0.2, gt=0)
+    entropy_coef: float = Field(default=0.01, ge=0)
+    gae_lambda: float = Field(default=0.95, ge=0, le=1)
+    lr: float = Field(default=1e-5, gt=0)
+    ppo_epochs: int = Field(default=4, ge=1)
+    minibatch_size: int = Field(default=64, ge=1)
+    max_grad_norm: float = Field(default=0.5, gt=0)
+    max_episode_frames: int = Field(default=18000, ge=1)
+    num_workers: int = Field(default=1, ge=1)
+    normalize_advantages: bool = True
+    value_clip: Optional[float] = Field(default=None, gt=0)
 
 
-@dataclass
-class ImitationConfig:
-    """Configuration for imitation learning strategy"""
+class ImitationConfig(BaseModel):
+    """Pydantic version of ImitationConfig."""
 
-    # Strategy type
+    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+
     strategy: Literal[
         "uniform", "value_weighted", "value_advantage", "value_filter", "hybrid"
     ] = "hybrid"
-
-    # Value-weighted parameters
-    value_k: float = 1.0  # scaling factor for value difference
-    value_temperature: float = 1.0  # temperature for sigmoid/softmax
-    value_use_exp: bool = False  # use exp instead of sigmoid
-
-    # Value-advantage parameters
-    advantage_n_steps: int = 5  # look-ahead window
-    advantage_alpha: float = 1.0  # exponent for advantage
-    advantage_use_gae: bool = False  # use GAE instead of simple advantage
-    gae_gamma: float = 0.99
-    gae_lambda: float = 0.95
-
-    # Value-filter parameters
-    filter_percentile: float = 50.0  # percentile threshold (0-100)
-    filter_soft: bool = False  # use soft filtering with sigmoid
-    filter_temperature: float = 1.0
-
-    # Hybrid strategy (if strategy="hybrid")
-    hybrid_strategies: list = field(
+    value_k: float = Field(default=1.0, gt=0)
+    value_temperature: float = Field(default=1.0, gt=0)
+    value_use_exp: bool = False
+    advantage_n_steps: int = Field(default=5, ge=1)
+    advantage_alpha: float = Field(default=1.0, gt=0)
+    advantage_use_gae: bool = False
+    gae_gamma: float = Field(default=0.99, ge=0, le=1)
+    gae_lambda: float = Field(default=0.95, ge=0, le=1)
+    filter_percentile: float = Field(default=50.0, ge=0, le=100)
+    filter_soft: bool = False
+    filter_temperature: float = Field(default=1.0, gt=0)
+    hybrid_strategies: list[str] = Field(
         default_factory=lambda: ["value_weighted", "value_filter"]
     )
-    hybrid_weights: list = field(default_factory=lambda: [0.5, 0.5])
+    hybrid_weights: list[float] = Field(default_factory=lambda: [0.5, 0.5])
+
+    @model_validator(mode='after')
+    def validate_hybrid(self):
+        """Ensure hybrid strategies and weights are consistent."""
+        if self.strategy == "hybrid":
+            if len(self.hybrid_strategies) != len(self.hybrid_weights):
+                raise ValueError(
+                    "hybrid_strategies and hybrid_weights must have same length"
+                )
+            if abs(sum(self.hybrid_weights) - 1.0) > 1e-6:
+                raise ValueError("hybrid_weights must sum to 1.0")
+        return self
 
 
-@dataclass
-class AuxTaskConfig:
-    """Configuration for auxiliary self-supervised tasks"""
+class AuxTaskConfig(BaseModel):
+    """Pydantic version of AuxTaskConfig."""
 
-    # Enable/disable tasks
+    model_config = SettingsConfigDict(validate_assignment=True, extra='forbid')
+
     enable_opponent_action: bool = True
     enable_damage_diff: bool = True
     enable_action_effectiveness: bool = True
-
-    # Opponent action prediction
-    opponent_action_weight: float = 0.5
-
-    # Damage differential prediction
-    damage_diff_weight: float = 0.3
-    damage_diff_n_frames: int = 30  # predict net damage over next N frames
-
-    # Action effectiveness prediction
-    action_effectiveness_weight: float = 0.2
-    action_effectiveness_k_frames: int = 10  # will action cause hitlag within K frames?
-    effectiveness_pos_weight_max: float = 10.0  # clamp pos_weight for class imbalance
-
-    # Overall auxiliary loss weight (multiplied with policy loss)
-    aux_loss_weight: float = 0.1
+    opponent_action_weight: float = Field(default=0.5, ge=0)
+    damage_diff_weight: float = Field(default=0.3, ge=0)
+    damage_diff_n_frames: int = Field(default=30, ge=1)
+    action_effectiveness_weight: float = Field(default=0.2, ge=0)
+    action_effectiveness_k_frames: int = Field(default=10, ge=1)
+    effectiveness_pos_weight_max: float = Field(default=10.0, ge=1)
+    aux_loss_weight: float = Field(default=0.1, ge=0)
 
 
-@dataclass
-class Config(_FreezeGuard):
-    seq_len: int = 256
+class Config(BaseModel):
+    """Main Pydantic configuration with all sub-configs."""
 
-    zarr: ZarrConfig = field(default_factory=ZarrConfig)
-    train: TrainConfig = field(default_factory=TrainConfig)
-    model: GPTConfig = field(default_factory=GPTConfig)
-    profile: ProfileConfig = field(default_factory=ProfileConfig)
-    features: FeatureConfig = field(default_factory=FeatureConfig)
-    rl: RLConfig = field(default_factory=RLConfig)
-    ppo: PPOConfig = field(default_factory=PPOConfig)
-    loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
+    model_config = SettingsConfigDict(
+        validate_assignment=True,
+        extra='forbid',
+        frozen=False,  # Can be frozen after initialization
+    )
 
-    imitation: ImitationConfig = field(default_factory=ImitationConfig)
-    aux_tasks: AuxTaskConfig = field(default_factory=AuxTaskConfig)
+    seq_len: int = Field(default=256, ge=1)
+    zarr: ZarrConfig = Field(default_factory=ZarrConfig)
+    train: TrainConfig = Field(default_factory=TrainConfig)
+    model: GPTConfig = Field(default_factory=GPTConfig)
+    profile: ProfileConfig = Field(default_factory=ProfileConfig)
+    features: FeatureConfig = Field(default_factory=FeatureConfig)
+    rl: RLConfig = Field(default_factory=RLConfig)
+    ppo: PPOConfig = Field(default_factory=PPOConfig)
+    loss_weights: LossWeightConfig = Field(default_factory=LossWeightConfig)
+    imitation: ImitationConfig = Field(default_factory=ImitationConfig)
+    aux_tasks: AuxTaskConfig = Field(default_factory=AuxTaskConfig)
 
     def freeze(self) -> None:
-        _freeze_dataclass(self)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Return a JSON-serializable dict of the config (recursively)."""
-        return _to_jsonable(self)
+        """Make config immutable."""
+        self.model_config['frozen'] = True
 
     def to_json(self, indent: int = 2) -> str:
-        return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "Config":
-        return _dataclass_from_dict(cls, data)
+        """Serialize to JSON string."""
+        return self.model_dump_json(indent=indent)
 
     @classmethod
     def from_json(cls, s: str) -> "Config":
-        return cls.from_dict(json.loads(s))
+        """Deserialize from JSON string."""
+        return cls.model_validate_json(s)
+
+    def save(self, path: Union[str, Path]) -> Path:
+        """Save config to JSON file."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.to_json(), encoding="utf-8")
+        return path
+
+    @classmethod
+    def load(cls, path: Union[str, Path]) -> "Config":
+        """Load config from JSON file."""
+        return cls.from_json(Path(path).read_text(encoding="utf-8"))
 
 
-def _player_prefixes(feature_names: Sequence[str]) -> List[str]:
-    prefixes: set[str] = set()
-    for name in feature_names:
-        if len(name) < 3 or name[0] != "p" or name[1] not in "0123456789":
-            continue
-        head, _, tail = name.partition("_")
-        if not tail:
-            continue
-        prefixes.add(head)
-    if not prefixes:
-        raise ValueError(
-            "No player-prefixed feature columns found (expected p1_/p2_ entries)."
-        )
-    return sorted(prefixes)
+
+def apply_overrides_(cfg: Config, overrides: Dict[str, str]) -> None:
+    """
+    Apply dotted-key overrides to Pydantic config.
+    Example: {"train.lr": "0.001", "model.n_layer": "6"}
+    """
+    for dotted_key, raw_value in overrides.items():
+        parts = dotted_key.split(".")
+
+        # Navigate to the parent
+        parent = cfg
+        for part in parts[:-1]:
+            parent = getattr(parent, part)
+
+        # Set the final attribute (Pydantic will validate automatically)
+        field_name = parts[-1]
+
+        # Get the field type for proper coercion
+        field_info = parent.model_fields.get(field_name)
+        if field_info is None:
+            raise ValueError(f"Unknown field: {dotted_key}")
+
+        # Pydantic will handle type conversion, but we can help with common cases
+        try:
+            if raw_value.lower() in ("true", "false"):
+                value = raw_value.lower() == "true"
+            elif "." in raw_value or "e" in raw_value.lower():
+                value = float(raw_value)
+            elif raw_value.isdigit() or (raw_value[0] == "-" and raw_value[1:].isdigit()):
+                value = int(raw_value)
+            else:
+                value = raw_value
+
+            setattr(parent, field_name, value)
+        except Exception as e:
+            raise ValueError(f"Failed to set {dotted_key}={raw_value}: {e}")
 
 
-def _controller_field_bases() -> List[str]:
-    bases: set[str] = set()
-    for name in get_target_names():
-        prefix, _, base = name.partition("_")
-        if not base or not prefix.startswith("p"):
-            continue
-        bases.add(base)
-    if not bases:
-        raise ValueError("Unable to infer controller field names from schema targets.")
-    return sorted(bases)
-
-
-def _compute_model_input_size(cfg: "Config") -> int:
-    feature_names = get_feature_names()
-
-    if "stage" not in feature_names:
-        raise ValueError(
-            "Required feature 'stage' missing; cannot derive model input size."
-        )
-
-    prefixes = _player_prefixes(feature_names)
-
-    categorical_bases = ("character", "action")
-    categorical_names: List[str] = []
-    for prefix in prefixes:
-        for base in categorical_bases:
-            name = f"{prefix}_{base}"
-            if name not in feature_names:
-                raise ValueError(
-                    f"Required categorical feature '{name}' missing; ensure feature selection keeps it."
-                )
-            categorical_names.append(name)
-
-    controller_bases = _controller_field_bases()
-    controller_names: List[str] = []
-    for prefix in prefixes:
-        for base in controller_bases:
-            name = f"{prefix}_{base}"
-            if name not in feature_names:
-                raise ValueError(
-                    f"Controller feature '{name}' missing; update schema targets or feature selection."
-                )
-            controller_names.append(name)
-
-    reserved = 1 + len(categorical_names) + len(controller_names)
-    if reserved > len(feature_names):
-        raise ValueError(
-            "Feature accounting failed; reserved columns exceed available features."
-        )
-
-    gamestate_count = len(feature_names) - reserved
-
-    onehot_dims = cfg.model.num_stages + (
-        len(prefixes) * (cfg.model.num_characters + cfg.model.num_actions)
-    )
-    return gamestate_count + len(controller_names) + onehot_dims
-
-
-def _apply_derived_fields(cfg: "Config") -> None:
-    cfg.model.input_size = _compute_model_input_size(cfg)
-
-
-_GLOBAL_CFG: Optional[Config] = None
+_GLOBAL_CONFIG: Optional[Config] = None
 
 
 def init_config(
-    initial: Optional[Mapping[str, Any]] = None,
-    cli_overrides: Optional[Mapping[str, str]] = None,
-    *,
-    freeze: bool = True,
+        config_path: Optional[Union[str, Path]] = None,
+        overrides: Optional[Dict[str, str]] = None,
+        gamestate_dim: Optional[int] = None,
+        controller_dim: Optional[int] = None,
+        freeze: bool = True,
 ) -> Config:
-    global _GLOBAL_CFG
-    cfg = Config.from_dict(initial or {})
-    if cli_overrides:
-        apply_overrides(cfg, cli_overrides)
-    _apply_derived_fields(cfg)
-    if freeze:
-        cfg.freeze()
-    _GLOBAL_CFG = cfg
-    return cfg
+    """
+    Initialize global config singleton. Replaces old init_config().
 
+    Args:
+        config_path: Optional path to JSON config file
+        overrides: Optional dict of CLI overrides (e.g., {"train.lr": "0.001"})
+        freeze: If True, make config immutable after initialization
+
+    Returns:
+        Initialized Config instance
+
+    Example:
+        # Initialize with defaults
+        config = init_config()
+
+        # Initialize from file
+        config = init_config("config.json")
+
+        # Initialize with overrides
+        config = init_config(overrides={"train.lr": "0.001"})
+    """
+    global _GLOBAL_CONFIG
+
+    context = {}
+    if gamestate_dim is not None and controller_dim is not None:
+        context['gamestate_dim'] = gamestate_dim
+        context['controller_dim'] = controller_dim
+
+    # Load from file or create with defaults
+    if config_path:
+        # When loading from a file, we first load the data, then validate with context
+        data = Config.model_validate_json(Path(config_path).read_text(encoding="utf-8"))
+        cfg = Config.model_validate(data, context=context)
+    else:
+        cfg = Config.model_validate({}, context=context)
+
+    # Debug: verify compressor is valid after creation
+    if cfg.zarr.compressor is None:
+        import warnings
+        warnings.warn(
+            "CRITICAL: compressor is None after Config creation! Creating default.",
+            UserWarning
+        )
+        cfg.zarr.compressor = BloscCodec(
+            cname="zstd",
+            clevel=7,
+            shuffle=BloscShuffle.bitshuffle
+        )
+
+    # Apply CLI overrides if provided
+    if overrides:
+        apply_overrides_(cfg, overrides)
+
+    # Final safety check
+    if cfg.zarr.compressor is None:
+        raise RuntimeError(
+            "Compressor is None after initialization! This should never happen. "
+            "Check your config file or initialization code."
+        )
+
+    # Optionally freeze to prevent modifications
+    if freeze:
+        cfg.model_config['frozen'] = True
+
+    _GLOBAL_CONFIG = cfg
+    return cfg
 
 def get_config() -> Config:
-    if _GLOBAL_CFG is None:
+    """
+    Get global config singleton. Replaces old get_config().
+
+    Returns:
+        Config instance
+
+    Raises:
+        RuntimeError: If config not initialized (call init_config() first)
+
+    Example:
+        # In main script
+        init_config()
+
+        # Anywhere else in your code
+        cfg = get_config()
+        print(cfg.train.lr)
+    """
+    if _GLOBAL_CONFIG is None:
         raise RuntimeError(
-            "Global config not initialized. Call init_config(...) early in your program."
+            "Global config not initialized. Call init_config() first."
         )
-    return _GLOBAL_CFG
+    return _GLOBAL_CONFIG
 
 
-def reset_config_for_tests() -> None:
-    global _GLOBAL_CFG
-    _GLOBAL_CFG = None
-
-
-def apply_overrides(cfg: Config, overrides: Mapping[str, str]) -> None:
-    if getattr(cfg, "_frozen", False):
-        raise AttributeError("Config is frozen; cannot apply overrides.")
-
-    for dotted_key, raw in overrides.items():
-        parts = dotted_key.split(".")
-        parent, attr = _resolve_parent_and_attr(cfg, parts)
-        if is_dataclass(parent):
-            target_type = _dataclass_field_type(type(parent), attr)
-            value = _coerce(raw, target_type)
-            setattr(parent, attr, value)
-        elif isinstance(parent, MutableMapping):
-            parent[attr] = _coerce_best_effort(raw)
-        else:
-            raise TypeError(
-                f"Cannot set '{dotted_key}'; parent is neither dataclass nor mapping."
-            )
-
-    _apply_derived_fields(cfg)
-
-
-def parse_cli_overrides(argv: Sequence[str]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+def reset_config() -> None:
     """
-    Minimal CLI:
-      --config_json PATH   (optional) load initial config values from JSON
-      --set KEY=VALUE      (repeatable) e.g. --set learning_rate=5e-4 --set optimizer.weight_decay=0.02
+    Reset global config. Useful for testing.
+
+    Example:
+        def test_something():
+            init_config()
+            # ... test code ...
+            reset_config()  # Clean up for next test
     """
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--config_json", type=str, default=None)
-    p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
-    ns, _ = p.parse_known_args(argv)
-
-    initial: Dict[str, Any] = {}
-    if ns.config_json:
-        with open(ns.config_json, "r", encoding="utf-8") as f:
-            initial = json.load(f)
-
-    overrides: Dict[str, str] = {}
-    for item in ns.set:
-        if "=" not in item:
-            raise ValueError(f"Invalid override '{item}', expected KEY=VALUE.")
-        k, v = item.split("=", 1)
-        overrides[k.strip()] = v.strip()
-
-    return initial, overrides
+    global _GLOBAL_CONFIG
+    _GLOBAL_CONFIG = None
 
 
-def save_config_json(path: Union[str, Path], cfg: Optional[Config] = None) -> Path:
-    cfg = cfg or get_config()
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(cfg.to_json(), encoding="utf-8")
-    return path
+def has_config() -> bool:
+    """Check if global config has been initialized."""
+    return _GLOBAL_CONFIG is not None
 
 
-def load_config_json(path: Union[str, Path], *, freeze: bool = True) -> Config:
-    s = Path(path).read_text(encoding="utf-8")
-    cfg = Config.from_json(s)
-    if freeze:
-        cfg.freeze()
-    return cfg
+if __name__ == "__main__":
+    # Test 1: Create ZarrConfig directly
+    print("Test 1: ZarrConfig()")
+    zarr_cfg = ZarrConfig()
+    print(f"  compressor after init: {zarr_cfg.compressor}")
+    print(f"  compressor type: {type(zarr_cfg.compressor)}")
 
+    # Test 2: Create full Config (which creates ZarrConfig)
+    print("\nTest 2: Config()")
+    cfg = Config()
+    print(f"  compressor after init: {cfg.zarr.compressor}")
+    print(f"  compressor type: {type(cfg.zarr.compressor)}")
 
-def _dataclass_from_dict(cls: type, data: Mapping[str, Any]) -> Any:
-    """Recursively construct dataclass instance from dict, merging into defaults."""
-    inst = cls()  # start from defaults
-    type_hints = _dataclass_type_hints(cls)
-    updates: Dict[str, Any] = {}
-    for f in fields(cls):
-        if f.name not in data:
-            continue
-        incoming = data[f.name]
-        ftype = type_hints.get(f.name, f.type)
-        base = getattr(inst, f.name)
-
-        dc_cls = _unwrap_dataclass_type(ftype)
-        if dc_cls and isinstance(incoming, Mapping):
-            # nested dataclass
-            nested = _dataclass_from_dict(dc_cls, incoming)
-            updates[f.name] = nested
-        elif isinstance(base, dict) and isinstance(incoming, Mapping):
-            merged = copy.deepcopy(base)
-            merged.update(incoming)
-            updates[f.name] = merged
-        else:
-            updates[f.name] = incoming
-
-    if not updates:
-        return inst
-
-    dataclass_params = getattr(cls, "__dataclass_params__", None)
-    if dataclass_params and dataclass_params.frozen:
-        return replace(inst, **updates)
-
-    for name, value in updates.items():
-        setattr(inst, name, value)
-    return inst
-
-
-def _unwrap_dataclass_type(tp: Any) -> Optional[type]:
-    """Return the dataclass type if tp is a dataclass or Optional[dataclass], else None."""
-    if is_dataclass(tp):
-        return tp  # type: ignore[return-value]
-    origin = get_origin(tp)
-    args = get_args(tp)
-    if origin is Union and len(args) == 2 and type(None) in args:
-        t = args[0] if args[1] is type(None) else args[1]
-        return t if is_dataclass(t) else None
-    return None
-
-
-def _dataclass_field_type(dc_type: type, name: str) -> Any:
-    type_hints = _dataclass_type_hints(dc_type)
-    if name in type_hints:
-        return type_hints[name]
-    raise KeyError(f"Unknown field '{name}' on {dc_type.__name__}")
-
-
-@lru_cache(maxsize=None)
-def _dataclass_type_hints(dc_type: type) -> Dict[str, Any]:
-    """Return resolved type hints for a dataclass, resilient to postponed evaluation."""
-    try:
-        return get_type_hints(dc_type, include_extras=True)
-    except Exception:
-        # Fallback to the raw annotations if get_type_hints cannot resolve them.
-        return {f.name: f.type for f in fields(dc_type)}
-
-
-def _resolve_parent_and_attr(root: Any, parts: Sequence[str]) -> Tuple[Any, str]:
-    """Walk parts[:-1] and return (parent, final_attr_name)."""
-    if not parts:
-        raise ValueError("Empty override key")
-    cur = root
-    for p in parts[:-1]:
-        if is_dataclass(cur):
-            if not hasattr(cur, p):
-                raise KeyError(f"Unknown field '{p}' in path: {'.'.join(parts)}")
-            cur = getattr(cur, p)
-        elif isinstance(cur, Mapping):
-            cur = cur[p]
-        else:
-            raise TypeError(f"Cannot traverse into '{p}' on {type(cur).__name__}")
-    return cur, parts[-1]
-
-
-def _coerce(raw: str, target_type: Any) -> Any:
-    """Coerce string to annotated target_type. Handles Optional[T], bool/int/float/str; else literal_eval fallback."""
-    origin = get_origin(target_type)
-    args = get_args(target_type)
-    if origin is Union and len(args) == 2 and type(None) in args:
-        t = args[0] if args[1] is type(None) else args[1]
-        return None if raw.lower() in {"none", "null"} else _coerce(raw, t)
-    if target_type in (str, int, float):
-        return target_type(raw)
-    if target_type is bool:
-        return _parse_bool(raw)
-    try:
-        return ast.literal_eval(raw)
-    except Exception:
-        return raw
-
-
-def _coerce_best_effort(raw: str) -> Any:
-    try:
-        return ast.literal_eval(raw)
-    except Exception:
-        pass
-    for caster in (_parse_bool, int, float):
-        try:
-            return caster(raw)  # type: ignore[misc]
-        except Exception:
-            continue
-    return raw
-
-
-def _parse_bool(s: str) -> bool:
-    s = s.lower()
-    if s in {"1", "true", "t", "yes", "y", "on"}:
-        return True
-    if s in {"0", "false", "f", "no", "n", "off"}:
-        return False
-    raise ValueError(f"Cannot parse boolean from '{s}'")
-
-
-def _freeze_dataclass(dc: _FreezeGuard) -> None:
-    """Recursively freeze a dataclass (convert containers to immutable, set _frozen=True everywhere)."""
-    assert is_dataclass(dc)
-    for f in fields(dc):
-        if f.name.startswith("_"):
-            continue
-        val = getattr(dc, f.name)
-        frozen_val = _deep_freeze_value(val)
-        object.__setattr__(dc, f.name, frozen_val)
-    object.__setattr__(dc, "_frozen", True)
-
-
-def _deep_freeze_value(obj: Any) -> Any:
-    if is_dataclass(obj) and isinstance(obj, _FreezeGuard):
-        _freeze_dataclass(obj)
-        return obj
-    if isinstance(obj, dict):
-        return MappingProxyType({k: _deep_freeze_value(v) for k, v in obj.items()})
-    if isinstance(obj, (list, tuple)):
-        return tuple(_deep_freeze_value(v) for v in obj)
-    if isinstance(obj, set):
-        return frozenset(_deep_freeze_value(v) for v in obj)
-    return obj
-
-
-def _to_jsonable(obj: Any) -> Any:
-    # Primitives
-    if obj is None or isinstance(obj, (str, int, float, bool)):
-        return obj
-
-    # Enums -> their .value (e.g., BloscCname.zstd -> "zstd")
-    if isinstance(obj, Enum):
-        return obj.value
-
-    # Dataclasses -> dict (skip private fields)
-    if is_dataclass(obj):
-        return {
-            f.name: _to_jsonable(getattr(obj, f.name))
-            for f in fields(obj)
-            if not f.name.startswith("_")
-        }
-
-    # Mappings -> dict with stringified keys
-    if isinstance(obj, Mapping):
-        return {str(_to_jsonable(k)): _to_jsonable(v) for k, v in obj.items()}
-
-    # Sequences & sets -> lists
-    if isinstance(obj, (list, tuple, set, frozenset)):
-        return [_to_jsonable(v) for v in obj]
-
-    # Paths
-    if isinstance(obj, Path):
-        return str(obj)
-
-    # Objects that know how to serialize themselves (Zarr v3 codecs, etc.)
-    if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
-        try:
-            return _to_jsonable(obj.to_dict())
-        except Exception:
-            pass  # fall through to other options
-
-    # Numcodecs codecs (and others) often expose get_config()
-    if hasattr(obj, "get_config") and callable(getattr(obj, "get_config")):
-        try:
-            return _to_jsonable(obj.get_config())
-        except Exception:
-            pass
-
-    # Numpy: scalars -> Python scalars; arrays -> lists
-    try:
-        import numpy as np  # optional dependency
-
-        if isinstance(obj, np.generic):
-            return obj.item()
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-    except Exception:
-        pass
-
-    # PyTorch: represent dtypes/devices/sizes as strings/lists; tensors as lists
-    try:
-        import torch  # optional dependency
-
-        if isinstance(obj, torch.dtype) or isinstance(obj, torch.device):
-            return str(obj)
-        if isinstance(obj, torch.Size):
-            return list(obj)
-        if isinstance(obj, torch.Tensor):
-            return obj.detach().cpu().tolist()
-    except Exception:
-        pass
-
-    # Last resort: string representation
-    return repr(obj)
+    # Test 3: Explicit compressor
+    print("\nTest 3: Explicit compressor")
+    zarr_cfg2 = ZarrConfig(compressor=BloscCodec(cname="zstd", clevel=7))
+    print(f"  compressor: {zarr_cfg2.compressor}")

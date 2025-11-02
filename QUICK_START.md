@@ -40,7 +40,7 @@ Your PPO self-play training system is now fully implemented and ready to use.
    - Checkpointing
    - Pool management
 
-## Quick Start (3 Steps)
+## Quick Start (2 Steps)
 
 ### Step 1: Activate Your Environment
 
@@ -49,21 +49,7 @@ cd /Users/eppie/PycharmProjects/nano-melee
 source venv/bin/activate  # or your virtualenv path
 ```
 
-### Step 2: Verify Installation (Optional)
-
-```bash
-python test_ppo_imports.py
-```
-
-Expected output:
-```
-✓ All imports successful!
-✓ Configuration successful!
-✓ Trajectory computation successful!
-🎉 All tests passed! PPO implementation is ready.
-```
-
-### Step 3: Start Training
+### Step 2: Start Training
 
 ```bash
 python train_ppo.py \

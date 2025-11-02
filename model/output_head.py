@@ -28,6 +28,7 @@ class ButtonHead(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # TODO: Why are we doing the sigmoid here?
         logits = self.net(norm(x))
         probs = torch.sigmoid(logits)
         return logits, probs

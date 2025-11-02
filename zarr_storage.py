@@ -12,8 +12,8 @@ import numpy as np
 import tqdm
 import zarr
 
+from config import get_config, init_config
 from constants import _SHOULDER_PALETTE
-from config import init_config, get_config
 from libmelee.melee.console import Console
 from libmelee.melee.gamestate import GameState
 from schema import Row, extract_row, get_feature_names, get_target_names
@@ -590,7 +590,7 @@ def _merge_and_write_metadata(
     meta = {
         "version": 1,
         "created_at_unix": int(time.time()),
-        "build_config": config.to_dict(),
+        "build_config": config.model_dump(mode='json'),
         "schema": {"features": list(feature_names), "targets": list(target_names)},
         "feat_dtypes": feat_dtypes,
         "targ_dtypes": targ_dtypes,

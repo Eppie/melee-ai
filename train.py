@@ -19,7 +19,7 @@ from torch.amp import autocast, GradScaler
 from torch.amp.autocast_mode import is_autocast_available
 
 from column_map import ColumnMap
-from config import get_config, init_config, parse_cli_overrides
+from config import get_config, init_config
 from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
 from loss import compute_loss_components, CompositeLossComputer
 from model.nano_gpt import GPT
@@ -53,10 +53,31 @@ from train.wandb_utils import (
 )
 from utils import print_model_diagram, _resolve_device
 from window_dataset import make_dataloader
+from typing import Sequence # Added for parse_cli_overrides
+
+
+def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
+    """
+    Parses CLI arguments for --set KEY=VALUE overrides.
+    """
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    ns, _ = p.parse_known_args(argv)
+
+    overrides: Dict[str, str] = {}
+    for item in ns.set:
+        if "=" not in item:
+            raise ValueError(f"Invalid override '{item}', expected KEY=VALUE.")
+        k, v = item.split("=", 1)
+        overrides[k.strip()] = v.strip()
+    return overrides
 
 
 def train_loop(
     model: GPT,
+    loader,
+    ds,
+    sampler,
     *,
     debug: bool = False,
 ) -> None:
@@ -112,8 +133,6 @@ def train_loop(
                 " falling back to full precision."
             )
 
-    # Build loader + sampler
-    loader, ds, sampler = make_dataloader()
 
     # Column map built from dataset metadata (only once)
     colmap = ColumnMap.from_dataset(ds)
@@ -1230,8 +1249,30 @@ if __name__ == "__main__":
         help="Disable wandb logging for local debugging runs.",
     )
     args, remaining = parser.parse_known_args()
-    initial, overrides = parse_cli_overrides(remaining)
-    init_config(initial, overrides)
-    model = GPT(get_config())
+
+    overrides = parse_cli_overrides(remaining)
+    # Initialize a partial config first
+    init_config(overrides=overrides)
+
+    # Create dataset and dataloader to get feature dimensions
+    loader, ds, sampler = make_dataloader(get_config())
+    feature_names = getattr(ds, "_feature_names_sel", ds.index.feature_names)
+    target_names = getattr(ds, "_target_names_sel", ds.index.target_names)
+    colmap = ColumnMap(feature_names, target_names)
+    gamestate_dim = len(colmap.gamestate_idxs)
+    controller_dim = len(colmap.controller_idxs)
+
+    # Update the config with the dynamic dimensions
+    config = get_config()
+    config.model.input_size = (
+        config.model.num_stages
+        + config.model.num_characters * 2
+        + config.model.num_actions * 2
+        + gamestate_dim
+        + controller_dim
+    )
+
+    # Create model and train
+    model = GPT(config)
     print_model_diagram(model)
-    train_loop(model, debug=args.debug)
+    train_loop(model, loader, ds, sampler, debug=args.debug)

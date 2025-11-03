@@ -107,5 +107,4 @@ C_STICK_QUANTIZED: np.ndarray = np.array(
     dtype=np.float32,
 )
 
-# TODO: Does 0.25 actually do anything? Might need some custom quantization
-SHOULDER_QUANTIZED: list[float] = [0.0, 0.25, 0.5, 0.75, 1.0]
+SHOULDER_QUANTIZED: list[float] = [0.0, 0.31, 0.42, 0.55, 1.0]

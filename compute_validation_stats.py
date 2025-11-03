@@ -222,8 +222,9 @@ def _quantize_shoulder_indices(values: np.ndarray) -> np.ndarray:
     if values.ndim != 1:
         values = values.reshape(-1)
     arr = values.astype(np.float32, copy=False)
-    diffs = np.abs(arr[:, None] - SHOULDER_PALETTE[None, :])
-    idx = np.argmin(diffs, axis=1)
+    palette = SHOULDER_PALETTE
+    idx = np.searchsorted(palette, arr, side="right") - 1
+    idx = np.clip(idx, 0, palette.shape[0] - 1)
     return idx.astype(np.int32, copy=False)
 
 

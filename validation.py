@@ -1196,10 +1196,11 @@ def _evaluate(
                 s_vals = torch.clamp(
                     Y_cpu[..., colmap.y_shoulder].to(torch.float32), 0.0, 1.0
                 )
-                diffs = (
-                    s_vals.reshape(-1, 1) - _SHOULDER_PALETTE_T.reshape(1, -1)
-                ).abs()
-                s_idx = diffs.argmin(dim=-1)
+                s_vals = s_vals.reshape(-1)
+                s_idx = torch.searchsorted(
+                    _SHOULDER_PALETTE_T, s_vals, right=True
+                ) - 1
+                s_idx = torch.clamp(s_idx, min=0, max=_SHOULDER_PALETTE_T.shape[0] - 1)
                 raw_counts_shoulder += torch.bincount(
                     s_idx.cpu(), minlength=raw_counts_shoulder.shape[0]
                 )

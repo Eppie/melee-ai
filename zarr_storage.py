@@ -86,15 +86,16 @@ def _quantize_shoulder_np(values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
     Example
     -------
-    ``values=[0.05, 0.9]`` yields palette values ``[0.0, 1.0]`` with indices
-    ``[0, 2]`` when ``SHOULDER_QUANTIZED=[0.0, 0.5, 1.0]``, showing the nearest
-    discrete shoulder levels stored alongside their indices.
+    ``values=[0.05, 0.9]`` yields palette values ``[0.0, 0.55]`` with indices
+    ``[0, 3]`` when ``SHOULDER_QUANTIZED=[0.0, 0.31, 0.42, 0.55, 1.0]``, snapping
+    each entry to the greatest palette value that does not exceed the input.
     """
     if _SHOULDER_PALETTE is None:
         raise RuntimeError("Shoulder quantization requested but no palette is defined.")
     arr = values.astype(np.float32, copy=False).reshape(-1)
-    diffs = np.abs(arr[:, None] - _SHOULDER_PALETTE[None, :])
-    idx = np.argmin(diffs, axis=1)
+    palette = _SHOULDER_PALETTE
+    idx = np.searchsorted(palette, arr, side="right") - 1
+    idx = np.clip(idx, 0, palette.shape[0] - 1)
     quantized = _SHOULDER_PALETTE[idx]
     return quantized.astype(np.float32, copy=False), idx.astype(np.int32, copy=False)
 

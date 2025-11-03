@@ -1,9 +1,11 @@
+from bisect import bisect_right
+
 import torch
 import numpy as np
 import pytest
 
 from controller_quantization import _quantize_stick
-from controller_utils import CONTROL_STICK_QUANTIZED
+from controller_utils import CONTROL_STICK_QUANTIZED, SHOULDER_QUANTIZED
 
 
 @pytest.fixture
@@ -225,6 +227,38 @@ def test_quantize_targets():
     assert result["c_idx"].shape == (B, L)
     assert result["buttons"].shape == (B, L, 2)
     assert result["shoulder_idx"].shape == (B, L)
+
+
+def test_quantize_targets_shoulders_floor_palette():
+    """Shoulder quantization should choose the largest palette value <= raw input."""
+    colmap = MockColumnMap()
+    B, L = 1, 3
+    shoulder_vals = [0.15, 0.31, 0.65]
+    batch_Y = torch.tensor(
+        [
+            [
+                [0.5, 0.5, 0.5, 0.5, 1.0, 0.0, shoulder_vals[0]],
+                [0.5, 0.5, 0.5, 0.5, 1.0, 0.0, shoulder_vals[1]],
+                [0.5, 0.5, 0.5, 0.5, 1.0, 0.0, shoulder_vals[2]],
+            ]
+        ],
+        dtype=torch.float32,
+    )
+
+    result = quantize_targets(batch_Y, colmap)
+    palette = SHOULDER_QUANTIZED
+    expected_indices = torch.tensor(
+        [
+            [
+                max(0, min(len(palette) - 1, bisect_right(palette, shoulder_vals[0]) - 1)),
+                max(0, min(len(palette) - 1, bisect_right(palette, shoulder_vals[1]) - 1)),
+                max(0, min(len(palette) - 1, bisect_right(palette, shoulder_vals[2]) - 1)),
+            ]
+        ],
+        dtype=torch.long,
+    )
+
+    assert torch.equal(result["shoulder_idx"], expected_indices)
 
 
 def test_quantize_targets_no_shoulder(monkeypatch):

@@ -197,7 +197,8 @@ def quantize_targets(
        palette entry. For the first main-stick frame above the nearest palette
        might be ``[-0.125, 0.875]`` at index ``14``.
     3. Repeat for the C-stick and (optionally) shoulder analog values, producing
-       integer index tensors shaped like ``(B, L)``.
+       integer index tensors shaped like ``(B, L)``. Shoulder values are snapped
+       to the largest palette element that does not exceed the raw value.
     4. Clamp button probabilities into ``[0, 1]`` without otherwise changing
        their shape, keeping them ready for BCE losses.
 
@@ -235,9 +236,16 @@ def quantize_targets(
                 "Shoulder quantization palette requested but not defined."
             )
         centers = _palette_for_device(_SHOULDER_PALETTE_CPU, _SHOULDER_CACHE, device)
-        s = batch_Y[..., colmap.y_shoulder].unsqueeze(-1)
-        d2s = (s - centers) ** 2
-        y_shoulder_idx = torch.argmin(d2s, dim=-1)
+        centers = centers.view(-1)
+        s = (
+            batch_Y[..., colmap.y_shoulder]
+            .to(dtype=centers.dtype)
+            .contiguous()
+        )
+        y_shoulder_idx = torch.searchsorted(centers, s, right=True) - 1
+        y_shoulder_idx = torch.clamp(
+            y_shoulder_idx, min=0, max=int(centers.shape[0] - 1)
+        )
         shoulder_K = len(SHOULDER_QUANTIZED)
 
     return {

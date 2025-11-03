@@ -561,23 +561,6 @@ class ImitationConfig(BaseModel):
         return self
 
 
-class AuxTaskConfig(BaseModel):
-    """Pydantic version of AuxTaskConfig."""
-
-    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
-
-    enable_opponent_action: bool = True
-    enable_damage_diff: bool = True
-    enable_action_effectiveness: bool = True
-    opponent_action_weight: float = Field(default=0.5, ge=0)
-    damage_diff_weight: float = Field(default=0.3, ge=0)
-    damage_diff_n_frames: int = Field(default=30, ge=1)
-    action_effectiveness_weight: float = Field(default=0.2, ge=0)
-    action_effectiveness_k_frames: int = Field(default=10, ge=1)
-    effectiveness_pos_weight_max: float = Field(default=10.0, ge=1)
-    aux_loss_weight: float = Field(default=0.1, ge=0)
-
-
 class Config(BaseModel):
     """Main Pydantic configuration with all sub-configs."""
 
@@ -597,7 +580,6 @@ class Config(BaseModel):
     ppo: PPOConfig = Field(default_factory=PPOConfig)
     loss_weights: LossWeightConfig = Field(default_factory=LossWeightConfig)
     imitation: ImitationConfig = Field(default_factory=ImitationConfig)
-    aux_tasks: AuxTaskConfig = Field(default_factory=AuxTaskConfig)
 
     def freeze(self) -> None:
         """Make config immutable."""

@@ -12,6 +12,7 @@ from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
 from libmelee.melee.enums import Character, Stage, Menu, ControllerType
 from libmelee.melee.menuhelper import MenuHelper
+from train import find_latest_checkpoint
 from model_interface import (
     GPTInferenceEngine,
     apply_model_outputs_to_game,
@@ -43,20 +44,27 @@ if __name__ == "__main__":
         help="The directory where dolphin is",
     )
     parser.add_argument("--iso", default=None, type=str, help="Path to melee iso.")
-    # TODO: Default to most recent checkpoint
     parser.add_argument(
         "--checkpoint",
         "-c",
         type=Path,
-        default=Path(
-            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep002_045002.pt"
-        ),
+        default=None,
         help="Path to trained model checkpoint (.pt)",
     )
 
     args = parser.parse_args()
+    checkpoint_path = args.checkpoint
+    if checkpoint_path is None:
+        default_dir = Path("checkpoints")
+        latest = find_latest_checkpoint(default_dir)
+        if latest is None:
+            raise FileNotFoundError(
+                f"No checkpoint provided and none found in {default_dir.resolve()}"
+            )
+        checkpoint_path = latest
+
     engine = GPTInferenceEngine(
-        checkpoint_path=args.checkpoint,
+        checkpoint_path=checkpoint_path,
     )
     console = Console(
         path=args.dolphin_executable_path,

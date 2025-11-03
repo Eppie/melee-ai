@@ -19,64 +19,58 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 
 from model.attention import CausalSelfAttention
-from model.auxiliary_heads import (
-    OpponentActionHead,
-    DamageDifferentialHead,
-    ActionEffectivenessHead,
-)
 from model.norm import norm
-from model.output_head import SimpleHead, ButtonHead
-from model.value_head import ValueHead
+from model.output_head import SimpleHead
 from utils import _resolve_device
 
 
 class MLP(nn.Module):
-    def __init__(self, n_embd):
+    def __init__(self, embedding_dim):
         super().__init__()
-        self.c_fc = nn.Linear(n_embd, 4 * n_embd, bias=False)
-        self.c_proj = nn.Linear(4 * n_embd, n_embd, bias=False)
+        self.fully_connected = nn.Linear(embedding_dim, 4 * embedding_dim, bias=False)
+        self.output_projection = nn.Linear(4 * embedding_dim, embedding_dim, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.c_fc(x)
-        x = F.relu(x).square()
-        x = self.c_proj(x)
-        return x
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        hidden_states = self.fully_connected(hidden_states)
+        hidden_states = F.relu(hidden_states).square()
+        hidden_states = self.output_projection(hidden_states)
+        return hidden_states
 
 
 class Block(nn.Module):
-    def __init__(self, n_embd, n_head, n_kv_head, dropout):
+    def __init__(self, embedding_dim, num_heads, num_key_value_heads, dropout):
         super().__init__()
-        self.attn = CausalSelfAttention(n_embd, n_head, n_kv_head, dropout)
-        self.mlp = MLP(n_embd)
+        self.attention = CausalSelfAttention(embedding_dim, num_heads, num_key_value_heads, dropout)
+        self.mlp = MLP(embedding_dim)
 
     def forward(
-        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+        self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
-        x = x + self.attn(norm(x), cos, sin)
-        x = x + self.mlp(norm(x))
-        return x
+        hidden_states = hidden_states + self.attention(norm(hidden_states), cos, sin)
+        hidden_states = hidden_states + self.mlp(norm(hidden_states))
+        return hidden_states
 
 
 class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        cfg = config.model
-        self.block_size = cfg.block_size
-        self.n_embd: int = cfg.n_embd
-        self.input_size: int = cfg.input_size
+        model_config = config.model
+        self.block_size = model_config.block_size
+        self.embedding_dim: int = model_config.n_embd
+        self.input_size: int = model_config.input_size
 
-        self.proj_down = nn.Linear(self.input_size, self.n_embd, bias=True)
-        self.drop = nn.Dropout(cfg.dropout)
+        self.projection_down = nn.Linear(self.input_size, self.embedding_dim, bias=True)
+        self.dropout = nn.Dropout(model_config.dropout)
 
         self.blocks = nn.ModuleList(
             [
-                Block(self.n_embd, cfg.n_head, cfg.n_kv_head, cfg.dropout)
-                for _ in range(cfg.n_layer)
+                Block(self.embedding_dim, model_config.n_head, model_config.n_kv_head, model_config.dropout)
+                for _ in range(model_config.n_layer)
             ]
         )
 
-        self.target_shapes_by_head = cfg.target_shapes_by_head
+        self.target_shapes_by_head = model_config.target_shapes_by_head
         self.shoulder_output_size = self.target_shapes_by_head["shoulder"]
         self.c_stick_output_size = self.target_shapes_by_head["c_stick"]
         self.main_stick_output_size = self.target_shapes_by_head["main_stick"]
@@ -86,24 +80,24 @@ class GPT(nn.Module):
         head_hidden_dim = 128
 
         # TODO: Is there a way to make the sizes of these heads nicer / more even?
-        self.button_head = ButtonHead(
-            self.n_embd, self.button_output_size, hidden=head_hidden_dim
+        self.button_head = SimpleHead(
+            self.embedding_dim, self.button_output_size, hidden=head_hidden_dim
         )
 
-        main_stick_input_size = self.n_embd + self.button_output_size
+        main_stick_input_size = self.embedding_dim + self.button_output_size
         self.main_stick_head = SimpleHead(
             main_stick_input_size, self.main_stick_output_size, hidden=head_hidden_dim
         )
 
         c_stick_input_size = (
-            self.n_embd + self.button_output_size + self.main_stick_output_size
+            self.embedding_dim + self.button_output_size + self.main_stick_output_size
         )
         self.c_stick_head = SimpleHead(
             c_stick_input_size, self.c_stick_output_size, hidden=head_hidden_dim
         )
 
         shoulder_input_size = (
-            self.n_embd
+            self.embedding_dim
             + self.button_output_size
             + self.main_stick_output_size
             + self.c_stick_output_size
@@ -111,45 +105,13 @@ class GPT(nn.Module):
         self.shoulder_head = SimpleHead(
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
         )
-        self.value_head = ValueHead(self.n_embd, hidden=head_hidden_dim)
+        self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim)
 
-        self.use_aux_heads = (
-            config.aux_tasks.enable_opponent_action
-            or config.aux_tasks.enable_damage_diff
-            or config.aux_tasks.enable_action_effectiveness
-        )
-
-        if self.use_aux_heads:
-            if config.aux_tasks.enable_opponent_action:
-                self.opponent_action_head = OpponentActionHead(
-                    self.n_embd, cfg.num_actions, hidden=head_hidden_dim
-                )
-            else:
-                self.opponent_action_head = None
-
-            if config.aux_tasks.enable_damage_diff:
-                self.damage_diff_head = DamageDifferentialHead(
-                    self.n_embd, hidden=head_hidden_dim
-                )
-            else:
-                self.damage_diff_head = None
-
-            if config.aux_tasks.enable_action_effectiveness:
-                self.action_effectiveness_head = ActionEffectivenessHead(
-                    self.n_embd, hidden=head_hidden_dim
-                )
-            else:
-                self.action_effectiveness_head = None
-        else:
-            self.opponent_action_head = None
-            self.damage_diff_head = None
-            self.action_effectiveness_head = None
-
-        self.rotary_seq_len = self.block_size * 2
-        head_dim = cfg.n_embd // cfg.n_head
-        rope_base = getattr(cfg, "rope_theta", 10000.0)
+        self.rotary_sequence_length = self.block_size * 2
+        head_dim = model_config.n_embd // model_config.n_head
+        rope_base = getattr(model_config, "rope_theta", 10000.0)
         cos, sin = self._precompute_rotary_embeddings(
-            self.rotary_seq_len, head_dim, rope_base
+            self.rotary_sequence_length, head_dim, rope_base
         )
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
@@ -157,8 +119,8 @@ class GPT(nn.Module):
         self.apply(self._init_weights)
 
         for block in self.blocks:
-            torch.nn.init.zeros_(block.mlp.c_proj.weight)
-            torch.nn.init.zeros_(block.attn.c_proj.weight)
+            torch.nn.init.zeros_(block.mlp.output_projection.weight)
+            torch.nn.init.zeros_(block.attention.output_projection.weight)
 
     # TODO: Check if this is getting applied correctly
     def _init_weights(self, module):
@@ -174,16 +136,16 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
 
     # TODO: Lower base since we have shorter sequences?
-    def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000):
+    def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=10000):
         device = _resolve_device()
         # stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
-        inv_freq = 1.0 / (base ** (channel_range / head_dim))
+        inverse_frequency = 1.0 / (base ** (channel_range / head_dim))
         # stride the time steps
-        t = torch.arange(seq_len, dtype=torch.float32, device=device)
+        timesteps = torch.arange(sequence_length, dtype=torch.float32, device=device)
         # calculate the rotation frequencies at each (time, channel) pair
-        freqs = torch.outer(t, inv_freq)
-        cos, sin = freqs.cos(), freqs.sin()
+        frequencies = torch.outer(timesteps, inverse_frequency)
+        cos, sin = frequencies.cos(), frequencies.sin()
         cos, sin = cos.to(torch.float32), sin.to(torch.float32)
         cos, sin = (
             cos[None, :, None, :],
@@ -223,36 +185,37 @@ class GPT(nn.Module):
         )
 
     def forward(self, inputs: TensorDict) -> TensorDict:
-        B, L, _ = inputs["gamestate"].shape
+        batch_size, sequence_length, _ = inputs["gamestate"].shape
         assert (
-            L <= self.block_size
-        ), f"Cannot forward sequence of length {L}, block size is only {self.block_size}"
+            sequence_length <= self.block_size
+        ), f"Cannot forward sequence of length {sequence_length}, block size is only {self.block_size}"
 
         combined_inputs = self._embed_inputs(inputs)
-        x = self.proj_down(combined_inputs)
-        x = self.drop(x)
-        cos = self.cos[:, :L]
-        sin = self.sin[:, :L]
+        hidden_states = self.projection_down(combined_inputs)
+        hidden_states = self.dropout(hidden_states)
+        cos = self.cos[:, :sequence_length]
+        sin = self.sin[:, :sequence_length]
 
         for block in self.blocks:
-            x = block(x, cos, sin)
+            hidden_states = block(hidden_states, cos, sin)
 
-        x = norm(x)
+        hidden_states = norm(hidden_states)
 
-        base = x
-        button_logits, button_probs = self.button_head(base)
+        base_hidden_states = hidden_states
+        button_logits = self.button_head(base_hidden_states)
+        button_probs = torch.sigmoid(button_logits)
 
         main_stick = self.main_stick_head(
-            torch.cat((base, button_logits.detach()), dim=-1)
+            torch.cat((base_hidden_states, button_logits.detach()), dim=-1)
         )
 
         c_stick = self.c_stick_head(
-            torch.cat((base, button_logits.detach(), main_stick.detach()), dim=-1)
+            torch.cat((base_hidden_states, button_logits.detach(), main_stick.detach()), dim=-1)
         )
 
         shoulder = self.shoulder_head(
             torch.cat(
-                (base, button_logits.detach(), main_stick.detach(), c_stick.detach()),
+                (base_hidden_states, button_logits.detach(), main_stick.detach(), c_stick.detach()),
                 dim=-1,
             )
         )
@@ -265,26 +228,10 @@ class GPT(nn.Module):
                 "c_stick": c_stick,
                 "shoulder": shoulder,
             },
-            batch_size=(B, L),
+            batch_size=(batch_size, sequence_length),
         )
 
-        value = self.value_head(x)
+        value = self.value_head(hidden_states)
         outputs.set("value", value)
-
-        if self.use_aux_heads:
-            aux_outputs = {}
-
-            if self.opponent_action_head is not None:
-                aux_outputs["opponent_action"] = self.opponent_action_head(base)
-
-            if self.damage_diff_head is not None:
-                aux_outputs["damage_diff"] = self.damage_diff_head(base)
-
-            if self.action_effectiveness_head is not None:
-                aux_outputs["action_effectiveness"] = self.action_effectiveness_head(
-                    base
-                )
-
-            outputs.set("aux_outputs", aux_outputs)
 
         return outputs

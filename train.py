@@ -21,9 +21,8 @@ from torch.amp.autocast_mode import is_autocast_available
 from column_map import ColumnMap
 from config import get_config, init_config
 from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
-from loss import compute_loss_components, CompositeLossComputer
+from loss import compute_loss_components
 from model.nano_gpt import GPT
-from train.aux_targets import compute_imitation_weights, compute_aux_targets
 from train.batch_utils import (
     build_model_inputs,
     quantize_controller_targets,
@@ -103,8 +102,6 @@ def train_loop(
         hold_base=lw_cfg.hold_base,
         value_change=lw_cfg.value_change,
     )
-    loss_computer = CompositeLossComputer(config) if model.use_aux_heads else None
-
     # Configure AMP support dynamically for CUDA and MPS
     if device.type in ("cuda", "mps") and is_autocast_available(device.type):
         amp_device_type = device.type
@@ -137,10 +134,6 @@ def train_loop(
     # Column map built from dataset metadata (only once)
     colmap = ColumnMap.from_dataset(ds)
     reward_idx = build_reward_feature_index(colmap)
-    try:
-        off_stage_idx = colmap.feat_names.index("p1_off_stage")
-    except ValueError:
-        off_stage_idx = None
 
     # Optimizer & (optional) simple cosine LR
     opt = torch.optim.AdamW(
@@ -261,8 +254,6 @@ def train_loop(
             value_pred: Optional[torch.Tensor] = None
             value_target: Optional[torch.Tensor] = None
             loss_value = torch.tensor(0.0, device=device)
-            aux_outputs: Dict[str, torch.Tensor] = {}
-            aux_targets: Dict[str, torch.Tensor] = {}
 
             # Forward pass and loss computation with automatic mixed precision
             with autocast(
@@ -289,55 +280,7 @@ def train_loop(
                     button_names=CONTROLLER_KEY_GROUPS["buttons"],
                 )
 
-                # TODO: Stop being so careful! Assume that we have these things.
                 value_pred = pred.get("value", None)
-                if value_pred is not None and config.imitation.strategy != "uniform":
-                    imitation_weights = compute_imitation_weights(
-                        value_pred.detach(), config.imitation
-                    )
-                else:
-                    # Fallback: use your existing component weights or uniform
-                    weights = compute_component_sample_weights(
-                        target_info,
-                        device,
-                        ratios=ratios,
-                        button_names=CONTROLLER_KEY_GROUPS["buttons"],
-                    )
-                    # Extract a single [B, L] weight (e.g., use "main" component)
-                    imitation_weights = weights.get(
-                        "main", torch.ones((B, L), device=device)
-                    )
-
-                if model.use_aux_heads:
-                    aux_targets = compute_aux_targets(X, colmap, config)
-                    aux_outputs_td = pred.get("aux_outputs", {})
-                    if isinstance(aux_outputs_td, TensorDict):
-                        aux_outputs = {
-                            key: aux_outputs_td[key] for key in aux_outputs_td.keys()
-                        }
-                    else:
-                        aux_outputs = aux_outputs_td
-
-                    # Use composite loss computer
-                    loss, metrics = loss_computer.compute_loss(
-                        policy_outputs=pred,
-                        policy_targets=target_info,
-                        aux_outputs=aux_outputs,
-                        aux_targets=aux_targets,
-                        imitation_weights=imitation_weights,
-                    )
-                else:
-                    # Fallback: use existing loss computation with imitation weights
-                    loss_components = compute_loss_components(
-                        pred,
-                        target_info,
-                        label_smoothing=config.train.label_smoothing,
-                        sample_weights=imitation_weights,
-                    )
-                    loss = loss_components["total"]
-                    metrics = {k: v.item() for k, v in loss_components.items()}
-
-                probs_btn = pred.get("buttons_probs", None)
 
                 policy_loss_components = compute_loss_components(
                     pred,
@@ -345,8 +288,7 @@ def train_loop(
                     label_smoothing=config.train.label_smoothing,
                     sample_weights=weights,  # <-- dict with per-component weights
                 )
-                if not model.use_aux_heads:
-                    loss = policy_loss_components["total"]
+                loss = policy_loss_components["total"]
                 loss_main = policy_loss_components["main"]
                 loss_c = policy_loss_components["c"]
                 loss_btn = policy_loss_components["buttons"]
@@ -479,14 +421,6 @@ def train_loop(
                 btn_logits = logits_btn  # [B,L,Kb]
                 btn_true = target_btn  # [B,L,Kb]
                 btn_probs = torch.sigmoid(btn_logits)
-                if off_stage_idx is not None:
-                    off_stage_mask = X[..., off_stage_idx] > 0.5
-                else:
-                    off_stage_mask = torch.zeros(
-                        (B, L), dtype=torch.bool, device=device
-                    )
-                off_stage_mask = off_stage_mask.to(device=device)
-                off_stage_present = bool(off_stage_mask.any().item())
 
                 main_change_mask = torch.zeros_like(true_main_idx, dtype=torch.bool)
                 main_change_mask[:, 1:] = true_main_idx[:, 1:] != true_main_idx[:, :-1]
@@ -552,8 +486,6 @@ def train_loop(
                 # C-STICK
                 c_true_flat = true_c_idx.reshape(-1)
                 c_pred_flat = pred_c_idx.reshape(-1)
-                K_c = int(target_info["c_K"])
-                cm_c_b = compute_confusion_matrix(c_true_flat, c_pred_flat, K_c)
                 acc_c_b = float((c_pred_flat == c_true_flat).float().mean().item())
                 c_major_lbl = (
                     int(torch.bincount(c_true_flat.cpu()).argmax().item())
@@ -573,9 +505,6 @@ def train_loop(
                     )
                     if rep_mask.any()
                     else 0.0
-                )
-                c_conf_str = format_confusion_matrix(
-                    cm_c_b, max_size=12, title="C-STICK confusion"
                 )
 
                 # BUTTONS
@@ -694,184 +623,11 @@ def train_loop(
                     )
                 btn_line3 = "            " + " | ".join(per_button)
 
-                # --- OFF-STAGE METRICS ---
-                acc_main_off = (
-                    acc_main_chg_off
-                ) = acc_main_hold_off = acc_main_rep_off = 0.0
-                acc_c_off = acc_c_chg_off = acc_c_hold_off = acc_c_rep_off = 0.0
-                em_off = p_off = r_off = f1_off = f1_macro_off = 0.0
-                em_btn_chg_off = em_btn_hold_off = 0.0
-                f1_maj_off = f1_rep_off = em_rep_off = 0.0
-                btn_match_off_vals = (
-                    btn_prec_off_vals
-                ) = btn_rec_off_vals = btn_f1_off_vals = btn_rate_off_vals = None
-                acc_sh_off = acc_sh_maj_off = acc_sh_rep_off = 0.0
-                off_per_button = []
-                if off_stage_present:
-                    off_main_change_mask = off_stage_mask & main_change_mask
-                    off_main_hold_mask = off_stage_mask & main_hold_mask
-                    off_rep_mask = off_stage_mask & rep_mask
-                    acc_main_off = float(
-                        correct_main[off_stage_mask].float().mean().item()
-                    )
-                    acc_main_chg_off = (
-                        float(correct_main[off_main_change_mask].float().mean().item())
-                        if off_main_change_mask.any()
-                        else 0.0
-                    )
-                    acc_main_hold_off = (
-                        float(correct_main[off_main_hold_mask].float().mean().item())
-                        if off_main_hold_mask.any()
-                        else 0.0
-                    )
-                    acc_main_rep_off = (
-                        float(
-                            (main_rep[off_rep_mask] == true_main_idx[off_rep_mask])
-                            .float()
-                            .mean()
-                            .item()
-                        )
-                        if off_rep_mask.any()
-                        else 0.0
-                    )
-
-                    off_c_change_mask = off_stage_mask & c_change_mask
-                    off_c_hold_mask = off_stage_mask & c_hold_mask
-                    acc_c_off = float(correct_c[off_stage_mask].float().mean().item())
-                    acc_c_chg_off = (
-                        float(correct_c[off_c_change_mask].float().mean().item())
-                        if off_c_change_mask.any()
-                        else 0.0
-                    )
-                    acc_c_hold_off = (
-                        float(correct_c[off_c_hold_mask].float().mean().item())
-                        if off_c_hold_mask.any()
-                        else 0.0
-                    )
-                    acc_c_rep_off = (
-                        float(
-                            (c_rep[off_rep_mask] == true_c_idx[off_rep_mask])
-                            .float()
-                            .mean()
-                            .item()
-                        )
-                        if off_rep_mask.any()
-                        else 0.0
-                    )
-
-                    off_btn_change_mask = off_stage_mask & btn_change_mask
-                    off_btn_hold_mask = off_stage_mask & btn_hold_mask
-                    mask_flat = off_stage_mask.view(B * L)
-                    btn_true_flat = btn_true.reshape(B * L, -1).float()
-                    btn_pred_flat = btn_pred.reshape(B * L, -1).float()
-                    btn_true_off_flat = btn_true_flat[mask_flat]
-                    btn_pred_off_flat = btn_pred_flat[mask_flat]
-                    em_off, p_off, r_off, f1_off, f1_macro_off = multilabel_prf(
-                        btn_true_off_flat, btn_pred_off_flat
-                    )
-
-                    correct_btn_em_off = correct_btn_em & off_stage_mask
-                    em_btn_chg_off = (
-                        float(
-                            correct_btn_em_off[off_btn_change_mask]
-                            .float()
-                            .mean()
-                            .item()
-                        )
-                        if off_btn_change_mask.any()
-                        else 0.0
-                    )
-                    em_btn_hold_off = (
-                        float(
-                            correct_btn_em_off[off_btn_hold_mask].float().mean().item()
-                        )
-                        if off_btn_hold_mask.any()
-                        else 0.0
-                    )
-
-                    btn_match_off = (
-                        (btn_true_off_flat == btn_pred_off_flat).float().mean(dim=0)
-                    )
-                    btn_tp_off = (btn_true_off_flat * btn_pred_off_flat).sum(dim=0)
-                    btn_fp_off = ((1.0 - btn_true_off_flat) * btn_pred_off_flat).sum(
-                        dim=0
-                    )
-                    btn_fn_off = (btn_true_off_flat * (1.0 - btn_pred_off_flat)).sum(
-                        dim=0
-                    )
-                    btn_prec_off = btn_tp_off / (btn_tp_off + btn_fp_off + eps)
-                    btn_rec_off = btn_tp_off / (btn_tp_off + btn_fn_off + eps)
-                    btn_f1_off = (
-                        2
-                        * btn_prec_off
-                        * btn_rec_off
-                        / (btn_prec_off + btn_rec_off + eps)
-                    )
-                    btn_rate_off = btn_true_off_flat.mean(dim=0)
-
-                    btn_match_off_vals = [float(v) for v in btn_match_off.cpu()]
-                    btn_prec_off_vals = [float(v) for v in btn_prec_off.cpu()]
-                    btn_rec_off_vals = [float(v) for v in btn_rec_off.cpu()]
-                    btn_f1_off_vals = [float(v) for v in btn_f1_off.cpu()]
-                    btn_rate_off_vals = [float(v) for v in btn_rate_off.cpu()]
-
-                    btn_maj_pred_flat = btn_maj_pred.reshape(B * L, -1)
-                    btn_maj_pred_off_flat = btn_maj_pred_flat[mask_flat]
-                    _, _, _, f1_maj_off, _ = multilabel_prf(
-                        btn_true_off_flat, btn_maj_pred_off_flat
-                    )
-
-                    off_rep_mask_flat = (off_stage_mask & rep_mask).view(B * L)
-                    if L > 1 and off_rep_mask_flat.any():
-                        btn_rep_flat = btn_rep.reshape(B * L, -1)
-                        btn_rep_off_flat = btn_rep_flat[off_rep_mask_flat]
-                        t_rep_off_flat = btn_true.reshape(B * L, -1)[off_rep_mask_flat]
-                        em_rep_off, _, _, f1_rep_off, _ = multilabel_prf(
-                            t_rep_off_flat, btn_rep_off_flat
-                        )
-                    else:
-                        em_rep_off = f1_rep_off = 0.0
-
-                    for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
-                        label = _BUTTON_PRETTY.get(name, name)
-                        off_per_button.append(
-                            f"{label}: acc {btn_match_off_vals[idx]:.3f} F1 {btn_f1_off_vals[idx]:.3f} rate {btn_rate_off_vals[idx]:.3f}"
-                        )
-
-                    acc_sh_components_mask = off_stage_mask
-                    if acc_sh_components_mask.any():
-                        acc_sh_off = float(
-                            (
-                                sh_pred_idx[acc_sh_components_mask]
-                                == sh_true_idx[acc_sh_components_mask]
-                            )
-                            .float()
-                            .mean()
-                            .item()
-                        )
-                        acc_sh_maj_off = float(
-                            (sh_true_idx[acc_sh_components_mask] == sh_major_lbl)
-                            .float()
-                            .mean()
-                            .item()
-                        )
-                    off_sh_rep_mask = off_stage_mask & rep_mask
-                    if L > 1 and off_sh_rep_mask.any():
-                        acc_sh_rep_off = float(
-                            (sh_rep[off_sh_rep_mask] == sh_true_idx[off_sh_rep_mask])
-                            .float()
-                            .mean()
-                            .item()
-                        )
-                    else:
-                        acc_sh_rep_off = 0.0
-
                 log_lines = [
                     header,
                     main_line,
                     indent(main_conf_str, "    "),
                     c_line,
-                    indent(c_conf_str, "    "),
                     btn_line1,
                     btn_line2,
                     btn_line3,
@@ -879,22 +635,6 @@ def train_loop(
                 log_lines.append(
                     f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
                 )
-                if off_stage_present:
-                    off_main_line = f"  OFF-STAGE MAIN: acc {acc_main_off:.3f} (chg: {acc_main_chg_off:.3f}, hold: {acc_main_hold_off:.3f}) | rep {acc_main_rep_off:.3f}"
-                    off_c_line = f"  OFF-STAGE C-STICK: acc {acc_c_off:.3f} (chg: {acc_c_chg_off:.3f}, hold: {acc_c_hold_off:.3f}) | rep {acc_c_rep_off:.3f}"
-                    off_btn_line1 = f"  OFF-STAGE BUTTONS: EM {em_off:.3f} (chg: {em_btn_chg_off:.3f}, hold: {em_btn_hold_off:.3f}) | F1μ {f1_off:.3f}"
-                    off_btn_line2 = f"                 maj F1μ {f1_maj_off:.3f} | rep F1μ {f1_rep_off:.3f} | EM_rep {em_rep_off:.3f}"
-                    if off_per_button:
-                        off_btn_line3 = "                 " + " | ".join(off_per_button)
-                    else:
-                        off_btn_line3 = None
-                    off_sh_line = f"  OFF-STAGE SHOULDER: acc {acc_sh_off:.3f} | maj {acc_sh_maj_off:.3f} | rep {acc_sh_rep_off:.3f}"
-                    log_lines.extend(
-                        [off_main_line, off_c_line, off_btn_line1, off_btn_line2]
-                    )
-                    if off_btn_line3:
-                        log_lines.append(off_btn_line3)
-                    log_lines.append(off_sh_line)
 
                 # VALUE HEAD (if enabled)
                 if config.model.use_value_head and value_pred is not None:
@@ -928,212 +668,6 @@ def train_loop(
                         f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation.item():.3f}"
                     )
 
-                aux_console_lines: List[str] = []
-                aux_log_values: Dict[str, float] = {}
-                if model.use_aux_heads and aux_outputs:
-                    with torch.no_grad():
-                        if (
-                            "opponent_action" in aux_outputs
-                            and "opponent_action" in aux_targets
-                        ):
-                            opp_logits = aux_outputs["opponent_action"]
-                            opp_targets = aux_targets["opponent_action"].long()
-                            opp_pred = opp_logits.argmax(dim=-1)
-                            opp_acc = (opp_pred == opp_targets).float().mean().item()
-                            opp_ce = torch.nn.functional.cross_entropy(
-                                opp_logits.reshape(-1, opp_logits.shape[-1]),
-                                opp_targets.reshape(-1),
-                                reduction="mean",
-                            ).item()
-                            aux_console_lines.append(
-                                f"  AUX OPP ACTION: acc {opp_acc:.3f} | CE {opp_ce:.4f}"
-                            )
-                            aux_log_values.update(
-                                {
-                                    "aux/opponent_action/acc": opp_acc,
-                                    "aux/opponent_action/cross_entropy": opp_ce,
-                                }
-                            )
-
-                            if off_stage_present and off_stage_mask.any():
-                                opp_acc_off = (
-                                    (
-                                        opp_pred[off_stage_mask]
-                                        == opp_targets[off_stage_mask]
-                                    )
-                                    .float()
-                                    .mean()
-                                    .item()
-                                )
-                                aux_console_lines.append(
-                                    f"    OFF-STAGE: acc {opp_acc_off:.3f}"
-                                )
-                                aux_log_values.update(
-                                    {
-                                        "aux/opponent_action/acc_off_stage": opp_acc_off,
-                                    }
-                                )
-
-                        if (
-                            "damage_diff" in aux_outputs
-                            and "damage_diff" in aux_targets
-                        ):
-                            dmg_pred = aux_outputs["damage_diff"].squeeze(-1)
-                            dmg_target = aux_targets["damage_diff"].squeeze(-1)
-                            dmg_pred_mean = dmg_pred.mean().item()
-                            dmg_target_mean = dmg_target.mean().item()
-                            dmg_mse = ((dmg_pred - dmg_target) ** 2).mean().item()
-                            dmg_mae = (dmg_pred - dmg_target).abs().mean().item()
-                            dmg_pred_flat = dmg_pred.reshape(-1)
-                            dmg_target_flat = dmg_target.reshape(-1)
-                            dmg_corr = 0.0
-                            if dmg_pred_flat.numel() > 1:
-                                dp_center = dmg_pred_flat - dmg_pred_flat.mean()
-                                dt_center = dmg_target_flat - dmg_target_flat.mean()
-                                denom = torch.sqrt(
-                                    (dp_center**2).sum() * (dt_center**2).sum()
-                                ).clamp_min(1e-8)
-                                dmg_corr = float((dp_center * dt_center).sum() / denom)
-                            aux_console_lines.append(
-                                "  AUX DAMAGE DIFF: "
-                                f"pred {dmg_pred_mean:.3f} | targ {dmg_target_mean:.3f} | "
-                                f"MSE {dmg_mse:.4f} | MAE {dmg_mae:.4f} | corr {dmg_corr:.3f}"
-                            )
-                            aux_log_values.update(
-                                {
-                                    "aux/damage_diff/pred_mean": dmg_pred_mean,
-                                    "aux/damage_diff/target_mean": dmg_target_mean,
-                                    "aux/damage_diff/mse": dmg_mse,
-                                    "aux/damage_diff/mae": dmg_mae,
-                                    "aux/damage_diff/corr": dmg_corr,
-                                }
-                            )
-
-                            if off_stage_present and off_stage_mask.any():
-                                dmg_pred_off = dmg_pred[off_stage_mask]
-                                dmg_target_off = dmg_target[off_stage_mask]
-                                dmg_mse_off = (
-                                    ((dmg_pred_off - dmg_target_off) ** 2)
-                                    .mean()
-                                    .item()
-                                )
-                                dmg_mae_off = (
-                                    (dmg_pred_off - dmg_target_off).abs().mean().item()
-                                )
-                                aux_console_lines.append(
-                                    f"    OFF-STAGE: MSE {dmg_mse_off:.4f} | MAE {dmg_mae_off:.4f}"
-                                )
-                                aux_log_values.update(
-                                    {
-                                        "aux/damage_diff/mse_off_stage": dmg_mse_off,
-                                        "aux/damage_diff/mae_off_stage": dmg_mae_off,
-                                    }
-                                )
-
-                        if (
-                            "action_effectiveness" in aux_outputs
-                            and "action_effectiveness" in aux_targets
-                        ):
-                            eff_logits = aux_outputs["action_effectiveness"].squeeze(-1)
-                            eff_targets = aux_targets["action_effectiveness"].squeeze(
-                                -1
-                            )
-                            eff_probs = torch.sigmoid(eff_logits)
-                            eff_pred = (eff_probs >= 0.5).float()
-                            eff_acc = (eff_pred == eff_targets).float().mean().item()
-                            eff_prob_mean = eff_probs.mean().item()
-                            eff_target_pos = eff_targets.float().mean().item()
-                            eff_pred_pos = eff_pred.mean().item()
-                            tp = (
-                                ((eff_pred == 1.0) & (eff_targets == 1.0)).float().sum()
-                            )
-                            fp = (
-                                ((eff_pred == 1.0) & (eff_targets == 0.0)).float().sum()
-                            )
-                            fn = (
-                                ((eff_pred == 0.0) & (eff_targets == 1.0)).float().sum()
-                            )
-                            eps = 1e-6
-                            prec_tensor = tp / (tp + fp + eps)
-                            rec_tensor = tp / (tp + fn + eps)
-                            eff_precision = float(prec_tensor)
-                            eff_recall = float(rec_tensor)
-                            eff_f1 = 0.0
-                            if eff_precision + eff_recall > 0:
-                                eff_f1 = float(
-                                    2
-                                    * prec_tensor
-                                    * rec_tensor
-                                    / (prec_tensor + rec_tensor + eps)
-                                )
-                            eff_bce = (
-                                torch.nn.functional.binary_cross_entropy_with_logits(
-                                    eff_logits,
-                                    eff_targets,
-                                    reduction="mean",
-                                ).item()
-                            )
-                            aux_console_lines.append(
-                                "  AUX ACTION EFFECT: "
-                                f"acc {eff_acc:.3f} | prec {eff_precision:.3f} | rec {eff_recall:.3f} | "
-                                f"F1 {eff_f1:.3f} | targ_pos {eff_target_pos:.3f} | pred_pos {eff_pred_pos:.3f}"
-                            )
-                            aux_log_values.update(
-                                {
-                                    "aux/action_effectiveness/acc": eff_acc,
-                                    "aux/action_effectiveness/precision": eff_precision,
-                                    "aux/action_effectiveness/recall": eff_recall,
-                                    "aux/action_effectiveness/f1": eff_f1,
-                                    "aux/action_effectiveness/target_pos_rate": eff_target_pos,
-                                    "aux/action_effectiveness/pred_pos_rate": eff_pred_pos,
-                                    "aux/action_effectiveness/prob_mean": eff_prob_mean,
-                                    "aux/action_effectiveness/bce": eff_bce,
-                                }
-                            )
-
-                            if off_stage_present and off_stage_mask.any():
-                                eff_pred_off = eff_pred[off_stage_mask]
-                                eff_targets_off = eff_targets[off_stage_mask]
-                                eff_acc_off = (
-                                    (eff_pred_off == eff_targets_off)
-                                    .float()
-                                    .mean()
-                                    .item()
-                                )
-                                tp_off = (
-                                    ((eff_pred_off == 1.0) & (eff_targets_off == 1.0))
-                                    .float()
-                                    .sum()
-                                )
-                                fp_off = (
-                                    ((eff_pred_off == 1.0) & (eff_targets_off == 0.0))
-                                    .float()
-                                    .sum()
-                                )
-                                fn_off = (
-                                    ((eff_pred_off == 0.0) & (eff_targets_off == 1.0))
-                                    .float()
-                                    .sum()
-                                )
-                                prec_off = tp_off / (tp_off + fp_off + eps)
-                                rec_off = tp_off / (tp_off + fn_off + eps)
-                                f1_off = (
-                                    2
-                                    * prec_off
-                                    * rec_off
-                                    / (prec_off + rec_off + eps)
-                                )
-                                aux_console_lines.append(
-                                    f"    OFF-STAGE: acc {eff_acc_off:.3f} | F1 {f1_off:.3f}"
-                                )
-                                aux_log_values.update(
-                                    {
-                                        "aux/action_effectiveness/acc_off_stage": eff_acc_off,
-                                        "aux/action_effectiveness/f1_off_stage": f1_off.item(),
-                                    }
-                                )
-
-                log_lines.extend(aux_console_lines)
 
                 print("\n".join(log_lines))
 
@@ -1182,67 +716,6 @@ def train_loop(
                         log_payload["optimizer/loss_scale"] = float(scaler.get_scale())
                     except Exception:
                         pass
-                    if off_stage_present:
-                        log_payload.update(
-                            {
-                                "off_stage_metrics/acc_main": float(acc_main_off),
-                                "off_stage_metrics/acc_main_change": float(
-                                    acc_main_chg_off
-                                ),
-                                "off_stage_metrics/acc_main_hold": float(
-                                    acc_main_hold_off
-                                ),
-                                "off_stage_metrics/acc_main_rep": float(
-                                    acc_main_rep_off
-                                ),
-                                "off_stage_metrics/acc_c": float(acc_c_off),
-                                "off_stage_metrics/acc_c_change": float(acc_c_chg_off),
-                                "off_stage_metrics/acc_c_hold": float(acc_c_hold_off),
-                                "off_stage_metrics/acc_c_rep": float(acc_c_rep_off),
-                                "off_stage_metrics/buttons_em": float(em_off),
-                                "off_stage_metrics/buttons_em_change": float(
-                                    em_btn_chg_off
-                                ),
-                                "off_stage_metrics/buttons_em_hold": float(
-                                    em_btn_hold_off
-                                ),
-                                "off_stage_metrics/buttons_em_rep": float(em_rep_off),
-                                "off_stage_metrics/buttons_f1_micro": float(f1_off),
-                                "off_stage_metrics/buttons_f1_micro_maj": float(
-                                    f1_maj_off
-                                ),
-                                "off_stage_metrics/buttons_f1_micro_rep": float(
-                                    f1_rep_off
-                                ),
-                                "off_stage_metrics/acc_shoulder": float(acc_sh_off),
-                                "off_stage_metrics/acc_shoulder_maj": float(
-                                    acc_sh_maj_off
-                                ),
-                                "off_stage_metrics/acc_shoulder_rep": float(
-                                    acc_sh_rep_off
-                                ),
-                            }
-                        )
-                        if btn_match_off_vals is not None:
-                            for idx, name in enumerate(
-                                CONTROLLER_KEY_GROUPS["buttons"]
-                            ):
-                                label = _BUTTON_PRETTY.get(name, name)
-                                log_payload[
-                                    f"off_stage_metrics/buttons/{label}_acc"
-                                ] = float(btn_match_off_vals[idx])
-                                log_payload[
-                                    f"off_stage_metrics/buttons/{label}_f1"
-                                ] = float(btn_f1_off_vals[idx])
-                                log_payload[
-                                    f"off_stage_metrics/buttons/{label}_precision"
-                                ] = float(btn_prec_off_vals[idx])
-                                log_payload[
-                                    f"off_stage_metrics/buttons/{label}_recall"
-                                ] = float(btn_rec_off_vals[idx])
-                                log_payload[
-                                    f"off_stage_metrics/buttons/{label}_rate"
-                                ] = float(btn_rate_off_vals[idx])
                     # Per-button metrics
                     try:
                         for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
@@ -1274,8 +747,6 @@ def train_loop(
                                 "value/corr": float(correlation.item()),
                             }
                         )
-                    if aux_log_values:
-                        log_payload.update(aux_log_values)
                     logger.log_metrics(log_payload, step=global_step)
                     # persist latest step for robust resume
                     try:

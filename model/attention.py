@@ -6,62 +6,65 @@ from model.norm import norm
 from model.positional_encoding import apply_rotary_emb
 
 
-# TODO: better variable names
 class CausalSelfAttention(nn.Module):
-    def __init__(self, n_embd, n_head, n_kv_head, dropout):
+    def __init__(self, embedding_dim, num_heads, num_key_value_heads, dropout):
         super().__init__()
-        self.num_query_heads = n_head
-        self.num_kv_heads = n_kv_head
-        self.n_embd = n_embd
-        self.head_dim = n_embd // n_head
+        self.num_query_heads = num_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.embedding_dim = embedding_dim
+        self.head_dim = embedding_dim // num_heads
         self.dropout = dropout
-        assert n_embd % n_head == 0
-        assert n_kv_head <= n_head and n_head % n_kv_head == 0
-        self.c_q = nn.Linear(
-            n_embd, n_head * self.head_dim, bias=False
-        )  # query projection
-        self.c_k = nn.Linear(
-            n_embd, n_kv_head * self.head_dim, bias=False
-        )  # key projection
-        self.c_v = nn.Linear(
-            n_embd, n_kv_head * self.head_dim, bias=False
-        )  # value projection
-        self.c_proj = nn.Linear(n_embd, n_embd, bias=False)  # output projection
+        assert embedding_dim % num_heads == 0
+        assert num_key_value_heads <= num_heads and num_heads % num_key_value_heads == 0
+        
+        # Query, key, and value projections
+        self.query_projection = nn.Linear(
+            embedding_dim, num_heads * self.head_dim, bias=False
+        )
+        self.key_projection = nn.Linear(
+            embedding_dim, num_key_value_heads * self.head_dim, bias=False
+        )
+        self.value_projection = nn.Linear(
+            embedding_dim, num_key_value_heads * self.head_dim, bias=False
+        )
+        self.output_projection = nn.Linear(embedding_dim, embedding_dim, bias=False)
 
         self.attention_dropout = nn.Dropout(dropout)
         self.residual_dropout = nn.Dropout(dropout)
 
     def forward(
-        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+        self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
-        batch_size, sequence_length, C = x.size()
+        batch_size, sequence_length, channels = hidden_states.size()
 
         # Project the input to get queries, keys, and values
-        query_states = self.c_q(x).view(
+        query_states = self.query_projection(hidden_states).view(
             batch_size, sequence_length, self.num_query_heads, self.head_dim
         )
-        key_states = self.c_k(x).view(
-            batch_size, sequence_length, self.num_kv_heads, self.head_dim
+        key_states = self.key_projection(hidden_states).view(
+            batch_size, sequence_length, self.num_key_value_heads, self.head_dim
         )
-        value_states = self.c_v(x).view(
-            batch_size, sequence_length, self.num_kv_heads, self.head_dim
+        value_states = self.value_projection(hidden_states).view(
+            batch_size, sequence_length, self.num_key_value_heads, self.head_dim
         )
 
-        # TODO: Can we collapse these calls at all?
+        # Apply rotary positional embeddings
         query_states = apply_rotary_emb(query_states, cos, sin)
         key_states = apply_rotary_emb(key_states, cos, sin)
 
+        # Normalize queries and keys
         query_states = norm(query_states)
         key_states = norm(key_states)
 
+        # Transpose to (batch_size, num_heads, sequence_length, head_dim)
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
-
         value_states = value_states.transpose(1, 2)
 
-        num_repetitions = self.num_query_heads // self.num_kv_heads
-        key_states = repeat_kv(key_states, num_repetitions)
-        value_states = repeat_kv(value_states, num_repetitions)
+        # Repeat key-value heads to match query heads for grouped-query attention
+        num_repetitions = self.num_query_heads // self.num_key_value_heads
+        key_states = repeat_key_value_heads(key_states, num_repetitions)
+        value_states = repeat_key_value_heads(value_states, num_repetitions)
 
         attention_output = F.scaled_dot_product_attention(
             query_states,
@@ -72,23 +75,29 @@ class CausalSelfAttention(nn.Module):
             is_causal=True,
         )
 
+        # Reshape back to (batch_size, sequence_length, embedding_dim)
         attention_output = (
             attention_output.transpose(1, 2)
             .contiguous()
-            .view(batch_size, sequence_length, C)
+            .view(batch_size, sequence_length, channels)
         )
-        attention_output = self.residual_dropout(self.c_proj(attention_output))
+        attention_output = self.residual_dropout(self.output_projection(attention_output))
         return attention_output
 
 
-# TODO: 8 times per frame. torch.repeat_interleave?
-def repeat_kv(x, n_rep):
-    """torch.repeat_interleave(x, dim=1, repeats=n_rep)"""
-    if n_rep == 1:
-        return x
-    bs, n_kv_heads, slen, head_dim = x.shape
+def repeat_key_value_heads(hidden_states, num_repetitions):
+    """
+    Repeats key/value heads to match the number of query heads.
+    This is used for grouped-query attention where multiple query heads share the same key/value heads.
+    
+    Equivalent to: torch.repeat_interleave(hidden_states, dim=1, repeats=num_repetitions)
+    """
+    if num_repetitions == 1:
+        return hidden_states
+    
+    batch_size, num_key_value_heads, sequence_length, head_dim = hidden_states.shape
     return (
-        x[:, :, None, :, :]
-        .expand(bs, n_kv_heads, n_rep, slen, head_dim)
-        .reshape(bs, n_kv_heads * n_rep, slen, head_dim)
+        hidden_states[:, :, None, :, :]
+        .expand(batch_size, num_key_value_heads, num_repetitions, sequence_length, head_dim)
+        .reshape(batch_size, num_key_value_heads * num_repetitions, sequence_length, head_dim)
     )

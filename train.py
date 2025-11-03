@@ -326,6 +326,7 @@ def _forward_pass(
             target_info,
             label_smoothing=config.train.label_smoothing,
             sample_weights=weights,
+            loss_config=config.loss_weights,
         )
         loss = policy_loss_components["total"]
         loss_components = dict(policy_loss_components)

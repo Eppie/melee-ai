@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Mapping, Union
-from typing import Dict, Optional
+from typing import Any, Dict, Mapping, Optional, TYPE_CHECKING, Union
 
 import torch
 import torch.nn.functional as F
@@ -9,9 +8,33 @@ from tensordict import TensorDict
 from torch import Tensor
 
 
-# TODO: Make using this configurable via config.py
-def _compute_ce_weights(labels: Tensor, num_classes: int) -> Tensor:
+if TYPE_CHECKING:
+    from config import LossConfig
+
+
+_DEFAULT_CE_WEIGHT_MAX = 10.0
+_DEFAULT_CE_WEIGHT_MIN = 0.1
+_DEFAULT_POS_WEIGHT_MAX = 10.0
+
+
+def _compute_ce_weights(
+    labels: Tensor, num_classes: int, loss_config: Optional["LossConfig"]
+) -> Optional[Tensor]:
     """Compute class-balanced weights for cross-entropy loss."""
+    if loss_config is not None and not loss_config.enable_class_balancing:
+        return None
+
+    ce_min = (
+        loss_config.ce_weight_min
+        if loss_config is not None
+        else _DEFAULT_CE_WEIGHT_MIN
+    )
+    ce_max = (
+        loss_config.ce_weight_max
+        if loss_config is not None
+        else _DEFAULT_CE_WEIGHT_MAX
+    )
+
     device = labels.device
     try:
         counts = torch.bincount(labels, minlength=num_classes)
@@ -19,29 +42,34 @@ def _compute_ce_weights(labels: Tensor, num_classes: int) -> Tensor:
         counts = torch.bincount(labels.cpu(), minlength=num_classes).to(device)
     counts = counts.float().clamp_min(1.0)
     weights = counts.sum() / (counts * num_classes)
-    return weights.clamp(min=_CE_WEIGHT_MIN, max=_CE_WEIGHT_CLAMP)
+    return weights.clamp(min=ce_min, max=ce_max)
 
 
-# TODO: Make using this configurable via config.py
-def _compute_pos_weights(targets: Tensor) -> Tensor:
+def _compute_pos_weights(
+    targets: Tensor, loss_config: Optional["LossConfig"]
+) -> Optional[Tensor]:
     """Compute positive class weights for multi-label BCE loss."""
+    if loss_config is not None and not loss_config.enable_pos_weighting:
+        return None
+
+    pos_max = (
+        loss_config.pos_weight_max
+        if loss_config is not None
+        else _DEFAULT_POS_WEIGHT_MAX
+    )
+
     flat = targets.reshape(-1, targets.shape[-1])
     pos = flat.sum(dim=0)
     total = flat.shape[0]
     neg = total - pos
     pos_weight = neg / pos.clamp_min(1.0)
-    return pos_weight.clamp(min=1.0, max=_POS_WEIGHT_CLAMP).to(targets.device)
+    return pos_weight.clamp(min=1.0, max=pos_max).to(targets.device)
 
 
-# TODO: Make using these configurable via config.py
-_CE_WEIGHT_CLAMP = 10.0
-_CE_WEIGHT_MIN = 0.1
-_POS_WEIGHT_CLAMP = 10.0
-
-
-# TODO: Make using this configurable via config.py
-def _mean_with_weights(x: Tensor, w: Optional[Tensor]) -> Tensor:
-    if w is None:
+def _mean_with_weights(
+    x: Tensor, w: Optional[Tensor], loss_config: Optional["LossConfig"]
+) -> Tensor:
+    if w is None or (loss_config is not None and not loss_config.use_weighted_component_means):
         return x.mean()
     # Match dims to broadcast, then true weighted mean:
     w = w.to(x.dtype)
@@ -56,6 +84,7 @@ def compute_loss_components(
     *,
     label_smoothing: float,
     sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
+    loss_config: Optional["LossConfig"] = None,
 ) -> Dict[str, Tensor]:
     """
     Accepts either:
@@ -93,10 +122,20 @@ def compute_loss_components(
     w_buttons = _get_w("buttons", 3)  # [B, L, K_btn]
     w_shoulder = _get_w("shoulder", 2)  # [B, L]
 
+    if loss_config is None:
+        try:
+            from config import get_config
+
+            loss_config = get_config().loss_weights
+        except Exception:
+            loss_config = None
+
     # --- MAIN ---
     main_targets = target_info["main_idx"].reshape(B * L)
     main_logits = logits_main.reshape(B * L, -1)
-    main_weights = _compute_ce_weights(main_targets, int(target_info["main_K"]))
+    main_weights = _compute_ce_weights(
+        main_targets, int(target_info["main_K"]), loss_config
+    )
     loss_main_vec = F.cross_entropy(
         main_logits,
         main_targets,
@@ -104,12 +143,14 @@ def compute_loss_components(
         label_smoothing=label_smoothing,
         weight=main_weights,
     ).reshape(B, L)
-    loss_main = _mean_with_weights(loss_main_vec, w_main)
+    loss_main = _mean_with_weights(loss_main_vec, w_main, loss_config)
 
     # --- C-STICK ---
     c_targets = target_info["c_idx"].reshape(B * L)
     c_logits = logits_c.reshape(B * L, -1)
-    c_weights = _compute_ce_weights(c_targets, int(target_info["c_K"]))
+    c_weights = _compute_ce_weights(
+        c_targets, int(target_info["c_K"]), loss_config
+    )
     loss_c_vec = F.cross_entropy(
         c_logits,
         c_targets,
@@ -117,18 +158,18 @@ def compute_loss_components(
         label_smoothing=label_smoothing,
         weight=c_weights,
     ).reshape(B, L)
-    loss_c = _mean_with_weights(loss_c_vec, w_c)
+    loss_c = _mean_with_weights(loss_c_vec, w_c, loss_config)
 
     # --- BUTTONS (per-label weighting)
     target_btn = target_info["buttons"]
-    pos_weight = _compute_pos_weights(target_btn)  # [K_btn]
+    pos_weight = _compute_pos_weights(target_btn, loss_config)  # [K_btn] or None
     loss_btn_all = F.binary_cross_entropy_with_logits(
         logits_btn, target_btn, reduction="none", pos_weight=pos_weight
     )  # [B, L, K_btn]
 
     if w_buttons is not None:
         # true weighted mean over all dims
-        loss_buttons = _mean_with_weights(loss_btn_all, w_buttons)
+        loss_buttons = _mean_with_weights(loss_btn_all, w_buttons, loss_config)
     else:
         # original behavior (mean over label dim, then batch/time)
         loss_buttons = loss_btn_all.mean()
@@ -140,7 +181,7 @@ def compute_loss_components(
         reduction="none",
         label_smoothing=label_smoothing,
     ).reshape(B, L)
-    loss_shoulder = _mean_with_weights(sh_vec, w_shoulder)
+    loss_shoulder = _mean_with_weights(sh_vec, w_shoulder, loss_config)
 
     total_loss = loss_main + loss_c + loss_buttons + loss_shoulder
     return {
@@ -159,6 +200,7 @@ class PolicyLossComputer:
         self.config = config
         # We'll reuse the existing compute_loss_components function
         self.label_smoothing = config.train.label_smoothing
+        self.loss_config = config.loss_weights
 
     def compute_loss(
         self,
@@ -198,6 +240,7 @@ class PolicyLossComputer:
             targets,
             label_smoothing=self.label_smoothing,
             sample_weights=sample_weights,
+            loss_config=self.loss_config,
         )
 
         return loss_components["total"], {
@@ -206,4 +249,3 @@ class PolicyLossComputer:
             "buttons": loss_components["buttons"].item(),
             "shoulder": loss_components["shoulder"].item(),
         }
-

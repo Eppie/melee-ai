@@ -24,6 +24,7 @@ class RewardFeatureIdx:
     p1_in_defender_hitlag: Optional[int] = None
     p2_in_defender_hitlag: Optional[int] = None
     p1_shield_strength: Optional[int] = None
+    p2_shield_strength: Optional[int] = None
 
 
 def build_reward_feature_index(colmap: ColumnMap) -> RewardFeatureIdx:
@@ -57,7 +58,100 @@ def build_reward_feature_index(colmap: ColumnMap) -> RewardFeatureIdx:
         p1_in_defender_hitlag=idx("p1_in_defender_hitlag"),
         p2_in_defender_hitlag=idx("p2_in_defender_hitlag"),
         p1_shield_strength=idx("p1_shield_strength"),
+        p2_shield_strength=idx("p2_shield_strength"),
     )
+
+
+def _compute_player_rewards(
+    X: torch.Tensor,
+    idx: RewardFeatureIdx,
+    cfg,
+    *,
+    player: str,
+) -> torch.Tensor:
+    """Compute per-frame rewards from the perspective of a single player.
+
+    Args:
+        X: ``[B, L, F]`` feature tensor.
+        idx: Cached feature indices.
+        cfg: RL configuration namespace with reward weights.
+        player: Either ``\"p1\"`` or ``\"p2\"`` indicating the ego player.
+
+    Returns:
+        ``[B, L]`` tensor containing that player's frame rewards.
+    """
+    if player not in ("p1", "p2"):
+        raise ValueError(f"player must be 'p1' or 'p2', got {player!r}")
+
+    opponent = "p2" if player == "p1" else "p1"
+
+    B, L, _F = X.shape
+    device = X.device
+    dtype = X.dtype
+
+    rewards = torch.full(
+        (B, L), float(cfg.reward_per_frame), device=device, dtype=dtype
+    )
+
+    if L > 1:
+        # --- Damage deltas (current player deals damage to opponent/opponent to player) ---
+        self_percent_idx = getattr(idx, f"{player}_percent")
+        opp_percent_idx = getattr(idx, f"{opponent}_percent")
+
+        if opp_percent_idx is not None and float(cfg.reward_damage_dealt) != 0.0:
+            d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
+            rewards[:, 1:].add_(d_opp.mul_(100.0).mul_(float(cfg.reward_damage_dealt)))
+
+        if self_percent_idx is not None and float(cfg.reward_damage_taken) != 0.0:
+            d_self = torch.diff(X[:, :, self_percent_idx], dim=1)  # [B, L-1]
+            rewards[:, 1:].add_(d_self.mul_(100.0).mul_(float(cfg.reward_damage_taken)))
+
+        # --- Stock changes ---
+        self_stock_idx = getattr(idx, f"{player}_stock")
+        opp_stock_idx = getattr(idx, f"{opponent}_stock")
+
+        if self_stock_idx is not None and opp_stock_idx is not None:
+            d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
+            d_self_stock = torch.diff(X[:, :, self_stock_idx], dim=1)
+
+            stock_taken = (-d_opp_stock).clamp_min_(0)
+            stock_lost = (-d_self_stock).clamp_min_(0)
+
+            if float(cfg.reward_stock_taken) != 0.0:
+                rewards[:, 1:].add_(stock_taken.mul_(float(cfg.reward_stock_taken)))
+            if float(cfg.reward_stock_lost) != 0.0:
+                rewards[:, 1:].add_(stock_lost.mul_(float(cfg.reward_stock_lost)))
+
+    # --- Hitlag rewards/penalties (per-frame) ---
+    self_hitlag_idx = getattr(idx, f"{player}_in_hitlag")
+    self_def_hitlag_idx = getattr(idx, f"{player}_in_defender_hitlag")
+    opp_hitlag_idx = getattr(idx, f"{opponent}_in_hitlag")
+    opp_def_hitlag_idx = getattr(idx, f"{opponent}_in_defender_hitlag")
+
+    if (
+        self_hitlag_idx is not None
+        and self_def_hitlag_idx is not None
+        and float(cfg.reward_hitlag_self) != 0.0
+    ):
+        self_metric = X[:, :, self_hitlag_idx] - X[:, :, self_def_hitlag_idx]
+        rewards.add_((self_metric == 1).to(dtype).mul_(float(cfg.reward_hitlag_self)))
+
+    if (
+        opp_hitlag_idx is not None
+        and opp_def_hitlag_idx is not None
+        and float(cfg.reward_hitlag_opponent) != 0.0
+    ):
+        opp_metric = X[:, :, opp_hitlag_idx] - X[:, :, opp_def_hitlag_idx]
+        rewards.add_((opp_metric == 1).to(dtype).mul_(float(cfg.reward_hitlag_opponent)))
+
+    # --- Shield penalty (per-frame) ---
+    shield_idx = getattr(idx, f"{player}_shield_strength")
+    if shield_idx is not None and float(cfg.reward_low_shield) != 0.0:
+        shield = X[:, :, shield_idx]
+        penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
+        rewards.add_(penalty.mul_(float(cfg.reward_low_shield)))
+
+    return rewards
 
 
 def compute_frame_rewards(
@@ -66,21 +160,13 @@ def compute_frame_rewards(
     *,
     idx: Optional[RewardFeatureIdx] = None,
 ) -> torch.Tensor:
-    """Compute reward signals per frame using stock, damage, hitlag, and shield features.
+    """Compute zero-sum per-frame rewards as ego minus opponent reward.
 
     Example:
-        Consider ``B=1`` and ``L=3`` with stocks ``[4, 4, 3]`` and opponent percent damage
-        ``[0.10, 0.20, 0.25]`` (normalized 0–1). Using configuration weights
-        ``reward_stock_taken = 2`` and ``reward_damage_dealt = 0.5``:
-
-        #. ``torch.diff`` finds a stock drop of ``1`` at frame 2, so ``rw[:, 2]`` gains ``+2``.
-        #. Damage deltas are ``[+0.10, +0.05]``; the second frame adds ``0.10 * 100 * 0.5 = 5`` and
-           the third frame adds ``0.05 * 100 * 0.5 = 2.5``.
-        #. Summing the base reward ``reward_per_frame`` (call it ``r``) with these bonuses yields a
-           reward vector ``[r, r + 5, r + 2 + 2.5]``.
-
-        The example showcases each tensor operation—diffs, clamps, and adds—and how they manipulate
-        the inputs to produce the per-frame rewards.
+        The helper first computes rewards for the ego player ``p1`` (damage dealt, stocks taken,
+        shield penalties, etc.). It then computes the same quantity from the opponent's perspective
+        (treating ``p2`` as ego) and returns their difference. The resulting tensor is guaranteed to
+        be zero-sum: swapping ``p1`` and ``p2`` negates the reward signal.
 
     Args:
         X: ``[B, L, F]`` input feature tensor.
@@ -90,68 +176,17 @@ def compute_frame_rewards(
     Returns:
         ``[B, L]`` tensor of per-frame rewards.
     """
-    B, L, _F = X.shape
-    device = X.device
-    dtype = X.dtype
     # TODO: Make this mandatory
     if idx is None:
         # Resolve on the fly (still cheap), or pass a cached `idx` from caller for max perf.
         idx = build_reward_feature_index(colmap)
 
     cfg = get_config().rl
-    rw = torch.full(
-        (B, L), float(cfg.reward_per_frame), device=device, dtype=dtype
-    )  # base per-frame reward
 
-    if L > 1:
-        # --- Damage deltas (vectorized with torch.diff) ---
-        if (idx.p1_percent is not None) and (idx.p2_percent is not None):
-            # deltas are current - previous over time dim
-            d_p2 = torch.diff(X[:, :, idx.p2_percent], dim=1)  # [B, L-1]
-            d_p1 = torch.diff(X[:, :, idx.p1_percent], dim=1)  # [B, L-1]
-            # Scale percents from [0,1] back to 0..100 if that matches your preprocessing
-            # Then apply weights, in-place add to t>=1 frames
-            if float(cfg.reward_damage_dealt) != 0.0:
-                rw[:, 1:].add_(d_p2.mul_(100.0).mul_(float(cfg.reward_damage_dealt)))
-            if float(cfg.reward_damage_taken) != 0.0:
-                rw[:, 1:].add_(d_p1.mul_(100.0).mul_(float(cfg.reward_damage_taken)))
+    ego_rewards = _compute_player_rewards(X, idx, cfg, player="p1")
+    opp_rewards = _compute_player_rewards(X, idx, cfg, player="p2")
 
-        # --- Stock changes (vectorized) ---
-        if (idx.p1_stock is not None) and (idx.p2_stock is not None):
-            d_p2_stock = torch.diff(X[:, :, idx.p2_stock], dim=1)  # [B,L-1]
-            d_p1_stock = torch.diff(X[:, :, idx.p1_stock], dim=1)  # [B,L-1]
-            # Lost stock ⇒ delta = -1. Clamp the positive part of (-delta)
-            stock_taken = (-d_p2_stock).clamp_min_(0)  # opponent lost stock
-            stock_lost = (-d_p1_stock).clamp_min_(0)  # we lost stock
-            if float(cfg.reward_stock_taken) != 0.0:
-                rw[:, 1:].add_(stock_taken.mul_(float(cfg.reward_stock_taken)))
-            if float(cfg.reward_stock_lost) != 0.0:
-                rw[:, 1:].add_(stock_lost.mul_(float(cfg.reward_stock_lost)))
-
-    # --- Hitlag rewards/penalties (no diffs, per-frame) ---
-    if (
-        (idx.p1_in_hitlag is not None)
-        and (idx.p1_in_defender_hitlag is not None)
-        and (idx.p2_in_hitlag is not None)
-        and (idx.p2_in_defender_hitlag is not None)
-    ):
-        # metric: in_hitlag - in_defender_hitlag; reward when equals 1
-        p1_metric = X[:, :, idx.p1_in_hitlag] - X[:, :, idx.p1_in_defender_hitlag]
-        p2_metric = X[:, :, idx.p2_in_hitlag] - X[:, :, idx.p2_in_defender_hitlag]
-
-        if float(cfg.reward_hitlag_self) != 0.0:
-            rw.add_((p1_metric == 1).to(dtype).mul_(float(cfg.reward_hitlag_self)))
-        if float(cfg.reward_hitlag_opponent) != 0.0:
-            rw.add_((p2_metric == 1).to(dtype).mul_(float(cfg.reward_hitlag_opponent)))
-
-    # --- Shield penalty (fused math; no mask tensor needed) ---
-    if idx.p1_shield_strength is not None and float(cfg.reward_low_shield) != 0.0:
-        s = X[:, :, idx.p1_shield_strength]  # [B, L] in [0,1]
-        # penalty_multiplier = clamp(1 - 2*shield, 0, 1)
-        pen = (1.0 - 2.0 * s).clamp_min_(0.0).clamp_max_(1.0)
-        rw.add_(pen.mul_(float(cfg.reward_low_shield)))
-
-    return rw
+    return ego_rewards - opp_rewards
 
 
 # Cache for gamma powers to avoid recomputation
@@ -246,12 +281,7 @@ def compute_value_targets(
 
         * Weighted rewards become ``[[1.0, 1.8, 2.43]]``.
         * The reversed ``cumsum`` generates ``[[5.23, 4.23, 2.43]]``.
-        * Dividing by the gamma powers recovers the standard discounted returns
-          ``[[5.23, 4.7, 3.0]]``.
-
-        Finally the method adds the optional terminal bonus (contributing ``[0.81, 0.9, 1.0]`` in this
-        example) and unsqueezes the last dimension to produce ``[[[6.04], [5.6], [4.0]]]``. This
-        detailed walkthrough mirrors the tensor manipulations used in the implementation.
+        * Dividing by the gamma powers recovers the discounted returns ``[[5.23, 4.7, 3.0]]``.
 
     Args:
         X: ``[B, L, F]`` input features.
@@ -280,9 +310,5 @@ def compute_value_targets(
         weighted = rewards * gamma_powers  # broadcast multiply
         discounted = torch.cumsum(weighted.flip(1), dim=1).flip(1)
         returns = discounted / gamma_powers.clamp_min(1e-12)
-
-    terminal_bonus = 1.0
-    terminal_vec = gamma_powers.flip(0)
-    returns = returns + terminal_bonus * terminal_vec
 
     return returns.unsqueeze(-1)  # [B, L, 1]

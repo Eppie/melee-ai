@@ -320,11 +320,38 @@ def _get_optimal_amp_dtype() -> str:
     return "float32"  # Safe fallback when AMP is unavailable
 
 
-class LossWeightConfig(BaseModel):
-    """Pydantic version of LossWeightConfig."""
+class LossConfig(BaseModel):
+    """Configuration related to loss computation and weighting."""
 
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
+    enable_class_balancing: bool = Field(
+        default=True,
+        description="Enable class-balanced weights for cross-entropy losses.",
+    )
+    ce_weight_min: float = Field(
+        default=0.1,
+        gt=0,
+        description="Minimum clamp value applied to class weights.",
+    )
+    ce_weight_max: float = Field(
+        default=10.0,
+        gt=0,
+        description="Maximum clamp value applied to class weights.",
+    )
+    enable_pos_weighting: bool = Field(
+        default=True,
+        description="Enable positive-class weighting for multi-label BCE losses.",
+    )
+    pos_weight_max: float = Field(
+        default=10.0,
+        gt=0,
+        description="Maximum clamp value applied to positive-class weights.",
+    )
+    use_weighted_component_means: bool = Field(
+        default=True,
+        description="Apply provided sample weights when averaging component losses.",
+    )
     main_change: float = Field(default=5.0, gt=0)
     c_change: float = Field(default=10.0, gt=0)
     shoulder_change: float = Field(default=5.0, gt=0)
@@ -574,7 +601,7 @@ class Config(BaseModel):
     features: FeatureConfig = Field(default_factory=FeatureConfig)
     rl: RLConfig = Field(default_factory=RLConfig)
     ppo: PPOConfig = Field(default_factory=PPOConfig)
-    loss_weights: LossWeightConfig = Field(default_factory=LossWeightConfig)
+    loss_weights: LossConfig = Field(default_factory=LossConfig)
     imitation: ImitationConfig = Field(default_factory=ImitationConfig)
 
     def freeze(self) -> None:

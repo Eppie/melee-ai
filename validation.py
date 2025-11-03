@@ -1114,6 +1114,7 @@ def _evaluate(
                 target_info,
                 label_smoothing=config.train.label_smoothing,
                 sample_weights=None,
+                loss_config=config.loss_weights,
             )
 
             for key, value in loss_components.items():

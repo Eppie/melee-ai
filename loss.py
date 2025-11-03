@@ -74,6 +74,10 @@ def compute_loss_components(
         if sample_weights is None:
             return None
         if isinstance(sample_weights, Tensor):
+            if expect_ndim == 3:
+                if sample_weights.ndim == 2:
+                    return sample_weights.unsqueeze(-1)
+                return sample_weights
             assert expect_ndim in (1, 2)  # only [B,L] valid for non-buttons
             return sample_weights  # [B,L]
         w = sample_weights.get(name)

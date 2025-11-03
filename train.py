@@ -10,6 +10,7 @@ import argparse
 import math
 import time
 from pathlib import Path
+from pprint import pformat
 from textwrap import indent
 from typing import Dict, List, Optional
 
@@ -73,6 +74,19 @@ def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
     return overrides
 
 
+def _make_printable_config(value):
+    """Recursively convert complex config values into printable representations."""
+    if isinstance(value, dict):
+        return {k: _make_printable_config(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_make_printable_config(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_make_printable_config(v) for v in value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
+
+
 def train_loop(
     model: GPT,
     loader,
@@ -110,21 +124,16 @@ def train_loop(
 
     amp_enabled = bool(config.train.use_amp and amp_device_type != "cpu")
     amp_dtype_cfg = getattr(config.train, "amp_dtype", "float16").lower()
-    # TODO: We never want to use bfloat16
-    if amp_device_type == "mps":
-        autocast_dtype = torch.float16
-        if config.train.use_amp and amp_dtype_cfg != "float16":
-            print(
-                "Warning: MPS AMP only supports float16; overriding amp_dtype to 'float16'."
-            )
-    else:
-        autocast_dtype = torch.float16 if amp_dtype_cfg == "float16" else torch.bfloat16
+    autocast_dtype = torch.float16
+    if config.train.use_amp and amp_dtype_cfg != "float16":
+        print(
+            "Warning: AMP currently only uses float16 autocast; overriding amp_dtype to 'float16'."
+        )
     if config.train.use_amp:
         print(f"Using PyTorch {torch.__version__}")
         if amp_enabled:
             backend_name = "CUDA" if amp_device_type == "cuda" else "MPS"
-            dtype_name = "float16" if autocast_dtype == torch.float16 else "bfloat16"
-            print(f"AMP enabled with {dtype_name} on {backend_name} backend")
+            print(f"AMP enabled with float16 on {backend_name} backend")
         else:
             print(
                 f"AMP requested but disabled for device '{device.type}';"
@@ -203,6 +212,10 @@ def train_loop(
 
     resume_epoch = start_epoch
     resume_iter = start_iter
+
+    printable_config = _make_printable_config(config.model_dump(mode="python"))
+    print("Resolved training configuration:")
+    print(pformat(printable_config, indent=2, width=100))
 
     # Main epochs
     for epoch in range(start_epoch, config.train.epochs):
@@ -332,7 +345,7 @@ def train_loop(
             current_iter = applied_skip + iters_processed
             # TODO: Don't log on the very first iter
             # TODO: Move the `10` to new LoggingConfig
-            log_this_iter = current_iter % 10 == 0
+            log_this_iter = current_iter % 50 == 0
             should_collect_grad_stats = logger.enabled and log_this_iter
             grad_stats: Optional[Dict[str, float]] = None
 
@@ -421,6 +434,67 @@ def train_loop(
                 btn_logits = logits_btn  # [B,L,Kb]
                 btn_true = target_btn  # [B,L,Kb]
                 btn_probs = torch.sigmoid(btn_logits)
+                logit_metrics: Dict[str, float] = {}
+                bias_metrics: Dict[str, float] = {}
+
+                def _collect_logit_stats(name: str, tensor: torch.Tensor) -> None:
+                    if tensor is None:
+                        return
+                    flat = tensor.detach()
+                    if not torch.is_floating_point(flat):
+                        flat = flat.float()
+                    else:
+                        flat = flat.to(torch.float32)
+                    logit_metrics[f"logits/{name}_min"] = float(torch.amin(flat).item())
+                    logit_metrics[f"logits/{name}_max"] = float(torch.amax(flat).item())
+                    logit_metrics[f"logits/{name}_mean"] = float(flat.mean().item())
+                    if flat.numel() > 1:
+                        logit_metrics[f"logits/{name}_std"] = float(
+                            flat.std(unbiased=False).item()
+                        )
+                    else:
+                        logit_metrics[f"logits/{name}_std"] = 0.0
+                    logit_metrics[f"logits/{name}_abs_max"] = float(
+                        flat.abs().max().item()
+                    )
+
+                def _collect_bias_stats(name: str, tensor: Optional[torch.Tensor]) -> None:
+                    if tensor is None:
+                        return
+                    flat = tensor.detach().to(torch.float32)
+                    bias_metrics[f"bias/{name}_min"] = float(torch.amin(flat).item())
+                    bias_metrics[f"bias/{name}_max"] = float(torch.amax(flat).item())
+                    bias_metrics[f"bias/{name}_mean"] = float(flat.mean().item())
+                    if flat.numel() > 1:
+                        bias_metrics[f"bias/{name}_std"] = float(
+                            flat.std(unbiased=False).item()
+                        )
+                    else:
+                        bias_metrics[f"bias/{name}_std"] = 0.0
+                    bias_metrics[f"bias/{name}_abs_max"] = float(flat.abs().max().item())
+
+                _collect_logit_stats("main", logits_main)
+                _collect_logit_stats("c", logits_c)
+                _collect_logit_stats("buttons", btn_logits)
+                def _get_head_bias(module: Optional[torch.nn.Module]) -> Optional[torch.Tensor]:
+                    if module is None:
+                        return None
+                    net = getattr(module, "net", None)
+                    if net is None or not isinstance(net, (torch.nn.Sequential, list, tuple)):
+                        return getattr(module, "bias", None)
+                    if len(net) == 0:
+                        return None
+                    last = net[-1]
+                    return getattr(last, "bias", None)
+
+                _collect_bias_stats(
+                    "input_projection", getattr(model.projection_down, "bias", None)
+                )
+                _collect_bias_stats("buttons_out", _get_head_bias(model.button_head))
+                _collect_bias_stats("main_stick_out", _get_head_bias(model.main_stick_head))
+                _collect_bias_stats("c_stick_out", _get_head_bias(model.c_stick_head))
+                _collect_bias_stats("shoulder_out", _get_head_bias(model.shoulder_head))
+                _collect_bias_stats("value_out", _get_head_bias(getattr(model, "value_head", None)))
 
                 main_change_mask = torch.zeros_like(true_main_idx, dtype=torch.bool)
                 main_change_mask[:, 1:] = true_main_idx[:, 1:] != true_main_idx[:, :-1]
@@ -542,6 +616,7 @@ def train_loop(
 
                 # SHOULDER
                 sh_logits = pred["shoulder"]
+                _collect_logit_stats("shoulder", sh_logits)
                 sh_pred_idx = sh_logits.argmax(dim=-1)  # [B,L]
                 sh_true_idx = target_info["shoulder_idx"]
                 sh_rep = torch.zeros_like(sh_true_idx)
@@ -704,6 +779,8 @@ def train_loop(
                         "metrics/buttons_em_rep": em_rep,
                         "throughput/frames_per_s": frames_per_s,
                     }
+                    log_payload.update(logit_metrics)
+                    log_payload.update(bias_metrics)
                     if grad_stats is not None:
                         logger.log_gradients(grad_stats, step=global_step)
                         grad_elems = grad_stats.get("num_elements", 0.0)

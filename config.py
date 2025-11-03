@@ -60,10 +60,10 @@ class ZarrConfig(BaseModel):
         description="Root directory for validation data (auto-detected by OS)",
     )
     episode_count: int = Field(
-        default=10, ge=1, description="Number of episodes to process"
+        default=1000, ge=1, description="Number of episodes to process"
     )
     validation_count: int = Field(
-        default=10,
+        default=20,
         ge=1,
         description="Number of validation episodes (automatically matches episode_count by default)",
     )
@@ -233,7 +233,7 @@ class TrainConfig(BaseModel):
     )
     amp_dtype: str = Field(
         default_factory=lambda: _get_optimal_amp_dtype(),
-        description="AMP dtype (auto-detected: bfloat16 for modern GPUs, float16 for older)",
+        description="AMP dtype (auto-detected: float16 on supported accelerators, float32 on CPU)",
     )
 
     # Checkpointing
@@ -252,7 +252,7 @@ class TrainConfig(BaseModel):
     @classmethod
     def validate_amp_dtype(cls, v):
         """Ensure amp_dtype is valid."""
-        valid_dtypes = ["float16", "bfloat16", "float32"]
+        valid_dtypes = ["float16", "float32"]
         if v not in valid_dtypes:
             raise ValueError(f"amp_dtype must be one of {valid_dtypes}, got {v}")
         return v
@@ -300,8 +300,7 @@ def _should_use_amp() -> bool:
 def _get_optimal_amp_dtype() -> str:
     """
     Auto-detect optimal AMP dtype based on hardware.
-    - bfloat16: Ampere (A100, RTX 30xx) and newer, better numerical stability
-    - float16: Older GPUs (V100, RTX 20xx), wider support
+    - float16: GPUs and Apple Silicon with AMP support
     - float32: CPU or unsupported hardware
     """
     try:
@@ -310,18 +309,15 @@ def _get_optimal_amp_dtype() -> str:
         if torch.cuda.is_available():
             # Get compute capability
             major, minor = torch.cuda.get_device_capability(0)
-            # Ampere (8.0) and newer support bfloat16 natively
-            if major >= 8:
-                return "bfloat16"
-            # Volta/Turing support float16
-            elif major >= 7:
+            # Volta/Turing (7.x) and newer support float16
+            if major >= 7:
                 return "float16"
         # Apple Silicon supports float16 well
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "float16"
     except (ImportError, RuntimeError):
         pass
-    return "float16"  # Safe default
+    return "float32"  # Safe fallback when AMP is unavailable
 
 
 class LossWeightConfig(BaseModel):

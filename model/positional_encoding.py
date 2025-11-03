@@ -31,7 +31,7 @@ def apply_rotary_emb(states: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
           • (1, T, 1, d)
           • (B, T, H, d)
         It is fine (and common) for `cos`/`sin` to be float32 while `states`
-        are float16/bfloat16; the output is cast back to `states.dtype`.
+        are float16; the output is cast back to `states.dtype`.
     sin : torch.Tensor
         Sine factors, same shape/broadcasting rules as `cos`.
 

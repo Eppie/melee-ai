@@ -148,7 +148,7 @@ if __name__ == "__main__":
                 gamestate,
                 controllers[1],
                 Character.FOX,
-                Stage.FINAL_DESTINATION,
+                Stage.BATTLEFIELD,
                 costume=1,
                 autostart=False,
                 swag=False,

@@ -26,11 +26,8 @@ from controller_utils import (
 from feature_transforms import feature_spec_from_config
 from loss import compute_loss_components
 from model.nano_gpt import GPT
-from train import (
-    RunningMetrics,
-    build_inputs_for_gpt,
-    compute_value_targets,
-)
+from train.batch_utils import build_model_inputs as build_inputs_for_gpt
+from train.value_head import compute_value_targets
 from train.checkpoint import _latest_checkpoint
 from utils import _resolve_device
 from window_dataset import WindowDataset, worker_init_fn
@@ -945,102 +942,24 @@ def _update_enhanced_metrics(
     return last_pred_main, last_pred_c, last_true_main, last_true_c
 
 
-def _update_running_metrics(
-    metrics: RunningMetrics,
-    target_info: Dict[str, torch.Tensor],
-    pred_main_idx: torch.Tensor,
-    pred_c_idx: torch.Tensor,
-    btn_pred: torch.Tensor,
-    btn_probs: torch.Tensor,
-    logits_btn: torch.Tensor,
-    logits_shoulder: Optional[torch.Tensor],
-    change_stats_main: ChangeHoldStats,
-    change_stats_c: ChangeHoldStats,
-    change_stats_buttons: ChangeHoldStats,
-) -> None:
-    B, L = pred_main_idx.shape
 
-    target_main = target_info["main_idx"].view(B, L)
-    target_c = target_info["c_idx"].view(B, L)
-    target_btn = target_info["buttons"]
 
-    main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
-    main_change_mask[:, 1:] = target_main[:, 1:] != target_main[:, :-1]
-    main_hold_mask = ~main_change_mask
-    main_hold_mask[:, 0] = True
 
-    c_change_mask = torch.zeros_like(target_c, dtype=torch.bool)
-    c_change_mask[:, 1:] = target_c[:, 1:] != target_c[:, :-1]
-    c_hold_mask = ~c_change_mask
-    c_hold_mask[:, 0] = True
-
-    btn_change_mask = torch.zeros((B, L), dtype=torch.bool, device=target_btn.device)
-    btn_change_mask[:, 1:] = torch.any(target_btn[:, 1:] != target_btn[:, :-1], dim=-1)
-    btn_hold_mask = ~btn_change_mask
-    btn_hold_mask[:, 0] = True
-
-    main_major = metrics._majority_label(metrics.main_label_counts)
-    c_major = metrics._majority_label(metrics.c_label_counts)
-
-    rep_mask = torch.ones((B, L), dtype=torch.bool, device=target_main.device)
-    rep_mask[:, 0] = False
-    main_rep = torch.zeros_like(target_main)
-    c_rep = torch.zeros_like(target_c)
-    if L > 1:
-        main_rep[:, 1:] = target_main[:, :-1]
-        c_rep[:, 1:] = target_c[:, :-1]
-
-    metrics.update_main(
-        pred_main_idx.reshape(-1),
-        target_main.reshape(-1),
-        main_major,
-        main_rep.reshape(-1),
-        rep_mask.reshape(-1),
-    )
-    metrics.update_c(
-        pred_c_idx.reshape(-1),
-        target_c.reshape(-1),
-        c_major,
-        c_rep.reshape(-1),
-        rep_mask.reshape(-1),
-    )
-    metrics.update_buttons(logits_btn, target_btn, btn_probs)
-
-    if logits_shoulder is not None and target_info.get("shoulder_idx") is not None:
-        sh_major = (
-            metrics._majority_label(metrics.shoulder_label_counts)
-            if metrics.K_shoulder
-            else None
-        )
-        metrics.update_shoulder(logits_shoulder, target_info["shoulder_idx"], sh_major)
-
-    correct_main = pred_main_idx == target_main
-    correct_c = pred_c_idx == target_c
-    correct_btn_em = (btn_pred == target_btn).all(dim=-1)
-
-    change_stats_main.update(correct_main, main_change_mask, main_hold_mask)
-    change_stats_c.update(correct_c, c_change_mask, c_hold_mask)
-    change_stats_buttons.update(correct_btn_em, btn_change_mask, btn_hold_mask)
-
+from collections import defaultdict
+from train.metrics import multilabel_prf
 
 def _evaluate(
     model: GPT,
     loader: DataLoader,
     colmap: ColumnMap,
     device: torch.device,
-    button_thresholds: torch.Tensor,
     progress: bool,
     report_every: int,
     max_batches: Optional[int] = None,
 ) -> Dict[str, object]:
     config = get_config()
-    metrics = RunningMetrics(
-        K_main=config.model.target_shapes_by_head["main_stick"],
-        K_c=config.model.target_shapes_by_head["c_stick"],
-        K_buttons=config.model.target_shapes_by_head["buttons"],
-        K_shoulder=config.model.target_shapes_by_head["shoulder"],
-        device=device,
-    )
+
+    metrics = defaultdict(float)
 
     pred_counts_main = torch.zeros(
         config.model.target_shapes_by_head["main_stick"], dtype=torch.long
@@ -1089,9 +1008,6 @@ def _evaluate(
     results: Dict[str, object] = {}
 
     with torch.inference_mode():
-        threshold_vector = button_thresholds.to(device=device, dtype=torch.float32)
-        threshold_view = threshold_vector.view(1, 1, -1)
-
         for batch_idx, batch in enumerate(loader, start=1):
             if max_batches is not None and batch_idx > max_batches:
                 break
@@ -1123,21 +1039,26 @@ def _evaluate(
             pred_main_idx = logits_main.argmax(dim=-1)
             pred_c_idx = logits_c.argmax(dim=-1)
             btn_probs = torch.sigmoid(logits_btn)
-            btn_pred = (btn_probs > threshold_view).to(target_info["buttons"].dtype)
+            btn_pred = torch.bernoulli(btn_probs).to(target_info["buttons"].dtype)
 
-            _update_running_metrics(
-                metrics,
-                target_info,
-                pred_main_idx,
-                pred_c_idx,
-                btn_pred,
-                btn_probs,
-                logits_btn,
-                logits_shoulder,
-                change_stats_main,
-                change_stats_c,
-                change_stats_buttons,
-            )
+            # Update metrics directly
+            B, L = pred_main_idx.shape
+            target_main = target_info["main_idx"].view(B, L)
+            target_c = target_info["c_idx"].view(B, L)
+            target_btn = target_info["buttons"]
+
+            main_correct = (pred_main_idx == target_main).float().sum().item()
+            c_correct = (pred_c_idx == target_c).float().sum().item()
+            metrics["main_correct"] += main_correct
+            metrics["c_correct"] += c_correct
+            metrics["main_total"] += B * L
+            metrics["c_total"] += B * L
+
+            em_b, p_b, r_b, f1_b, f1_macro_b = multilabel_prf(target_btn, btn_pred)
+            metrics["btn_em_correct"] += em_b * B * L
+            metrics["btn_total"] += B * L
+            metrics["btn_f1_micro_sum"] += f1_b * B * L
+            metrics["btn_f1_macro_sum"] += f1_macro_b * B*L
 
             # Extract value prediction if available
             value_pred = pred.get("value")  # [B, L, 1] or None
@@ -1211,7 +1132,10 @@ def _evaluate(
 
             if progress:
                 running_loss = loss_sums["total"] / batch_idx
-                summary = metrics.summary()
+                acc_main = metrics["main_correct"] / metrics["main_total"]
+                acc_c = metrics["c_correct"] / metrics["c_total"]
+                btn_em = metrics["btn_em_correct"] / metrics["btn_total"]
+
                 pct = (
                     (batch_idx / total_batches) * 100.0
                     if total_batches
@@ -1219,20 +1143,21 @@ def _evaluate(
                 )
                 line = (
                     f"[{batch_idx}/{total_batches if total_batches else '?'} | {pct:5.1f}%] "
-                    f"loss {running_loss:.4f} | main acc {summary['acc_main']:.3f} "
+                    f"loss {running_loss:.4f} | main acc {acc_main:.3f} "
                     f"(chg {change_stats_main.change_acc():.3f} hold {change_stats_main.hold_acc():.3f}) | "
-                    f"c acc {summary['acc_c']:.3f} (chg {change_stats_c.change_acc():.3f} hold {change_stats_c.hold_acc():.3f}) | "
-                    f"btn EM {summary['btn_em']:.3f} (chg {change_stats_buttons.change_acc():.3f} hold {change_stats_buttons.hold_acc():.3f})"
+                    f"c acc {acc_c:.3f} (chg {change_stats_c.change_acc():.3f} hold {change_stats_c.hold_acc():.3f}) | "
+                    f"btn EM {btn_em:.3f} (chg {change_stats_buttons.change_acc():.3f} hold {change_stats_buttons.hold_acc():.3f})"
                 )
-                acc_shoulder = summary.get("acc_shoulder")
-                if acc_shoulder is not None:
-                    line += f" | shoulder acc {acc_shoulder:.3f}"
+                # acc_shoulder = summary.get("acc_shoulder")
+                # if acc_shoulder is not None:
+                #     line += f" | shoulder acc {acc_shoulder:.3f}"
                 print(line, flush=True)
 
                 if report_every and batch_idx % report_every == 0:
-                    _print_intermediate_summary(
-                        metrics, change_stats_main, change_stats_c, change_stats_buttons
-                    )
+                    # _print_intermediate_summary(
+                    #     metrics, change_stats_main, change_stats_c, change_stats_buttons
+                    # )
+                    pass
 
     elapsed = time.time() - start_time
     batches_processed = (
@@ -1255,74 +1180,15 @@ def _evaluate(
     results["raw_counts_main"] = raw_counts_main
     results["raw_counts_c"] = raw_counts_c
     results["raw_counts_shoulder"] = raw_counts_shoulder
-    results["button_thresholds"] = threshold_vector.cpu().tolist()
+
     results["enhanced"] = enhanced
     return results
 
 
-def _print_intermediate_summary(
-    metrics: RunningMetrics,
-    main_stats: ChangeHoldStats,
-    c_stats: ChangeHoldStats,
-    btn_stats: ChangeHoldStats,
-) -> None:
-    summary = metrics.summary()
-    print("Interim summary:")
-    print(
-        f"  Main acc {summary['acc_main']:.3f} | maj {summary['acc_main_maj']:.3f} | rep {summary['acc_main_rep']:.3f}"
-    )
-    print(
-        f"    change {main_stats.change_acc():.3f} | hold {main_stats.hold_acc():.3f}"
-    )
-    print(
-        f"  C acc {summary['acc_c']:.3f} | maj {summary['acc_c_maj']:.3f} | rep {summary['acc_c_rep']:.3f}"
-    )
-    print(f"    change {c_stats.change_acc():.3f} | hold {c_stats.hold_acc():.3f}")
-    print(
-        f"  Buttons EM {summary['btn_em']:.3f} | F1μ {summary['btn_f1_micro']:.3f} | F1_macro {summary['btn_f1_macro']:.3f}"
-    )
-    print(
-        f"    change {btn_stats.change_acc():.3f} | hold {btn_stats.hold_acc():.3f}",
-        flush=True,
-    )
 
 
-def _render_button_metrics(metrics: RunningMetrics) -> str:
-    total_frames = (
-        float(metrics.btn_total.item())
-        if isinstance(metrics.btn_total, torch.Tensor)
-        else float(metrics.btn_total)
-    )
-    tp = metrics.btn_tp.detach().cpu().numpy()
-    fp = metrics.btn_fp.detach().cpu().numpy()
-    fn = metrics.btn_fn.detach().cpu().numpy()
-    pos_counts = metrics.btn_pos_counts.detach().cpu().numpy()
-    neg_counts = total_frames - pos_counts
-    tn = np.maximum(neg_counts - fp, 0.0)
 
-    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0)
-    recall = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0)
-    f1 = np.divide(
-        2 * precision * recall,
-        precision + recall,
-        out=np.zeros_like(tp),
-        where=(precision + recall) > 0,
-    )
-    accuracy = np.divide(
-        tp + tn, total_frames, out=np.zeros_like(tp), where=total_frames > 0
-    )
-    pos_rate = np.divide(
-        pos_counts, total_frames, out=np.zeros_like(tp), where=total_frames > 0
-    )
 
-    lines = ["Per-button metrics:"]
-    button_names = CONTROLLER_KEY_GROUPS["buttons"]
-    for idx, name in enumerate(button_names):
-        label = _BUTTON_PRETTY.get(name, name.upper())
-        lines.append(
-            f"  {label:<6} acc {accuracy[idx]:.3f} | prec {precision[idx]:.3f} | rec {recall[idx]:.3f} | f1 {f1[idx]:.3f} | pos_rate {pos_rate[idx]:.3f}"
-        )
-    return "\n".join(lines)
 
 
 def _assign_to_palette(
@@ -1632,7 +1498,7 @@ def _print_final_summary(
     elapsed = results["elapsed"]
     total_frames = results["frames"]
     total_tokens = results["tokens"]
-    metrics: RunningMetrics = results["metrics"]
+    metrics: Dict[str, float] = results["metrics"]
     main_stats: ChangeHoldStats = results["main_change_stats"]
     c_stats: ChangeHoldStats = results["c_change_stats"]
     btn_stats: ChangeHoldStats = results["btn_change_stats"]
@@ -1650,8 +1516,8 @@ def _print_final_summary(
         if results.get("raw_counts_shoulder") is not None
         else None
     )
-    btn_true_press_counts = metrics.btn_pos_counts.detach().cpu().numpy()
-    button_thresholds = results.get("button_thresholds", [])
+    # btn_true_press_counts = metrics.btn_pos_counts.detach().cpu().numpy()
+
 
     avg_loss = {
         k: (v / batches if batches else float("nan")) for k, v in loss_sums.items()
@@ -1661,7 +1527,11 @@ def _print_final_summary(
         for k, v in loss_sums.items()
     }
 
-    summary = metrics.summary()
+    acc_main = _safe_div(metrics["main_correct"], metrics["main_total"])
+    acc_c = _safe_div(metrics["c_correct"], metrics["c_total"])
+    btn_em = _safe_div(metrics["btn_em_correct"], metrics["btn_total"])
+    btn_f1_micro = _safe_div(metrics["btn_f1_micro_sum"], metrics["btn_total"])
+    btn_f1_macro = _safe_div(metrics["btn_f1_macro_sum"], metrics["btn_total"])
 
     print("\n===== Validation Summary =====")
     print(f"Checkpoint: {checkpoint}")
@@ -1672,9 +1542,7 @@ def _print_final_summary(
     print(
         f"Elapsed:    {elapsed:.2f}s | {total_tokens / max(elapsed, 1e-9):,.0f} tokens/s"
     )
-    if button_thresholds:
-        formatted_thr = ", ".join(f"{thr:.3f}" for thr in button_thresholds)
-        print(f"Button thresholds: [{formatted_thr}]")
+
 
     print("\nLoss (per batch):")
     for key in ("total", "main", "c", "buttons", "shoulder"):
@@ -1686,7 +1554,7 @@ def _print_final_summary(
 
     print("\nMain Stick:")
     print(
-        f"  accuracy {summary['acc_main']:.3f} | majority {summary['acc_main_maj']:.3f} | repeat {summary['acc_main_rep']:.3f}"
+        f"  accuracy {acc_main:.3f}"
     )
     print(
         f"  change   {main_stats.change_acc():.3f} | hold {main_stats.hold_acc():.3f}"
@@ -1694,24 +1562,22 @@ def _print_final_summary(
 
     print("\nC-Stick:")
     print(
-        f"  accuracy {summary['acc_c']:.3f} | majority {summary['acc_c_maj']:.3f} | repeat {summary['acc_c_rep']:.3f}"
+        f"  accuracy {acc_c:.3f}"
     )
     print(f"  change   {c_stats.change_acc():.3f} | hold {c_stats.hold_acc():.3f}")
 
     print("\nButtons:")
     print(
-        f"  EM {summary['btn_em']:.3f} | F1μ {summary['btn_f1_micro']:.3f} | F1_macro {summary['btn_f1_macro']:.3f} | "
-        f"maj_EM {summary['btn_em_maj']:.3f} | rep_EM {summary['btn_em_rep']:.3f}"
+        f"  EM {btn_em:.3f} | F1μ {btn_f1_micro:.3f} | F1_macro {btn_f1_macro:.3f}"
     )
     print(f"  change {btn_stats.change_acc():.3f} | hold {btn_stats.hold_acc():.3f}")
-    print(_render_button_metrics(metrics))
 
-    acc_shoulder = summary.get("acc_shoulder")
-    if acc_shoulder is not None:
-        print("\nShoulder:")
-        print(
-            f"  accuracy {acc_shoulder:.3f} | majority {summary['acc_shoulder_maj']:.3f}"
-        )
+    # acc_shoulder = summary.get("acc_shoulder")
+    # if acc_shoulder is not None:
+    #     print("\nShoulder:")
+    #     print(
+    #         f"  accuracy {acc_shoulder:.3f} | majority {summary['acc_shoulder_maj']:.3f}"
+    #     )
 
     print("\nPrediction distributions:")
     print("  Main stick (top bins):")
@@ -1735,10 +1601,10 @@ def _print_final_summary(
             )
         )
 
-    print("  Button press rates:")
-    _print_button_press_distribution(
-        btn_press_counts, btn_true_press_counts, total_frames
-    )
+    # print("  Button press rates:")
+    # _print_button_press_distribution(
+    #     btn_press_counts, btn_true_press_counts, total_frames
+    # )
 
     # Value head summary
     enhanced: EnhancedMetrics = results.get("enhanced")
@@ -1832,12 +1698,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-progress", action="store_true", help="Disable per-batch progress output."
     )
-    parser.add_argument(
-        "--thresholds-path",
-        type=Path,
-        default=None,
-        help="Path to per-button threshold JSON (defaults to button_thresholds.json if present).",
-    )
+
     return parser.parse_args()
 
 
@@ -1893,7 +1754,19 @@ def main() -> None:
 
     colmap = ColumnMap.from_dataset(dataset)
 
-    model = GPT()
+    gamestate_dim = len(colmap.gamestate_idxs)
+    controller_dim = len(colmap.controller_idxs)
+
+    # Update the config with the dynamic dimensions
+    config.model.input_size = (
+        config.model.num_stages
+        + config.model.num_characters * 2
+        + config.model.num_actions * 2
+        + gamestate_dim
+        + controller_dim
+    )
+
+    model = GPT(config)
     # TODO: use loading from checkpoint.py
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(ckpt["model"])
@@ -1904,17 +1777,6 @@ def main() -> None:
     if "scaler" in ckpt:
         del ckpt["scaler"]
 
-    threshold_path = args.thresholds_path or _DEFAULT_THRESHOLD_PATH
-    threshold_path = _ensure_absolute(threshold_path, project_root)
-    threshold_values = _load_saved_button_thresholds(threshold_path)
-    if threshold_values is None:
-        threshold_values = [0.5] * len(CONTROLLER_KEY_GROUPS["buttons"])
-        print("No threshold file found; using 0.50 for all buttons")
-    else:
-        print(f"Loaded button thresholds from {threshold_path}")
-
-    button_thresholds = torch.tensor(threshold_values, dtype=torch.float32)
-
     print(
         f"Evaluating on {len(dataset):,} windows with batch size {batch_size} (device={device})"
     )
@@ -1924,7 +1786,6 @@ def main() -> None:
         loader,
         colmap,
         device,
-        button_thresholds,
         progress=not args.no_progress,
         report_every=args.report_every,
         max_batches=args.max_batches,

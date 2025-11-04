@@ -26,7 +26,7 @@ def _get_default_paths() -> tuple[str, str, str]:
     if system == "Darwin":
         return (
             "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX",
-            "/Users/eppie/PycharmProjects/nano-melee/processed_data_10",
+            "/Users/eppie/PycharmProjects/nano-melee/processed_data_1",
             "/Users/eppie/PycharmProjects/nano-melee/validation_set",
         )
     elif system == "Linux":
@@ -60,10 +60,10 @@ class ZarrConfig(BaseModel):
         description="Root directory for validation data (auto-detected by OS)",
     )
     episode_count: int = Field(
-        default=1000, ge=1, description="Number of episodes to process"
+        default=1, ge=1, description="Number of episodes to process"
     )
     validation_count: int = Field(
-        default=20,
+        default=1,
         ge=1,
         description="Number of validation episodes (automatically matches episode_count by default)",
     )

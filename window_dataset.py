@@ -421,7 +421,6 @@ class WindowDataset(Dataset):
         Xw = _apply_feature_transforms(Xw, self._feature_names, self.transforms)
         if Yw is not None:
             Yw = np.ascontiguousarray(Yw)
-            Yw = _apply_feature_transforms(Yw, self._target_names, self.transforms)
 
         if self._return_numpy:
             X_out = Xw.astype(np.float32, copy=False)

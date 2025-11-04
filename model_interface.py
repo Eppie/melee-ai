@@ -243,11 +243,8 @@ def _coerce_scalar(value: object) -> float | int | bool:
         ) from exc
 
 
-def set_feature_transforms(transforms: Optional[Any]) -> None:
+def set_feature_transforms(transforms: Any) -> None:
     """Configure per-feature transforms used at inference time."""
-    if not transforms:
-        constants._FEATURE_TRANSFORMS_SPEC = None
-        return
     constants._FEATURE_TRANSFORMS_SPEC = build_transform_spec(transforms)
 
 
@@ -258,7 +255,7 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
     """Apply the configured transform spec to the features mapping."""
     spec = _FEATURE_TRANSFORMS_SPEC
     if not spec or not spec.steps:
-        return features
+        spec = build_transform_spec(FeatureConfig().transforms)
 
     out = dict(features)
     keys = list(out.keys())

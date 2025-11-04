@@ -769,11 +769,11 @@ def main():
     init_config()
     config = get_config()
 
-    train_slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "*.slp")))[
+    train_slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp")))[
         : config.zarr.episode_count
     ]
     validation_slp_files = sorted(
-        glob.glob(os.path.join(config.zarr.input_root, "*.slp"))
+        glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp"))
     )[
         config.zarr.episode_count : config.zarr.episode_count
         + config.zarr.validation_count

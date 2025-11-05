@@ -311,7 +311,7 @@ def _forward_pass(
     ):
         inputs_td = build_model_inputs(X, components.colmap)
         target_info = quantize_controller_targets(
-            Y, components.colmap, input_domain="unit11"
+            Y, components.colmap, input_domain="unit01"
         )
         pred: TensorDict = components.model(inputs_td)
         weights = compute_component_sample_weights(

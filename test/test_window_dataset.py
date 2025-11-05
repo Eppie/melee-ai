@@ -46,8 +46,8 @@ def zarr_corpus(tmp_path: Path) -> Path:
     ep_group = root.create_group("ep_000000")
     x_data = np.random.rand(10, 2).astype(np.float32)
     y_data = np.random.rand(10, 2).astype(np.float32)
-    ep_group.create_dataset("X", data=x_data)
-    ep_group.create_dataset("Y", data=y_data)
+    ep_group.create_array("X", data=x_data)
+    ep_group.create_array("Y", data=y_data)
 
     return data_dir
 

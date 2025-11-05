@@ -170,6 +170,58 @@ class Schema:
     targets: List[str]
 
 
+def _player_active(rows: List[Row], prefix: str, *, stick_eps: float = 0.05, min_frames: int = 10) -> bool:
+    """Return True if the specified player shows meaningful controller input."""
+    stick_x = f"{prefix}main_stick_x"
+    stick_y = f"{prefix}main_stick_y"
+    c_x = f"{prefix}c_stick_x"
+    c_y = f"{prefix}c_stick_y"
+    shoulder = f"{prefix}shoulder_analog"
+    btn_fields = [
+        f"{prefix}button_a",
+        f"{prefix}button_b",
+        f"{prefix}button_xy",
+        f"{prefix}button_z",
+        f"{prefix}button_lr",
+    ]
+
+    active_frames = 0
+    for row in rows:
+        try:
+            if abs(getattr(row, stick_x, 0.5) - 0.5) > stick_eps:
+                active_frames += 1
+                if active_frames >= min_frames:
+                    return True
+                continue
+            if abs(getattr(row, stick_y, 0.5) - 0.5) > stick_eps:
+                active_frames += 1
+                if active_frames >= min_frames:
+                    return True
+                continue
+            if abs(getattr(row, c_x, 0.5) - 0.5) > stick_eps:
+                active_frames += 1
+                if active_frames >= min_frames:
+                    return True
+                continue
+            if abs(getattr(row, c_y, 0.5) - 0.5) > stick_eps:
+                active_frames += 1
+                if active_frames >= min_frames:
+                    return True
+                continue
+            if getattr(row, shoulder, 0.0) > 0.0:
+                active_frames += 1
+                if active_frames >= min_frames:
+                    return True
+                continue
+            if any(getattr(row, field, 0.0) > 0.0 for field in btn_fields):
+                active_frames += 1
+                if active_frames >= min_frames:
+                    return True
+        except AttributeError:
+            continue
+    return False
+
+
 def process_one_episode(raw_path: str) -> List[Row]:
     """Convert an ``.slp`` replay into a list of schema rows with filtering steps.
 
@@ -213,6 +265,12 @@ def process_one_episode(raw_path: str) -> List[Row]:
 
     if not rows:
         raise ValueError(f"No valid frames found in {raw_path}")
+
+    if not rows:
+        raise ValueError(f"No valid frames found in {raw_path}")
+
+    if not _player_active(rows, "p1_") or not _player_active(rows, "p2_"):
+        raise ValueError(f"Replay {raw_path} discarded due to inactive player(s).")
 
     return _row_to_winner_first(rows)
 
@@ -394,129 +452,6 @@ def _rows_to_dense(
 
     feature_names_out = list(base_feature_names)
     target_names_out = list(base_target_names)
-    # TODO: Compute the quantized and preprocessed versions of everything,
-    # while including the original features, while still getting the model shape/size right
-    # feat_name_to_idx = {name: idx for idx, name in enumerate(base_feature_names)}
-    # targ_name_to_idx = (
-    #     {name: idx for idx, name in enumerate(base_target_names)} if Yd else {}
-    # )
-    #
-    # quant_feature_blocks: List[np.ndarray] = []
-    # quant_feature_names: List[str] = []
-    #
-    # for prefix in ("p1_", "p2_"):
-    #     main_x = f"{prefix}main_stick_x"
-    #     main_y = f"{prefix}main_stick_y"
-    #     if main_x in feat_name_to_idx and main_y in feat_name_to_idx:
-    #         idxs = [feat_name_to_idx[main_x], feat_name_to_idx[main_y]]
-    #         main_quantized, _ = _quantize_stick_block_np(
-    #             X[:, idxs],
-    #             palette=_MAIN_STICK_PALETTE,
-    #             palette_norm=_MAIN_STICK_PALETTE_NORM,
-    #         )
-    #         quant_feature_blocks.append(main_quantized)
-    #         quant_feature_names.extend(
-    #             [
-    #                 f"{prefix}main_stick_quantized_x",
-    #                 f"{prefix}main_stick_quantized_y",
-    #             ]
-    #         )
-    #
-    #     c_x = f"{prefix}c_stick_x"
-    #     c_y = f"{prefix}c_stick_y"
-    #     if c_x in feat_name_to_idx and c_y in feat_name_to_idx:
-    #         idxs = [feat_name_to_idx[c_x], feat_name_to_idx[c_y]]
-    #         c_quantized, _ = _quantize_stick_block_np(
-    #             X[:, idxs],
-    #             palette=_C_STICK_PALETTE,
-    #             palette_norm=_C_STICK_PALETTE_NORM,
-    #         )
-    #         quant_feature_blocks.append(c_quantized)
-    #         quant_feature_names.extend(
-    #             [
-    #                 f"{prefix}c_stick_quantized_x",
-    #                 f"{prefix}c_stick_quantized_y",
-    #             ]
-    #         )
-    #
-    #     shoulder = f"{prefix}shoulder_analog"
-    #     if _SHOULDER_PALETTE is not None and shoulder in feat_name_to_idx:
-    #         col = feat_name_to_idx[shoulder]
-    #         shoulder_quantized, _ = _quantize_shoulder_np(X[:, col])
-    #         quant_feature_blocks.append(shoulder_quantized.reshape(-1, 1))
-    #         quant_feature_names.append(f"{prefix}shoulder_quantized")
-    #
-    # if quant_feature_blocks:
-    #     X = np.concatenate([X] + quant_feature_blocks, axis=1)
-    #     added_cols = sum(block.shape[1] for block in quant_feature_blocks)
-    #     feat_dtypes.extend(["float32"] * added_cols)
-    #     feature_names_out.extend(quant_feature_names)
-    #
-    # quant_target_blocks: List[np.ndarray] = []
-    # quant_target_names: List[str] = []
-    #
-    # if Yd > 0:
-    #     main_x = "p1_main_stick_x"
-    #     main_y = "p1_main_stick_y"
-    #     if main_x in targ_name_to_idx and main_y in targ_name_to_idx:
-    #         idxs = [targ_name_to_idx[main_x], targ_name_to_idx[main_y]]
-    #         main_quantized, main_idx = _quantize_stick_block_np(
-    #             Y[:, idxs],
-    #             palette=_MAIN_STICK_PALETTE,
-    #             palette_norm=_MAIN_STICK_PALETTE_NORM,
-    #         )
-    #         quant_target_blocks.append(main_quantized)
-    #         quant_target_names.extend(
-    #             [
-    #                 "p1_main_stick_quantized_x",
-    #                 "p1_main_stick_quantized_y",
-    #             ]
-    #         )
-    #         quant_target_blocks.append(
-    #             main_idx.astype(np.float32, copy=False).reshape(-1, 1)
-    #         )
-    #         quant_target_names.append("p1_main_stick_quantized_idx")
-    #
-    #     c_x = "p1_c_stick_x"
-    #     c_y = "p1_c_stick_y"
-    #     if c_x in targ_name_to_idx and c_y in targ_name_to_idx:
-    #         idxs = [targ_name_to_idx[c_x], targ_name_to_idx[c_y]]
-    #         c_quantized, c_idx = _quantize_stick_block_np(
-    #             Y[:, idxs],
-    #             palette=_C_STICK_PALETTE,
-    #             palette_norm=_C_STICK_PALETTE_NORM,
-    #         )
-    #         quant_target_blocks.append(c_quantized)
-    #         quant_target_names.extend(
-    #             [
-    #                 "p1_c_stick_quantized_x",
-    #                 "p1_c_stick_quantized_y",
-    #             ]
-    #         )
-    #         quant_target_blocks.append(
-    #             c_idx.astype(np.float32, copy=False).reshape(-1, 1)
-    #         )
-    #         quant_target_names.append("p1_c_stick_quantized_idx")
-    #
-    #     shoulder = "p1_shoulder_analog"
-    #     if _SHOULDER_PALETTE is not None and shoulder in targ_name_to_idx:
-    #         col = targ_name_to_idx[shoulder]
-    #         shoulder_quantized, shoulder_idx = _quantize_shoulder_np(Y[:, col])
-    #         quant_target_blocks.append(shoulder_quantized.reshape(-1, 1))
-    #         quant_target_names.append("p1_shoulder_quantized")
-    #         quant_target_blocks.append(
-    #             shoulder_idx.astype(np.float32, copy=False).reshape(-1, 1)
-    #         )
-    #         quant_target_names.append("p1_shoulder_quantized_idx")
-    #
-    # if quant_target_blocks:
-    #     if Y.shape[1] == 0:
-    #         Y = np.concatenate(quant_target_blocks, axis=1)
-    #     else:
-    #         Y = np.concatenate([Y] + quant_target_blocks, axis=1)
-    #     added_cols = sum(block.shape[1] for block in quant_target_blocks)
-    #     targ_dtypes.extend(["float32"] * added_cols)
-    #     target_names_out.extend(quant_target_names)
 
     return X, Y, feat_dtypes, targ_dtypes, feature_names_out, target_names_out
 

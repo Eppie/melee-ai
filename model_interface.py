@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections import deque
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import (
@@ -568,17 +569,25 @@ class GPTInferenceEngine:
     def _override_controller_features(
             self, features: Mapping[str, float]
     ) -> Dict[str, float]:
-        """Replace controller-related keys with cached values (optimized)."""
-        if not self._prev_controller_features:
+        """Prefer live controller readings, only fall back to cached values if missing."""
+        if not self._controller_feature_keys:
             return dict(features)
 
-        # Single dict creation with comprehension
-        return {
-            key: self._prev_controller_features.get(key, features[key])
-            if key in self._controller_feature_keys
-            else features[key]
-            for key in features
-        }
+        out = dict(features)
+        for key in self._controller_feature_keys:
+            if key not in out:
+                continue
+            val = out[key]
+            if val is None:
+                cached = self._prev_controller_features.get(key)
+                if cached is not None:
+                    out[key] = cached
+                continue
+            if isinstance(val, float) and math.isnan(val):
+                cached = self._prev_controller_features.get(key)
+                if cached is not None:
+                    out[key] = cached
+        return out
 
     def _update_prev_controller_features(self, state: ControllerState) -> None:
         """Cache the transformed controller state."""

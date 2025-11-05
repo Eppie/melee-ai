@@ -100,9 +100,9 @@ C_STICK_QUANTIZED: np.ndarray = np.array(
         [0.0, -1.0],  # 4 hard down
         [0.0, 1.0],  # 5 hard up
         [-0.7, -0.7],  # 6 down left
-        [0.7, -0.7],  # 7 up left
+        [0.7, -0.7],  # 7 down right
         [0.7, 0.7],  # 8 up right
-        [-0.7, 0.7],  # down right
+        [-0.7, 0.7],  # 9 up left
     ],
     dtype=np.float32,
 )

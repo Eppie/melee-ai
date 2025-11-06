@@ -78,6 +78,16 @@ def _mean_with_weights(
     return num / den
 
 
+def _blend_weights(weights: Optional[Tensor], scale: float) -> Optional[Tensor]:
+    if weights is None:
+        return None
+    if scale <= 0.0:
+        return torch.ones_like(weights)
+    if scale >= 1.0:
+        return weights
+    return torch.ones_like(weights) + (weights - 1.0) * scale
+
+
 def compute_loss_components(
     pred: Mapping[str, Tensor],
     target_info: Mapping[str, Any],
@@ -85,6 +95,8 @@ def compute_loss_components(
     label_smoothing: float,
     sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
     loss_config: Optional["LossConfig"] = None,
+    ce_weight_scale: float = 1.0,
+    pos_weight_scale: float = 1.0,
 ) -> Dict[str, Tensor]:
     """
     Accepts either:
@@ -136,6 +148,7 @@ def compute_loss_components(
     main_weights = _compute_ce_weights(
         main_targets, int(target_info["main_K"]), loss_config
     )
+    main_weights = _blend_weights(main_weights, ce_weight_scale)
     loss_main_vec = F.cross_entropy(
         main_logits,
         main_targets,
@@ -151,6 +164,7 @@ def compute_loss_components(
     c_weights = _compute_ce_weights(
         c_targets, int(target_info["c_K"]), loss_config
     )
+    c_weights = _blend_weights(c_weights, ce_weight_scale)
     loss_c_vec = F.cross_entropy(
         c_logits,
         c_targets,
@@ -163,6 +177,7 @@ def compute_loss_components(
     # --- BUTTONS (per-label weighting)
     target_btn = target_info["buttons"]
     pos_weight = _compute_pos_weights(target_btn, loss_config)  # [K_btn] or None
+    pos_weight = _blend_weights(pos_weight, pos_weight_scale)
     loss_btn_all = F.binary_cross_entropy_with_logits(
         logits_btn, target_btn, reduction="none", pos_weight=pos_weight
     )  # [B, L, K_btn]

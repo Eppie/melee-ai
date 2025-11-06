@@ -325,18 +325,14 @@ def _forward_pass(
         label_smoothing = base_smoothing + (final_smoothing - base_smoothing) * progress
         label_smoothing = float(max(label_smoothing, 0.0))
 
-        final_change_scale = getattr(
-            components.config.loss_weights, "change_weight_final_scale", 0.25
-        )
-        change_scale = 1.0 + (final_change_scale - 1.0) * progress
-        change_scale = float(max(change_scale, 0.0))
+        imbalance_scale = float(max(0.0, 1.0 - progress))
 
         weights = compute_component_sample_weights(
             target_info,
             components.device,
             ratios=components.ratios,
             button_names=CONTROLLER_KEY_GROUPS["buttons"],
-            change_scale=change_scale,
+            change_scale=imbalance_scale,
         )
 
         policy_loss_components = compute_loss_components(
@@ -345,6 +341,8 @@ def _forward_pass(
             label_smoothing=label_smoothing,
             sample_weights=weights,
             loss_config=config.loss_weights,
+            ce_weight_scale=imbalance_scale,
+            pos_weight_scale=imbalance_scale,
         )
         loss = policy_loss_components["total"]
         loss_components = dict(policy_loss_components)
@@ -385,7 +383,7 @@ def _forward_pass(
         batch_inputs=batch_inputs,
         batch_targets=batch_targets,
         label_smoothing=label_smoothing,
-        change_scale=change_scale,
+        change_scale=imbalance_scale,
     )
 
 def _compute_training_progress(
@@ -394,14 +392,19 @@ def _compute_training_progress(
     total_batches: int,
     total_epochs: int,
     warmup_epochs: int,
+    cooldown_epochs: int,
 ) -> float:
     warmup_epochs = max(warmup_epochs, 0)
-    if total_epochs <= warmup_epochs:
-        return 1.0
+    cooldown_epochs = max(cooldown_epochs, 0)
+    if total_epochs <= warmup_epochs + cooldown_epochs:
+        return 1.0 if epoch >= warmup_epochs else 0.0
+
     if epoch < warmup_epochs:
         return 0.0
+    if epoch >= total_epochs - cooldown_epochs:
+        return 1.0
 
-    effective_epochs = total_epochs - warmup_epochs
+    effective_epochs = total_epochs - warmup_epochs - cooldown_epochs
     epoch_offset = epoch - warmup_epochs
     if total_batches <= 0:
         progress = (epoch_offset + 1) / float(effective_epochs)
@@ -997,6 +1000,7 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             total_batches,
             config.train.epochs,
             config.train.schedule_warmup_epochs,
+            getattr(config.train, "schedule_cooldown_epochs", 1),
         )
         forward_result = _forward_pass(
             components,

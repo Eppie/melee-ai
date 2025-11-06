@@ -7,18 +7,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-# Optional wandb import
-try:
-    import wandb  # type: ignore
-
-    WANDB_AVAILABLE = True
-except ImportError:
-    wandb = None  # type: ignore
-    WANDB_AVAILABLE = False
+import wandb
 
 
-# TODO: Make proper use of the code here
 @dataclass
 class WandbConfig:
     """Configuration for wandb initialization."""
@@ -46,8 +37,7 @@ def init_wandb(
         Calling ``init_wandb`` with ``config.project="demo"`` and ``config.mode="online"`` loads the
         stored ID, sets ``WANDB_MODE=online`` in the environment, and calls ``wandb.init(project="demo",
         dir=str(run_dir), id="abc123", resume="allow")``. The returned run object is then cached so
-        subsequent launches reuse the same dashboard entry. If wandb is unavailable, the function
-        simply returns ``None``, illustrating both control-flow branches.
+        subsequent launches reuse the same dashboard entry.
 
     Args:
         config: Wandb configuration describing project metadata.
@@ -55,9 +45,9 @@ def init_wandb(
         hyperparameters: Optional dictionary logged to wandb's config section.
 
     Returns:
-        Wandb run object or ``None`` if wandb is unavailable or disabled.
+        Wandb run object or ``None`` if wandb is disabled.
     """
-    if not WANDB_AVAILABLE or config.mode == "disabled":
+    if config.mode == "disabled":
         return None
 
     try:
@@ -151,7 +141,7 @@ def finish_wandb() -> None:
         exception, the call is skipped, leaving the application unharmed. This demonstrates the
         defensive behaviour against missing dependencies.
     """
-    if WANDB_AVAILABLE and wandb is not None:
+    if wandb is not None:
         try:
             wandb.finish()
         except Exception:
@@ -159,9 +149,7 @@ def finish_wandb() -> None:
 
 
 class WandbLogger:
-    """Optional wandb logger with no-op behavior when unavailable.
-
-    Provides a consistent interface whether wandb is available or not.
+    """Optional wandb logger with no-op behavior. Provides a consistent interface.
     """
 
     def __init__(self, wandb_run: Optional[Any] = None, enabled: bool = True):
@@ -177,7 +165,7 @@ class WandbLogger:
             wandb_run: Wandb run object (from :func:`wandb.init`).
             enabled: Whether logging should be performed.
         """
-        self.run = wandb_run if WANDB_AVAILABLE else None
+        self.run = wandb_run
         self.enabled = enabled and self.run is not None
 
     def log_metrics(
@@ -223,86 +211,3 @@ class WandbLogger:
         # Prefix with "gradients/" for organization
         prefixed = {f"gradients/{k}": v for k, v in grad_stats.items()}
         self.log_metrics(prefixed, step, commit=False)
-
-    def log_loss_components(self, losses: Dict[str, float], step: int) -> None:
-        """Record individual loss components under the ``loss/`` namespace.
-
-        Example:
-            For ``losses={"main": 0.3, "buttons": 0.2}`` the method constructs
-            ``{"loss/main": 0.3, "loss/buttons": 0.2}`` and invokes :meth:`log_metrics` with
-            ``commit=False``. This allows callers to combine loss logging with other statistics within
-            the same wandb step.
-
-        Args:
-            losses: Dictionary of loss component names to values.
-            step: Global step number.
-        """
-        if not self.enabled:
-            return
-
-        # Prefix with "loss/" for organization
-        prefixed = {f"loss/{k}": v for k, v in losses.items()}
-        self.log_metrics(prefixed, step, commit=False)
-
-    def log_hyperparameters(self, params: Dict[str, Any]) -> None:
-        """Persist hyperparameters in ``wandb.config`` for reproducibility.
-
-        Example:
-            When ``params={"lr": 0.001, "batch_size": 64}``, the method iterates over the dictionary
-            and assigns ``wandb.config["lr"] = 0.001`` and ``wandb.config["batch_size"] = 64``. If
-            logging is disabled, the loop is skipped entirely. This showcases the mapping from input
-            dictionary to wandb's configuration namespace.
-
-        Args:
-            params: Dictionary of hyperparameter names to values.
-        """
-        if not self.enabled or self.run is None:
-            return
-
-        try:
-            for key, value in params.items():
-                wandb.config[key] = value
-        except Exception:
-            pass
-
-    def should_log_this_step(self, step: int, frequency: int = 10) -> bool:
-        """Return ``True`` when ``step`` is a multiple of ``frequency`` and logging is enabled.
-
-        Example:
-            With ``frequency=5`` and ``self.enabled=True``, calling ``should_log_this_step(10)`` returns
-            ``True`` because ``10 % 5 == 0``. Calling ``should_log_this_step(11)`` returns ``False``.
-            If ``self.enabled`` were ``False`` both calls would return ``False``. This demonstrates the
-            precise boolean condition used to decide whether to log.
-
-        Args:
-            step: Current step number.
-            frequency: Log every ``N`` steps.
-
-        Returns:
-            ``True`` if logging should happen this step, ``False`` otherwise.
-        """
-        return self.enabled and (step % frequency == 0)
-
-    def watch_model(
-        self, model: Any, log: str = "gradients", log_freq: int = 100
-    ) -> None:
-        """Register a model with wandb's watch API when logging is active.
-
-        Example:
-            ``watch_model(model, log="all", log_freq=50)`` triggers ``wandb.watch`` with the same
-            arguments, enabling parameter and gradient histograms in the UI. If wandb is disabled the
-            method returns without side effects, illustrating the guard that prevents unnecessary API
-            calls.
-
-        Args:
-            model: Model to watch.
-            log: What to log (``"gradients"``, ``"parameters"``, or ``"all"``).
-            log_freq: Frequency with which wandb should log model statistics.
-        """
-        if not self.enabled or self.run is None:
-            return
-
-        try:
-            wandb.watch(model, log=log, log_freq=log_freq)
-        except Exception:
-            pass

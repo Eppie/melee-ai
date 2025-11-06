@@ -226,6 +226,11 @@ class TrainConfig(BaseModel):
         ge=0,
         description="Number of epochs to keep label smoothing and change weights at their initial values before decay.",
     )
+    schedule_cooldown_epochs: int = Field(
+        default=1,
+        ge=0,
+        description="Number of epochs at the end to run with fully-unweighted losses (scale=0).",
+    )
 
     # AMP - auto-detect optimal dtype based on hardware
     use_amp: bool = Field(
@@ -364,11 +369,6 @@ class LossConfig(BaseModel):
     button_lr: float = Field(default=8.0, gt=0)
     hold_base: float = Field(default=1.0, gt=0)
     value_change: float = Field(default=8.0, gt=0)
-    change_weight_final_scale: float = Field(
-        default=0.25,
-        ge=0.0,
-        description="Final multiplier applied to change-frame sample weights after schedule decay.",
-    )
 
 
 class ProfileConfig(BaseModel):

@@ -188,18 +188,18 @@ def compute_component_sample_weights(
     """
     r = ratios or SampleWeightRatios()
     B, L = target_info["main_idx"].shape
-    change_scale = max(change_scale, 0.0)
-    main_change_weight = torch.as_tensor(r.main_change * change_scale, device=device)
-    c_change_weight = torch.as_tensor(r.c_change * change_scale, device=device)
-    shoulder_change_weight = torch.as_tensor(
-        r.shoulder_change * change_scale, device=device
-    )
-    hold_weight = torch.as_tensor(r.hold_base, device=device)
-    value_change_weight = (
-        torch.as_tensor(r.value_change * change_scale, device=device)
-        if r.value_change is not None
-        else None
-    )
+    change_scale = float(max(min(change_scale, 1.0), 0.0))
+
+    hold_weight = torch.as_tensor(r.hold_base, device=device, dtype=torch.float32)
+
+    def _blend(value: float) -> torch.Tensor:
+        base = torch.as_tensor(value, device=device, dtype=torch.float32)
+        return hold_weight + (base - hold_weight) * change_scale
+
+    main_change_weight = _blend(r.main_change)
+    c_change_weight = _blend(r.c_change)
+    shoulder_change_weight = _blend(r.shoulder_change)
+    value_change_weight = _blend(r.value_change) if r.value_change is not None else None
 
     # --- MAIN ---
     main_idx = target_info["main_idx"]  # [B, L]
@@ -237,15 +237,16 @@ def compute_component_sample_weights(
         btn_change[:, 1:, :] = btn_t[:, 1:, :] != btn_t[:, :-1, :]
 
     # Build per-button change ratios
+    base_button = float(_blend(r.buttons_change_default).item())
     per_button_ratio = torch.full(
         (K,),
-        float(r.buttons_change_default * change_scale),
+        base_button,
         device=device,
         dtype=torch.float32,
     )
     for k, name in enumerate(button_names):
         if name in r.buttons_change_per_key:
-            per_button_ratio[k] = float(r.buttons_change_per_key[name] * change_scale)
+            per_button_ratio[k] = float(_blend(r.buttons_change_per_key[name]).item())
 
     # weights = hold_base on holds; ratio_k on changes of button k
     w_buttons = torch.where(

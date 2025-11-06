@@ -26,13 +26,13 @@ def _get_default_paths() -> tuple[str, str, str]:
     if system == "Darwin":
         return (
             "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX",
-            "/Users/eppie/PycharmProjects/nano-melee/processed_data_1",
+            "/Users/eppie/PycharmProjects/nano-melee/processed_data_250",
             "/Users/eppie/PycharmProjects/nano-melee/validation_set",
         )
     elif system == "Linux":
         return (
             "/home/eppie/hal/replays",
-            "/home/eppie/melee-ai/processed_data_10",
+            "/home/eppie/melee-ai/processed_data_250",
             "/home/eppie/melee-ai/validation_set",
         )
     raise ValueError(f"Unknown operating system: {system}")
@@ -60,10 +60,10 @@ class ZarrConfig(BaseModel):
         description="Root directory for validation data (auto-detected by OS)",
     )
     episode_count: int = Field(
-        default=1, ge=1, description="Number of episodes to process"
+        default=250, ge=1, description="Number of episodes to process"
     )
     validation_count: int = Field(
-        default=1,
+        default=10,
         ge=1,
         description="Number of validation episodes (automatically matches episode_count by default)",
     )
@@ -78,7 +78,7 @@ class ZarrConfig(BaseModel):
     # Blosc compressor - must always be a valid codec
     compressor: BloscCodec = Field(
         default_factory=lambda: BloscCodec(
-            cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle
+            cname="zstd", clevel=3, shuffle=BloscShuffle.bitshuffle
         ),
         description="Blosc compressor configuration",
     )
@@ -102,7 +102,7 @@ class ZarrConfig(BaseModel):
         """Ensure compressor is always a valid BloscCodec."""
         # If None, create default
         if v is None:
-            return BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle)
+            return BloscCodec(cname="zstd", clevel=3, shuffle=BloscShuffle.bitshuffle)
 
         # If it's a dict (from JSON), reconstruct the BloscCodec
         if isinstance(v, dict):
@@ -110,7 +110,7 @@ class ZarrConfig(BaseModel):
             if "configuration" in v:
                 config = v["configuration"]
                 cname = config.get("cname", "zstd")
-                clevel = config.get("clevel", 7)
+                clevel = config.get("clevel", 3)
                 shuffle_str = config.get("shuffle", "bitshuffle")
                 shuffle = (
                     BloscShuffle[shuffle_str]
@@ -121,7 +121,7 @@ class ZarrConfig(BaseModel):
 
             # Handle simple dict format
             cname = v.get("cname", "zstd")
-            clevel = v.get("clevel", 7)
+            clevel = v.get("clevel", 3)
             shuffle_val = v.get("shuffle", BloscShuffle.bitshuffle)
 
             # Handle shuffle as string or enum
@@ -137,7 +137,7 @@ class ZarrConfig(BaseModel):
         if isinstance(v, BloscCodec):
             return v
 
-        return BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle)
+        return BloscCodec(cname="zstd", clevel=3, shuffle=BloscShuffle.bitshuffle)
 
     @model_validator(mode="after")
     def validate_paths_and_sharding(self):
@@ -154,7 +154,7 @@ class ZarrConfig(BaseModel):
             object.__setattr__(
                 self,
                 "compressor",
-                BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle),
+                BloscCodec(cname="zstd", clevel=3, shuffle=BloscShuffle.bitshuffle),
             )
 
         # Double-check it's a valid BloscCodec instance
@@ -207,7 +207,7 @@ class TrainConfig(BaseModel):
     )
 
     batch_size: int = Field(default=128, ge=1)
-    epochs: int = Field(default=100, ge=1)
+    epochs: int = Field(default=10, ge=1)
     lr: float = Field(default=1.3e-4, gt=0)
     weight_decay: float = Field(default=0.002, ge=0)
     betas: Tuple[float, float] = Field(default=(0.9, 0.95))

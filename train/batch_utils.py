@@ -147,6 +147,7 @@ def compute_component_sample_weights(
     *,
     ratios: Optional[SampleWeightRatios] = None,
     button_names: Optional[Sequence[str]] = None,
+    change_scale: float = 1.0,
 ) -> Dict[str, Tensor]:
     """Construct dynamic loss weights that emphasize frames where actions change.
 
@@ -175,6 +176,7 @@ def compute_component_sample_weights(
         device: Target device for the constructed tensors.
         ratios: Optional override for the default :class:`SampleWeightRatios`.
         button_names: Optional list of button names that aligns with the ``buttons`` tensor.
+        change_scale: Multiplier applied to all change weights (1.0 keeps original ratios).
 
     Returns:
         Dictionary with per-component weight tensors:
@@ -186,17 +188,25 @@ def compute_component_sample_weights(
     """
     r = ratios or SampleWeightRatios()
     B, L = target_info["main_idx"].shape
+    change_scale = max(change_scale, 0.0)
+    main_change_weight = torch.as_tensor(r.main_change * change_scale, device=device)
+    c_change_weight = torch.as_tensor(r.c_change * change_scale, device=device)
+    shoulder_change_weight = torch.as_tensor(
+        r.shoulder_change * change_scale, device=device
+    )
+    hold_weight = torch.as_tensor(r.hold_base, device=device)
+    value_change_weight = (
+        torch.as_tensor(r.value_change * change_scale, device=device)
+        if r.value_change is not None
+        else None
+    )
 
     # --- MAIN ---
     main_idx = target_info["main_idx"]  # [B, L]
     main_change = torch.zeros((B, L), device=device, dtype=torch.bool)
     if L > 1:
         main_change[:, 1:] = main_idx[:, 1:] != main_idx[:, :-1]
-    w_main = torch.where(
-        main_change,
-        torch.as_tensor(r.main_change, device=device),
-        torch.as_tensor(r.hold_base, device=device),
-    ).to(torch.float32)
+    w_main = torch.where(main_change, main_change_weight, hold_weight).to(torch.float32)
     w_main = _normalize(w_main)
 
     # --- C-STICK ---
@@ -204,11 +214,7 @@ def compute_component_sample_weights(
     c_change = torch.zeros((B, L), device=device, dtype=torch.bool)
     if L > 1:
         c_change[:, 1:] = c_idx[:, 1:] != c_idx[:, :-1]
-    w_c = torch.where(
-        c_change,
-        torch.as_tensor(r.c_change, device=device),
-        torch.as_tensor(r.hold_base, device=device),
-    ).to(torch.float32)
+    w_c = torch.where(c_change, c_change_weight, hold_weight).to(torch.float32)
     w_c = _normalize(w_c)
 
     sh_idx = target_info.get("shoulder_idx")
@@ -216,11 +222,7 @@ def compute_component_sample_weights(
     sh_change = torch.zeros((B, L), device=device, dtype=torch.bool)
     if L > 1:
         sh_change[:, 1:] = sh_idx[:, 1:] != sh_idx[:, :-1]
-    w_shoulder = torch.where(
-        sh_change,
-        torch.as_tensor(r.shoulder_change, device=device),
-        torch.as_tensor(r.hold_base, device=device),
-    ).to(torch.float32)
+    w_shoulder = torch.where(sh_change, shoulder_change_weight, hold_weight).to(torch.float32)
     w_shoulder = _normalize(w_shoulder)
 
     # --- BUTTONS (per-button) ---
@@ -236,17 +238,20 @@ def compute_component_sample_weights(
 
     # Build per-button change ratios
     per_button_ratio = torch.full(
-        (K,), float(r.buttons_change_default), device=device, dtype=torch.float32
+        (K,),
+        float(r.buttons_change_default * change_scale),
+        device=device,
+        dtype=torch.float32,
     )
     for k, name in enumerate(button_names):
         if name in r.buttons_change_per_key:
-            per_button_ratio[k] = float(r.buttons_change_per_key[name])
+            per_button_ratio[k] = float(r.buttons_change_per_key[name] * change_scale)
 
     # weights = hold_base on holds; ratio_k on changes of button k
     w_buttons = torch.where(
         btn_change,
         per_button_ratio.view(1, 1, K),
-        torch.as_tensor(r.hold_base, device=device).view(1, 1, 1),
+        hold_weight.view(1, 1, 1),
     ).to(torch.float32)
     w_buttons = _normalize(w_buttons)
 
@@ -255,11 +260,15 @@ def compute_component_sample_weights(
     union_change = union_change | sh_change
     union_change = union_change | btn_change.any(dim=-1)
 
-    value_ratio = r.value_change if (r.value_change is not None) else r.main_change
+    value_ratio = (
+        value_change_weight
+        if value_change_weight is not None
+        else main_change_weight
+    )
     w_global = torch.where(
         union_change,
-        torch.as_tensor(value_ratio, device=device),
-        torch.as_tensor(r.hold_base, device=device),
+        value_ratio,
+        hold_weight,
     ).to(torch.float32)
     w_global = _normalize(w_global)
 

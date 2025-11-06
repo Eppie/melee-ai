@@ -13,92 +13,14 @@ import tqdm
 import zarr
 
 from config import get_config, init_config
-from constants import _SHOULDER_PALETTE
+from data_types import RawNumpyArray
 from libmelee.melee.console import Console
 from libmelee.melee.gamestate import GameState
 from schema import Row, extract_row, get_feature_names, get_target_names
 
-
 ROW_FIELDS = tuple(fields(Row))
 
 # TODO: Rename this file
-# TODO: exclude too-short and too-long replays
-
-
-# TODO: this is implemented elsewhere
-def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
-    """Rescale ``[0, 1]`` stick coordinates to ``[-1, 1]`` while clamping overflow.
-
-    Example
-    -------
-    ``xy01 = [[0.0, 1.0], [0.75, 0.75]]`` becomes ``[[-0.7071, 0.7071], [0.5, 0.5]]``
-    after scaling and unit-circle projection, matching the preprocessing used in
-    dataset creation.
-    """
-    xy01_clipped = np.clip(xy01, 0.0, 1.0)
-    xy11 = xy01_clipped * 2.0 - 1.0
-    norms = np.linalg.norm(xy11, axis=1, keepdims=True)
-    mask = norms > 1.0
-    if np.any(mask):
-        xy11[mask] /= norms[mask]
-    return xy11
-
-
-def _quantize_stick_block_np(
-    values: np.ndarray,
-    *,
-    palette: np.ndarray,
-    palette_norm: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Snap ``values`` to the nearest stick palette entries with an example.
-
-    Example
-    -------
-    With ``values=[[0.2, 0.9], [1.1, -0.4]]`` and a four-direction palette, the
-    helper clamps the second row, computes squared distances to every palette
-    vector, and returns the closest palette coordinates along with their indices.
-    The result mirrors how controller targets are quantized during dataset build.
-    """
-    if values.shape[1] != 2:
-        raise ValueError("Stick quantization expects two columns (x, y).")
-
-    arr = values.astype(np.float32, copy=False)
-    if np.any(arr < 0.0) or np.any(arr > 1.0):
-        xy11 = np.clip(arr, -1.0, 1.0).copy()
-        norms = np.linalg.norm(xy11, axis=1, keepdims=True)
-        mask = norms > 1.0
-        if np.any(mask):
-            xy11[mask] /= norms[mask]
-    else:
-        xy01 = np.clip(arr, 0.0, 1.0)
-        xy11 = _sticks01_to_unit11_np(xy01.copy())
-
-    dot = xy11 @ palette.T
-    norm = np.sum(xy11**2, axis=1, keepdims=True)
-    d2 = norm - 2.0 * dot + palette_norm.T
-    idx = np.argmin(d2, axis=1)
-    quantized = palette[idx]
-    return quantized.astype(np.float32, copy=False), idx.astype(np.int32, copy=False)
-
-
-def _quantize_shoulder_np(values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Quantize shoulder analog values to the predefined palette.
-
-    Example
-    -------
-    ``values=[0.05, 0.9]`` yields palette values ``[0.0, 0.55]`` with indices
-    ``[0, 3]`` when ``SHOULDER_QUANTIZED=[0.0, 0.31, 0.42, 0.55, 1.0]``, snapping
-    each entry to the greatest palette value that does not exceed the input.
-    """
-    if _SHOULDER_PALETTE is None:
-        raise RuntimeError("Shoulder quantization requested but no palette is defined.")
-    arr = values.astype(np.float32, copy=False).reshape(-1)
-    palette = _SHOULDER_PALETTE
-    idx = np.searchsorted(palette, arr, side="right") - 1
-    idx = np.clip(idx, 0, palette.shape[0] - 1)
-    quantized = _SHOULDER_PALETTE[idx]
-    return quantized.astype(np.float32, copy=False), idx.astype(np.int32, copy=False)
-
 
 def extract(game_state: GameState) -> Row:
     """Extract a :class:`Row` of schema-aligned fields from ``game_state``.
@@ -332,7 +254,7 @@ class EpisodeWriter:
             self._chunk_t_cache[F] = ct
         return self._chunk_t_cache[F]
 
-    def write_episode(self, episode_id: int, X: np.ndarray, Y: np.ndarray) -> str:
+    def write_episode(self, episode_id: int, X: RawNumpyArray, Y: RawNumpyArray) -> str:
         """Write ``X``/``Y`` arrays for ``episode_id`` into the shard.
 
         Example
@@ -400,7 +322,7 @@ class ShardResult:
 
 def _rows_to_dense(
     rows: Sequence[object], schema: Schema
-) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[str], List[str]]:
+) -> Tuple[RawNumpyArray, RawNumpyArray, List[str], List[str], List[str], List[str]]:
     """Convert a list of :class:`Row` objects into feature/target matrices.
 
     Example
@@ -459,7 +381,7 @@ def _rows_to_dense(
 def _process_episode_task(
     raw_path: str,
     schema: Schema,
-) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], List[str], List[str]]:
+) -> Tuple[RawNumpyArray, RawNumpyArray, List[str], List[str], List[str], List[str]]:
     """Process a single episode path inside the multiprocessing pool.
 
     Example

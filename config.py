@@ -8,13 +8,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 from zarr.codecs import BloscCodec, BloscShuffle
 
-from constants import BUTTON_TARGET_NAMES
-from controller_utils import (
-    CONTROL_STICK_QUANTIZED,
-    C_STICK_QUANTIZED,
-    SHOULDER_QUANTIZED,
-)
-
 
 def _get_default_paths() -> tuple[str, str, str]:
     """
@@ -225,6 +218,14 @@ class TrainConfig(BaseModel):
     # Losses
     grad_clip: float = Field(default=5.0, gt=0)
     label_smoothing: float = Field(default=0.02, ge=0, le=1)
+    label_smoothing_final: float = Field(
+        default=0.0, ge=0, le=1, description="Target label smoothing after full training schedule."
+    )
+    schedule_warmup_epochs: int = Field(
+        default=1,
+        ge=0,
+        description="Number of epochs to keep label smoothing and change weights at their initial values before decay.",
+    )
 
     # AMP - auto-detect optimal dtype based on hardware
     use_amp: bool = Field(
@@ -363,6 +364,11 @@ class LossConfig(BaseModel):
     button_lr: float = Field(default=8.0, gt=0)
     hold_base: float = Field(default=1.0, gt=0)
     value_change: float = Field(default=8.0, gt=0)
+    change_weight_final_scale: float = Field(
+        default=0.25,
+        ge=0.0,
+        description="Final multiplier applied to change-frame sample weights after schedule decay.",
+    )
 
 
 class ProfileConfig(BaseModel):
@@ -399,6 +405,7 @@ class GPTConfig(BaseModel):
     n_layer: int = Field(default=4, ge=1)
     n_head: int = Field(default=8, ge=1)
     dropout: float = Field(default=0.03, ge=0, le=1)
+    # TODO: Fix this dynamic computation
     input_size: int = Field(default=-1, description="Computed dynamically")
     num_stages: int = Field(default=6, ge=1)
     num_characters: int = Field(default=26, ge=1)

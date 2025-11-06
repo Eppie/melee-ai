@@ -10,9 +10,9 @@ import torch
 import zarr
 from torch.utils.data import Dataset, Sampler
 
-from config import FeatureConfig, get_config
-from utils import _resolve_device
+from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor, RawTorchTensor
 from feature_transforms import FeatureTransformSpec, feature_spec_from_config
+from utils import _resolve_device
 
 
 @dataclass(frozen=True)
@@ -21,71 +21,6 @@ class EpisodeInfo:
     shard_id: int
     num_frames: int  # = X.shape[0] = Y.shape[0]
     num_windows: int  # = max(frames - seq_len + 1, 0)
-
-
-# keys are randomly distributed, so hit rate is inversely proportional to the number of episodes
-class _LRUEpisodeCache:
-    """Tiny per-worker cache for opened episode arrays to cut directory lookups."""
-
-    def __init__(self, max_open: int = 8) -> None:
-        """Initialize the cache and show how capacity behaves in practice.
-
-        Example
-        -------
-        ``cache = _LRUEpisodeCache(max_open=2)`` starts empty. After calling
-        ``cache.put((0, 1), (X0, Y0))`` and ``cache.put((0, 2), (X1, Y1))`` both
-        entries remain. Inserting ``cache.put((0, 3), (X2, Y2))`` pushes out the
-        oldest ``(0, 1)`` pair so subsequent ``get`` calls only see the two most
-        recently touched episodes.
-        """
-        self.max_open = max_open
-        self._keys: List[Tuple[int, int]] = []  # (shard_id, episode_id)
-        self._vals: List[Tuple[zarr.Array, Optional[zarr.Array]]] = []
-
-    def get(
-        self, key: Tuple[int, int]
-    ) -> Optional[Tuple[zarr.Array, Optional[zarr.Array]]]:
-        """Retrieve and mark an entry as recently used with a concrete trace.
-
-        Example
-        -------
-        If ``cache`` already stored ``(0, 5) -> (X5, None)`` and ``(0, 6) -> (X6, Y6)``,
-        calling ``cache.get((0, 5))`` returns ``(X5, None)`` and rotates that key to
-        the end of ``_keys`` so the next eviction would remove ``(0, 6)`` instead.
-        Requesting an unseen key yields ``None`` without mutating the cache.
-        """
-        try:
-            i = self._keys.index(key)
-        except ValueError:
-            return None
-        # LRU touch
-        self._keys.append(self._keys.pop(i))
-        self._vals.append(self._vals.pop(i))
-        return self._vals[-1]
-
-    def put(
-        self, key: Tuple[int, int], value: Tuple[zarr.Array, Optional[zarr.Array]]
-    ) -> None:
-        """Insert ``key`` while maintaining the maximum cache size.
-
-        Example
-        -------
-        Starting from ``[(0, 1), (0, 2)]`` in ``_keys`` with ``max_open=2``:
-
-        1. ``put((0, 2), v)`` updates the value and moves ``(0, 2)`` to the end so
-           it becomes the most recent entry.
-        2. ``put((0, 3), v3)`` appends ``(0, 3)`` and pops ``(0, 1)`` from the
-           front, ensuring only the two newest handles remain cached.
-        """
-        if key in self._keys:
-            i = self._keys.index(key)
-            self._keys.pop(i)
-            self._vals.pop(i)
-        self._keys.append(key)
-        self._vals.append(value)
-        if len(self._keys) > self.max_open:
-            self._keys.pop(0)
-            self._vals.pop(0)
 
 
 # TODO: Can we do this with a generator? If not, can we compute it at dataset generation time?
@@ -198,26 +133,17 @@ class ZarrCorpusIndex:
 
     def open_episode_arrays(
         self,
-        ep: EpisodeInfo,
-        *,
-        cache: Optional[_LRUEpisodeCache] = None,
+        ep: EpisodeInfo
     ) -> Tuple[zarr.Array, Optional[zarr.Array]]:
-        """Open and optionally cache the ``X``/``Y`` arrays for ``ep``.
+        """Open the ``X``/``Y`` arrays for ``ep``.
 
         Example
         -------
         When ``ep`` describes ``episode_id=7`` in ``shard_00002.zarr``, the method
         locates the shard directory, opens ``root['ep_000007']``, and returns the
-        ``X`` and ``Y`` arrays. Supplying a cache reuses the same handles when the
-        worker revisits the episode later in the same epoch, saving filesystem
-        round-trips.
+        ``X`` and ``Y`` arrays.
         """
         key = (ep.shard_id, ep.episode_id)
-        if cache is not None:
-            cached = cache.get(key)
-            if cached is not None:
-                return cached
-
         shard_path = self._shard_paths.get(ep.shard_id)
         if shard_path is None:
             raise FileNotFoundError(f"Shard path not found for shard_id={ep.shard_id}")
@@ -230,8 +156,6 @@ class ZarrCorpusIndex:
         X = epg["X"]  # shape (T, F), float32
         Y = epg.get("Y", None)  # shape (T, Yd) or missing
 
-        if cache is not None:
-            cache.put(key, (X, Y))
         return X, Y
 
 
@@ -277,8 +201,8 @@ def _resolve_feature_groups(
 
 
 def _apply_feature_transforms(
-    X: np.ndarray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
-) -> np.ndarray:
+    X: RawNumpyArray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
+) -> ProcessedNumpyArray:
     """Apply configured transforms to every requested column with a trace.
 
     Example
@@ -293,8 +217,6 @@ def _apply_feature_transforms(
     ``[[2., 6.], [3., 8.]]``. The modified array is returned, demonstrating the
     in-place but staged nature of the transform pipeline.
     """
-    if spec is None or not spec.steps:
-        return X
 
     out = X
     for step in spec.steps:
@@ -344,16 +266,13 @@ class WindowDataset(Dataset):
         self,
         data_dir: str | Path,
         *,
-        feature_transforms: Optional[FeatureTransformSpec] = None,
-        ep_cache_size: int = 8,
-        return_numpy: bool = False,
+        feature_transforms: Optional[FeatureTransformSpec] = None
     ) -> None:
         """Prepare the dataset by indexing shards and wiring transforms.
 
         Example
         -------
-        ``WindowDataset('dataset_root', ep_cache_size=1)`` loads corpus metadata,
-        builds an LRU cache that keeps one episode open per worker, and stores the
+        ``WindowDataset('dataset_root')`` loads corpus metadata and stores the
         requested transform spec so future ``__getitem__`` calls transparently
         apply preprocessing before returning tensors.
         """
@@ -362,13 +281,6 @@ class WindowDataset(Dataset):
         self.index = ZarrCorpusIndex(data_dir)
         self.seq_len = self.index.seq_len
         self.transforms = feature_transforms
-        # TODO: How much does this actually help?
-        self._cache = _LRUEpisodeCache(max_open=ep_cache_size)
-        # TODO: Why do we have this?
-        self._return_numpy = (
-            return_numpy  # if True, return np.float32 arrays instead of torch tensors
-        )
-
         self._feature_names = tuple(self.index.feature_names)
         self._target_names = tuple(self.index.target_names)
         self._feature_names_sel = list(self._feature_names)
@@ -395,9 +307,8 @@ class WindowDataset(Dataset):
            frames ``[1:4]`` from the episode arrays.
         2. After copying into contiguous buffers we run feature transforms such as
            scaling or palette snapping.
-        3. If ``return_numpy`` is ``False`` the arrays are converted to
-           ``torch.float32`` tensors and the target array defaults to shape
-           ``(3, 0)`` when an episode lacks ``Y`` data.
+        3. The arrays are converted to ``torch.float32`` tensors and the target array
+           defaults to shape ``(3, 0)`` when an episode lacks ``Y`` data.
 
         The method returns a dictionary containing the tensors alongside the
         ``episode_id`` and the local ``start`` offset, mirroring the exact payload
@@ -408,38 +319,21 @@ class WindowDataset(Dataset):
         start = offset  # within episode, window starts at this index
         L = self.seq_len
 
-        Xa, Ya = self.index.open_episode_arrays(
-            ep,
-            cache=self._cache,
-        )
+        feature_array, target_array = self.index.open_episode_arrays(ep)
         # Slice contiguous window; arrays are (T, F) and (T, Yd)
-        Xw = Xa[start : start + L, :]  # (L, F)
-        Yw = None if Ya is None else Ya[start : start + L, :]  # (L, Yd)
+        feature_window = feature_array[start : start + L, :]  # (L, F)
+        target_window = target_array[start : start + L, :]  # (L, Yd)
 
         # Apply per-feature transforms (in-place on view)
-        Xw = np.ascontiguousarray(Xw)  # ensure contiguous for in-place ops
-        Xw = _apply_feature_transforms(Xw, self._feature_names, self.transforms)
-        if Yw is not None:
-            Yw = np.ascontiguousarray(Yw)
-
-        if self._return_numpy:
-            X_out = Xw.astype(np.float32, copy=False)
-            Y_out = (
-                Yw.astype(np.float32, copy=False)
-                if Yw is not None
-                else np.empty((L, 0), dtype=np.float32)
-            )
-        else:
-            X_out = torch.from_numpy(Xw.astype(np.float32, copy=False))
-            Y_out = (
-                torch.from_numpy(Yw.astype(np.float32, copy=False))
-                if Yw is not None
-                else torch.empty((L, 0), dtype=torch.float32)
-            )
+        feature_window: RawNumpyArray = np.ascontiguousarray(feature_window)  # ensure contiguous for in-place ops
+        feature_window: ProcessedNumpyArray = _apply_feature_transforms(feature_window, self._feature_names, self.transforms)
+        features_out: ProcessedTorchTensor = torch.from_numpy(feature_window.astype(np.float32, copy=False))
+        targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
+        targets_out = torch.from_numpy(targets_as_numpy.astype(np.float32, copy=False))
 
         return {
-            "X": X_out,
-            "Y": Y_out,
+            "X": features_out,
+            "Y": targets_out,
             "episode_id": ep.episode_id,
             "start": start,
         }
@@ -620,7 +514,6 @@ def make_dataloader(
     ds = WindowDataset(
         config.zarr.out_root,
         feature_transforms=feature_spec,
-        return_numpy=False,
     )
 
     stride = config.train.stride

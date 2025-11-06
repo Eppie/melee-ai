@@ -623,7 +623,6 @@ def _prepare_dataloader(
     dataset = WindowDataset(
         data_dir=str(data_root),
         feature_transforms=feature_spec,
-        return_numpy=False,
     )
 
     mp_ctx = None

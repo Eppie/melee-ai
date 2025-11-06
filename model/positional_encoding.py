@@ -26,7 +26,7 @@ def apply_rotary_emb(states: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
         multi-head attention. The last dimension must be even (2d).
     cos : torch.Tensor
         Cosine factors with last dimension d. Must be broadcastable to
-        x1/x2’s shape (B, T, H, d). Common shapes:
+        x1/x2's shape (B, T, H, d). Common shapes:
           • (T, 1, d)  — shared across batch and heads
           • (1, T, 1, d)
           • (B, T, H, d)
@@ -89,7 +89,7 @@ def apply_rotary_emb(states: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
            [[[[  3.,   4.,  -1.,  -2.]],
              [[ 10.,  20.,  30.,  40.]]]]
 
-       Note how t=0 performed a 90° rotation ( (x1,x2) → (x2, −x1) ), while
+       Note how t=0 performed a 90° rotation ( (x1,x2) --> (x2, -x1) ), while
        t=1 (0°) left the vector unchanged.
 
 

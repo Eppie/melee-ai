@@ -72,6 +72,8 @@ class ForwardPassResult:
     value_target: Optional[torch.Tensor]
     batch_inputs: Dict[str, torch.Tensor]
     batch_targets: Dict[str, torch.Tensor]
+    label_smoothing: float
+    change_scale: float
 
 
 @dataclass

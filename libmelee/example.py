@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import argparse
+import random
 import signal
 import sys
 from dataclasses import dataclass
@@ -10,7 +11,12 @@ sys.path.append(str(REPO_ROOT))
 from config import init_config
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
-from libmelee.melee.enums import Character, Stage, Menu, ControllerType
+from libmelee.melee.enums import (
+    Character,
+    ControllerType,
+    Menu,
+    Stage,
+)
 from libmelee.melee.menuhelper import MenuHelper
 from train import find_latest_checkpoint
 from model_interface import (
@@ -23,6 +29,16 @@ from model_interface import (
 @dataclass
 class ProfilerConfig:
     a: int = 0
+
+
+LEGAL_TOURNAMENT_STAGES = [
+    Stage.BATTLEFIELD,
+    Stage.YOSHIS_STORY,
+    Stage.POKEMON_STADIUM,
+    Stage.DREAMLAND,
+    Stage.FINAL_DESTINATION,
+    Stage.FOUNTAIN_OF_DREAMS,
+]
 
 
 if __name__ == "__main__":
@@ -114,6 +130,7 @@ if __name__ == "__main__":
     print("Controller connected")
 
     menu_helper = MenuHelper()
+    current_stage = random.choice(LEGAL_TOURNAMENT_STAGES)
 
     BOT_PORT = 1
     OPP_PORT = 2
@@ -144,11 +161,17 @@ if __name__ == "__main__":
             previous_gamestate = gamestate
 
         else:
+            if previous_gamestate and previous_gamestate.menu_state in [
+                Menu.IN_GAME,
+                Menu.SUDDEN_DEATH,
+            ]:
+                current_stage = random.choice(LEGAL_TOURNAMENT_STAGES)
+
             menu_helper.menu_helper_simple(
                 gamestate,
                 controllers[1],
                 Character.FOX,
-                Stage.FINAL_DESTINATION,
+                current_stage,
                 costume=1,
                 autostart=False,
                 swag=False,
@@ -163,3 +186,4 @@ if __name__ == "__main__":
                 swag=False,
                 start=True,
             )
+        previous_gamestate = gamestate

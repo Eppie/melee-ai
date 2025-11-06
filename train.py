@@ -133,6 +133,8 @@ class ForwardPassResult:
     value_target: Optional[torch.Tensor]
     batch_inputs: Dict[str, torch.Tensor]
     batch_targets: Dict[str, torch.Tensor]
+    label_smoothing: float
+    change_scale: float
 
 
 @dataclass
@@ -295,6 +297,8 @@ def _prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device) -> Dict
 def _forward_pass(
     components: TrainingComponents,
     batch_tensors: Dict[str, torch.Tensor],
+    *,
+    progress: float,
 ) -> ForwardPassResult:
     X = batch_tensors["X"]
     Y = batch_tensors["Y"]
@@ -314,17 +318,31 @@ def _forward_pass(
             Y, components.colmap, input_domain="unit01"
         )
         pred: TensorDict = components.model(inputs_td)
+        base_smoothing = components.config.train.label_smoothing
+        final_smoothing = getattr(
+            components.config.train, "label_smoothing_final", 0.0
+        )
+        label_smoothing = base_smoothing + (final_smoothing - base_smoothing) * progress
+        label_smoothing = float(max(label_smoothing, 0.0))
+
+        final_change_scale = getattr(
+            components.config.loss_weights, "change_weight_final_scale", 0.25
+        )
+        change_scale = 1.0 + (final_change_scale - 1.0) * progress
+        change_scale = float(max(change_scale, 0.0))
+
         weights = compute_component_sample_weights(
             target_info,
             components.device,
             ratios=components.ratios,
             button_names=CONTROLLER_KEY_GROUPS["buttons"],
+            change_scale=change_scale,
         )
 
         policy_loss_components = compute_loss_components(
             pred,
             target_info,
-            label_smoothing=config.train.label_smoothing,
+            label_smoothing=label_smoothing,
             sample_weights=weights,
             loss_config=config.loss_weights,
         )
@@ -366,8 +384,31 @@ def _forward_pass(
         value_target=value_target,
         batch_inputs=batch_inputs,
         batch_targets=batch_targets,
+        label_smoothing=label_smoothing,
+        change_scale=change_scale,
     )
 
+def _compute_training_progress(
+    epoch: int,
+    iteration: int,
+    total_batches: int,
+    total_epochs: int,
+    warmup_epochs: int,
+) -> float:
+    warmup_epochs = max(warmup_epochs, 0)
+    if total_epochs <= warmup_epochs:
+        return 1.0
+    if epoch < warmup_epochs:
+        return 0.0
+
+    effective_epochs = total_epochs - warmup_epochs
+    epoch_offset = epoch - warmup_epochs
+    if total_batches <= 0:
+        progress = (epoch_offset + 1) / float(effective_epochs)
+    else:
+        batch_fraction = (iteration + 1) / float(total_batches)
+        progress = (epoch_offset + batch_fraction) / float(effective_epochs)
+    return float(min(max(progress, 0.0), 1.0))
 
 def _update_learning_rate(components: TrainingComponents, global_step: int) -> float:
     config = components.config
@@ -729,7 +770,8 @@ def _prepare_logging_bundle(
     log_lines: List[str] = [
         (
             f"ep {epoch + 1}/{config.train.epochs} it {completed_batches}/{len(components.loader)}\n"
-            f"  loss {avg_loss_running:.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | {loss_summary}"
+            f"  loss {avg_loss_running:.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | "
+            f"ls {forward_result.label_smoothing:.4f} | cw {forward_result.change_scale:.3f} | {loss_summary}"
         ),
         f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f}) | rep {acc_main_rep_b:.3f}",
         indent(main_conf_str, "    "),
@@ -756,66 +798,54 @@ def _prepare_logging_bundle(
         f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
     )
 
-    if components.config.model.use_value_head and forward_result.value_pred is not None:
-        value_target_eval = (
-            forward_result.value_target
-            if forward_result.value_target is not None
-            else compute_value_targets(
-                forward_result.batch_inputs["X"],
-                components.colmap,
-                gamma=components.config.rl.gamma,
-                reward_idx=components.reward_idx,
-            )
+    value_target_eval = (
+        forward_result.value_target
+        if forward_result.value_target is not None
+        else compute_value_targets(
+            forward_result.batch_inputs["X"],
+            components.colmap,
+            gamma=components.config.rl.gamma,
+            reward_idx=components.reward_idx,
         )
-        value_pred_mean = forward_result.value_pred.mean().item()
-        value_target_mean = value_target_eval.mean().item()
-        value_mse = ((forward_result.value_pred - value_target_eval) ** 2).mean().item()
-        value_mae = (
-            (forward_result.value_pred - value_target_eval).abs().mean().item()
-        )
-        vp_flat = forward_result.value_pred.reshape(-1)
-        vt_flat = value_target_eval.reshape(-1)
-        vp_centered = vp_flat - vp_flat.mean()
-        vt_centered = vt_flat - vt_flat.mean()
-        correlation = (vp_centered * vt_centered).sum() / (
-            torch.sqrt((vp_centered**2).sum() * (vt_centered**2).sum()) + 1e-8
-        )
-        log_lines.append(
-            f"  VALUE:    pred {value_pred_mean:.3f} | targ {value_target_mean:.3f} | "
-            f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation.item():.3f}"
-        )
-    else:
-        value_pred_mean = value_target_mean = value_mse = value_mae = 0.0
-        correlation = torch.tensor(0.0)
+    )
+    value_pred_mean = forward_result.value_pred.mean().item()
+    value_target_mean = value_target_eval.mean().item()
+    value_mse = ((forward_result.value_pred - value_target_eval) ** 2).mean().item()
+    value_mae = (
+        (forward_result.value_pred - value_target_eval).abs().mean().item()
+    )
+    vp_flat = forward_result.value_pred.reshape(-1)
+    vt_flat = value_target_eval.reshape(-1)
+    vp_centered = vp_flat - vp_flat.mean()
+    vt_centered = vt_flat - vt_flat.mean()
+    correlation = (vp_centered * vt_centered).sum() / (
+        torch.sqrt((vp_centered**2).sum() * (vt_centered**2).sum()) + 1e-8
+    )
+    log_lines.append(
+        f"  VALUE:    pred {value_pred_mean:.3f} | targ {value_target_mean:.3f} | "
+        f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation.item():.3f}"
+    )
 
-    log_payload: Dict[str, float] = {
-        "epoch": epoch + 1,
-        "iter": completed_batches,
-        "global_step": global_step,
-        "lr": lr,
-        "loss/total": avg_loss_running,
-        "loss/main": float(forward_result.loss_components["main"].item()),
-        "loss/c": float(forward_result.loss_components["c"].item()),
-        "loss/buttons": float(forward_result.loss_components["buttons"].item()),
-        "loss/shoulder": float(forward_result.loss_components["shoulder"].item()),
-        "loss/value": float(forward_result.loss_components["value"].item()),
-        "metrics/acc_main_batch": acc_main_b,
-        "metrics/acc_main_change": acc_main_chg,
-        "metrics/acc_main_hold": acc_main_hold,
-        "metrics/acc_main_rep": acc_main_rep_b,
-        "metrics/acc_c_batch": acc_c_b,
-        "metrics/acc_c_change": acc_c_chg,
-        "metrics/acc_c_hold": acc_c_hold,
-        "metrics/acc_c_rep": acc_c_rep_b,
-        "metrics/buttons_em_batch": em_b,
-        "metrics/buttons_em_change": float(em_btn_chg),
-        "metrics/buttons_em_hold": float(em_btn_hold),
-        "metrics/buttons_f1_micro_batch": f1_b,
-        "metrics/buttons_f1_micro_maj": _to_float(f1_maj),
-        "metrics/buttons_f1_micro_rep": _to_float(f1_rep),
-        "metrics/buttons_em_rep": _to_float(em_rep),
-        "throughput/frames_per_s": frames_per_s,
-    }
+    log_payload: Dict[str, float] = {"epoch": epoch + 1, "iter": completed_batches, "global_step": global_step,
+                                     "lr": lr, "loss/total": avg_loss_running,
+                                     "loss/main": float(forward_result.loss_components["main"].item()),
+                                     "loss/c": float(forward_result.loss_components["c"].item()),
+                                     "loss/buttons": float(forward_result.loss_components["buttons"].item()),
+                                     "loss/shoulder": float(forward_result.loss_components["shoulder"].item()),
+                                     "loss/value": float(forward_result.loss_components["value"].item()),
+                                     "metrics/acc_main_batch": acc_main_b, "metrics/acc_main_change": acc_main_chg,
+                                     "metrics/acc_main_hold": acc_main_hold, "metrics/acc_main_rep": acc_main_rep_b,
+                                     "metrics/acc_c_batch": acc_c_b, "metrics/acc_c_change": acc_c_chg,
+                                     "metrics/acc_c_hold": acc_c_hold, "metrics/acc_c_rep": acc_c_rep_b,
+                                     "metrics/buttons_em_batch": em_b, "metrics/buttons_em_change": float(em_btn_chg),
+                                     "metrics/buttons_em_hold": float(em_btn_hold),
+                                     "metrics/buttons_f1_micro_batch": f1_b,
+                                     "metrics/buttons_f1_micro_maj": _to_float(f1_maj),
+                                     "metrics/buttons_f1_micro_rep": _to_float(f1_rep),
+                                     "metrics/buttons_em_rep": _to_float(em_rep),
+                                     "throughput/frames_per_s": frames_per_s,
+                                     "schedule/label_smoothing": float(forward_result.label_smoothing),
+                                     "schedule/change_weight_scale": float(forward_result.change_scale)}
 
     log_payload.update(_gather_logit_metrics(pred, components.model))
     log_payload.update(_gather_bias_metrics(components.model))
@@ -921,6 +951,12 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
         components.sampler.set_epoch(epoch)
     components.model.train()
 
+    try:
+        total_batches = len(components.loader)
+    except TypeError:
+        total_batches = 0
+    total_batches = max(int(total_batches), 1)
+
     epoch_ctx = EpochContext()
     epoch_ctx.last_log_time = time.time()
     if epoch == state.resume_epoch:
@@ -955,7 +991,18 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             break
 
         batch_tensors = _prepare_batch(batch, components.device)
-        forward_result = _forward_pass(components, batch_tensors)
+        progress = _compute_training_progress(
+            epoch,
+            iteration,
+            total_batches,
+            config.train.epochs,
+            config.train.schedule_warmup_epochs,
+        )
+        forward_result = _forward_pass(
+            components,
+            batch_tensors,
+            progress=progress,
+        )
 
         current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
         log_this_iter = _should_log(current_iter)

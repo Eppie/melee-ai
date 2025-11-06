@@ -676,6 +676,7 @@ class GPTInferenceEngine:
             self._persist_death_record(stock_value)
         self._prev_stock = stock_value
 
+    # TODO: Raw or processed here?
     def _decode_stick(
             self, logits: torch.Tensor, palette: np.ndarray, stick_name: str
     ) -> np.ndarray:

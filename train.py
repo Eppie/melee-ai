@@ -52,7 +52,6 @@ from train.wandb_utils import (
     WandbLogger,
     init_wandb,
     finish_wandb,
-    WANDB_AVAILABLE,
 )
 from utils import print_model_diagram, _resolve_device
 from window_dataset import make_dataloader
@@ -252,7 +251,7 @@ def _initialize_training_components(
             },
         )
     logger = WandbLogger(
-        wandb_run, enabled=not debug and WANDB_AVAILABLE and wandb_run is not None
+        wandb_run, enabled=not debug and wandb_run is not None
     )
 
     start_epoch, global_step, start_iter = _load_latest_checkpoint(

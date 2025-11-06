@@ -71,7 +71,6 @@ from train.wandb_utils import (
     WandbLogger,
     init_wandb,
     finish_wandb,
-    WANDB_AVAILABLE,
 )
 
 __all__ = [
@@ -111,5 +110,4 @@ __all__ = [
     "WandbLogger",
     "init_wandb",
     "finish_wandb",
-    "WANDB_AVAILABLE",
 ]

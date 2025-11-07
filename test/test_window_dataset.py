@@ -25,26 +25,18 @@ def zarr_corpus(tmp_path: Path) -> Path:
         },
         "array_layout": {
             "features": {"raw": "X_raw", "transformed": "X_transformed"},
-            "targets": {
-                "raw": "Y_raw",
-                "transformed": {
-                    "type": "quantized_v1",
-                    "main_idx": "Y_main_idx",
-                    "c_idx": "Y_c_idx",
-                    "buttons": "Y_buttons",
-                    "shoulder_idx": "Y_shoulder_idx",
-                },
-            },
+            "targets": {"raw": "Y_raw", "transformed": "Y_quantized"},
         },
         "target_quantization": {
             "version": 1,
-            "layout": {
-                "type": "quantized_v1",
-                "main_idx": "Y_main_idx",
-                "c_idx": "Y_c_idx",
-                "buttons": "Y_buttons",
-                "shoulder_idx": "Y_shoulder_idx",
+            "dataset": "Y_quantized",
+            "fields": {
+                "main_idx": {"offset": 0},
+                "c_idx": {"offset": 1},
+                "shoulder_idx": {"offset": 2},
             },
+            "buttons": {"offset": 3, "count": 2},
+            "column_count": 5,
             "main_K": 5,
             "c_K": 5,
             "buttons_K": 2,
@@ -75,11 +67,16 @@ def zarr_corpus(tmp_path: Path) -> Path:
     ep_group.create_array("X_raw", data=x_raw)
     ep_group.create_array("X_transformed", data=x_transformed)
     ep_group.create_array("Y_raw", data=y_raw)
-    ep_group.create_array("Y_main_idx", data=(np.arange(10, dtype=np.int16) % 5))
-    ep_group.create_array("Y_c_idx", data=(np.arange(10, dtype=np.int16) % 7))
+    main_idx = (np.arange(10) % 5).astype(np.float32)
+    c_idx = (np.arange(10) % 3).astype(np.float32)
+    shoulder_idx = (np.arange(10) % 2).astype(np.float32)
     buttons = np.random.rand(10, 2).astype(np.float32)
-    ep_group.create_array("Y_buttons", data=buttons)
-    ep_group.create_array("Y_shoulder_idx", data=(np.arange(10, dtype=np.int16) % 3))
+    y_quantized = np.zeros((10, 5), dtype=np.float32)
+    y_quantized[:, 0] = main_idx
+    y_quantized[:, 1] = c_idx
+    y_quantized[:, 2] = shoulder_idx
+    y_quantized[:, 3:] = buttons
+    ep_group.create_array("Y_quantized", data=y_quantized)
 
     return data_dir
 
@@ -93,23 +90,20 @@ def test_window_dataset_uses_transformed_arrays(zarr_corpus: Path):
 
     root = zarr.open_group(str(zarr_corpus / "shard_00000.zarr"), mode="r")
     transformed_x = root["ep_000000/X_transformed"][:4]
-    expected_main = root["ep_000000/Y_main_idx"][:4]
-    expected_c = root["ep_000000/Y_c_idx"][:4]
-    expected_buttons = root["ep_000000/Y_buttons"][:4]
-    expected_shoulder = root["ep_000000/Y_shoulder_idx"][:4]
+    quantized = root["ep_000000/Y_quantized"][:4]
 
     assert np.allclose(
         x_window.numpy(), transformed_x
     ), "Features should match the stored transformed array"
     assert np.array_equal(
-        target_info["main_idx"].numpy(), expected_main
+        target_info["main_idx"].numpy(), quantized[:, 0].astype(np.int64)
     ), "Main indices should match transformed storage"
     assert np.array_equal(
-        target_info["c_idx"].numpy(), expected_c
+        target_info["c_idx"].numpy(), quantized[:, 1].astype(np.int64)
     ), "C-stick indices should match transformed storage"
     assert np.allclose(
-        target_info["buttons"].numpy(), expected_buttons
+        target_info["buttons"].numpy(), quantized[:, 3:]
     ), "Button targets should match transformed storage"
     assert np.array_equal(
-        target_info["shoulder_idx"].numpy(), expected_shoulder
+        target_info["shoulder_idx"].numpy(), quantized[:, 2].astype(np.int64)
     ), "Shoulder indices should match transformed storage"

@@ -36,13 +36,7 @@ FEATURE_DATASET_NAMES = {
 
 TARGET_DATASET_NAMES = {
     "raw": "Y_raw",
-    "transformed": {
-        "type": "quantized_v1",
-        "main_idx": "Y_main_idx",
-        "c_idx": "Y_c_idx",
-        "buttons": "Y_buttons",
-        "shoulder_idx": "Y_shoulder_idx",
-    },
+    "transformed": "Y_quantized",
 }
 
 # TODO: Rename this file
@@ -124,6 +118,53 @@ class QuantizedTargetArrays:
     buttons: np.ndarray
     shoulder_idx: Optional[np.ndarray]
     meta: Dict[str, int]
+
+    def pack_columns(self) -> Tuple[np.ndarray, Dict[str, object]]:
+        """Pack quantized targets into a single float32 matrix plus layout metadata."""
+        T = self.main_idx.shape[0]
+        buttons_cols = int(self.buttons.shape[1])
+        include_shoulder = self.shoulder_idx is not None
+        column_order: List[Tuple[str, int]] = [
+            ("main_idx", 1),
+            ("c_idx", 1),
+        ]
+        if include_shoulder:
+            column_order.append(("shoulder_idx", 1))
+        column_order.append(("buttons", buttons_cols))
+
+        total_cols = sum(width for _, width in column_order)
+        matrix = np.zeros((T, total_cols), dtype=np.float32)
+        fields_meta: Dict[str, Dict[str, int]] = {}
+        offset = 0
+
+        matrix[:, offset] = self.main_idx.astype(np.float32, copy=False)
+        fields_meta["main_idx"] = {"offset": offset}
+        offset += 1
+
+        matrix[:, offset] = self.c_idx.astype(np.float32, copy=False)
+        fields_meta["c_idx"] = {"offset": offset}
+        offset += 1
+
+        if include_shoulder:
+            matrix[:, offset] = self.shoulder_idx.astype(np.float32, copy=False)
+            fields_meta["shoulder_idx"] = {"offset": offset}
+            offset += 1
+
+        if buttons_cols:
+            matrix[:, offset : offset + buttons_cols] = self.buttons.astype(
+                np.float32, copy=False
+            )
+            buttons_meta = {"offset": offset, "count": buttons_cols}
+            offset += buttons_cols
+        else:
+            buttons_meta = {"offset": offset, "count": 0}
+
+        layout_meta = {
+            "fields": fields_meta,
+            "buttons": buttons_meta,
+            "column_count": total_cols,
+        }
+        return matrix, layout_meta
 
 
 def _player_active(rows: List[Row], prefix: str, *, stick_eps: float = 0.05, min_frames: int = 10) -> bool:
@@ -328,7 +369,7 @@ class EpisodeWriter:
         raw_features: RawFeatureArray,
         transformed_features: TransformedFeatureArray,
         raw_targets: RawTargetArray,
-        quantized_targets: Optional[QuantizedTargetArrays],
+        quantized_matrix: Optional[np.ndarray],
     ) -> str:
         """Store both raw and transformed feature/target arrays for ``episode_id``."""
         assert raw_features.dtype == np.float32
@@ -341,15 +382,7 @@ class EpisodeWriter:
             FEATURE_DATASET_NAMES["transformed"],
             TARGET_DATASET_NAMES["raw"],
         ]
-        transformed_layout = TARGET_DATASET_NAMES["transformed"]
-        if isinstance(transformed_layout, dict):
-            cleanup_targets.extend(
-                dataset_name
-                for key, dataset_name in transformed_layout.items()
-                if isinstance(dataset_name, str)
-            )
-        elif isinstance(transformed_layout, str):
-            cleanup_targets.append(transformed_layout)
+        cleanup_targets.append(TARGET_DATASET_NAMES["transformed"])
 
         for name in cleanup_targets:
             if isinstance(name, str) and name in epg:
@@ -373,33 +406,13 @@ class EpisodeWriter:
             raw_targets,
             dtype="float32",
         )
-        if quantized_targets is not None:
-            layout = TARGET_DATASET_NAMES["transformed"]
+        if quantized_matrix is not None:
             self._write_array(
                 epg,
-                layout["main_idx"],
-                quantized_targets.main_idx,
-                dtype="int16",
-            )
-            self._write_array(
-                epg,
-                layout["c_idx"],
-                quantized_targets.c_idx,
-                dtype="int16",
-            )
-            self._write_array(
-                epg,
-                layout["buttons"],
-                quantized_targets.buttons,
+                TARGET_DATASET_NAMES["transformed"],
+                quantized_matrix,
                 dtype="float32",
             )
-            if quantized_targets.shoulder_idx is not None:
-                self._write_array(
-                    epg,
-                    layout["shoulder_idx"],
-                    quantized_targets.shoulder_idx,
-                    dtype="int16",
-                )
         return ep_name
 
     def finalize(self) -> None:
@@ -548,6 +561,7 @@ def _quantize_targets_numpy(
         else None
     )
     meta = {
+        "version": 1,
         "main_K": int(result["main_K"]),
         "c_K": int(result["c_K"]),
         "buttons_K": int(result["buttons_K"]),
@@ -628,11 +642,10 @@ def _merge_and_write_metadata(
     }
 
     if target_quant_meta:
-        meta["target_quantization"] = {
-            "version": 1,
-            "layout": TARGET_DATASET_NAMES["transformed"],
-            **target_quant_meta,
-        }
+        tq_meta = dict(target_quant_meta)
+        tq_meta.setdefault("version", 1)
+        tq_meta.setdefault("dataset", TARGET_DATASET_NAMES["transformed"])
+        meta["target_quantization"] = tq_meta
 
     with (out_dir / "meta.json").open("w") as f:
         json.dump(meta, f, indent=2)
@@ -736,9 +749,13 @@ def build_dataset(
                     X, feature_names, feature_spec
                 )
                 quantized_targets = _quantize_targets_numpy(Y, column_map)
+                quantized_matrix: Optional[np.ndarray] = None
+                quant_layout: Optional[Dict[str, object]] = None
                 if quantized_targets is not None:
+                    quantized_matrix, quant_layout = quantized_targets.pack_columns()
                     if target_quant_meta is None:
                         target_quant_meta = dict(quantized_targets.meta)
+                        target_quant_meta.setdefault("dataset", TARGET_DATASET_NAMES["transformed"])
                     else:
                         for key, value in quantized_targets.meta.items():
                             if key in target_quant_meta and target_quant_meta[key] != value:
@@ -746,12 +763,25 @@ def build_dataset(
                                     f"Quantized target meta mismatch for {key}: "
                                     f"{target_quant_meta[key]} != {value}"
                                 )
+                    if quant_layout is not None:
+                        if "fields" in target_quant_meta:
+                            if target_quant_meta["fields"] != quant_layout["fields"]:
+                                raise ValueError("Quantized target field layout mismatch between episodes.")
+                        else:
+                            target_quant_meta["fields"] = quant_layout["fields"]
+                        if "buttons" in target_quant_meta:
+                            if target_quant_meta["buttons"] != quant_layout["buttons"]:
+                                raise ValueError("Quantized button layout mismatch between episodes.")
+                        else:
+                            target_quant_meta["buttons"] = quant_layout["buttons"]
+                        target_quant_meta["column_count"] = quant_layout["column_count"]
+                        target_quant_meta["dataset"] = TARGET_DATASET_NAMES["transformed"]
                 writer.write_episode(
                     episode_id,
                     raw_features=X,
                     transformed_features=transformed_features,
                     raw_targets=Y,
-                    quantized_targets=quantized_targets,
+                    quantized_matrix=quantized_matrix,
                 )
 
                 if shard_feat_dtypes[shard_idx] is None:

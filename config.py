@@ -53,7 +53,7 @@ class ZarrConfig(BaseModel):
         description="Root directory for validation data (auto-detected by OS)",
     )
     episode_count: int = Field(
-        default=1000, ge=1, description="Number of episodes to process"
+        default=10, ge=1, description="Number of episodes to process"
     )
     validation_count: int = Field(
         default=10,

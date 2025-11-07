@@ -69,6 +69,28 @@ SHOULDER_QUANTIZATION_CONFIG = {
 
 SHOULDER_PALETTE = np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
 
+_ARRAY_LAYOUT_CACHE: Dict[Path, Tuple[object, object]] = {}
+
+
+def _get_array_dataset_names(
+    data_root: Path, meta: Optional[Dict[str, object]] = None
+) -> Tuple[str, str]:
+    """Return the (feature, target) dataset names for ``data_root``."""
+    root = data_root.resolve()
+    cached = _ARRAY_LAYOUT_CACHE.get(root)
+    if cached is not None and meta is None:
+        return cached
+    if meta is None:
+        meta_path = root / "meta.json"
+        with meta_path.open("r") as f:
+            meta = json.load(f)
+    layout = meta.get("array_layout", {}) if meta else {}
+    feature_key = layout.get("features", {}).get("transformed", "X")
+    target_key = layout.get("targets", {}).get("transformed", "Y")
+    result = (feature_key, target_key)
+    _ARRAY_LAYOUT_CACHE[root] = result
+    return result
+
 
 @dataclass(frozen=True)
 class ShoulderQuantizationSpec:
@@ -102,7 +124,7 @@ class EpisodeInfo:
 
 class ValidationDatasetIndex:
     def __init__(self, data_dir: Path) -> None:
-        self.data_dir = Path(data_dir)
+        self.data_dir = Path(data_dir).resolve()
         meta_path = self.data_dir / "meta.json"
         index_path = self.data_dir / "index.jsonl"
         if not meta_path.exists() or not index_path.exists():
@@ -116,6 +138,10 @@ class ValidationDatasetIndex:
         schema = meta.get("schema", {})
         self.feature_names: List[str] = list(schema.get("features", []))
         self.target_names: List[str] = list(schema.get("targets", []))
+        (
+            self._feature_dataset_name,
+            self._target_dataset_name,
+        ) = _get_array_dataset_names(self.data_dir, meta)
 
         episodes: List[EpisodeInfo] = []
         with index_path.open("r") as f:
@@ -143,9 +169,11 @@ class ValidationDatasetIndex:
             shard_group = zarr.open_group(str(shard_path), mode="r")
             self._shard_cache[episode.shard_id] = shard_group
         ep_group = shard_group[f"ep_{episode.episode_id:06d}"]
-        X = ep_group["X"]
-        Y = ep_group.get("Y")
-        return X, Y
+        feature_key = self._feature_dataset_name or "X"
+        X = ep_group.get(feature_key)
+        if X is None:
+            X = ep_group["X"]
+        return X, None
 
 
 def _split_into_chunks(
@@ -180,7 +208,14 @@ def _open_episode_array(
         group = zarr.open_group(str(shard_path), mode="r")
         shard_cache[episode.shard_id] = group
     ep_name = f"ep_{episode.episode_id:06d}"
-    return group[ep_name]["X"]
+    feature_key, _ = _get_array_dataset_names(data_root)
+    ep_group = group[ep_name]
+    array = ep_group.get(feature_key)
+    if array is None and feature_key != "X":
+        array = ep_group.get("X")
+    if array is None:
+        raise KeyError(f"Feature array '{feature_key}' missing in {ep_name}")
+    return array
 
 
 def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:

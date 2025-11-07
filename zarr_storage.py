@@ -6,19 +6,44 @@ import time
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import tqdm
 import zarr
+import torch
 
 from config import get_config, init_config
-from data_types import RawNumpyArray
+from data_types import (
+    RawFeatureArray,
+    RawNumpyArray,
+    RawTargetArray,
+    TransformedFeatureArray,
+)
 from libmelee.melee.console import Console
 from libmelee.melee.gamestate import GameState
+from feature_transforms import FeatureTransformSpec, apply_transform_spec, feature_spec_from_config
+from column_map import ColumnMap
+from controller_quantization import quantize_targets
 from schema import Row, extract_row, get_feature_names, get_target_names
 
 ROW_FIELDS = tuple(fields(Row))
+
+FEATURE_DATASET_NAMES = {
+    "raw": "X_raw",
+    "transformed": "X_transformed",
+}
+
+TARGET_DATASET_NAMES = {
+    "raw": "Y_raw",
+    "transformed": {
+        "type": "quantized_v1",
+        "main_idx": "Y_main_idx",
+        "c_idx": "Y_c_idx",
+        "buttons": "Y_buttons",
+        "shoulder_idx": "Y_shoulder_idx",
+    },
+}
 
 # TODO: Rename this file
 
@@ -90,6 +115,15 @@ def _swap_row_players(row: Row) -> Row:
 class Schema:
     features: List[str]
     targets: List[str]
+
+
+@dataclass
+class QuantizedTargetArrays:
+    main_idx: np.ndarray
+    c_idx: np.ndarray
+    buttons: np.ndarray
+    shoulder_idx: Optional[np.ndarray]
+    meta: Dict[str, int]
 
 
 def _player_active(rows: List[Row], prefix: str, *, stick_eps: float = 0.05, min_frames: int = 10) -> bool:
@@ -254,44 +288,118 @@ class EpisodeWriter:
             self._chunk_t_cache[F] = ct
         return self._chunk_t_cache[F]
 
-    def write_episode(self, episode_id: int, X: RawNumpyArray, Y: RawNumpyArray) -> str:
-        """Write ``X``/``Y`` arrays for ``episode_id`` into the shard.
-
-        Example
-        -------
-        Given ``X`` with shape ``(300, F)`` and ``Y`` with ``(300, Yd)``, the method
-        creates ``ep_000123/X`` and ``ep_000123/Y`` arrays (chunked along time),
-        fills them with the provided data, and returns the episode group name. If
-        ``Y`` is empty the feature array is still written while the target dataset
-        is omitted.
-        """
+    def _write_array(
+        self,
+        group: "zarr.Group",
+        name: str,
+        data: np.ndarray,
+        *,
+        dtype: Optional[str] = None,
+    ) -> None:
+        """Write ``data`` into ``group[name]`` with chunking along time."""
+        if data is None:
+            return
+        arr = np.asarray(data)
+        if arr.size == 0:
+            return
         config = get_config()
-        assert X.dtype == np.float32 and (Y.size == 0 or Y.dtype == np.float32)
-        ep_name = f"ep_{episode_id:06d}"
-        epg = self.root.require_group(ep_name)
-        for name in ("X", "Y"):
-            if name in epg:
-                del epg[name]
-        chunk_t = self._chunk_t(X.shape[1], elem_bytes=4)
-        arrX = epg.create_array(
-            "X",
-            shape=X.shape,
-            chunks=(min(chunk_t, X.shape[0]), X.shape[1]),
+        if arr.ndim == 1:
+            F = 1
+            chunk_t = self._chunk_t(F, elem_bytes=arr.dtype.itemsize)
+            chunks = (min(chunk_t, arr.shape[0]),)
+        else:
+            F = arr.shape[1]
+            chunk_t = self._chunk_t(F, elem_bytes=arr.dtype.itemsize)
+            chunks = (min(chunk_t, arr.shape[0]), arr.shape[1])
+        zarr_arr = group.create_array(
+            name,
+            shape=arr.shape,
+            chunks=chunks,
             compressors=[config.zarr.compressor],
-            dtype="float32",
+            dtype=dtype or str(arr.dtype),
             overwrite=True,
         )
-        arrX[:] = X
-        if Y.shape[1] > 0:
-            arrY = epg.create_array(
-                "Y",
-                shape=Y.shape,
-                chunks=(min(chunk_t, Y.shape[0]), Y.shape[1]),
-                compressors=[config.zarr.compressor],
-                dtype="float32",
-                overwrite=True,
+        zarr_arr[:] = arr
+
+    def write_episode(
+        self,
+        episode_id: int,
+        *,
+        raw_features: RawFeatureArray,
+        transformed_features: TransformedFeatureArray,
+        raw_targets: RawTargetArray,
+        quantized_targets: Optional[QuantizedTargetArrays],
+    ) -> str:
+        """Store both raw and transformed feature/target arrays for ``episode_id``."""
+        assert raw_features.dtype == np.float32
+        assert transformed_features.dtype == np.float32
+        assert raw_targets.dtype == np.float32
+        ep_name = f"ep_{episode_id:06d}"
+        epg = self.root.require_group(ep_name)
+        cleanup_targets = [
+            FEATURE_DATASET_NAMES["raw"],
+            FEATURE_DATASET_NAMES["transformed"],
+            TARGET_DATASET_NAMES["raw"],
+        ]
+        transformed_layout = TARGET_DATASET_NAMES["transformed"]
+        if isinstance(transformed_layout, dict):
+            cleanup_targets.extend(
+                dataset_name
+                for key, dataset_name in transformed_layout.items()
+                if isinstance(dataset_name, str)
             )
-            arrY[:] = Y
+        elif isinstance(transformed_layout, str):
+            cleanup_targets.append(transformed_layout)
+
+        for name in cleanup_targets:
+            if isinstance(name, str) and name in epg:
+                del epg[name]
+
+        self._write_array(
+            epg,
+            FEATURE_DATASET_NAMES["raw"],
+            raw_features,
+            dtype="float32",
+        )
+        self._write_array(
+            epg,
+            FEATURE_DATASET_NAMES["transformed"],
+            transformed_features,
+            dtype="float32",
+        )
+        self._write_array(
+            epg,
+            TARGET_DATASET_NAMES["raw"],
+            raw_targets,
+            dtype="float32",
+        )
+        if quantized_targets is not None:
+            layout = TARGET_DATASET_NAMES["transformed"]
+            self._write_array(
+                epg,
+                layout["main_idx"],
+                quantized_targets.main_idx,
+                dtype="int16",
+            )
+            self._write_array(
+                epg,
+                layout["c_idx"],
+                quantized_targets.c_idx,
+                dtype="int16",
+            )
+            self._write_array(
+                epg,
+                layout["buttons"],
+                quantized_targets.buttons,
+                dtype="float32",
+            )
+            if quantized_targets.shoulder_idx is not None:
+                self._write_array(
+                    epg,
+                    layout["shoulder_idx"],
+                    quantized_targets.shoulder_idx,
+                    dtype="int16",
+                )
         return ep_name
 
     def finalize(self) -> None:
@@ -322,7 +430,14 @@ class ShardResult:
 
 def _rows_to_dense(
     rows: Sequence[object], schema: Schema
-) -> Tuple[RawNumpyArray, RawNumpyArray, List[str], List[str], List[str], List[str]]:
+) -> Tuple[
+    RawFeatureArray,
+    RawTargetArray,
+    List[str],
+    List[str],
+    List[str],
+    List[str],
+]:
     """Convert a list of :class:`Row` objects into feature/target matrices.
 
     Example
@@ -381,7 +496,14 @@ def _rows_to_dense(
 def _process_episode_task(
     raw_path: str,
     schema: Schema,
-) -> Tuple[RawNumpyArray, RawNumpyArray, List[str], List[str], List[str], List[str]]:
+) -> Tuple[
+    RawFeatureArray,
+    RawTargetArray,
+    List[str],
+    List[str],
+    List[str],
+    List[str],
+]:
     """Process a single episode path inside the multiprocessing pool.
 
     Example
@@ -394,11 +516,58 @@ def _process_episode_task(
     return _rows_to_dense(rows, schema)
 
 
+def _prepare_transformed_array(
+    array: RawFeatureArray,
+    names: Sequence[str],
+    spec: Optional[FeatureTransformSpec],
+) -> TransformedFeatureArray:
+    """Return a transformed copy of ``array`` when ``spec`` has steps."""
+    if array.shape[1] == 0:
+        return array
+    if spec is None or not spec.steps:
+        return array
+    return apply_transform_spec(array.copy(), names, spec)
+
+
+def _quantize_targets_numpy(
+    targets: RawTargetArray,
+    column_map: ColumnMap,
+) -> Optional[QuantizedTargetArrays]:
+    if targets.size == 0:
+        return None
+    tensor = torch.from_numpy(targets.astype(np.float32, copy=False)).unsqueeze(0)
+    with torch.no_grad():
+        result = quantize_targets(tensor, column_map, input_domain="unit01")
+    main_idx = result["main_idx"].squeeze(0).to(torch.int16).cpu().numpy()
+    c_idx = result["c_idx"].squeeze(0).to(torch.int16).cpu().numpy()
+    buttons = result["buttons"].squeeze(0).to(torch.float32).cpu().numpy()
+    shoulder_tensor = result.get("shoulder_idx")
+    shoulder_idx = (
+        shoulder_tensor.squeeze(0).to(torch.int16).cpu().numpy()
+        if shoulder_tensor is not None
+        else None
+    )
+    meta = {
+        "main_K": int(result["main_K"]),
+        "c_K": int(result["c_K"]),
+        "buttons_K": int(result["buttons_K"]),
+        "shoulder_K": int(result.get("shoulder_K", 0)),
+    }
+    return QuantizedTargetArrays(
+        main_idx=main_idx,
+        c_idx=c_idx,
+        buttons=buttons,
+        shoulder_idx=shoulder_idx,
+        meta=meta,
+    )
+
+
 def _merge_and_write_metadata(
     results: List[ShardResult],
     feature_names: Sequence[str],
     target_names: Sequence[str],
     out_root: str,
+    target_quant_meta: Optional[Dict[str, int]] = None,
 ) -> None:
     """Write index files, lengths, and ``meta.json`` for the built dataset.
 
@@ -452,14 +621,29 @@ def _merge_and_write_metadata(
         "schema": {"features": list(feature_names), "targets": list(target_names)},
         "feat_dtypes": feat_dtypes,
         "targ_dtypes": targ_dtypes,
+        "array_layout": {
+            "features": FEATURE_DATASET_NAMES.copy(),
+            "targets": TARGET_DATASET_NAMES.copy(),
+        },
     }
+
+    if target_quant_meta:
+        meta["target_quantization"] = {
+            "version": 1,
+            "layout": TARGET_DATASET_NAMES["transformed"],
+            **target_quant_meta,
+        }
 
     with (out_dir / "meta.json").open("w") as f:
         json.dump(meta, f, indent=2)
 
 
 def build_dataset(
-    raw_episode_paths: Sequence[str], schema: Schema, out_root: str
+    raw_episode_paths: Sequence[str],
+    schema: Schema,
+    out_root: str,
+    *,
+    feature_spec: Optional[FeatureTransformSpec] = None,
 ) -> None:
     """Parallelize replay processing and assemble Zarr shards with metadata.
 
@@ -475,6 +659,8 @@ def build_dataset(
     N = len(raw_episode_paths)
     if N == 0:
         raise ValueError("No raw episodes provided.")
+    column_map = ColumnMap(schema.features, schema.targets)
+    target_quant_meta: Optional[Dict[str, int]] = None
 
     num_shards = math.ceil(N / config.zarr.shard_size)
     shards: List[List[str]] = []
@@ -546,7 +732,27 @@ def build_dataset(
                     writers[shard_idx] = writer
 
                 episode_id = shard_idx * config.zarr.shard_size + local_idx
-                writer.write_episode(episode_id, X, Y)
+                transformed_features = _prepare_transformed_array(
+                    X, feature_names, feature_spec
+                )
+                quantized_targets = _quantize_targets_numpy(Y, column_map)
+                if quantized_targets is not None:
+                    if target_quant_meta is None:
+                        target_quant_meta = dict(quantized_targets.meta)
+                    else:
+                        for key, value in quantized_targets.meta.items():
+                            if key in target_quant_meta and target_quant_meta[key] != value:
+                                raise ValueError(
+                                    f"Quantized target meta mismatch for {key}: "
+                                    f"{target_quant_meta[key]} != {value}"
+                                )
+                writer.write_episode(
+                    episode_id,
+                    raw_features=X,
+                    transformed_features=transformed_features,
+                    raw_targets=Y,
+                    quantized_targets=quantized_targets,
+                )
 
                 if shard_feat_dtypes[shard_idx] is None:
                     shard_feat_dtypes[shard_idx] = feat_dtypes
@@ -594,7 +800,13 @@ def build_dataset(
     target_names_out = final_target_names or (
         results[0].target_names if results else []
     )
-    _merge_and_write_metadata(results, feature_names_out, target_names_out, out_root)
+    _merge_and_write_metadata(
+        results,
+        feature_names_out,
+        target_names_out,
+        out_root,
+        target_quant_meta=target_quant_meta,
+    )
 
 
 def create_melee_schema() -> Schema:
@@ -650,6 +862,7 @@ def main():
     )
 
     schema = create_melee_schema()
+    feature_spec = feature_spec_from_config(config.features)
 
     print(f"Schema: {len(schema.features)} features, {len(schema.targets)} targets")
     print(f"Output directory: {config.zarr.out_root}")
@@ -659,7 +872,12 @@ def main():
     )
 
     try:
-        build_dataset(validation_slp_files, schema, config.zarr.validation_root)
+        build_dataset(
+            validation_slp_files,
+            schema,
+            config.zarr.validation_root,
+            feature_spec=feature_spec,
+        )
         print(f"Dataset built successfully in {config.zarr.validation_root}")
 
         # Print some statistics
@@ -674,7 +892,12 @@ def main():
         raise
 
     try:
-        build_dataset(train_slp_files, schema, config.zarr.out_root)
+        build_dataset(
+            train_slp_files,
+            schema,
+            config.zarr.out_root,
+            feature_spec=feature_spec,
+        )
         print(f"Dataset built successfully in {config.zarr.out_root}")
 
         # Print some statistics

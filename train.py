@@ -30,7 +30,6 @@ from train.batch_utils import (
     SampleWeightRatios,
     build_model_inputs,
     compute_component_sample_weights,
-    quantize_controller_targets,
 )
 
 # Train module utilities
@@ -100,6 +99,7 @@ class TrainingComponents:
     out_dir: Path
     last_step_file: Path
     debug: bool
+    target_quant_meta: Dict[str, int]
 
 
 @dataclass
@@ -124,7 +124,7 @@ class EpochContext:
 @dataclass
 class ForwardPassResult:
     pred: TensorDict
-    target_info: Dict[str, torch.Tensor]
+    target_info: Dict[str, object]
     weights: Dict[str, torch.Tensor]
     loss: torch.Tensor
     loss_components: Dict[str, torch.Tensor]
@@ -281,26 +281,35 @@ def _initialize_training_components(
         out_dir=out_dir,
         last_step_file=last_step_file,
         debug=debug,
+        target_quant_meta=getattr(ds, "_target_quant_meta", {}),
     )
 
     return components, start_epoch, global_step, start_iter
 
 
-def _prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
-    return {
+def _prepare_batch(batch: Dict[str, object], device: torch.device) -> Dict[str, object]:
+    out: Dict[str, object] = {
         "X": batch["X"].to(device, non_blocking=True),
-        "Y": batch["Y"].to(device, non_blocking=True),
     }
+    target_info = {}
+    batch_targets = batch.get("target_info", {})
+    for key, value in batch_targets.items():
+        if value is None:
+            target_info[key] = None
+        else:
+            target_info[key] = value.to(device, non_blocking=True)
+    out["target_info"] = target_info
+    return out
 
 
 def _forward_pass(
     components: TrainingComponents,
-    batch_tensors: Dict[str, torch.Tensor],
+    batch_tensors: Dict[str, object],
     *,
     progress: float,
 ) -> ForwardPassResult:
     X = batch_tensors["X"]
-    Y = batch_tensors["Y"]
+    target_info = dict(batch_tensors.get("target_info", {}))
     config = components.config
     amp = components.amp
 
@@ -313,9 +322,10 @@ def _forward_pass(
         enabled=amp.enabled,
     ):
         inputs_td = build_model_inputs(X, components.colmap)
-        target_info = quantize_controller_targets(
-            Y, components.colmap, input_domain="unit01"
-        )
+        target_meta = components.target_quant_meta or {}
+        for key in ("main_K", "c_K", "buttons_K", "shoulder_K"):
+            if key not in target_info and key in target_meta:
+                target_info[key] = target_meta[key]
         pred: TensorDict = components.model(inputs_td)
         base_smoothing = components.config.train.label_smoothing
         final_smoothing = getattr(

@@ -1,60 +1,39 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, TypeAlias
+from typing import TypeAlias
 
-import numpy as np  # type: ignore[import]
-import torch  # type: ignore[import]
+import numpy as np
+import torch
 
 RawNumpyArray: TypeAlias = np.ndarray
 ProcessedNumpyArray: TypeAlias = np.ndarray
 RawTorchTensor: TypeAlias = torch.Tensor
 ProcessedTorchTensor: TypeAlias = torch.Tensor
 
+RawFeatureArray: TypeAlias = RawNumpyArray
+TransformedFeatureArray: TypeAlias = ProcessedNumpyArray
+RawTargetArray: TypeAlias = RawNumpyArray
 
-@dataclass(frozen=True)
-class RawNumpyBatch:
-    """Container for raw observation data plus lightweight provenance."""
+FeatureBlockArray: TypeAlias = np.ndarray
+TargetBlockArray: TypeAlias = np.ndarray
 
-    data: RawNumpyArray
-    zarr_path: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class RawTorchBatch:
-    """Container for raw torch tensors plus lightweight provenance."""
-
-    data: RawTorchTensor
-    zarr_path: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class ProcessedNumpyBatch:
-    """Container for transformed data alongside its provenance."""
-
-    data: ProcessedNumpyArray
-    zarr_path: Optional[str] = None
-    raw_source: Optional[str] = None
-    transform_id: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class ProcessedTorchBatch:
-    """Container for transformed torch tensors alongside their provenance."""
-
-    data: ProcessedTorchTensor
-    zarr_path: Optional[str] = None
-    raw_source: Optional[str] = None
-    transform_id: Optional[str] = None
-
+RawFeatureTensor: TypeAlias = RawTorchTensor
+TransformedFeatureTensor: TypeAlias = ProcessedTorchTensor
+RawTargetTensor: TypeAlias = RawTorchTensor
+TransformedTargetTensor: TypeAlias = ProcessedTorchTensor
 
 __all__ = [
     "RawNumpyArray",
     "ProcessedNumpyArray",
     "RawTorchTensor",
     "ProcessedTorchTensor",
-    "RawNumpyBatch",
-    "RawTorchBatch",
-    "ProcessedNumpyBatch",
-    "ProcessedTorchBatch",
+    "RawFeatureArray",
+    "TransformedFeatureArray",
+    "RawTargetArray",
+    "FeatureBlockArray",
+    "TargetBlockArray",
+    "RawFeatureTensor",
+    "TransformedFeatureTensor",
+    "RawTargetTensor",
+    "TransformedTargetTensor",
 ]

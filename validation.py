@@ -17,13 +17,11 @@ from torch.utils.data import DataLoader, SequentialSampler
 from column_map import ColumnMap
 from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
 from config import get_config, init_config
-from controller_quantization import quantize_targets
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
-from feature_transforms import feature_spec_from_config
 from loss import compute_loss_components
 from model.nano_gpt import GPT
 from train.batch_utils import build_model_inputs as build_inputs_for_gpt
@@ -36,8 +34,6 @@ _C_STICK_LABELS = [f"({float(x):.2f},{float(y):.2f})" for x, y in C_STICK_QUANTI
 _SHOULDER_LABELS = [f"{float(v):.2f}" for v in SHOULDER_QUANTIZED]
 _DEFAULT_THRESHOLD_PATH = Path(__file__).resolve().with_name("button_thresholds.json")
 
-_MAIN_PALETTE_T = torch.tensor(np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32))
-_C_PALETTE_T = torch.tensor(np.asarray(C_STICK_QUANTIZED, dtype=np.float32))
 _SHOULDER_PALETTE_T = torch.tensor(np.asarray(SHOULDER_QUANTIZED, dtype=np.float32))
 
 from typing import Sequence
@@ -619,10 +615,8 @@ def _prepare_dataloader(
     persistent_workers: bool,
 ) -> Tuple[DataLoader, WindowDataset]:
     config = get_config()
-    feature_spec = feature_spec_from_config(config.features)
     dataset = WindowDataset(
         data_dir=str(data_root),
-        feature_transforms=feature_spec,
     )
 
     mp_ctx = None
@@ -1005,6 +999,8 @@ def _evaluate(
     model.eval()
     total_batches = len(loader)
     results: Dict[str, object] = {}
+    dataset_obj = getattr(loader, "dataset", None)
+    target_quant_meta = getattr(dataset_obj, "_target_quant_meta", {})
 
     with torch.inference_mode():
         for batch_idx, batch in enumerate(loader, start=1):
@@ -1012,10 +1008,17 @@ def _evaluate(
                 break
 
             X: torch.Tensor = batch["X"].to(device, non_blocking=True)
-            Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
+            target_info = {}
+            for key, value in batch.get("target_info", {}).items():
+                if value is None:
+                    target_info[key] = None
+                else:
+                    target_info[key] = value.to(device, non_blocking=True)
+            for key in ("main_K", "c_K", "buttons_K", "shoulder_K"):
+                if key not in target_info and key in target_quant_meta:
+                    target_info[key] = target_quant_meta[key]
 
             inputs_td = build_inputs_for_gpt(X, colmap)
-            target_info = quantize_targets(Y, colmap, input_domain="unit11")
 
             pred = model(inputs_td)
 
@@ -1100,30 +1103,23 @@ def _evaluate(
 
             pred_button_presses += btn_pred.sum(dim=(0, 1)).cpu().to(torch.long)
 
-            Y_cpu = batch["Y"].detach().cpu()
-            main_vals = Y_cpu[..., colmap.y_main]
-            main_idx_raw = _assign_to_palette(main_vals.reshape(-1, 2), _MAIN_PALETTE_T)
+            main_idx_raw = target_info["main_idx"].detach().cpu().reshape(-1)
             raw_counts_main += torch.bincount(
-                main_idx_raw.cpu(), minlength=raw_counts_main.shape[0]
+                main_idx_raw, minlength=raw_counts_main.shape[0]
             )
 
-            c_vals = Y_cpu[..., colmap.y_c]
-            c_idx_raw = _assign_to_palette(c_vals.reshape(-1, 2), _C_PALETTE_T)
+            c_idx_raw = target_info["c_idx"].detach().cpu().reshape(-1)
             raw_counts_c += torch.bincount(
-                c_idx_raw.cpu(), minlength=raw_counts_c.shape[0]
+                c_idx_raw, minlength=raw_counts_c.shape[0]
             )
 
-            if raw_counts_shoulder is not None and colmap.y_shoulder is not None:
-                s_vals = torch.clamp(
-                    Y_cpu[..., colmap.y_shoulder].to(torch.float32), 0.0, 1.0
+            if raw_counts_shoulder is not None and target_info.get("shoulder_idx") is not None:
+                s_idx = target_info["shoulder_idx"].detach().cpu().reshape(-1)
+                s_idx = torch.clamp(
+                    s_idx, min=0, max=_SHOULDER_PALETTE_T.shape[0] - 1
                 )
-                s_vals = s_vals.reshape(-1)
-                s_idx = torch.searchsorted(
-                    _SHOULDER_PALETTE_T, s_vals, right=True
-                ) - 1
-                s_idx = torch.clamp(s_idx, min=0, max=_SHOULDER_PALETTE_T.shape[0] - 1)
                 raw_counts_shoulder += torch.bincount(
-                    s_idx.cpu(), minlength=raw_counts_shoulder.shape[0]
+                    s_idx, minlength=raw_counts_shoulder.shape[0]
                 )
 
             total_tokens += int(X.numel())
@@ -1188,25 +1184,6 @@ def _evaluate(
 
 
 
-
-
-def _assign_to_palette(
-    values: torch.Tensor, palette: torch.Tensor, *, from_unit_square: bool = False
-) -> torch.Tensor:
-    if values.numel() == 0:
-        return torch.empty(0, dtype=torch.long, device=values.device)
-    vals = values.to(torch.float32)
-    if from_unit_square:
-        vals = vals * 2.0 - 1.0
-    vals = torch.clamp(vals, -1.0, 1.0)
-    radius = torch.linalg.norm(vals, dim=-1, keepdim=True)
-    vals = vals / torch.clamp(radius, min=1.0)
-    norms = (vals**2).sum(dim=-1, keepdim=True)
-    palette = palette.to(vals.device)
-    palette_norm = (palette**2).sum(dim=-1).unsqueeze(0)
-    dot = vals @ palette.t()
-    d2 = norms - 2.0 * dot + palette_norm
-    return d2.argmin(dim=-1)
 
 
 def _format_distribution_comparison(

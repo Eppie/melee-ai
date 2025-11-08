@@ -270,13 +270,18 @@ class WindowDataset(Dataset):
 
         target_info: Dict[str, torch.Tensor]
         if isinstance(target_array, dict):
-            target_info = self._slice_quantized_dict(target_array, start, L)
-        elif target_array is None:
-            target_info = self._empty_target_info(L)
+            target_info = self._slice_quantized_targets(target_array, start, L)
+        elif target_array is None or target_array.shape[1] == 0:
+            target_info = {
+                "main_idx": torch.empty((L,), dtype=torch.long),
+                "c_idx": torch.empty((L,), dtype=torch.long),
+                "buttons": torch.empty((L, 0), dtype=torch.float32),
+                "shoulder_idx": None,
+            }
         else:
-            target_info = self._slice_quantized_matrix(target_array, start, L)
-
-        target_info = self._enrich_target_info(target_info)
+            raise RuntimeError(
+                "Dataset targets lack transformed quantized arrays. Rebuild the dataset"
+            )
 
         return {
             "X": features_out,
@@ -285,7 +290,7 @@ class WindowDataset(Dataset):
             "start": start,
         }
 
-    def _slice_quantized_dict(
+    def _slice_quantized_targets(
         self,
         arrays: Dict[str, "zarr.Array"],
         start: int,
@@ -315,79 +320,8 @@ class WindowDataset(Dataset):
                 shoulder_idx.astype(np.int64, copy=False)
             )
         else:
-            result["shoulder_idx"] = torch.zeros(length, dtype=torch.long)
+            result["shoulder_idx"] = None
         return result
-
-    def _slice_quantized_matrix(
-        self,
-        array: "zarr.Array",
-        start: int,
-        length: int,
-    ) -> Dict[str, torch.Tensor]:
-        if not self._target_quant_meta:
-            raise RuntimeError(
-                "Quantized target metadata missing; rebuild the dataset with the new format."
-            )
-        matrix = np.ascontiguousarray(
-            array[start : start + length], dtype=np.float32
-        )
-        fields = self._target_quant_meta.get("fields", {})
-        buttons_meta = self._target_quant_meta.get("buttons", {})
-
-        def _extract_field(name: str) -> Optional[torch.Tensor]:
-            info = fields.get(name)
-            if not info:
-                return None
-            offset = int(info["offset"])
-            column = matrix[:, offset].astype(np.int64, copy=False)
-            return torch.from_numpy(column)
-
-        main_idx = _extract_field("main_idx")
-        c_idx = _extract_field("c_idx")
-        if main_idx is None or c_idx is None:
-            raise RuntimeError("Quantized matrix is missing required index columns.")
-
-        shoulder_tensor = _extract_field("shoulder_idx")
-
-        btn_offset = int(buttons_meta.get("offset", matrix.shape[1]))
-        btn_count = int(buttons_meta.get("count", 0))
-        if btn_count > 0:
-            buttons_np = matrix[:, btn_offset : btn_offset + btn_count].astype(
-                np.float32, copy=False
-            )
-        else:
-            buttons_np = np.zeros((length, 0), dtype=np.float32)
-        buttons_tensor = torch.from_numpy(buttons_np)
-
-        result: Dict[str, torch.Tensor] = {
-            "main_idx": main_idx,
-            "c_idx": c_idx,
-            "buttons": buttons_tensor,
-        }
-        if shoulder_tensor is None:
-            shoulder_tensor = torch.zeros(length, dtype=torch.long)
-        result["shoulder_idx"] = shoulder_tensor
-        return result
-
-    def _empty_target_info(self, length: int) -> Dict[str, torch.Tensor]:
-        buttons_count = int(
-            self._target_quant_meta.get("buttons", {}).get("count", 0)
-        )
-        buttons_tensor = torch.zeros((length, buttons_count), dtype=torch.float32)
-        return {
-            "main_idx": torch.zeros(length, dtype=torch.long),
-            "c_idx": torch.zeros(length, dtype=torch.long),
-            "buttons": buttons_tensor,
-            "shoulder_idx": torch.zeros(length, dtype=torch.long),
-        }
-
-    def _enrich_target_info(
-        self, target_info: Dict[str, torch.Tensor]
-    ) -> Dict[str, torch.Tensor]:
-        for key in ("main_K", "c_K", "buttons_K", "shoulder_K"):
-            if key in self._target_quant_meta:
-                target_info.setdefault(key, self._target_quant_meta[key])
-        return target_info
 
 
 class RandomWindowSampler(Sampler[int]):

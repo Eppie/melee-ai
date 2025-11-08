@@ -19,7 +19,7 @@ The output of this stage is a Zarr corpus, which is a directory containing:
 Within each shard, the data is organized into episodes. Each episode now stores both raw and transformed matrices:
 - `X_raw` / `Y_raw`: Float32 arrays that preserve the unnormalized features and targets exactly as they were extracted from the replay.
 - `X_transformed`: Float32 features with every configured transform (scales, offsets, palette snaps) baked in at build time.
-- `Y_quantized`: A single float32 matrix that packs the quantized main-stick indices, C-stick indices, optional shoulder indices, and button probabilities. Offsets and palette sizes are recorded in `meta.json` so readers know how to slice the matrix back into logical components.
+- `Y_main_idx`, `Y_c_idx`, `Y_buttons`, `Y_shoulder_idx`: Quantized controller targets that mirror the tensors previously produced on-the-fly by `quantize_controller_targets`. Metadata in `meta.json` reports palette sizes so consumers know how many classes/buttons exist.
 
 ## 3. Data Loading and Windowing (`window_dataset.py`)
 
@@ -33,9 +33,9 @@ The `WindowDataset` class is a `torch.utils.data.Dataset` that provides access t
 
 - **`__getitem__(i)`**: This method is called by the `DataLoader` to retrieve a single window of data.
     1. It calls `self.index.window_to_episode(i)` to get the episode and frame offset for the requested window index `i`.
-    2. It opens the transformed feature array and the packed quantized target matrix for that episode using `self.index.open_episode_arrays`.
+    2. It opens the transformed feature array and the quantized target arrays for that episode using `self.index.open_episode_arrays`.
     3. It slices a window of `seq_len` frames from the feature matrix, producing `Xw`.
-    4. It slices the aligned quantized target matrix once, then uses the metadata offsets to recover `main_idx`, `c_idx`, `buttons`, and optionally `shoulder_idx`, packaging them into the same dictionary structure that `quantize_controller_targets` historically returned.
+    4. It slices the aligned quantized target arrays (`main_idx`, `c_idx`, `buttons`, and optionally `shoulder_idx`) and packages them into the same dictionary structure that `quantize_controller_targets` historically returned.
     5. Both the feature slice and the quantized target tensors are converted to `torch.Tensor`s and returned to the DataLoader.
 
 ## 4. Batching and Training (`train.py`)

@@ -72,7 +72,7 @@ This report covers every metric emitted by `train.py` through the helpers in `tr
 | `buttons/L/R_f1` | F1 for L/R. | Target 0.45–0.6; low values mean missed shield drops or wavedashes. |
 | `buttons/L/R_rate` | Activation rate for L/R. | Should remain around 11–12%; large swings point to weighting bugs. |
 
-## Value Head Metrics *(only when `config.model.use_value_head` is true)*
+## Value Head Metrics
 
 | Metric | Tracks / why it matters | Watch for |
 | --- | --- | --- |

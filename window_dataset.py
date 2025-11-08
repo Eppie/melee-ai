@@ -529,8 +529,7 @@ def make_dataloader(
         except RuntimeError:
             mp_ctx = None
 
-    device = _resolve_device(None)
-    pin_memory = config.train.pin_memory and device.type == "cuda"
+    pin_memory = config.train.pin_memory
 
     loader = torch.utils.data.DataLoader(
         ds,

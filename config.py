@@ -4,9 +4,11 @@ import platform
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 from zarr.codecs import BloscCodec, BloscShuffle
+
+import torch
 
 
 def _get_default_paths() -> tuple[str, str, str]:
@@ -40,60 +42,23 @@ class ZarrConfig(BaseModel):
         arbitrary_types_allowed=True,  # Allow BloscCodec
     )
 
-    input_root: str = Field(
-        default_factory=lambda: _get_default_paths()[0],
-        description="Root directory for input replay files (auto-detected by OS)",
-    )
-    out_root: str = Field(
-        default_factory=lambda: _get_default_paths()[1],
-        description="Root directory for processed output data (auto-detected by OS)",
-    )
-    validation_root: str = Field(
-        default_factory=lambda: _get_default_paths()[2],
-        description="Root directory for validation data (auto-detected by OS)",
-    )
-    episode_count: int = Field(
-        default=1000, ge=1, description="Number of episodes to process"
-    )
-    validation_count: int = Field(
-        default=10,
-        ge=1,
-        description="Number of validation episodes (automatically matches episode_count by default)",
-    )
-    shard_size: int = Field(
-        default=100, ge=1, description="Number of episodes per shard"
-    )
-    target_chunk_mb: float = Field(
-        default=8.0, gt=0, description="Target chunk size in megabytes"
-    )
-    seed: int = Field(default=42, description="Random seed for reproducibility")
-
-    # Blosc compressor - must always be a valid codec
+    input_root: str = Field(default_factory=lambda: _get_default_paths()[0])
+    out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
+    validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
+    episode_count: int = Field(default=1000, ge=1)
+    validation_count: int = Field(default=10, ge=1)
+    shard_size: int = Field(default=100, ge=1)
+    target_chunk_mb: float = Field(default=8.0, gt=0)
+    seed: int = Field(default=42)
     compressor: BloscCodec = Field(
         default_factory=lambda: BloscCodec(
             cname="zstd", clevel=3, shuffle=BloscShuffle.bitshuffle
-        ),
-        description="Blosc compressor configuration",
+        )
     )
 
-    def __init__(self, **data):
-        """Override init to debug compressor initialization."""
-        super().__init__(**data)
-        # Debug: Check if compressor got set
-        if self.compressor is None:
-            import warnings
-
-            warnings.warn(
-                "Compressor is None after __init__, this indicates field_validator "
-                "or model_validator is setting it to None. Check validators!",
-                UserWarning,
-            )
-
-    @classmethod
     @field_validator("compressor", mode="before")
     def validate_compressor(cls, v):
         """Ensure compressor is always a valid BloscCodec."""
-        # If None, create default
         if v is None:
             return BloscCodec(cname="zstd", clevel=3, shuffle=BloscShuffle.bitshuffle)
 
@@ -136,13 +101,6 @@ class ZarrConfig(BaseModel):
     def validate_paths_and_sharding(self):
         """Validate paths exist and sharding makes sense."""
         if self.compressor is None:
-            import warnings
-
-            warnings.warn(
-                "Compressor was None in model_validator (after field validation). "
-                "This suggests an issue with Pydantic field initialization order.",
-                UserWarning,
-            )
             # Use object.__setattr__ to bypass frozen config if needed
             object.__setattr__(
                 self,
@@ -152,28 +110,13 @@ class ZarrConfig(BaseModel):
 
         # Double-check it's a valid BloscCodec instance
         if not isinstance(self.compressor, BloscCodec):
-            import warnings
-
-            warnings.warn(
-                f"Compressor is type {type(self.compressor)}, converting to BloscCodec",
-                UserWarning,
-            )
             object.__setattr__(
                 self,
                 "compressor",
                 BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle),
             )
 
-        # Warn if episode_count < shard_size (not an error, just inefficient)
-        if self.episode_count < self.shard_size:
-            import warnings
-
-            warnings.warn(
-                f"episode_count ({self.episode_count}) < shard_size ({self.shard_size}). "
-                f"Consider reducing shard_size for efficiency.",
-                UserWarning,
-            )
-
+        self.update_out_root_for_episode_count()
         return self
 
     def update_out_root_for_episode_count(self) -> None:
@@ -186,9 +129,8 @@ class ZarrConfig(BaseModel):
         # Remove any existing _N suffix
         import re
 
-        base_path = re.sub(r"_\d+", "", base_path)
-        # Add new episode count
-        self.out_root = f"{base_path}_{self.episode_count}"
+        base_path = re.sub(r"_(\d+)$", "", base_path)
+        object.__setattr__(self, "out_root", f"{base_path}_{self.episode_count}")
 
 
 class TrainConfig(BaseModel):
@@ -202,66 +144,27 @@ class TrainConfig(BaseModel):
     batch_size: int = Field(default=128, ge=1)
     epochs: int = Field(default=10, ge=1)
     lr: float = Field(default=1.3e-4, gt=0)
+    # TODO: Document the effect of this setting
     weight_decay: float = Field(default=0.002, ge=0)
+    # TODO: Document the effect of this setting
     betas: Tuple[float, float] = Field(default=(0.9, 0.95))
     warmup_steps: int = Field(default=5000, ge=0)
-    max_steps: Optional[int] = Field(default=None, ge=1)
     num_workers: int = Field(default=16, ge=0)
     prefetch_factor: int = Field(default=4, ge=1)
-    pin_memory: bool = Field(
-        default_factory=lambda: _should_pin_memory(),
-        description="Pin memory for faster data transfer (auto-detected based on device)",
-    )
+    pin_memory: bool = Field(default_factory=lambda: _should_pin_memory())
     persistent_workers: bool = True
     stride: int = Field(default=1, ge=1)
 
     # Losses
     grad_clip: float = Field(default=5.0, gt=0)
     label_smoothing: float = Field(default=0.02, ge=0, le=1)
-    label_smoothing_final: float = Field(
-        default=0.0, ge=0, le=1, description="Target label smoothing after full training schedule."
-    )
-    schedule_warmup_epochs: int = Field(
-        default=1,
-        ge=0,
-        description="Number of epochs to keep label smoothing and change weights at their initial values before decay.",
-    )
-    schedule_cooldown_epochs: int = Field(
-        default=1,
-        ge=0,
-        description="Number of epochs at the end to run with fully-unweighted losses (scale=0).",
-    )
-
-    # AMP - auto-detect optimal dtype based on hardware
-    use_amp: bool = Field(
-        default_factory=lambda: _should_use_amp(),
-        description="Use Automatic Mixed Precision (auto-detected based on hardware)",
-    )
-    amp_dtype: str = Field(
-        default_factory=lambda: _get_optimal_amp_dtype(),
-        description="AMP dtype (auto-detected: float16 on supported accelerators, float32 on CPU)",
-    )
+    schedule_warmup_epochs: int = Field(default=1, ge=0)
+    schedule_cooldown_epochs: int = Field(default=1, ge=0)
+    use_amp: bool = Field(default_factory=lambda: _should_use_amp())
+    amp_dtype: str = Field(default_factory=lambda: _get_optimal_amp_dtype())
 
     # Checkpointing
     out_dir: str = "checkpoints"
-    save_every_epochs: int = Field(default=1, ge=1)
-
-    @field_validator("betas")
-    @classmethod
-    def validate_betas(cls, v):
-        """Ensure beta values are in valid range."""
-        if not (0 <= v[0] < 1 and 0 <= v[1] < 1):
-            raise ValueError("Beta values must be in [0, 1)")
-        return v
-
-    @field_validator("amp_dtype")
-    @classmethod
-    def validate_amp_dtype(cls, v):
-        """Ensure amp_dtype is valid."""
-        valid_dtypes = ["float16", "float32"]
-        if v not in valid_dtypes:
-            raise ValueError(f"amp_dtype must be one of {valid_dtypes}, got {v}")
-        return v
 
 
 def _should_pin_memory() -> bool:
@@ -269,16 +172,11 @@ def _should_pin_memory() -> bool:
     Auto-detect if memory pinning should be enabled.
     Pin memory is beneficial for CUDA but not for MPS or CPU.
     """
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            return True
-        # MPS (Apple Silicon) doesn't benefit from pinning
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return False
-    except ImportError:
-        pass
+    if hasattr(torch.backends, "cuda") and torch.cuda.is_available():
+        return True
+    # MPS (Apple Silicon) doesn't benefit from pinning
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return False
     return False
 
 
@@ -287,19 +185,11 @@ def _should_use_amp() -> bool:
     Auto-detect if Automatic Mixed Precision should be enabled.
     AMP is beneficial for modern GPUs with tensor cores.
     """
-    try:
-        import torch
-
-        # Check for CUDA with compute capability >= 7.0 (Volta+, has tensor cores)
-        if torch.cuda.is_available():
-            # Get compute capability of first GPU
-            major, minor = torch.cuda.get_device_capability(0)
-            return major >= 7  # Volta (7.0) and newer
-        # Apple Silicon supports AMP well
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return True
-    except (ImportError, RuntimeError):
-        pass
+    if hasattr(torch.backends, "cuda") and torch.cuda.is_available():
+        return True
+    # Apple Silicon supports AMP well
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return True
     return False
 
 
@@ -309,21 +199,12 @@ def _get_optimal_amp_dtype() -> str:
     - float16: GPUs and Apple Silicon with AMP support
     - float32: CPU or unsupported hardware
     """
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            # Get compute capability
-            major, minor = torch.cuda.get_device_capability(0)
-            # Volta/Turing (7.x) and newer support float16
-            if major >= 7:
-                return "float16"
-        # Apple Silicon supports float16 well
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "float16"
-    except (ImportError, RuntimeError):
-        pass
-    return "float32"  # Safe fallback when AMP is unavailable
+    if hasattr(torch.backends, "cuda") and torch.cuda.is_available():
+        return "float16"
+    # Apple Silicon supports float16 well
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "float16"
+    return "float32"
 
 
 class LossConfig(BaseModel):
@@ -331,33 +212,12 @@ class LossConfig(BaseModel):
 
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
-    enable_class_balancing: bool = Field(
-        default=True,
-        description="Enable class-balanced weights for cross-entropy losses.",
-    )
-    ce_weight_min: float = Field(
-        default=0.1,
-        gt=0,
-        description="Minimum clamp value applied to class weights.",
-    )
-    ce_weight_max: float = Field(
-        default=10.0,
-        gt=0,
-        description="Maximum clamp value applied to class weights.",
-    )
-    enable_pos_weighting: bool = Field(
-        default=True,
-        description="Enable positive-class weighting for multi-label BCE losses.",
-    )
-    pos_weight_max: float = Field(
-        default=10.0,
-        gt=0,
-        description="Maximum clamp value applied to positive-class weights.",
-    )
-    use_weighted_component_means: bool = Field(
-        default=True,
-        description="Apply provided sample weights when averaging component losses.",
-    )
+    enable_class_balancing: bool = Field(default=True)
+    ce_weight_min: float = Field(default=0.1, gt=0)
+    ce_weight_max: float = Field(default=10.0, gt=0)
+    enable_pos_weighting: bool = Field(default=True)
+    pos_weight_max: float = Field(default=10.0, gt=0)
+    use_weighted_component_means: bool = Field(default=True)
     main_change: float = Field(default=5.0, gt=0)
     c_change: float = Field(default=10.0, gt=0)
     shoulder_change: float = Field(default=5.0, gt=0)
@@ -371,22 +231,6 @@ class LossConfig(BaseModel):
     value_change: float = Field(default=8.0, gt=0)
 
 
-class ProfileConfig(BaseModel):
-    """Pydantic version of ProfileConfig."""
-
-    model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
-
-    enable: bool = False
-    out_dir: Optional[str] = None
-    wait: int = Field(default=1, ge=0)
-    warmup: int = Field(default=1, ge=0)
-    active: int = Field(default=10, ge=1)
-    repeat: int = Field(default=1, ge=1)
-    record_shapes: bool = True
-    with_stack: bool = False
-    profile_memory: bool = False
-
-
 from constants import BUTTON_TARGET_NAMES
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
@@ -396,8 +240,6 @@ from controller_utils import (
 
 
 class GPTConfig(BaseModel):
-    """Pydantic version of GPTConfig."""
-
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     block_size: int = Field(default=512, ge=1)
@@ -405,21 +247,12 @@ class GPTConfig(BaseModel):
     n_layer: int = Field(default=4, ge=1)
     n_head: int = Field(default=8, ge=1)
     dropout: float = Field(default=0.03, ge=0, le=1)
-    # TODO: Fix this dynamic computation
-    input_size: int = Field(default=-1, description="Computed dynamically")
+    input_size: int = Field(default=-1)
     num_stages: int = Field(default=6, ge=1)
     num_characters: int = Field(default=26, ge=1)
     num_actions: int = Field(default=396, ge=1)
     gamma: float = Field(default=0.999, ge=0, le=1)
-    norm_type: Literal["layernorm", "rmsnorm"] = "layernorm"
-    norm_eps: float = Field(default=1e-7, gt=0)
-    norm_affine: bool = True
-    norm_placement: Literal["pre", "post", "both"] = "post"
-    attention_type: Literal["mha", "gqa", "mqa"] = "gqa"
     n_kv_head: Optional[int] = Field(default=4, ge=1)
-    rope_theta: float = Field(default=10000.0, gt=0)
-    ffn_mult: float = Field(default=2, gt=0)
-    ffn_activation: Literal["gelu", "geglu", "swiglu", "relu"] = "geglu"
     head_flow: Literal["sequential", "parallel"] = "parallel"
     target_shapes_by_head: Dict[str, int] = Field(
         default_factory=lambda: {
@@ -429,37 +262,35 @@ class GPTConfig(BaseModel):
             "shoulder": len(SHOULDER_QUANTIZED),
         }
     )
-    use_value_head: bool = True
 
     @model_validator(mode="before")
-    def compute_input_size(cls, values):
-        """Dynamically compute input_size if dimensions are provided in context."""
-        if "context" in values and values["context"]:
-            context = values["context"]
-            gamestate_dim = context.get("gamestate_dim")
-            controller_dim = context.get("controller_dim")
+    def compute_input_size(cls, data: Any, info: ValidationInfo):
+        """Dynamically compute input_size if context provides dimensions."""
+        if not isinstance(data, dict):
+            return data
 
-            if gamestate_dim is not None and controller_dim is not None:
-                values["input_size"] = (
-                    values.get("num_stages", 6)
-                    + values.get("num_characters", 26) * 2
-                    + values.get("num_actions", 396) * 2
-                    + gamestate_dim
-                    + controller_dim
-                )
-        return values
+        # Allow explicit overrides to take precedence.
+        if "input_size" in data and data["input_size"] not in (-1, None):
+            return data
 
-    @model_validator(mode="after")
-    def validate_attention_heads(self):
-        """Ensure n_kv_head is compatible with n_head."""
-        if self.attention_type in ("gqa", "mqa"):
-            if self.n_kv_head is None:
-                raise ValueError(f"{self.attention_type} requires n_kv_head to be set")
-            if self.n_head % self.n_kv_head != 0:
-                raise ValueError(
-                    f"n_head ({self.n_head}) must be divisible by n_kv_head ({self.n_kv_head})"
-                )
-        return self
+        context = (info.context or {}) if info is not None else {}
+        gamestate_dim = context.get("gamestate_dim")
+        controller_dim = context.get("controller_dim")
+
+        if gamestate_dim is None or controller_dim is None:
+            return data
+
+        num_stages = data.get("num_stages", cls.model_fields["num_stages"].default)
+        num_characters = data.get(
+            "num_characters", cls.model_fields["num_characters"].default
+        )
+        num_actions = data.get("num_actions", cls.model_fields["num_actions"].default)
+
+        data = dict(data)
+        data["input_size"] = (
+            num_stages + num_characters * 2 + num_actions * 2 + gamestate_dim + controller_dim
+        )
+        return data
 
 
 class FeatureConfig(BaseModel):
@@ -519,25 +350,19 @@ class FeatureConfig(BaseModel):
 
 
 class RLConfig(BaseModel):
-    """Pydantic version of RLConfig."""
-
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
-
+    # TODO: Document what effect this has
     gamma: float = Field(default=0.995, ge=0, le=1)
+    # TODO: Document what effect this has
     value_loss_coef: float = Field(default=0.5, ge=0)
     reward_damage_dealt: float = 0.02
-    reward_damage_taken: float = -0.02
-    reward_stock_lost: float = -1
+    # TODO: Check if we need to fix when this is actually applied
     reward_stock_taken: float = 1
     reward_hitlag_opponent: float = 0.02
-    reward_hitlag_self: float = -0.02
     reward_low_shield: float = -0.1
-    reward_per_frame: float = 0
 
 
 class PPOConfig(BaseModel):
-    """Pydantic version of PPOConfig."""
-
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     pool_size: int = Field(default=5, ge=1)
@@ -554,9 +379,8 @@ class PPOConfig(BaseModel):
     value_clip: Optional[float] = Field(default=None, gt=0)
 
 
+# TODO: Currently unused, decide to either remove or actually implement.
 class ImitationConfig(BaseModel):
-    """Pydantic version of ImitationConfig."""
-
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     strategy: Literal[
@@ -604,7 +428,6 @@ class Config(BaseModel):
     zarr: ZarrConfig = Field(default_factory=ZarrConfig)
     train: TrainConfig = Field(default_factory=TrainConfig)
     model: GPTConfig = Field(default_factory=GPTConfig)
-    profile: ProfileConfig = Field(default_factory=ProfileConfig)
     features: FeatureConfig = Field(default_factory=FeatureConfig)
     rl: RLConfig = Field(default_factory=RLConfig)
     ppo: PPOConfig = Field(default_factory=PPOConfig)
@@ -635,6 +458,28 @@ class Config(BaseModel):
     def load(cls, path: Union[str, Path]) -> "Config":
         """Load config from JSON file."""
         return cls.from_json(Path(path).read_text(encoding="utf-8"))
+
+    @model_validator(mode="after")
+    def apply_context_defaults(self, info: ValidationInfo):
+        """Propagate context-aware defaults to nested configs."""
+        context = info.context or {}
+        gamestate_dim = context.get("gamestate_dim")
+        controller_dim = context.get("controller_dim")
+
+        if (
+            gamestate_dim is not None
+            and controller_dim is not None
+            and self.model.input_size in (-1, None)
+        ):
+            self.model.input_size = (
+                self.model.num_stages
+                + self.model.num_characters * 2
+                + self.model.num_actions * 2
+                + gamestate_dim
+                + controller_dim
+            )
+
+        return self
 
 
 def apply_overrides_(cfg: Config, overrides: Dict[str, str]) -> None:
@@ -722,28 +567,9 @@ def init_config(
     else:
         cfg = Config.model_validate({}, context=context)
 
-    # Debug: verify compressor is valid after creation
-    if cfg.zarr.compressor is None:
-        import warnings
-
-        warnings.warn(
-            "CRITICAL: compressor is None after Config creation! Creating default.",
-            UserWarning,
-        )
-        cfg.zarr.compressor = BloscCodec(
-            cname="zstd", clevel=7, shuffle=BloscShuffle.bitshuffle
-        )
-
     # Apply CLI overrides if provided
     if overrides:
         apply_overrides_(cfg, overrides)
-
-    # Final safety check
-    if cfg.zarr.compressor is None:
-        raise RuntimeError(
-            "Compressor is None after initialization! This should never happen. "
-            "Check your config file or initialization code."
-        )
 
     # Optionally freeze to prevent modifications
     if freeze:
@@ -755,7 +581,7 @@ def init_config(
 
 def get_config() -> Config:
     """
-    Get global config singleton. Replaces old get_config().
+    Get global config singleton.
 
     Returns:
         Config instance
@@ -788,27 +614,3 @@ def reset_config() -> None:
     """
     global _GLOBAL_CONFIG
     _GLOBAL_CONFIG = None
-
-
-def has_config() -> bool:
-    """Check if global config has been initialized."""
-    return _GLOBAL_CONFIG is not None
-
-
-if __name__ == "__main__":
-    # Test 1: Create ZarrConfig directly
-    print("Test 1: ZarrConfig()")
-    zarr_cfg = ZarrConfig()
-    print(f"  compressor after init: {zarr_cfg.compressor}")
-    print(f"  compressor type: {type(zarr_cfg.compressor)}")
-
-    # Test 2: Create full Config (which creates ZarrConfig)
-    print("\nTest 2: Config()")
-    cfg = Config()
-    print(f"  compressor after init: {cfg.zarr.compressor}")
-    print(f"  compressor type: {type(cfg.zarr.compressor)}")
-
-    # Test 3: Explicit compressor
-    print("\nTest 3: Explicit compressor")
-    zarr_cfg2 = ZarrConfig(compressor=BloscCodec(cname="zstd", clevel=7))
-    print(f"  compressor: {zarr_cfg2.compressor}")

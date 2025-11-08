@@ -19,10 +19,10 @@ class RewardFeatureIdx:
     p2_stock: Optional[int] = None
     p1_percent: Optional[int] = None
     p2_percent: Optional[int] = None
-    p1_in_hitlag: Optional[int] = None
-    p2_in_hitlag: Optional[int] = None
-    p1_in_defender_hitlag: Optional[int] = None
-    p2_in_defender_hitlag: Optional[int] = None
+    p1_is_in_hitlag: Optional[int] = None
+    p2_is_in_hitlag: Optional[int] = None
+    p1_is_defender_in_hitlag: Optional[int] = None
+    p2_is_defender_in_hitlag: Optional[int] = None
     p1_shield_strength: Optional[int] = None
     p2_shield_strength: Optional[int] = None
 
@@ -53,10 +53,10 @@ def build_reward_feature_index(colmap: ColumnMap) -> RewardFeatureIdx:
         p2_stock=idx("p2_stock"),
         p1_percent=idx("p1_percent"),
         p2_percent=idx("p2_percent"),
-        p1_in_hitlag=idx("p1_in_hitlag"),
-        p2_in_hitlag=idx("p2_in_hitlag"),
-        p1_in_defender_hitlag=idx("p1_in_defender_hitlag"),
-        p2_in_defender_hitlag=idx("p2_in_defender_hitlag"),
+        p1_is_in_hitlag=idx("p1_is_in_hitlag"),
+        p2_is_in_hitlag=idx("p2_is_in_hitlag"),
+        p1_is_defender_in_hitlag=idx("p1_is_defender_in_hitlag"),
+        p2_is_defender_in_hitlag=idx("p2_is_defender_in_hitlag"),
         p1_shield_strength=idx("p1_shield_strength"),
         p2_shield_strength=idx("p2_shield_strength"),
     )
@@ -89,57 +89,29 @@ def _compute_player_rewards(
     device = X.device
     dtype = X.dtype
 
-    rewards = torch.full(
-        (B, L), float(cfg.reward_per_frame), device=device, dtype=dtype
-    )
+    rewards = torch.zeros(B, L, device=device, dtype=dtype)
 
     if L > 1:
         # --- Damage deltas (current player deals damage to opponent/opponent to player) ---
-        self_percent_idx = getattr(idx, f"{player}_percent")
         opp_percent_idx = getattr(idx, f"{opponent}_percent")
 
-        if opp_percent_idx is not None and float(cfg.reward_damage_dealt) != 0.0:
-            d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
-            rewards[:, 1:].add_(d_opp.mul_(100.0).mul_(float(cfg.reward_damage_dealt)))
+        d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
+        rewards[:, 1:].add_(d_opp.mul_(100.0).mul_(float(cfg.reward_damage_dealt)))
 
-        if self_percent_idx is not None and float(cfg.reward_damage_taken) != 0.0:
-            d_self = torch.diff(X[:, :, self_percent_idx], dim=1)  # [B, L-1]
-            rewards[:, 1:].add_(d_self.mul_(100.0).mul_(float(cfg.reward_damage_taken)))
 
         # --- Stock changes ---
-        self_stock_idx = getattr(idx, f"{player}_stock")
         opp_stock_idx = getattr(idx, f"{opponent}_stock")
-
-        if self_stock_idx is not None and opp_stock_idx is not None:
-            d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
-            d_self_stock = torch.diff(X[:, :, self_stock_idx], dim=1)
-
-            stock_taken = (-d_opp_stock).clamp_min_(0)
-            stock_lost = (-d_self_stock).clamp_min_(0)
-
-            if float(cfg.reward_stock_taken) != 0.0:
-                rewards[:, 1:].add_(stock_taken.mul_(float(cfg.reward_stock_taken)))
-            if float(cfg.reward_stock_lost) != 0.0:
-                rewards[:, 1:].add_(stock_lost.mul_(float(cfg.reward_stock_lost)))
+        d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
+        stock_taken = (-d_opp_stock).clamp_min_(0)
+        rewards[:, 1:].add_(stock_taken.mul_(float(cfg.reward_stock_taken)))
 
     # --- Hitlag rewards/penalties (per-frame) ---
-    self_hitlag_idx = getattr(idx, f"{player}_in_hitlag")
-    self_def_hitlag_idx = getattr(idx, f"{player}_in_defender_hitlag")
     opp_hitlag_idx = getattr(idx, f"{opponent}_in_hitlag")
     opp_def_hitlag_idx = getattr(idx, f"{opponent}_in_defender_hitlag")
 
     if (
-        self_hitlag_idx is not None
-        and self_def_hitlag_idx is not None
-        and float(cfg.reward_hitlag_self) != 0.0
-    ):
-        self_metric = X[:, :, self_hitlag_idx] - X[:, :, self_def_hitlag_idx]
-        rewards.add_((self_metric == 1).to(dtype).mul_(float(cfg.reward_hitlag_self)))
-
-    if (
         opp_hitlag_idx is not None
         and opp_def_hitlag_idx is not None
-        and float(cfg.reward_hitlag_opponent) != 0.0
     ):
         opp_metric = X[:, :, opp_hitlag_idx] - X[:, :, opp_def_hitlag_idx]
         rewards.add_((opp_metric == 1).to(dtype).mul_(float(cfg.reward_hitlag_opponent)))

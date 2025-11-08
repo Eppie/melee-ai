@@ -6,13 +6,43 @@ This can be used to talk to some server implementing the Slippstream protocol
 """
 
 import logging
-from enum import Enum
-from typing import Optional, Tuple
-import enet
 import json
 import multiprocessing as mp
+import shutil
+import subprocess
+from enum import Enum
 from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event
+from pathlib import Path
+from typing import Optional, Tuple
+
+import ctypes
+from ctypes import RTLD_GLOBAL
+
+
+def _load_system_enet() -> None:
+    """Load Homebrew's libenet into the global table so ``import enet`` succeeds."""
+    brew = shutil.which("brew")
+    if not brew:
+        return
+    try:
+        prefix = subprocess.check_output([brew, "--prefix", "enet"], text=True).strip()
+    except subprocess.SubprocessError:
+        return
+    if not prefix:
+        return
+    lib_path = Path(prefix) / "lib" / "libenet.dylib"
+    if not lib_path.exists():
+        return
+    try:
+        ctypes.CDLL(str(lib_path), mode=RTLD_GLOBAL)
+    except OSError:
+        # Fall through to normal import failure; user can install a matching wheel.
+        return
+
+
+_load_system_enet()
+import enet  # noqa: E402
 
 from libmelee.melee.enums import Stage
 

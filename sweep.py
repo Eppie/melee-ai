@@ -30,7 +30,7 @@ from torch.nn.utils import clip_grad_norm_
 from tqdm.auto import tqdm
 
 from column_map import ColumnMap
-from config import Config, get_config, init_config, reset_config_for_tests
+from config import Config, get_config, init_config, reset_config
 from loss import _compute_ce_weights, _compute_pos_weights
 from model.nano_gpt import GPT
 
@@ -149,7 +149,6 @@ class TrainingRunResult:
     reached_target_loss: bool
     reached_target_objectives: bool
     interrupted: bool
-    stopped_due_to_cap: bool
     stopped_due_to_time_limit: bool
     time_seconds: float
     estimated_forward_flops: float
@@ -271,7 +270,6 @@ def _swiglu_flops(
 
 
 def _activation_ffn_flops(
-    activation: str,
     input_dim: int,
     inner_dim: int,
     output_dim: int,
@@ -279,25 +277,12 @@ def _activation_ffn_flops(
 ) -> float:
     if tokens <= 0:
         return 0.0
-    act = activation.lower()
-    if act == "swiglu":
-        return _swiglu_flops(input_dim, inner_dim, output_dim, tokens)
-    if act == "geglu":
-        gelu_cost = 6.0 * tokens * inner_dim
-        return (
-            2.0 * tokens * input_dim * inner_dim * 2
-            + 2.0 * tokens * inner_dim * output_dim
-            + gelu_cost
-        )
-    if act == "gelu":
-        gelu_cost = 6.0 * tokens * inner_dim
-        return (
-            2.0 * tokens * input_dim * inner_dim
-            + gelu_cost
-            + 2.0 * tokens * inner_dim * output_dim
-        )
-    return 2.0 * tokens * input_dim * inner_dim + 2.0 * tokens * inner_dim * output_dim
-
+    gelu_cost = 6.0 * tokens * inner_dim
+    return (
+        2.0 * tokens * input_dim * inner_dim * 2
+        + 2.0 * tokens * inner_dim * output_dim
+        + gelu_cost
+    )
 
 def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
     if batch_size == 0 or seq_len == 0:
@@ -314,14 +299,7 @@ def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
     flops += 2.0 * tokens * model_cfg.input_size * D
 
     # Transformer blocks
-    attn_type = model_cfg.attention_type.lower()
-    if attn_type == "mqa":
-        kv_heads = 1
-    elif attn_type == "gqa":
-        kv_heads = model_cfg.n_kv_head or max(1, H // 4)
-    else:
-        kv_heads = H
-    groups = max(1, H // kv_heads)
+    kv_heads = model_cfg.n_kv_head or max(1, H // 4)
 
     # Q projection always full size
     q_proj = 2.0 * tokens * D * D
@@ -337,18 +315,11 @@ def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
         q_proj + k_proj + v_proj + o_proj + attn_scores + attn_values + attn_softmax
     )
 
-    # Positional encoding overhead
-    pe_type = model_cfg.pe_type.lower()
-    if pe_type == "rope":
-        # approx cost of rotations (~6 ops per element)
-        attn_total += 6.0 * batch_size * H * seq_len * d_head * 2
-    elif pe_type == "alibi":
-        attn_total += batch_size * H * seq_len * seq_len
+    attn_total += 6.0 * batch_size * H * seq_len * d_head * 2
 
     ffn_mult = 2
-    activation = cfg.model.ffn_activation.lower()
     inner_dim = max(1, int(math.ceil(ffn_mult * D)))
-    mlp_total = _activation_ffn_flops(activation, D, inner_dim, D, tokens)
+    mlp_total = _activation_ffn_flops(D, inner_dim, D, tokens)
 
     residual_cost = 4.0 * tokens * D  # two residual adds per block
     block_total = attn_total + mlp_total + residual_cost
@@ -454,7 +425,7 @@ def run_training_once(
     verbose: bool,
     time_limit_seconds: Optional[float] = None,
 ) -> TrainingRunResult:
-    reset_config_for_tests()
+    reset_config()
     cfg = init_config(initial=base_initial, cli_overrides=overrides, freeze=False)
 
     if time_limit_seconds is not None and time_limit_seconds <= 0:
@@ -515,7 +486,6 @@ def run_training_once(
             reached_target_loss=False,
             reached_target_objectives=False,
             interrupted=False,
-            stopped_due_to_cap=False,
             stopped_due_to_time_limit=False,
             time_seconds=0.0,
             estimated_forward_flops=0.0,
@@ -545,7 +515,7 @@ def run_training_once(
     )
 
     steps_per_epoch = cfg.train.steps_per_epoch or math.ceil(len(loader))
-    total_steps_cap = cfg.train.max_steps or (cfg.train.epochs * steps_per_epoch)
+    total_steps_cap = cfg.train.epochs * steps_per_epoch
 
     global_step = 0
     epochs_completed = 0
@@ -562,10 +532,9 @@ def run_training_once(
     start_time = time.perf_counter()
     reached_target_loss = False
     interrupted = False
-    stopped_due_to_cap = False
     stopped_due_to_time_limit = False
     stop_reason = "completed"
-
+    # TODO: Remove profiler
     profiler_ctx, _ = _build_profiler_context(cfg, run_id, verbose=verbose)
 
     with profiler_ctx as profiler:
@@ -602,11 +571,6 @@ def run_training_once(
                         if (
                             cfg.train.steps_per_epoch is not None
                             and steps_this_epoch >= cfg.train.steps_per_epoch
-                        ):
-                            break
-                        if (
-                            cfg.train.max_steps is not None
-                            and global_step >= cfg.train.max_steps
                         ):
                             break
                         try:
@@ -685,8 +649,7 @@ def run_training_once(
                         opt.zero_grad(set_to_none=True)
                         loss.backward()
 
-                        if cfg.train.grad_clip is not None and cfg.train.grad_clip > 0:
-                            clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
+                        clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
 
                         opt.step()
 
@@ -917,17 +880,6 @@ def run_training_once(
                             loader_iter = None
                             break
 
-                        if global_step >= total_steps_cap:
-                            stopped_due_to_cap = True
-                            stop_reason = "max_steps_reached"
-                            if verbose:
-                                print(
-                                    f"[{run_id}] max step cap reached at step {global_step}"
-                                )
-                            _shutdown_loader_iter(loader_iter)
-                            loader_iter = None
-                            break
-
                         if time_limit_seconds is not None:
                             elapsed = time.perf_counter() - start_time
                             if elapsed >= time_limit_seconds:
@@ -968,8 +920,6 @@ def run_training_once(
         stop_reason = "objective_met"
     elif reached_target_loss:
         stop_reason = "target_met"
-    elif stopped_due_to_cap:
-        stop_reason = "max_steps_reached"
     elif stopped_due_to_time_limit:
         stop_reason = "time_limit"
     elif epochs_completed >= cfg.train.epochs:
@@ -988,7 +938,6 @@ def run_training_once(
         reached_target_loss=reached_target_loss,
         reached_target_objectives=objectives_met,
         interrupted=interrupted,
-        stopped_due_to_cap=stopped_due_to_cap,
         stopped_due_to_time_limit=stopped_due_to_time_limit,
         time_seconds=elapsed,
         estimated_forward_flops=forward_flops,
@@ -1024,8 +973,6 @@ def summarise_results(results: Sequence[TrainingRunResult]) -> str:
             status_bits.append("target met")
         if res.reached_target_objectives:
             status_bits.append("objective met")
-        if res.stopped_due_to_cap:
-            status_bits.append("max steps reached")
         if res.stopped_due_to_time_limit:
             status_bits.append("time limit")
         if res.interrupted:
@@ -1228,8 +1175,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 status_bits.append("target met")
             if result.reached_target_objectives:
                 status_bits.append("objective met")
-            if result.stopped_due_to_cap:
-                status_bits.append("max steps reached")
             if result.interrupted:
                 status_bits.append("interrupted")
             status = ", ".join(status_bits) if status_bits else "completed"

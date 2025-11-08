@@ -7,15 +7,6 @@ parameters:
   model.bias:
     distribution: categorical
     values: [True, False]
-  model.norm_eps:
-    distribution: categorical
-    values: [1e-4, 1e-5, 1e-6, 1e-7]
-  model.ffn_mult:
-    distribution: categorical
-    values: [2, 2.666666, 3, 4]
-  model.ffn_activation:
-    distribution: categorical
-    values: ["swiglu", "gelu", "geglu"]
 
 
 command:

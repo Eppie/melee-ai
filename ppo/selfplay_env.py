@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections import deque
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -20,20 +19,19 @@ from controller_utils import (
 )
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
-from libmelee.melee.enums import Button, Character, ControllerType, Menu, Stage
+from libmelee.melee.enums import Button, Character, ControllerType, Stage
 from libmelee.melee.gamestate import GameState
 from libmelee.melee.menuhelper import MenuHelper
 from model.nano_gpt import GPT
 from model_interface import (
     ControllerState,
     collect_raw_inputs_from_gamestate,
-    _apply_transforms_to_features,
 )
 from ppo.opponent_pool import OpponentPool
 from ppo.trajectory import TrajectoryBuffer
 from schema import get_feature_names, get_target_names
 from train.batch_utils import build_model_inputs
-from train.value_head import compute_frame_rewards, build_reward_feature_index
+from train.value_head import build_reward_feature_index
 
 
 class SelfPlayEnvironment:
@@ -111,9 +109,8 @@ class SelfPlayEnvironment:
         self.prev_p1_stock = 4
         self.prev_p2_stock = 4
 
-        # Reward computation - initialize column map immediately with proper target names
+        # Reward computation
         self.colmap = ColumnMap(self.feature_names, self.target_names)
-        self.reward_idx = build_reward_feature_index(self.colmap)
 
         # Opponent model (loaded at episode start)
         self.opponent_model: Optional[GPT] = None
@@ -241,7 +238,6 @@ class SelfPlayEnvironment:
         frames = list(buffer)
         stacked = torch.stack(frames, dim=0).unsqueeze(0).to(self.device)  # [1, T, F]
 
-        # Use column map to build inputs (already initialized in __init__)
         return build_model_inputs(stacked, self.colmap)
 
     def _sample_action(
@@ -385,67 +381,6 @@ class SelfPlayEnvironment:
         controller.tilt_analog(Button.BUTTON_C, state.c_stick_x, state.c_stick_y)
         controller.press_shoulder(Button.BUTTON_L, state.shoulder_analog)
 
-    def _compute_reward(
-        self,
-        gamestate: GameState,
-    ) -> float:
-        """Compute reward for current frame based on state changes."""
-        cfg = get_config().rl
-        reward = float(cfg.reward_per_frame)  # Base per-frame penalty
-
-        # Get current state
-        p1 = gamestate.players.get(self.learner_port)
-        p2 = gamestate.players.get(self.opponent_port)
-
-        if p1 is None or p2 is None:
-            return reward
-
-        # Damage rewards (scaled to 0-100 range)
-        p1_percent = float(p1.percent)
-        p2_percent = float(p2.percent)
-
-        damage_dealt = p2_percent - self.prev_p2_percent
-        damage_taken = p1_percent - self.prev_p1_percent
-
-        reward += damage_dealt * cfg.reward_damage_dealt
-        reward += damage_taken * cfg.reward_damage_taken
-
-        # Stock rewards
-        p1_stock = int(p1.stock)
-        p2_stock = int(p2.stock)
-
-        stocks_taken = self.prev_p2_stock - p2_stock
-        stocks_lost = self.prev_p1_stock - p1_stock
-
-        if stocks_taken > 0:
-            reward += stocks_taken * cfg.reward_stock_taken
-        if stocks_lost > 0:
-            reward += stocks_lost * cfg.reward_stock_lost
-
-        # Hitlag rewards (attacking vs being hit)
-        if p1.hitlag_left > 0 and not p1.is_defender_in_hitlag:
-            # We're attacking
-            reward += cfg.reward_hitlag_opponent
-        if p1.hitlag_left > 0 and p1.is_defender_in_hitlag:
-            # We're being hit
-            reward += cfg.reward_hitlag_self
-
-        # Shield penalty (scaled based on how low shield is)
-        if p1.shield_strength < 30.0:  # Shield strength is 0-60
-            shield_ratio = p1.shield_strength / 60.0  # Normalize to [0,1]
-            penalty_mult = max(
-                0.0, 1.0 - 2.0 * shield_ratio
-            )  # Increases as shield depletes
-            reward += penalty_mult * cfg.reward_low_shield
-
-        # Update previous state
-        self.prev_p1_percent = p1_percent
-        self.prev_p2_percent = p2_percent
-        self.prev_p1_stock = p1_stock
-        self.prev_p2_stock = p2_stock
-
-        return reward
-
     def step(self, gamestate: GameState) -> Tuple[bool, Dict[str, float]]:
         """Execute one step of the environment.
 
@@ -521,6 +456,7 @@ class SelfPlayEnvironment:
             )
 
         # Compute reward
+        # TODO: Use reward computation from value_head.py
         reward = self._compute_reward(gamestate)
         self.episode_reward += reward
 

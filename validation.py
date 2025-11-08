@@ -5,7 +5,6 @@ import argparse
 import json
 import sys
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
@@ -15,8 +14,8 @@ import torch
 from torch.utils.data import DataLoader, SequentialSampler
 
 from column_map import ColumnMap
-from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
 from config import get_config, init_config
+from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
 from controller_quantization import quantize_targets
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
@@ -27,8 +26,8 @@ from feature_transforms import feature_spec_from_config
 from loss import compute_loss_components
 from model.nano_gpt import GPT
 from train.batch_utils import build_model_inputs as build_inputs_for_gpt
-from train.value_head import compute_value_targets
 from train.checkpoint import _latest_checkpoint
+from train.value_head import compute_value_targets
 from utils import _resolve_device
 from window_dataset import WindowDataset, worker_init_fn
 
@@ -274,151 +273,6 @@ def _print_table_block(
                 row_cells.append(col_values[row_idx].rjust(width))
             print(" ".join(row_cells))
         print()
-
-
-def _compute_frame_rewards(X: torch.Tensor, colmap: ColumnMap) -> torch.Tensor:
-    """Compute per-frame rewards based on game state changes.
-
-    Args:
-        X: Input features [B, L, F]
-        colmap: Column mapping
-
-    Returns:
-        Rewards [B, L] - reward for each frame based on state changes
-    """
-    B, L, F = X.shape
-    device = X.device
-    rewards = torch.zeros(B, L, device=device)
-
-    # Get config for reward weights
-    config = get_config()
-
-    # Apply constant per-frame penalty to discourage stalling
-    rewards += config.rl.reward_per_frame
-
-    # Extract relevant features
-    p1_stock_idx = (
-        colmap.feat_names.index("p1_stock") if "p1_stock" in colmap.feat_names else None
-    )
-    p2_stock_idx = (
-        colmap.feat_names.index("p2_stock") if "p2_stock" in colmap.feat_names else None
-    )
-    p1_percent_idx = (
-        colmap.feat_names.index("p1_percent")
-        if "p1_percent" in colmap.feat_names
-        else None
-    )
-    p2_percent_idx = (
-        colmap.feat_names.index("p2_percent")
-        if "p2_percent" in colmap.feat_names
-        else None
-    )
-
-    # Hitlag features
-    p1_in_hitlag_idx = (
-        colmap.feat_names.index("p1_in_hitlag")
-        if "p1_in_hitlag" in colmap.feat_names
-        else None
-    )
-    p2_in_hitlag_idx = (
-        colmap.feat_names.index("p2_in_hitlag")
-        if "p2_in_hitlag" in colmap.feat_names
-        else None
-    )
-    p1_in_defender_hitlag_idx = (
-        colmap.feat_names.index("p1_in_defender_hitlag")
-        if "p1_in_defender_hitlag" in colmap.feat_names
-        else None
-    )
-    p2_in_defender_hitlag_idx = (
-        colmap.feat_names.index("p2_in_defender_hitlag")
-        if "p2_in_defender_hitlag" in colmap.feat_names
-        else None
-    )
-
-    # Shield strength features
-    p1_shield_strength_idx = (
-        colmap.feat_names.index("p1_shield_strength")
-        if "p1_shield_strength" in colmap.feat_names
-        else None
-    )
-
-    if L > 1:
-        # Damage rewards (difference between consecutive frames)
-        if p1_percent_idx is not None and p2_percent_idx is not None:
-            p1_percent_curr = X[:, 1:, p1_percent_idx]  # [B, L-1]
-            p1_percent_prev = X[:, :-1, p1_percent_idx]
-            p2_percent_curr = X[:, 1:, p2_percent_idx]
-            p2_percent_prev = X[:, :-1, p2_percent_idx]
-
-            damage_dealt = (
-                p2_percent_curr - p2_percent_prev
-            ) * 100  # scale back to 0-100 range
-            damage_taken = (p1_percent_curr - p1_percent_prev) * 100
-
-            rewards[:, 1:] += damage_dealt * config.rl.reward_damage_dealt
-            rewards[:, 1:] += damage_taken * config.rl.reward_damage_taken
-
-        # Stock rewards (when stock changes)
-        if p1_stock_idx is not None and p2_stock_idx is not None:
-            p1_stock_curr = X[:, 1:, p1_stock_idx]  # [B, L-1]
-            p1_stock_prev = X[:, :-1, p1_stock_idx]
-            p2_stock_curr = X[:, 1:, p2_stock_idx]
-            p2_stock_prev = X[:, :-1, p2_stock_idx]
-
-            stock_taken = (p2_stock_prev - p2_stock_curr).clamp(
-                min=0
-            )  # opponent lost stock
-            stock_lost = (p1_stock_prev - p1_stock_curr).clamp(min=0)  # we lost stock
-
-            rewards[:, 1:] += stock_taken * config.rl.reward_stock_taken
-            rewards[:, 1:] += stock_lost * config.rl.reward_stock_lost
-
-    # Hitlag rewards/penalties (apply to all frames, not just differences)
-    if (
-        p1_in_hitlag_idx is not None
-        and p1_in_defender_hitlag_idx is not None
-        and p2_in_hitlag_idx is not None
-        and p2_in_defender_hitlag_idx is not None
-    ):
-        # Compute hitlag metric for p1 (us): in_hitlag - in_defender_hitlag
-        p1_hitlag_metric = (
-            X[:, :, p1_in_hitlag_idx] - X[:, :, p1_in_defender_hitlag_idx]
-        )  # [B, L]
-        # Compute hitlag metric for p2 (opponent): in_hitlag - in_defender_hitlag
-        p2_hitlag_metric = (
-            X[:, :, p2_in_hitlag_idx] - X[:, :, p2_in_defender_hitlag_idx]
-        )  # [B, L]
-
-        # Penalty when we're in hitlag (being hit) - when metric = 1
-        p1_in_bad_hitlag = (p1_hitlag_metric == 1.0).float()
-        rewards += p1_in_bad_hitlag * config.rl.reward_hitlag_self  # negative reward
-
-        # Reward when opponent is in hitlag (we're hitting them) - when metric = 1
-        p2_in_bad_hitlag = (p2_hitlag_metric == 1.0).float()
-        rewards += (
-            p2_in_bad_hitlag * config.rl.reward_hitlag_opponent
-        )  # positive reward
-
-    # Shield strength penalty (apply to all frames)
-    if p1_shield_strength_idx is not None:
-        p1_shield = X[:, :, p1_shield_strength_idx]  # [B, L], range [0, 1]
-
-        # Apply penalty when shield < 0.5
-        # Magnify penalty as shield approaches 0: use (0.5 - shield) / 0.5 to get penalty multiplier
-        # When shield = 0.5, penalty = 0
-        # When shield = 0.25, penalty multiplier = 0.5
-        # When shield = 0, penalty multiplier = 1.0
-        low_shield_mask = (p1_shield < 0.5).float()  # [B, L]
-        penalty_multiplier = ((0.5 - p1_shield) / 0.5).clamp(
-            min=0, max=1
-        )  # [B, L], 0 to 1
-        shield_penalty = (
-            low_shield_mask * penalty_multiplier * config.rl.reward_low_shield
-        )  # negative
-        rewards += shield_penalty
-
-    return rewards
 
 
 def _print_extreme_value_frames(
@@ -803,12 +657,11 @@ def _update_enhanced_metrics(
     enhanced.total_main_entropy += entropy_main.sum().item()
     enhanced.total_c_entropy += entropy_c.sum().item()
 
-    if logits_shoulder is not None:
-        probs_shoulder = torch.softmax(logits_shoulder, dim=-1)
-        entropy_shoulder = -torch.sum(
-            probs_shoulder * torch.log(probs_shoulder + 1e-9), dim=-1
-        )
-        enhanced.total_shoulder_entropy += entropy_shoulder.sum().item()
+    probs_shoulder = torch.softmax(logits_shoulder, dim=-1)
+    entropy_shoulder = -torch.sum(
+        probs_shoulder * torch.log(probs_shoulder + 1e-9), dim=-1
+    )
+    enhanced.total_shoulder_entropy += entropy_shoulder.sum().item()
 
     enhanced.entropy_frames += B * L
 
@@ -890,47 +743,47 @@ def _update_enhanced_metrics(
 
     enhanced.total_frames += B * L
 
-    # 8. Value head metrics (if available)
-    if value_pred is not None:
-        config = get_config()
-        value_target = compute_value_targets(
-            X, colmap, gamma=config.rl.gamma
-        )  # [B, L, 1]
-        frame_rewards = _compute_frame_rewards(X, colmap)  # [B, L]
+    # 8. Value head metrics
+    config = get_config()
+    value_target = compute_value_targets(
+        X, colmap, gamma=config.rl.gamma
+    )  # [B, L, 1]
+    # TODO: Import from value_head.
+    frame_rewards = _compute_frame_rewards(X, colmap)  # [B, L]
 
-        # MSE and MAE
-        value_mse = ((value_pred - value_target) ** 2).mean().item()
-        value_mae = (value_pred - value_target).abs().mean().item()
+    # MSE and MAE
+    value_mse = ((value_pred - value_target) ** 2).mean().item()
+    value_mae = (value_pred - value_target).abs().mean().item()
 
-        enhanced.total_value_mse += value_mse * (B * L)
-        enhanced.total_value_mae += value_mae * (B * L)
-        enhanced.total_value_pred += value_pred.sum().item()
-        enhanced.total_value_target += value_target.sum().item()
+    enhanced.total_value_mse += value_mse * (B * L)
+    enhanced.total_value_mae += value_mae * (B * L)
+    enhanced.total_value_pred += value_pred.sum().item()
+    enhanced.total_value_target += value_target.sum().item()
 
-        # Store individual predictions and targets for correlation/distribution analysis
-        value_pred_flat = value_pred.cpu().numpy().flatten().tolist()
-        value_target_flat = value_target.cpu().numpy().flatten().tolist()
-        enhanced.value_pred_list.extend(value_pred_flat)
-        enhanced.value_target_list.extend(value_target_flat)
-        enhanced.value_frames += B * L
+    # Store individual predictions and targets for correlation/distribution analysis
+    value_pred_flat = value_pred.cpu().numpy().flatten().tolist()
+    value_target_flat = value_target.cpu().numpy().flatten().tolist()
+    enhanced.value_pred_list.extend(value_pred_flat)
+    enhanced.value_target_list.extend(value_target_flat)
+    enhanced.value_frames += B * L
 
-        # Store frame-level data for detailed analysis (with context)
-        # For each frame, store (value_pred, value_target, reward, frame_features)
-        value_pred_np = value_pred.squeeze(-1).cpu().numpy()  # [B, L]
-        value_target_np = value_target.squeeze(-1).cpu().numpy()  # [B, L]
-        frame_rewards_np = frame_rewards.cpu().numpy()  # [B, L]
-        X_np = X.cpu().numpy()  # [B, L, F]
+    # Store frame-level data for detailed analysis (with context)
+    # For each frame, store (value_pred, value_target, reward, frame_features)
+    value_pred_np = value_pred.squeeze(-1).cpu().numpy()  # [B, L]
+    value_target_np = value_target.squeeze(-1).cpu().numpy()  # [B, L]
+    frame_rewards_np = frame_rewards.cpu().numpy()  # [B, L]
+    X_np = X.cpu().numpy()  # [B, L, F]
 
-        for b in range(B):
-            for l in range(L):
-                enhanced.value_frame_data.append(
-                    (
-                        float(value_pred_np[b, l]),
-                        float(value_target_np[b, l]),
-                        float(frame_rewards_np[b, l]),
-                        X_np[b, l, :].copy(),  # Store full frame features
-                    )
+    for b in range(B):
+        for l in range(L):
+            enhanced.value_frame_data.append(
+                (
+                    float(value_pred_np[b, l]),
+                    float(value_target_np[b, l]),
+                    float(frame_rewards_np[b, l]),
+                    X_np[b, l, :].copy(),  # Store full frame features
                 )
+            )
 
     # Return last coordinates for next batch
     last_pred_main = main_pred_coords[:, -1]
@@ -1675,11 +1528,6 @@ def parse_args() -> argparse.Namespace:
         help="Prefetch factor when num_workers>0 (defaults to train.prefetch_factor).",
     )
     parser.add_argument(
-        "--no-pin-memory",
-        action="store_true",
-        help="Disable DataLoader pin_memory (enabled by default).",
-    )
-    parser.add_argument(
         "--device", default="auto", help="Torch device to run on (auto/cpu/cuda/mps)."
     )
     parser.add_argument(
@@ -1739,7 +1587,7 @@ def main() -> None:
         if args.prefetch_factor is not None
         else config.train.prefetch_factor
     )
-    pin_memory = config.train.pin_memory and not args.no_pin_memory
+    pin_memory = config.train.pin_memory
     persistent_workers = config.train.persistent_workers and num_workers > 0
 
     loader, dataset = _prepare_dataloader(

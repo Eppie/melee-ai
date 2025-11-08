@@ -109,10 +109,7 @@ class GPT(nn.Module):
 
         self.rotary_sequence_length = self.block_size * 2
         head_dim = model_config.n_embd // model_config.n_head
-        rope_base = getattr(model_config, "rope_theta", 10000.0)
-        cos, sin = self._precompute_rotary_embeddings(
-            self.rotary_sequence_length, head_dim, rope_base
-        )
+        cos, sin = self._precompute_rotary_embeddings(self.rotary_sequence_length, head_dim)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
@@ -122,7 +119,6 @@ class GPT(nn.Module):
             torch.nn.init.zeros_(block.mlp.output_projection.weight)
             torch.nn.init.zeros_(block.attention.output_projection.weight)
 
-    # TODO: Check if this is getting applied correctly
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             # https://arxiv.org/pdf/2310.17813
@@ -136,7 +132,7 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
 
     # TODO: Lower base since we have shorter sequences?
-    def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=10000):
+    def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=10000.0):
         device = _resolve_device()
         # stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)

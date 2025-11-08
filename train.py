@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from pprint import pformat
 from textwrap import indent
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+from typing import Sequence
 
 import torch
 import torch.nn as nn
@@ -32,7 +33,6 @@ from train.batch_utils import (
     compute_component_sample_weights,
     quantize_controller_targets,
 )
-
 # Train module utilities
 from train.checkpoint import (
     save_checkpoint,
@@ -46,7 +46,7 @@ from train.metrics import (
     compute_confusion_matrix,
     multilabel_prf,
 )
-from train.value_head import build_reward_feature_index, compute_value_targets
+from train.value_head import build_reward_feature_index, compute_value_targets, RewardFeatureIdx
 from train.wandb_utils import (
     WandbConfig,
     WandbLogger,
@@ -55,8 +55,7 @@ from train.wandb_utils import (
 )
 from utils import print_model_diagram, _resolve_device
 from window_dataset import make_dataloader
-from typing import Sequence  # Added for parse_cli_overrides
-
+from torch.nn.utils import clip_grad_norm_
 
 def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
     """
@@ -93,7 +92,7 @@ class TrainingComponents:
     amp: AMPContext
     ratios: SampleWeightRatios
     colmap: ColumnMap
-    reward_idx: int
+    reward_idx: RewardFeatureIdx
     loader: any
     sampler: any
     total_steps: int
@@ -108,7 +107,6 @@ class TrainingState:
     global_step: int
     resume_epoch: int
     resume_iter: int
-    stop_requested: bool = False
 
 
 @dataclass
@@ -142,31 +140,22 @@ class LoggingBundle:
     payload: Dict[str, float]
 
 
-def _configure_amp(config, device: torch.device) -> Tuple[AMPContext, Optional[str]]:
+def _configure_amp(config, device: torch.device) -> AMPContext:
     if device.type in ("cuda", "mps") and is_autocast_available(device.type):
         device_type = device.type
     else:
         device_type = "cpu"
 
-    amp_enabled = bool(config.train.use_amp and device_type != "cpu")
-    requested_dtype = getattr(config.train, "amp_dtype", "float16").lower()
-    warning = None
-    if config.train.use_amp and requested_dtype != "float16":
-        warning = (
-            "Warning: AMP currently only uses float16 autocast; overriding amp_dtype to 'float16'."
-        )
+    amp_enabled = config.train.use_amp
     amp_context = AMPContext(
         enabled=amp_enabled,
         device_type=device_type,
         dtype=torch.float16,
     )
-    return amp_context, warning
+    return amp_context
 
 
-def _report_amp_configuration(config, amp: AMPContext, device: torch.device) -> None:
-    if not config.train.use_amp:
-        return
-
+def _report_amp_configuration(amp: AMPContext, device: torch.device) -> None:
     print(f"Using PyTorch {torch.__version__}")
     if amp.enabled:
         backend_name = "CUDA" if amp.device_type == "cuda" else "MPS"
@@ -198,10 +187,8 @@ def _initialize_training_components(
     device = _resolve_device(None)
     model = model.to(device)
 
-    amp, warning = _configure_amp(config, device)
-    if warning:
-        print(warning)
-    _report_amp_configuration(config, amp, device)
+    amp= _configure_amp(config, device)
+    _report_amp_configuration(amp, device)
 
     colmap = ColumnMap.from_dataset(ds)
     reward_idx = build_reward_feature_index(colmap)
@@ -228,7 +215,7 @@ def _initialize_training_components(
     scaler = GradScaler(device=scaler_device, enabled=amp.enabled)
 
     steps_per_epoch = math.ceil(len(loader))
-    total_steps = config.train.max_steps or (config.train.epochs * steps_per_epoch)
+    total_steps = config.train.epochs * steps_per_epoch
 
     out_dir = Path(config.train.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -318,9 +305,7 @@ def _forward_pass(
         )
         pred: TensorDict = components.model(inputs_td)
         base_smoothing = components.config.train.label_smoothing
-        final_smoothing = getattr(
-            components.config.train, "label_smoothing_final", 0.0
-        )
+        final_smoothing = 0
         label_smoothing = base_smoothing + (final_smoothing - base_smoothing) * progress
         label_smoothing = float(max(label_smoothing, 0.0))
 
@@ -347,21 +332,18 @@ def _forward_pass(
         loss_components = dict(policy_loss_components)
 
         value_pred = pred.get("value")
-        if config.model.use_value_head and value_pred is not None:
-            value_target = compute_value_targets(
-                X, components.colmap, gamma=config.rl.gamma, reward_idx=components.reward_idx
-            )
-            value_loss_raw = torch.nn.functional.mse_loss(
-                value_pred, value_target, reduction="none"
-            ).squeeze(-1)
-            value_w = weights.get("global", weights["main"])
-            loss_value = (
-                value_loss_raw * value_w
-            ).sum() / value_w.sum().clamp_min(1e-12)
-            loss = loss + config.rl.value_loss_coef * loss_value
-            loss_components["value"] = loss_value
-        else:
-            loss_components["value"] = torch.tensor(0.0, device=components.device)
+        value_target = compute_value_targets(
+            X, components.colmap, gamma=config.rl.gamma, reward_idx=components.reward_idx
+        )
+        value_loss_raw = torch.nn.functional.mse_loss(
+            value_pred, value_target, reduction="none"
+        ).squeeze(-1)
+        value_w = weights.get("global", weights["main"])
+        loss_value = (
+            value_loss_raw * value_w
+        ).sum() / value_w.sum().clamp_min(1e-12)
+        loss = loss + config.rl.value_loss_coef * loss_value
+        loss_components["value"] = loss_value
 
     batch_targets = {
         "main": target_info["main_idx"],
@@ -414,13 +396,11 @@ def _compute_training_progress(
 
 def _update_learning_rate(components: TrainingComponents, global_step: int) -> float:
     config = components.config
-    lr_max = getattr(config.train, "lr_max", None) or config.train.lr
-    warmup_steps = getattr(config.train, "warmup_steps", 0)
     lr = cosine_lr_schedule(
         global_step,
         components.total_steps,
-        lr_max,
-        warmup_steps,
+        config.train.lr,
+        config.train.warmup_steps,
     )
     for pg in components.optimizer.param_groups:
         pg["lr"] = lr
@@ -454,20 +434,16 @@ def _backward_step(
         scaler.unscale_(optimizer)
 
     grad_stats = _collect_gradients(components, collect_grad_stats)
-    grad_clip = getattr(components.config.train, "grad_clip", None)
-    if grad_clip is not None and grad_clip > 0:
-        from torch.nn.utils import clip_grad_norm_
-
-        pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
-        if grad_stats is not None:
-            grad_stats["total_norm_pre_clip"] = pre_clip_norm
-            grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
-            grad_stats["was_clipped"] = float(pre_clip_norm > grad_clip)
-            grad_stats["clip_coef"] = (
-                grad_clip / max(pre_clip_norm, 1e-12)
-                if pre_clip_norm > grad_clip
-                else 1.0
-            )
+    grad_clip = components.config.train.grad_clip
+    pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
+    grad_stats["total_norm_pre_clip"] = pre_clip_norm
+    grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
+    grad_stats["was_clipped"] = float(pre_clip_norm > grad_clip)
+    grad_stats["clip_coef"] = (
+        grad_clip / max(pre_clip_norm, 1e-12)
+        if pre_clip_norm > grad_clip
+        else 1.0
+    )
 
     scaler.step(optimizer)
     scaler.update()
@@ -860,32 +836,25 @@ def _prepare_logging_bundle(
                 nonfinite / max(grad_elems, 1.0)
             )
 
-    try:
-        log_payload["optimizer/loss_scale"] = float(components.scaler.get_scale())
-    except Exception:
-        pass
+    log_payload["optimizer/loss_scale"] = float(components.scaler.get_scale())
 
-    try:
-        for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
-            label = _BUTTON_PRETTY.get(name, name)
-            log_payload[f"buttons/{label}_acc"] = float(btn_match[idx].item())
-            log_payload[f"buttons/{label}_f1"] = float(btn_f1[idx].item())
-            log_payload[f"buttons/{label}_precision"] = float(btn_prec[idx].item())
-            log_payload[f"buttons/{label}_recall"] = float(btn_rec[idx].item())
-            log_payload[f"buttons/{label}_rate"] = float(btn_rate[idx].item())
-    except Exception:
-        pass
+    for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
+        label = _BUTTON_PRETTY.get(name, name)
+        log_payload[f"buttons/{label}_acc"] = float(btn_match[idx].item())
+        log_payload[f"buttons/{label}_f1"] = float(btn_f1[idx].item())
+        log_payload[f"buttons/{label}_precision"] = float(btn_prec[idx].item())
+        log_payload[f"buttons/{label}_recall"] = float(btn_rec[idx].item())
+        log_payload[f"buttons/{label}_rate"] = float(btn_rate[idx].item())
 
-    if components.config.model.use_value_head and forward_result.value_pred is not None:
-        log_payload.update(
-            {
-                "value/pred_mean": value_pred_mean,
-                "value/target_mean": value_target_mean,
-                "value/mse": value_mse,
-                "value/mae": value_mae,
-                "value/corr": float(correlation.item()),
-            }
-        )
+    log_payload.update(
+        {
+            "value/pred_mean": value_pred_mean,
+            "value/target_mean": value_target_mean,
+            "value/mse": value_mse,
+            "value/mae": value_mae,
+            "value/corr": float(correlation.item()),
+        }
+    )
 
     return LoggingBundle(log_lines=log_lines, payload=log_payload)
 
@@ -985,13 +954,6 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             epoch_ctx.skip_remaining -= 1
             continue
 
-        if (
-            config.train.max_steps
-            and state.global_step >= config.train.max_steps
-        ):
-            state.stop_requested = True
-            break
-
         batch_tensors = _prepare_batch(batch, components.device)
         progress = _compute_training_progress(
             epoch,
@@ -999,7 +961,7 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             total_batches,
             config.train.epochs,
             config.train.schedule_warmup_epochs,
-            getattr(config.train, "schedule_cooldown_epochs", 1),
+            config.train.schedule_cooldown_epochs,
         )
         forward_result = _forward_pass(
             components,
@@ -1052,9 +1014,6 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 epoch_ctx=epoch_ctx,
             )
 
-        if config.train.max_steps and state.global_step >= config.train.max_steps:
-            state.stop_requested = True
-            break
 
     if epoch == state.resume_epoch:
         state.resume_iter = 0
@@ -1066,10 +1025,7 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             f"[epoch {epoch + 1}] avg_loss {avg_epoch_loss:.4f} ({epoch_ctx.iters_processed} iters)"
         )
 
-    save_condition = (
-        (epoch + 1) % config.train.save_every_epochs == 0 and epoch_ctx.iters_processed
-    )
-    _maybe_checkpoint_epoch(components, epoch, state.global_step, save_condition)
+    _maybe_checkpoint_epoch(components, epoch, state.global_step, True)
 
     return state
 
@@ -1115,21 +1071,12 @@ def train_loop(
         _finalize_training(components)
         return
 
-    if config.train.max_steps and global_step >= config.train.max_steps:
-        print(
-            f"Global step {global_step} reached configured max_steps={config.train.max_steps}; exiting."
-        )
-        _finalize_training(components)
-        return
-
     printable_config = _make_printable_config(config.model_dump(mode="python"))
     print("Resolved training configuration:")
     print(pformat(printable_config, indent=2, width=100))
 
     for epoch in range(start_epoch, config.train.epochs):
         state = _run_epoch(state, epoch)
-        if state.stop_requested:
-            break
 
     _finalize_training(components)
 

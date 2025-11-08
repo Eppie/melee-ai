@@ -152,30 +152,13 @@ def print_batch_preview(
         becomes a readable summary for quick debugging.
 
     Args:
-        batch: Dictionary containing ``"X"`` features and optionally ``"target_info"`` targets.
+        batch: Dictionary containing ``"X"`` features and optionally ``"Y"`` targets.
         feature_names: Names corresponding to the feature columns.
         target_names: Names corresponding to the target columns.
         max_frames: Maximum number of frames to display.
     """
     X = batch["X"].detach().cpu()
-    target_info = batch.get("target_info")
-    Y = None
-    if target_info:
-        buttons = target_info.get("buttons")
-        main_idx = target_info.get("main_idx")
-        c_idx = target_info.get("c_idx")
-        shoulder_idx = target_info.get("shoulder_idx")
-        preview_rows = []
-        if main_idx is not None:
-            preview_rows.append(("main_idx", main_idx.detach().cpu()))
-        if c_idx is not None:
-            preview_rows.append(("c_idx", c_idx.detach().cpu()))
-        if shoulder_idx is not None:
-            preview_rows.append(("shoulder_idx", shoulder_idx.detach().cpu()))
-        if buttons is not None:
-            preview_rows.append(("buttons", buttons.detach().cpu()))
-        if preview_rows:
-            Y = preview_rows
+    Y = batch["Y"].detach().cpu() if batch["Y"].numel() else None
 
     first_seq = X[0]
     num_frames = min(max_frames, first_seq.shape[0])
@@ -198,16 +181,13 @@ def print_batch_preview(
         formatters=formatters,
     )
 
-    if isinstance(Y, list):
-        print("Target preview")
-        for name, tensor in Y:
-            arr = tensor[0]
-            if arr.ndim == 1:
-                values = arr[:num_frames].numpy()
-                print(f"  {name}:", values)
-            else:
-                values = arr[:num_frames]
-                print(f"  {name}:\n{values.numpy()}")
+    if Y is not None and Y.shape[-1] > 0:
+        target_slice = Y[0, :num_frames].numpy()
+        _print_table_block(
+            "Target preview",
+            target_names,
+            target_slice,
+        )
 
 
 def _top_confusions(cm: torch.Tensor, k: int = 8) -> List[Tuple[int, int, int, float]]:

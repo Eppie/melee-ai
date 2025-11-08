@@ -35,7 +35,7 @@ from loss import _compute_ce_weights, _compute_pos_weights
 from model.nano_gpt import GPT
 
 # Train module utilities
-from train.batch_utils import build_model_inputs
+from train.batch_utils import build_model_inputs, quantize_controller_targets
 from train.metrics import MetricsAccumulator
 from utils import _resolve_device
 from window_dataset import make_dataloader
@@ -534,8 +534,7 @@ def run_training_once(
     parameter_count = sum(p.numel() for p in model.parameters())
     if verbose:
         print(f"[{run_id}] model parameter count: {parameter_count:,}")
-    loader, ds, sampler = make_dataloader(cfg)
-    target_quant_meta = getattr(ds, "_target_quant_meta", getattr(ds, "target_quant_meta", {}))
+    loader, ds, sampler = make_dataloader()
     colmap = ColumnMap.from_dataset(ds)
 
     opt = torch.optim.AdamW(
@@ -616,20 +615,12 @@ def run_training_once(
                             break
 
                         X = batch["X"].to(device, non_blocking=True)
-                        batch_target_info = {}
-                        for key, value in batch.get("target_info", {}).items():
-                            if value is None:
-                                batch_target_info[key] = None
-                            else:
-                                batch_target_info[key] = value.to(
-                                    device, non_blocking=True
-                                )
-                        for key in ("main_K", "c_K", "buttons_K", "shoulder_K"):
-                            if key not in batch_target_info and key in target_quant_meta:
-                                batch_target_info[key] = target_quant_meta[key]
+                        Y = batch["Y"].to(device, non_blocking=True)
 
                         inputs_td = build_model_inputs(X, colmap)
-                        target_info = batch_target_info
+                        target_info = quantize_controller_targets(
+                            Y, colmap, input_domain="unit11"
+                        )
 
                         pred = model(inputs_td)
                         B, L, _ = pred["main_stick"].shape

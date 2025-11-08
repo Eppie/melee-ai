@@ -10,10 +10,8 @@ import torch
 import zarr
 from torch.utils.data import Dataset, Sampler
 
-from data_types import (
-    ProcessedTorchTensor,
-    TransformedFeatureArray,
-)
+from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor, RawTorchTensor
+from feature_transforms import FeatureTransformSpec, feature_spec_from_config
 from utils import _resolve_device
 
 
@@ -65,21 +63,6 @@ class ZarrCorpusIndex:
         self.seq_len: int = int(self.meta["build_config"]["seq_len"])
         self.feature_names: List[str] = list(self.meta["schema"]["features"])
         self.target_names: List[str] = list(self.meta["schema"]["targets"])
-        layout = self.meta.get("array_layout", {})
-        feature_layout = layout.get("features", {})
-        target_layout = layout.get("targets", {})
-        self._feature_dataset_names: Dict[str, str] = {
-            "raw": feature_layout.get("raw", "X"),
-            "transformed": feature_layout.get("transformed", "X"),
-        }
-        self._target_dataset_layout = target_layout
-        self._target_dataset_names: Dict[str, str | Dict[str, str]] = {
-            "raw": target_layout.get("raw", "Y"),
-            "transformed": target_layout.get("transformed", "Y"),
-        }
-        self.target_quant_meta: Dict[str, object] = self.meta.get(
-            "target_quantization", {}
-        )
 
         lengths = np.load(lengths_path)  # (E,) frames per episode
         windows = np.load(wins_path)  # (E,) windows per episode
@@ -152,13 +135,13 @@ class ZarrCorpusIndex:
         self,
         ep: EpisodeInfo
     ) -> Tuple[zarr.Array, Optional[zarr.Array]]:
-        """Open the transformed feature/target arrays for ``ep``.
+        """Open the ``X``/``Y`` arrays for ``ep``.
 
         Example
         -------
         When ``ep`` describes ``episode_id=7`` in ``shard_00002.zarr``, the method
         locates the shard directory, opens ``root['ep_000007']``, and returns the
-        feature and target arrays.
+        ``X`` and ``Y`` arrays.
         """
         key = (ep.shard_id, ep.episode_id)
         shard_path = self._shard_paths.get(ep.shard_id)
@@ -170,26 +153,100 @@ class ZarrCorpusIndex:
 
         ep_name = f"ep_{ep.episode_id:06d}"
         epg = root[ep_name]
-        feature_key = self._feature_dataset_names.get("transformed", "X")
-        X = epg.get(feature_key)
-        if X is None:
-            X = epg["X"]
-        target_layout = self._target_dataset_names.get("transformed", "Y")
-        if isinstance(target_layout, dict):
-            payload: Dict[str, zarr.Array] = {}
-            for key, dataset_name in target_layout.items():
-                if key == "type" or not dataset_name:
-                    continue
-                arr = epg.get(dataset_name)
-                if arr is not None:
-                    payload[key] = arr
-            Y = payload
-        else:
-            target_key = target_layout or "Y"
-            Y = epg.get(target_key, None)
-            if Y is None and target_key != "Y":
-                Y = epg.get("Y", None)
+        X = epg["X"]  # shape (T, F), float32
+        Y = epg.get("Y", None)  # shape (T, Yd) or missing
+
         return X, Y
+
+
+def _resolve_feature_groups(
+    feature_names: Sequence[str],
+    requested: Sequence[str],
+) -> List[Tuple[int, ...]]:
+    """Expand requested feature names into column index groups with examples.
+
+    Example
+    -------
+    Suppose ``feature_names`` contains ``('p1_main_stick_x', 'p1_main_stick_y',
+    'p2_main_stick_x', 'p2_main_stick_y')`` and ``requested=('main_stick_x',
+    'main_stick_y')``. The helper first tries the names verbatim (fails) and then
+    matches both ``p1_`` and ``p2_`` prefixes, returning ``[(0, 1), (2, 3)]`` so
+    transforms run on each player slice independently.
+    """
+    name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
+
+    if all(name in name_to_idx for name in requested):
+        return [tuple(name_to_idx[name] for name in requested)]
+
+    prefixes: set[str] = set()
+    for name in feature_names:
+        head, _, tail = name.partition("_")
+        if tail and head.startswith("p") and head[1:].isdigit():
+            prefixes.add(head)
+
+    groups: List[Tuple[int, ...]] = []
+    for prefix in sorted(prefixes):
+        indices: List[int] = []
+        found_all = True
+        for feature in requested:
+            col = f"{prefix}_{feature}"
+            idx = name_to_idx.get(col)
+            if idx is None:
+                found_all = False
+                break
+            indices.append(idx)
+        if found_all and indices:
+            groups.append(tuple(indices))
+    return groups
+
+
+def _apply_feature_transforms(
+    X: RawNumpyArray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
+) -> ProcessedNumpyArray:
+    """Apply configured transforms to every requested column with a trace.
+
+    Example
+    -------
+    ``spec`` contains two steps:
+
+    1. ``('scale', features=('foo',), factor=0.5)``
+    2. ``('offset', features=('foo', 'bar'), delta=1)``
+
+    For input ``X = [[2., 5.], [4., 7.]]`` with feature names ``('foo', 'bar')`` we
+    first scale ``foo`` to ``[1., 2.]`` then add ``1`` to both columns yielding
+    ``[[2., 6.], [3., 8.]]``. The modified array is returned, demonstrating the
+    in-place but staged nature of the transform pipeline.
+    """
+
+    out = X
+    for step in spec.steps:
+        index_groups = _resolve_feature_groups(feature_names, step.features)
+        if not index_groups:
+            continue
+        for group in index_groups:
+            idxs = np.asarray(group, dtype=np.int64)
+            if idxs.size == 1:
+                col_idx = int(idxs[0])
+                block = out[:, col_idx].copy()
+                result = step.fn(block)
+                if result is None:
+                    result = block
+                if result.shape != block.shape:
+                    raise ValueError(
+                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
+                    )
+                out[:, col_idx] = result
+            else:
+                block = out[:, idxs].copy()
+                result = step.fn(block)
+                if result is None:
+                    result = block
+                if result.shape != block.shape:
+                    raise ValueError(
+                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
+                    )
+                out[:, idxs] = result
+    return out
 
 
 class WindowDataset(Dataset):
@@ -199,7 +256,7 @@ class WindowDataset(Dataset):
     __getitem__(i) returns:
         dict(
             X: FloatTensor [L, F],
-            target_info: Dict[str, Tensor],
+            Y: FloatTensor [L, Yd] or empty (0-dim second axis) if no targets,
             episode_id: int,
             start: int,
         )
@@ -208,23 +265,26 @@ class WindowDataset(Dataset):
     def __init__(
         self,
         data_dir: str | Path,
+        *,
+        feature_transforms: Optional[FeatureTransformSpec] = None
     ) -> None:
         """Prepare the dataset by indexing shards and wiring transforms.
 
         Example
         -------
-        ``WindowDataset('dataset_root')`` loads corpus metadata and prepares
-        sliding-window indexing that directly surfaces pre-transformed arrays.
+        ``WindowDataset('dataset_root')`` loads corpus metadata and stores the
+        requested transform spec so future ``__getitem__`` calls transparently
+        apply preprocessing before returning tensors.
         """
         super().__init__()
         # TODO: Can we build this index faster? generator?
         self.index = ZarrCorpusIndex(data_dir)
         self.seq_len = self.index.seq_len
+        self.transforms = feature_transforms
         self._feature_names = tuple(self.index.feature_names)
         self._target_names = tuple(self.index.target_names)
         self._feature_names_sel = list(self._feature_names)
         self._target_names_sel = list(self._target_names)
-        self._target_quant_meta = self.index.meta.get("target_quantization", {})
 
     def __len__(self) -> int:
         """Return the total number of sliding windows across the corpus.
@@ -245,8 +305,8 @@ class WindowDataset(Dataset):
 
         1. ``window_to_episode`` might yield ``(ep_idx=1, offset=1)`` so we slice
            frames ``[1:4]`` from the episode arrays.
-        2. Because the transformed sequences are already materialized in the corpus,
-           the slices are merely copied into contiguous buffers.
+        2. After copying into contiguous buffers we run feature transforms such as
+           scaling or palette snapping.
         3. The arrays are converted to ``torch.float32`` tensors and the target array
            defaults to shape ``(3, 0)`` when an episode lacks ``Y`` data.
 
@@ -260,68 +320,23 @@ class WindowDataset(Dataset):
         L = self.seq_len
 
         feature_array, target_array = self.index.open_episode_arrays(ep)
+        # Slice contiguous window; arrays are (T, F) and (T, Yd)
         feature_window = feature_array[start : start + L, :]  # (L, F)
-        feature_window_np: TransformedFeatureArray = np.ascontiguousarray(
-            feature_window, dtype=np.float32
-        )
-        features_out: ProcessedTorchTensor = torch.from_numpy(
-            feature_window_np.astype(np.float32, copy=False)
-        )
+        target_window = target_array[start : start + L, :]  # (L, Yd)
 
-        target_info: Dict[str, torch.Tensor]
-        if isinstance(target_array, dict):
-            target_info = self._slice_quantized_targets(target_array, start, L)
-        elif target_array is None or target_array.shape[1] == 0:
-            target_info = {
-                "main_idx": torch.empty((L,), dtype=torch.long),
-                "c_idx": torch.empty((L,), dtype=torch.long),
-                "buttons": torch.empty((L, 0), dtype=torch.float32),
-                "shoulder_idx": None,
-            }
-        else:
-            raise RuntimeError(
-                "Dataset targets lack transformed quantized arrays. Rebuild the dataset"
-            )
+        # Apply per-feature transforms (in-place on view)
+        feature_window: RawNumpyArray = np.ascontiguousarray(feature_window)  # ensure contiguous for in-place ops
+        feature_window: ProcessedNumpyArray = _apply_feature_transforms(feature_window, self._feature_names, self.transforms)
+        features_out: ProcessedTorchTensor = torch.from_numpy(feature_window.astype(np.float32, copy=False))
+        targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
+        targets_out = torch.from_numpy(targets_as_numpy.astype(np.float32, copy=False))
 
         return {
             "X": features_out,
-            "target_info": target_info,
+            "Y": targets_out,
             "episode_id": ep.episode_id,
             "start": start,
         }
-
-    def _slice_quantized_targets(
-        self,
-        arrays: Dict[str, "zarr.Array"],
-        start: int,
-        length: int,
-    ) -> Dict[str, torch.Tensor]:
-        def _slice_array(name: str) -> Optional[np.ndarray]:
-            arr = arrays.get(name)
-            if arr is None:
-                return None
-            return np.ascontiguousarray(arr[start : start + length])
-
-        main_idx = _slice_array("main_idx")
-        c_idx = _slice_array("c_idx")
-        buttons = _slice_array("buttons")
-        if main_idx is None or c_idx is None or buttons is None:
-            raise RuntimeError("Quantized target arrays are incomplete; rebuild dataset.")
-
-        result: Dict[str, torch.Tensor] = {
-            "main_idx": torch.from_numpy(main_idx.astype(np.int64, copy=False)),
-            "c_idx": torch.from_numpy(c_idx.astype(np.int64, copy=False)),
-            "buttons": torch.from_numpy(buttons.astype(np.float32, copy=False)),
-        }
-
-        shoulder_idx = _slice_array("shoulder_idx")
-        if shoulder_idx is not None:
-            result["shoulder_idx"] = torch.from_numpy(
-                shoulder_idx.astype(np.int64, copy=False)
-            )
-        else:
-            result["shoulder_idx"] = None
-        return result
 
 
 class RandomWindowSampler(Sampler[int]):
@@ -485,7 +500,7 @@ def make_dataloader(
     When configuration specifies ``batch_size=8``, ``stride=4`` and ``num_workers=2``
     this function:
 
-    1. Builds ``WindowDataset`` bound to the configured corpus root.
+    1. Builds ``WindowDataset`` with feature transforms from the config.
     2. Instantiates :class:`RandomWindowSampler` using the dataset's index and the
        configured stride.
     3. Creates ``DataLoader`` with two workers, pinned memory (on CUDA), and
@@ -495,8 +510,10 @@ def make_dataloader(
     can iterate over ``loader`` while still accessing ``dataset`` metadata and the
     sampler to adjust epochs.
     """
+    feature_spec = feature_spec_from_config(config.features)
     ds = WindowDataset(
         config.zarr.out_root,
+        feature_transforms=feature_spec,
     )
 
     stride = config.train.stride

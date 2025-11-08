@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 import zarr
 
+from config import FeatureConfig
+from feature_transforms import feature_spec_from_config
 from window_dataset import WindowDataset
 
 
@@ -22,33 +24,6 @@ def zarr_corpus(tmp_path: Path) -> Path:
         "schema": {
             "features": ["p1_main_stick_x", "p1_main_stick_y"],
             "targets": ["p1_main_stick_x", "p1_main_stick_y"],
-        },
-        "array_layout": {
-            "features": {"raw": "X_raw", "transformed": "X_transformed"},
-            "targets": {
-                "raw": "Y_raw",
-                "transformed": {
-                    "type": "quantized_v1",
-                    "main_idx": "Y_main_idx",
-                    "c_idx": "Y_c_idx",
-                    "buttons": "Y_buttons",
-                    "shoulder_idx": "Y_shoulder_idx",
-                },
-            },
-        },
-        "target_quantization": {
-            "version": 1,
-            "layout": {
-                "type": "quantized_v1",
-                "main_idx": "Y_main_idx",
-                "c_idx": "Y_c_idx",
-                "buttons": "Y_buttons",
-                "shoulder_idx": "Y_shoulder_idx",
-            },
-            "main_K": 5,
-            "c_K": 5,
-            "buttons_K": 2,
-            "shoulder_K": 3,
         },
     }
     with (data_dir / "meta.json").open("w") as f:
@@ -69,47 +44,46 @@ def zarr_corpus(tmp_path: Path) -> Path:
     shard_dir.mkdir()
     root = zarr.open_group(str(shard_dir), mode="w")
     ep_group = root.create_group("ep_000000")
-    x_raw = np.random.rand(10, 2).astype(np.float32)
-    y_raw = np.random.rand(10, 2).astype(np.float32)
-    x_transformed = (x_raw * 2.0).astype(np.float32)
-    ep_group.create_array("X_raw", data=x_raw)
-    ep_group.create_array("X_transformed", data=x_transformed)
-    ep_group.create_array("Y_raw", data=y_raw)
-    ep_group.create_array("Y_main_idx", data=(np.arange(10, dtype=np.int16) % 5))
-    ep_group.create_array("Y_c_idx", data=(np.arange(10, dtype=np.int16) % 7))
-    buttons = np.random.rand(10, 2).astype(np.float32)
-    ep_group.create_array("Y_buttons", data=buttons)
-    ep_group.create_array("Y_shoulder_idx", data=(np.arange(10, dtype=np.int16) % 3))
+    x_data = np.random.rand(10, 2).astype(np.float32)
+    y_data = np.random.rand(10, 2).astype(np.float32)
+    ep_group.create_array("X", data=x_data)
+    ep_group.create_array("Y", data=y_data)
 
     return data_dir
 
 
-def test_window_dataset_uses_transformed_arrays(zarr_corpus: Path):
-    """WindowDataset should surface the transformed feature/target arrays."""
-    dataset = WindowDataset(zarr_corpus)
+def test_window_dataset_double_quantization(zarr_corpus: Path):
+    """
+    Tests that the WindowDataset does not apply feature transforms to the target tensor (Y).
+    This prevents the double quantization issue.
+    """
+    # Create a FeatureConfig with a stick_palette transform
+    feature_config = FeatureConfig(
+        transforms=[
+            {
+                "transform": "stick_palette",
+                "features": ["main_stick_x", "main_stick_y"],
+                "palette": "fox_main",
+            }
+        ]
+    )
+    feature_spec = feature_spec_from_config(feature_config)
+
+    # Create a WindowDataset instance
+    dataset = WindowDataset(zarr_corpus, feature_transforms=feature_spec)
+
+    # Get a window from the dataset
     window = dataset[0]
     x_window = window["X"]
-    target_info = window["target_info"]
+    y_window = window["Y"]
 
+    # Get the original data from the Zarr corpus
     root = zarr.open_group(str(zarr_corpus / "shard_00000.zarr"), mode="r")
-    transformed_x = root["ep_000000/X_transformed"][:4]
-    expected_main = root["ep_000000/Y_main_idx"][:4]
-    expected_c = root["ep_000000/Y_c_idx"][:4]
-    expected_buttons = root["ep_000000/Y_buttons"][:4]
-    expected_shoulder = root["ep_000000/Y_shoulder_idx"][:4]
+    original_x = root["ep_000000/X"][:4]
+    original_y = root["ep_000000/Y"][:4]
 
-    assert np.allclose(
-        x_window.numpy(), transformed_x
-    ), "Features should match the stored transformed array"
-    assert np.array_equal(
-        target_info["main_idx"].numpy(), expected_main
-    ), "Main indices should match transformed storage"
-    assert np.array_equal(
-        target_info["c_idx"].numpy(), expected_c
-    ), "C-stick indices should match transformed storage"
-    assert np.allclose(
-        target_info["buttons"].numpy(), expected_buttons
-    ), "Button targets should match transformed storage"
-    assert np.array_equal(
-        target_info["shoulder_idx"].numpy(), expected_shoulder
-    ), "Shoulder indices should match transformed storage"
+    # Assert that the X tensor has been transformed (i.e., it's different from the original)
+    assert not np.allclose(x_window.numpy(), original_x), "X tensor should be transformed"
+
+    # Assert that the Y tensor has NOT been transformed (i.e., it's the same as the original)
+    assert np.allclose(y_window.numpy(), original_y), "Y tensor should not be transformed"

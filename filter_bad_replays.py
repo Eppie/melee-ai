@@ -12,7 +12,7 @@ import pyarrow as pa
 from peppi_py import Game
 from peppi_py.game import EndMethod, PlayerType
 
-REPLAYS_DIR = Path("/Users/eppie/Downloads/ALL_REPLAYS/OUT_EXTRACT/ranked-anonymized")
+REPLAYS_DIR = Path("/Users/eppie/Downloads/ALL_REPLAYS/ranked4")
 GOOD_DIR = Path("/Users/eppie/Downloads/ALL_REPLAYS/replays_sorted")
 FAILED_DIR = Path("/Users/eppie/Downloads/ALL_REPLAYS/replays_failed")
 FAILED_DIR.mkdir(exist_ok=True)

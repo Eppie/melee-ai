@@ -9,7 +9,6 @@ from typing import (
     Callable,
     Dict,
     Iterable,
-    List,
     Mapping,
     Optional,
     Sequence,
@@ -20,16 +19,11 @@ from typing import (
 import numpy as np
 
 from controller_utils import C_STICK_QUANTIZED, CONTROL_STICK_QUANTIZED
-from data_types import (
-    FeatureBlockArray,
-    RawFeatureArray,
-    TransformedFeatureArray,
-)
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers only
     from config import FeatureConfig
 
-FeatureFn = Callable[[FeatureBlockArray], FeatureBlockArray]
+FeatureFn = Callable[[np.ndarray], np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -51,7 +45,7 @@ class FeatureTransformSpec:
         return bool(self.steps)
 
 
-def _transform_scale(column: FeatureBlockArray, *, factor: float) -> FeatureBlockArray:
+def _transform_scale(column: np.ndarray, *, factor: float) -> np.ndarray:
     """Scale a feature column in-place with a concrete walkthrough.
 
     Example
@@ -65,7 +59,7 @@ def _transform_scale(column: FeatureBlockArray, *, factor: float) -> FeatureBloc
     return column
 
 
-def _transform_offset(column: FeatureBlockArray, *, delta: float) -> FeatureBlockArray:
+def _transform_offset(column: np.ndarray, *, delta: float) -> np.ndarray:
     """Shift a feature column in-place and illustrate the effect.
 
     Example
@@ -84,7 +78,7 @@ TransformFactory = Callable[[Mapping[str, Any]], FeatureFn]
 
 # TODO: might not need mask or clip
 # TODO: This is duplicated elsewhere
-def _sticks01_to_unit11_np(xy01: FeatureBlockArray) -> FeatureBlockArray:
+def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
     """Rescale ``[0, 1]`` stick coordinates to ``[-1, 1]`` with unit-circle clamping.
 
     Example
@@ -113,7 +107,7 @@ def _sticks01_to_unit11_np(xy01: FeatureBlockArray) -> FeatureBlockArray:
 _MAIN_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
 _C_PALETTE = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
 
-_PALETTES: Dict[str, FeatureBlockArray] = {
+_PALETTES: Dict[str, np.ndarray] = {
     "fox_main": _MAIN_PALETTE,
     "main": _MAIN_PALETTE,
     "c_stick": _C_PALETTE,
@@ -123,11 +117,11 @@ _PALETTES: Dict[str, FeatureBlockArray] = {
 
 # TODO: do we need both paths? should KNOW if [-1,1] or [0,1]
 def _stick_palette_apply(
-    block: FeatureBlockArray,
+    block: np.ndarray,
     *,
-    palette: FeatureBlockArray,
-    palette_norm: FeatureBlockArray,
-) -> FeatureBlockArray:
+    palette: np.ndarray,
+    palette_norm: np.ndarray,
+) -> np.ndarray:
     """Quantize ``(x, y)`` stick pairs to the nearest entry in ``palette``.
 
     Example
@@ -390,84 +384,10 @@ def feature_spec_from_config(
     return build_transform_spec(transforms)
 
 
-def _resolve_feature_groups(
-    feature_names: Sequence[str],
-    requested: Sequence[str],
-) -> List[Tuple[int, ...]]:
-    """Expand requested feature names into column index groups."""
-    name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
-
-    if all(name in name_to_idx for name in requested):
-        return [tuple(name_to_idx[name] for name in requested)]
-
-    prefixes: set[str] = set()
-    for name in feature_names:
-        head, _, tail = name.partition("_")
-        if tail and head.startswith("p") and head[1:].isdigit():
-            prefixes.add(head)
-
-    groups: List[Tuple[int, ...]] = []
-    for prefix in sorted(prefixes):
-        indices: List[int] = []
-        found_all = True
-        for feature in requested:
-            col = f"{prefix}_{feature}"
-            idx = name_to_idx.get(col)
-            if idx is None:
-                found_all = False
-                break
-            indices.append(idx)
-        if found_all and indices:
-            groups.append(tuple(indices))
-    return groups
-
-
-def apply_transform_spec(
-    array: RawFeatureArray,
-    feature_names: Sequence[str],
-    spec: Optional[FeatureTransformSpec],
-) -> TransformedFeatureArray:
-    """Apply ``spec`` to ``array`` using ``feature_names`` to resolve column groups."""
-
-    if spec is None or not spec.steps:
-        return array
-
-    out = array
-    for step in spec.steps:
-        index_groups = _resolve_feature_groups(feature_names, step.features)
-        if not index_groups:
-            continue
-        for group in index_groups:
-            idxs = np.asarray(group, dtype=np.int64)
-            if idxs.size == 1:
-                col_idx = int(idxs[0])
-                block = out[:, col_idx].copy()
-                result = step.fn(block)
-                if result is None:
-                    result = block
-                if result.shape != block.shape:
-                    raise ValueError(
-                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
-                    )
-                out[:, col_idx] = result
-            else:
-                block = out[:, idxs].copy()
-                result = step.fn(block)
-                if result is None:
-                    result = block
-                if result.shape != block.shape:
-                    raise ValueError(
-                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
-                    )
-                out[:, idxs] = result
-    return out
-
-
 __all__ = [
     "FeatureFn",
     "FeatureTransformSpec",
     "FeatureTransformStep",
-    "apply_transform_spec",
     "build_transform_spec",
     "feature_spec_from_config",
 ]

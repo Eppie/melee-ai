@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import math
 
-from train import TrainingComponents
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from train.components import TrainingComponents
 
 
 def cosine_lr_schedule(
@@ -64,7 +67,7 @@ def linear_warmup(step: int, warmup_steps: int, base_lr: float) -> float:
     return base_lr * min(1.0, (step + 1) / warmup_steps)
 
 
-def _update_learning_rate(components: TrainingComponents, global_step: int) -> float:
+def _update_learning_rate(components: "TrainingComponents", global_step: int) -> float:
     config = components.config
     lr = cosine_lr_schedule(
         global_step,

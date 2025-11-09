@@ -1,5 +1,5 @@
 """Core transformer-style Nano Melee models."""
 
-from .nano_gpt import NanoGPT
+from .nano_gpt import GPT
 
-__all__ = ["NanoGPT"]
+__all__ = ["GPT"]

@@ -9,7 +9,7 @@ import zarr
 
 from config import FeatureConfig
 from feature_transforms import feature_spec_from_config
-from window_dataset import WindowDataset
+import window_dataset
 
 
 @pytest.fixture
@@ -34,6 +34,18 @@ def zarr_corpus(tmp_path: Path) -> Path:
     np.save(data_dir / "lengths.npy", lengths)
     wins = np.array([7], dtype=np.int64)
     np.save(data_dir / "wins_per_ep.npy", wins)
+
+    total_windows = int(wins.sum())
+    window_index = np.empty((total_windows, 2), dtype=np.int64)
+    cursor = 0
+    for ep_idx, num_windows in enumerate(wins):
+        if num_windows == 0:
+            continue
+        next_cursor = cursor + int(num_windows)
+        window_index[cursor:next_cursor, 0] = ep_idx
+        window_index[cursor:next_cursor, 1] = np.arange(num_windows, dtype=np.int64)
+        cursor = next_cursor
+    np.save(data_dir / "window_index.npy", window_index)
 
     # Create index.jsonl
     with (data_dir / "index.jsonl").open("w") as f:
@@ -70,7 +82,7 @@ def test_window_dataset_double_quantization(zarr_corpus: Path):
     feature_spec = feature_spec_from_config(feature_config)
 
     # Create a WindowDataset instance
-    dataset = WindowDataset(zarr_corpus, feature_transforms=feature_spec)
+    dataset = window_dataset.WindowDataset(zarr_corpus, feature_transforms=feature_spec)
 
     # Get a window from the dataset
     window = dataset[0]
@@ -87,3 +99,17 @@ def test_window_dataset_double_quantization(zarr_corpus: Path):
 
     # Assert that the Y tensor has NOT been transformed (i.e., it's the same as the original)
     assert np.allclose(y_window.numpy(), original_y), "Y tensor should not be transformed"
+
+
+def test_window_to_episode_prefers_window_index(monkeypatch: pytest.MonkeyPatch, zarr_corpus: Path) -> None:
+    dataset = window_dataset.WindowDataset(zarr_corpus)
+    assert dataset.index._window_index is not None
+
+    def fail_searchsorted(*args, **kwargs):
+        raise AssertionError("searchsorted should not be invoked when window_index is available")
+
+    monkeypatch.setattr(window_dataset.np, "searchsorted", fail_searchsorted)
+    for idx in range(dataset.index.total_windows):
+        ep_idx, offset = dataset.index.window_to_episode(idx)
+        assert ep_idx == 0
+        assert offset == idx

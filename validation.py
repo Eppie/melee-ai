@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader, SequentialSampler
 from column_map import ColumnMap
 from config import get_config, init_config
 from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
-from controller_quantization import quantize_targets
+from train.batch_utils import quantize_controller_targets
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,
@@ -27,7 +27,7 @@ from loss import compute_loss_components
 from model.nano_gpt import GPT
 from train.batch_utils import build_model_inputs as build_inputs_for_gpt
 from train.checkpoint import _latest_checkpoint
-from train.value_head import compute_value_targets
+from train.value_head import compute_frame_rewards, compute_value_targets
 from utils import _resolve_device
 from window_dataset import WindowDataset, worker_init_fn
 
@@ -749,7 +749,7 @@ def _update_enhanced_metrics(
         X, colmap, gamma=config.rl.gamma
     )  # [B, L, 1]
     # TODO: Import from value_head.
-    frame_rewards = _compute_frame_rewards(X, colmap)  # [B, L]
+    frame_rewards = compute_frame_rewards(X, colmap)  # [B, L]
 
     # MSE and MAE
     value_mse = ((value_pred - value_target) ** 2).mean().item()
@@ -868,7 +868,9 @@ def _evaluate(
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
             inputs_td = build_inputs_for_gpt(X, colmap)
-            target_info = quantize_targets(Y, colmap, input_domain="unit11")
+            target_info = quantize_controller_targets(
+                Y, colmap, input_domain="unit01"
+            )
 
             pred = model(inputs_td)
 
@@ -899,8 +901,10 @@ def _evaluate(
             target_c = target_info["c_idx"].view(B, L)
             target_btn = target_info["buttons"]
 
-            main_correct = (pred_main_idx == target_main).float().sum().item()
-            c_correct = (pred_c_idx == target_c).float().sum().item()
+            main_correct_mask = pred_main_idx == target_main
+            c_correct_mask = pred_c_idx == target_c
+            main_correct = main_correct_mask.float().sum().item()
+            c_correct = c_correct_mask.float().sum().item()
             metrics["main_correct"] += main_correct
             metrics["c_correct"] += c_correct
             metrics["main_total"] += B * L
@@ -911,6 +915,26 @@ def _evaluate(
             metrics["btn_total"] += B * L
             metrics["btn_f1_micro_sum"] += f1_b * B * L
             metrics["btn_f1_macro_sum"] += f1_macro_b * B*L
+
+            btn_exact_match = (btn_pred == target_btn).all(dim=-1)
+
+            # Change/hold masks (first frame treated as hold)
+            main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
+            main_change_mask[:, 1:] = target_main[:, 1:] != target_main[:, :-1]
+            main_hold_mask = ~main_change_mask
+            change_stats_main.update(main_correct_mask, main_change_mask, main_hold_mask)
+
+            c_change_mask = torch.zeros_like(target_c, dtype=torch.bool)
+            c_change_mask[:, 1:] = target_c[:, 1:] != target_c[:, :-1]
+            c_hold_mask = ~c_change_mask
+            change_stats_c.update(c_correct_mask, c_change_mask, c_hold_mask)
+
+            btn_change_mask = torch.zeros_like(btn_exact_match, dtype=torch.bool)
+            btn_change_mask[:, 1:] = torch.any(
+                target_btn[:, 1:] != target_btn[:, :-1], dim=-1
+            )
+            btn_hold_mask = ~btn_change_mask
+            change_stats_buttons.update(btn_exact_match, btn_change_mask, btn_hold_mask)
 
             # Extract value prediction if available
             value_pred = pred.get("value")  # [B, L, 1] or None

@@ -96,32 +96,26 @@ def _compute_player_rewards(
         opp_percent_idx = getattr(idx, f"{opponent}_percent")
 
         d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
-        rewards[:, 1:].add_(d_opp.mul_(100.0).mul_(float(cfg.reward_damage_dealt)))
+        rewards[:, 1:].add_(d_opp.mul_(100.0).mul_(cfg.reward_damage_dealt))
 
 
         # --- Stock changes ---
         opp_stock_idx = getattr(idx, f"{opponent}_stock")
         d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
         stock_taken = (-d_opp_stock).clamp_min_(0)
-        rewards[:, 1:].add_(stock_taken.mul_(float(cfg.reward_stock_taken)))
+        rewards[:, 1:].add_(stock_taken.mul_(cfg.reward_stock_taken))
 
     # --- Hitlag rewards/penalties (per-frame) ---
-    opp_hitlag_idx = getattr(idx, f"{opponent}_in_hitlag")
-    opp_def_hitlag_idx = getattr(idx, f"{opponent}_in_defender_hitlag")
-
-    if (
-        opp_hitlag_idx is not None
-        and opp_def_hitlag_idx is not None
-    ):
-        opp_metric = X[:, :, opp_hitlag_idx] - X[:, :, opp_def_hitlag_idx]
-        rewards.add_((opp_metric == 1).to(dtype).mul_(float(cfg.reward_hitlag_opponent)))
+    opp_hitlag_idx = getattr(idx, f"{opponent}_is_in_hitlag")
+    opp_def_hitlag_idx = getattr(idx, f"{opponent}_is_defender_in_hitlag")
+    opp_metric = X[:, :, opp_hitlag_idx] - X[:, :, opp_def_hitlag_idx]
+    rewards.add_((opp_metric == 1).to(dtype).mul_(cfg.reward_hitlag_opponent))
 
     # --- Shield penalty (per-frame) ---
     shield_idx = getattr(idx, f"{player}_shield_strength")
-    if shield_idx is not None and float(cfg.reward_low_shield) != 0.0:
-        shield = X[:, :, shield_idx]
-        penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
-        rewards.add_(penalty.mul_(float(cfg.reward_low_shield)))
+    shield = X[:, :, shield_idx]
+    penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
+    rewards.add_(penalty.mul_(cfg.reward_low_shield))
 
     return rewards
 
@@ -241,9 +235,8 @@ def _get_gamma_powers(
 def compute_value_targets(
     X: torch.Tensor,
     colmap: ColumnMap,
-    gamma: float = 0.995,
-    *,
-    reward_idx: Optional[RewardFeatureIdx] = None,
+    gamma: float,
+    reward_idx: RewardFeatureIdx,
 ) -> torch.Tensor:
     """Compute discounted returns by summing future rewards with geometric decay.
 
@@ -272,15 +265,10 @@ def compute_value_targets(
         return torch.empty((B, 0, 1), device=device, dtype=dtype)
 
     rewards = compute_frame_rewards(X, colmap, idx=reward_idx)  # [B, L]
-    gamma_val = float(gamma)
-    gamma_powers = _get_gamma_powers(L, gamma_val, device, rewards.dtype)
+    gamma_powers = _get_gamma_powers(L, gamma, device, rewards.dtype)
 
-    # TODO: Do we really need this?
-    if abs(gamma_val) < 1e-12:
-        returns = rewards.clone()
-    else:
-        weighted = rewards * gamma_powers  # broadcast multiply
-        discounted = torch.cumsum(weighted.flip(1), dim=1).flip(1)
-        returns = discounted / gamma_powers.clamp_min(1e-12)
+    weighted = rewards * gamma_powers  # broadcast multiply
+    discounted = torch.cumsum(weighted.flip(1), dim=1).flip(1)
+    returns = discounted / gamma_powers.clamp_min(1e-12)
 
     return returns.unsqueeze(-1)  # [B, L, 1]

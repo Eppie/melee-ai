@@ -199,7 +199,6 @@ class GPT(nn.Module):
 
         base_hidden_states = hidden_states
         button_logits = self.button_head(base_hidden_states)
-        button_probs = torch.sigmoid(button_logits)
 
         main_stick = self.main_stick_head(
             torch.cat((base_hidden_states, button_logits.detach()), dim=-1)
@@ -219,7 +218,6 @@ class GPT(nn.Module):
         outputs = TensorDict(
             {
                 "buttons": button_logits,
-                "buttons_probs": button_probs,
                 "main_stick": main_stick,
                 "c_stick": c_stick,
                 "shoulder": shoulder,

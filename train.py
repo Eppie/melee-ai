@@ -9,11 +9,10 @@ from __future__ import annotations
 import argparse
 import math
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from pprint import pformat
 from textwrap import indent
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from typing import Sequence
 
 import torch
@@ -21,6 +20,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 from torch.amp import GradScaler, autocast
 from torch.amp.autocast_mode import is_autocast_available
+from torch.nn.utils import clip_grad_norm_
 
 from column_map import ColumnMap
 from config import get_config, init_config
@@ -39,14 +39,16 @@ from train.checkpoint import (
     _load_latest_checkpoint,
     _prune_checkpoints,
 )
+from train.components import AMPContext, TrainingComponents, ForwardPassResult, EpochContext, LoggingBundle, \
+    TrainingState
 from train.display import format_confusion_matrix
 from train.gradients import collect_gradient_diagnostics
-from train.lr_schedule import cosine_lr_schedule
+from train.lr_schedule import _update_learning_rate
 from train.metrics import (
     compute_confusion_matrix,
     multilabel_prf,
 )
-from train.value_head import build_reward_feature_index, compute_value_targets, RewardFeatureIdx
+from train.value_head import build_reward_feature_index, compute_value_targets
 from train.wandb_utils import (
     WandbConfig,
     WandbLogger,
@@ -55,7 +57,7 @@ from train.wandb_utils import (
 )
 from utils import print_model_diagram, _resolve_device
 from window_dataset import make_dataloader
-from torch.nn.utils import clip_grad_norm_
+
 
 def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
     """
@@ -73,71 +75,6 @@ def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
         overrides[k.strip()] = v.strip()
     return overrides
 
-
-@dataclass
-class AMPContext:
-    enabled: bool
-    device_type: str
-    dtype: torch.dtype
-
-
-@dataclass
-class TrainingComponents:
-    config: Any
-    model: GPT
-    optimizer: torch.optim.Optimizer
-    scaler: GradScaler
-    logger: WandbLogger
-    device: torch.device
-    amp: AMPContext
-    ratios: SampleWeightRatios
-    colmap: ColumnMap
-    reward_idx: RewardFeatureIdx
-    loader: any
-    sampler: any
-    total_steps: int
-    out_dir: Path
-    last_step_file: Path
-    debug: bool
-
-
-@dataclass
-class TrainingState:
-    components: TrainingComponents
-    global_step: int
-    resume_epoch: int
-    resume_iter: int
-
-
-@dataclass
-class EpochContext:
-    epoch_loss: float = 0.0
-    iters_processed: int = 0
-    applied_skip: int = 0
-    frames_since_last_log: float = 0.0
-    last_log_time: float = field(default_factory=time.time)
-    skip_remaining: int = 0
-
-
-@dataclass
-class ForwardPassResult:
-    pred: TensorDict
-    target_info: Dict[str, torch.Tensor]
-    weights: Dict[str, torch.Tensor]
-    loss: torch.Tensor
-    loss_components: Dict[str, torch.Tensor]
-    value_pred: Optional[torch.Tensor]
-    value_target: Optional[torch.Tensor]
-    batch_inputs: Dict[str, torch.Tensor]
-    batch_targets: Dict[str, torch.Tensor]
-    label_smoothing: float
-    change_scale: float
-
-
-@dataclass
-class LoggingBundle:
-    log_lines: List[str]
-    payload: Dict[str, float]
 
 
 def _configure_amp(config, device: torch.device) -> AMPContext:
@@ -182,7 +119,7 @@ def _initialize_training_components(
     ds,
     sampler,
     debug: bool,
-) -> Tuple[TrainingComponents, int, int, int]:
+) -> tuple[TrainingComponents, int, int, int]:
     config = get_config()
     device = _resolve_device(None)
     model = model.to(device)
@@ -291,9 +228,6 @@ def _forward_pass(
     config = components.config
     amp = components.amp
 
-    value_pred: Optional[torch.Tensor] = None
-    value_target: Optional[torch.Tensor] = None
-
     with autocast(
         device_type=amp.device_type,
         dtype=amp.dtype,
@@ -392,39 +326,18 @@ def _compute_training_progress(
     else:
         batch_fraction = (iteration + 1) / float(total_batches)
         progress = (epoch_offset + batch_fraction) / float(effective_epochs)
-    return float(min(max(progress, 0.0), 1.0))
-
-def _update_learning_rate(components: TrainingComponents, global_step: int) -> float:
-    config = components.config
-    lr = cosine_lr_schedule(
-        global_step,
-        components.total_steps,
-        config.train.lr,
-        config.train.warmup_steps,
-    )
-    for pg in components.optimizer.param_groups:
-        pg["lr"] = lr
-    return lr
+    return float(min(max(progress, 0.3), 1.0))
 
 
 def _should_log(current_iter: int) -> bool:
     return current_iter % 50 == 0
 
 
-def _collect_gradients(
-    components: TrainingComponents,
-    should_collect: bool,
-) -> Optional[Dict[str, float]]:
-    if not should_collect:
-        return None
-    return collect_gradient_diagnostics(components.model)
-
-
 def _backward_step(
     components: TrainingComponents,
     loss: torch.Tensor,
     collect_grad_stats: bool,
-) -> Optional[Dict[str, float]]:
+) -> Dict[str, float]:
     optimizer = components.optimizer
     scaler = components.scaler
     optimizer.zero_grad(set_to_none=True)
@@ -433,17 +346,20 @@ def _backward_step(
     if scaler.is_enabled():
         scaler.unscale_(optimizer)
 
-    grad_stats = _collect_gradients(components, collect_grad_stats)
-    grad_clip = components.config.train.grad_clip
-    pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
-    grad_stats["total_norm_pre_clip"] = pre_clip_norm
-    grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
-    grad_stats["was_clipped"] = float(pre_clip_norm > grad_clip)
-    grad_stats["clip_coef"] = (
-        grad_clip / max(pre_clip_norm, 1e-12)
-        if pre_clip_norm > grad_clip
-        else 1.0
-    )
+    if collect_grad_stats:
+        grad_stats =  collect_gradient_diagnostics(components.model)
+        grad_clip = components.config.train.grad_clip
+        pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
+        grad_stats["total_norm_pre_clip"] = pre_clip_norm
+        grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
+        grad_stats["was_clipped"] = float(pre_clip_norm > grad_clip)
+        grad_stats["clip_coef"] = (
+            grad_clip / max(pre_clip_norm, 1e-12)
+            if pre_clip_norm > grad_clip
+            else 1.0
+        )
+    else:
+        grad_stats = {}
 
     scaler.step(optimizer)
     scaler.update()
@@ -611,11 +527,6 @@ def _prepare_logging_bundle(
     K_main = int(target_info["main_K"])
     cm_main_b = compute_confusion_matrix(main_true_flat, main_pred_flat, K_main)
     acc_main_b = float((main_pred_flat == main_true_flat).float().mean().item())
-    main_major_lbl = (
-        int(torch.bincount(main_true_flat.cpu()).argmax().item())
-        if main_true_flat.numel()
-        else 0
-    )
     acc_main_rep_b = (
         float(
             (
@@ -655,7 +566,6 @@ def _prepare_logging_bundle(
         if c_true_flat.numel()
         else 0
     )
-    acc_c_maj_b = float((c_true_flat == c_major_lbl).float().mean().item())
     acc_c_rep_b = (
         float(
             (
@@ -711,8 +621,7 @@ def _prepare_logging_bundle(
 
     pos_rate = target_btn.float().mean(dim=(0, 1), keepdim=True)
     btn_maj_pred = (pos_rate >= 0.5).to(target_btn.dtype).expand_as(target_btn)
-    em_maj, p_maj, r_maj, f1_maj, f1_macro_maj = multilabel_prf(target_btn, btn_maj_pred)
-    em_maj = _to_float(em_maj)
+    _, _, _, f1_maj, _ = multilabel_prf(target_btn, btn_maj_pred)
     f1_maj = _to_float(f1_maj)
     if L > 1:
         btn_rep = torch.zeros_like(target_btn)
@@ -720,11 +629,11 @@ def _prepare_logging_bundle(
         mask_flat = rep_mask.view(B * L)
         t_flat = target_btn.reshape(B * L, -1)[mask_flat]
         p_flat = btn_rep.reshape(B * L, -1)[mask_flat]
-        em_rep, p_rep, r_rep, f1_rep, f1_macro_rep = multilabel_prf(t_flat, p_flat)
+        em_rep, _, _, f1_rep, _ = multilabel_prf(t_flat, p_flat)
         em_rep = _to_float(em_rep)
         f1_rep = _to_float(f1_rep)
     else:
-        em_rep = p_rep = r_rep = f1_rep = f1_macro_rep = 0.0
+        em_rep = f1_rep = 0.0
 
     sh_logits = pred["shoulder"]
     sh_true_idx = target_info["shoulder_idx"]

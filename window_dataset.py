@@ -10,9 +10,8 @@ import torch
 import zarr
 from torch.utils.data import Dataset, Sampler
 
-from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor, RawTorchTensor
+from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor
 from feature_transforms import FeatureTransformSpec, feature_spec_from_config
-from utils import _resolve_device
 
 
 @dataclass(frozen=True)
@@ -23,24 +22,21 @@ class EpisodeInfo:
     num_windows: int  # = max(frames - seq_len + 1, 0)
 
 
-# TODO: Can we do this with a generator? If not, can we compute it at dataset generation time?
-# TODO: O(log E) is good, but can we get constant time?
 class ZarrCorpusIndex:
     """
     Loads your dataset root (with shard_*.zarr, lengths.npy, wins_per_ep.npy, index.jsonl, meta.json).
-    Provides O(log E) mapping from global window index -> (episode_idx, start_offset).
+    Provides O(1) mapping from global window index -> (episode_idx, start_offset).
     """
 
     def __init__(self, data_dir: str | Path) -> None:
-        """Load metadata and build prefix sums for global-window lookups.
+        """Load metadata and map global-window lookups via a precomputed table.
 
         Example
         -------
         When ``data_dir`` contains ``meta.json``, ``lengths.npy`` and two episodes
-        with window counts ``[3, 2]``, the constructor builds
-        ``_cumulative_windows=[3, 5]``. Later ``window_to_episode(4)`` uses this
-        array to return ``(1, 1)`` because the fifth global window belongs to
-        episode index ``1`` starting at offset ``1``.
+        with window counts ``[3, 2]``, the constructor loads ``window_index.npy``
+        and later ``window_to_episode(4)`` reads the precomputed row ``(1, 1)``,
+        showing the fifth global window belongs to episode ``1`` at offset ``1``.
         """
         self.data_dir = Path(data_dir)
         meta_path = self.data_dir / "meta.json"
@@ -82,12 +78,28 @@ class ZarrCorpusIndex:
         assert len(ep_rows) == len(lengths), "index.jsonl and lengths.npy out of sync"
         self.episodes: List[EpisodeInfo] = ep_rows
 
-        # prefix sums over windows for fast mapping
+        # Episode start offsets (needed by episode_start_global_index)
         self._windows = windows.astype(np.int64)
-        self._cumulative_windows = np.cumsum(self._windows, dtype=np.int64)  # length E
-        self.total_windows: int = (
-            int(self._cumulative_windows[-1]) if len(self._cumulative_windows) else 0
-        )
+        starts = np.zeros(len(self._windows), dtype=np.int64)
+        total = 0
+        for idx, count in enumerate(self._windows):
+            starts[idx] = total
+            total += int(count)
+        self._episode_start_indices = starts
+        self.total_windows = total
+
+        window_index_path = self.data_dir / "window_index.npy"
+        window_index = np.load(window_index_path, mmap_mode="r")
+        if window_index.ndim != 2 or window_index.shape[1] != 2:
+            raise ValueError(
+                f"window_index.npy must have shape (N, 2), got {window_index.shape}"
+            )
+        if window_index.shape[0] != self.total_windows:
+            raise ValueError(
+                "window_index row count "
+                f"{window_index.shape[0]} does not match total_windows={self.total_windows}"
+            )
+        self._window_index = window_index
 
         # shard paths
         self._shard_paths: Dict[int, Path] = {}
@@ -97,39 +109,13 @@ class ZarrCorpusIndex:
             self._shard_paths[sid] = sdir
 
     def window_to_episode(self, global_win_idx: int) -> Tuple[int, int]:
-        """Map ``global_win_idx`` to an episode index and start offset.
-
-        Example
-        -------
-        With ``wins_per_ep = [3, 2]`` the cumulative windows are ``[3, 5]``. Calling
-        ``window_to_episode(2)`` returns ``(0, 2)`` because the third window still
-        falls within episode ``0`` at offset ``2``. Calling ``window_to_episode(3)``
-        returns ``(1, 0)`` showing how the search jumps to the next episode when the
-        index crosses a prefix boundary.
-        """
-        if not (0 <= global_win_idx < self.total_windows):
-            raise IndexError(
-                f"window index {global_win_idx} out of range 0..{self.total_windows - 1}"
-            )
-        ep_idx = int(
-            np.searchsorted(self._cumulative_windows, global_win_idx, side="right")
-        )
-        base = 0 if ep_idx == 0 else int(self._cumulative_windows[ep_idx - 1])
-        offset = int(global_win_idx - base)
-        return ep_idx, offset
+        """Map ``global_win_idx`` to an episode index and start offset in O(1)."""
+        row = self._window_index[global_win_idx]
+        return int(row[0]), int(row[1])
 
     def episode_start_global_index(self, ep_idx: int) -> int:
-        """Return the first global window index owned by ``ep_idx``.
-
-        Example
-        -------
-        Using the same ``wins_per_ep = [3, 2]`` example, ``ep_idx=0`` returns ``0``
-        while ``ep_idx=1`` returns ``3`` so you can offset local window indices by
-        this amount to obtain their global counterparts.
-        """
-        if ep_idx == 0:
-            return 0
-        return int(self._cumulative_windows[ep_idx - 1])
+        """Return the first global window index owned by ``ep_idx``."""
+        return int(self._episode_start_indices[ep_idx])
 
     def open_episode_arrays(
         self,

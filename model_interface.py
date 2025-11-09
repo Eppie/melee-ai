@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections import deque
 import math
+from collections import deque
 from datetime import datetime
-from pathlib import Path
 from typing import (
     Any,
     Dict,
@@ -697,9 +696,7 @@ class GPTInferenceEngine:
         """Assemble decoded sticks, buttons, and shoulder into controller output."""
         main_logits = outputs["main_stick"][0, -1]
         c_logits = outputs["c_stick"][0, -1]
-        button_probs = outputs.get("buttons_probs")
-        if button_probs is None:
-            button_probs = torch.sigmoid(outputs["buttons"])
+        button_probs = torch.sigmoid(outputs["buttons"])
         button_probs = button_probs[0, -1]
 
         shoulder_logits = outputs.get("shoulder")
@@ -708,12 +705,9 @@ class GPTInferenceEngine:
         c_xy = self._decode_stick(c_logits, self._c_stick_palette, "c_stick")
         buttons_bool = self._decode_buttons(button_probs)
 
-        if shoulder_logits is not None:
-            s_idx = int(torch.argmax(shoulder_logits[0, -1]).item())
-            s_idx = max(0, min(s_idx, len(self.shoulder_centers) - 1))
-            shoulder_val = float(self.shoulder_centers[s_idx])
-        else:
-            shoulder_val = 0.0
+        s_idx = int(torch.argmax(shoulder_logits[0, -1]).item())
+        s_idx = max(0, min(s_idx, len(self.shoulder_centers) - 1))
+        shoulder_val = float(self.shoulder_centers[s_idx])
 
         return ControllerState(
             main_stick_x=float(main_xy[0]),

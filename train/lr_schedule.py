@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+from train import TrainingComponents
+
 
 def cosine_lr_schedule(
     step: int, total_steps: int, base_lr: float, warmup: int = 0
@@ -60,3 +62,16 @@ def linear_warmup(step: int, warmup_steps: int, base_lr: float) -> float:
     if warmup_steps <= 0:
         return base_lr
     return base_lr * min(1.0, (step + 1) / warmup_steps)
+
+
+def _update_learning_rate(components: TrainingComponents, global_step: int) -> float:
+    config = components.config
+    lr = cosine_lr_schedule(
+        global_step,
+        components.total_steps,
+        config.train.lr,
+        config.train.warmup_steps,
+    )
+    for pg in components.optimizer.param_groups:
+        pg["lr"] = lr
+    return lr

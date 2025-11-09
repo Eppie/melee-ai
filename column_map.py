@@ -23,6 +23,7 @@ class ColumnMap:
         self.opp_char_idx = name2idx["p2_character"]
         self.ego_action_idx = name2idx["p1_action"]
         self.opp_action_idx = name2idx["p2_action"]
+        self.value_idx = name2idx.get("value_target")
 
         controller_idxs: List[int] = []
         for prefix in ("p1_", "p2_"):
@@ -40,6 +41,8 @@ class ColumnMap:
             self.opp_action_idx,
             *self.controller_idxs,
         }
+        if self.value_idx is not None:
+            excluded.add(self.value_idx)
         self.gamestate_idxs = [
             i for i in range(len(self.feat_names)) if i not in excluded
         ]

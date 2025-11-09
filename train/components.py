@@ -34,7 +34,8 @@ class TrainingComponents:
     amp: AMPContext
     ratios: SampleWeightRatios
     colmap: ColumnMap
-    reward_idx: RewardFeatureIdx
+    value_idx: Optional[int]
+    reward_features: Optional[RewardFeatureIdx]
     loader: any
     sampler: any
     total_steps: int

@@ -11,7 +11,11 @@ import zarr
 from torch.utils.data import Dataset, Sampler
 
 from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor
-from feature_transforms import FeatureTransformSpec, feature_spec_from_config
+from feature_transforms import (
+    FeatureTransformSpec,
+    FeatureTransformStep,
+    feature_spec_from_config,
+)
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,12 @@ class ZarrCorpusIndex:
         return X, Y
 
 
+@dataclass(frozen=True)
+class _PreparedTransform:
+    step: FeatureTransformStep
+    index_groups: Tuple[np.ndarray, ...]
+
+
 def _resolve_feature_groups(
     feature_names: Sequence[str],
     requested: Sequence[str],
@@ -186,53 +196,60 @@ def _resolve_feature_groups(
     return groups
 
 
-def _apply_feature_transforms(
-    X: RawNumpyArray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
-) -> ProcessedNumpyArray:
-    """Apply configured transforms to every requested column with a trace.
-
-    Example
-    -------
-    ``spec`` contains two steps:
-
-    1. ``('scale', features=('foo',), factor=0.5)``
-    2. ``('offset', features=('foo', 'bar'), delta=1)``
-
-    For input ``X = [[2., 5.], [4., 7.]]`` with feature names ``('foo', 'bar')`` we
-    first scale ``foo`` to ``[1., 2.]`` then add ``1`` to both columns yielding
-    ``[[2., 6.], [3., 8.]]``. The modified array is returned, demonstrating the
-    in-place but staged nature of the transform pipeline.
-    """
-
-    out = X
+def _prepare_transform_plan(
+    feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
+) -> Optional[Tuple[_PreparedTransform, ...]]:
+    if spec is None:
+        return None
+    plan: List[_PreparedTransform] = []
     for step in spec.steps:
         index_groups = _resolve_feature_groups(feature_names, step.features)
         if not index_groups:
             continue
-        for group in index_groups:
-            idxs = np.asarray(group, dtype=np.int64)
+        idx_arrays = tuple(np.asarray(group, dtype=np.int64) for group in index_groups)
+        plan.append(_PreparedTransform(step, idx_arrays))
+    return tuple(plan) if plan else None
+
+
+def _apply_prepared_transforms(
+    X: RawNumpyArray, plan: Optional[Tuple[_PreparedTransform, ...]]
+) -> ProcessedNumpyArray:
+    """Apply pre-resolved transform indices to ``X``."""
+    if not plan:
+        return X
+    out = X
+    for prepared in plan:
+        for idxs in prepared.index_groups:
             if idxs.size == 1:
                 col_idx = int(idxs[0])
                 block = out[:, col_idx].copy()
-                result = step.fn(block)
+                result = prepared.step.fn(block)
                 if result is None:
                     result = block
                 if result.shape != block.shape:
                     raise ValueError(
-                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
+                        f"Transform '{prepared.step.transform}' expected output shape {block.shape}, got {result.shape}."
                     )
                 out[:, col_idx] = result
             else:
                 block = out[:, idxs].copy()
-                result = step.fn(block)
+                result = prepared.step.fn(block)
                 if result is None:
                     result = block
                 if result.shape != block.shape:
                     raise ValueError(
-                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
+                        f"Transform '{prepared.step.transform}' expected output shape {block.shape}, got {result.shape}."
                     )
                 out[:, idxs] = result
     return out
+
+
+def _apply_feature_transforms(
+    X: RawNumpyArray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
+) -> ProcessedNumpyArray:
+    """Backward-compatible wrapper that prepares a plan on demand."""
+    plan = _prepare_transform_plan(feature_names, spec) if spec else None
+    return _apply_prepared_transforms(X, plan)
 
 
 class WindowDataset(Dataset):
@@ -271,6 +288,9 @@ class WindowDataset(Dataset):
         self._target_names = tuple(self.index.target_names)
         self._feature_names_sel = list(self._feature_names)
         self._target_names_sel = list(self._target_names)
+        self._transform_plan = _prepare_transform_plan(
+            self._feature_names, self.transforms
+        )
 
     def __len__(self) -> int:
         """Return the total number of sliding windows across the corpus.
@@ -312,7 +332,9 @@ class WindowDataset(Dataset):
 
         # Apply per-feature transforms (in-place on view)
         feature_window: RawNumpyArray = np.ascontiguousarray(feature_window)  # ensure contiguous for in-place ops
-        feature_window: ProcessedNumpyArray = _apply_feature_transforms(feature_window, self._feature_names, self.transforms)
+        feature_window: ProcessedNumpyArray = _apply_prepared_transforms(
+            feature_window, self._transform_plan
+        )
         features_out: ProcessedTorchTensor = torch.from_numpy(feature_window.astype(np.float32, copy=False))
         targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
         targets_out = torch.from_numpy(targets_as_numpy.astype(np.float32, copy=False))

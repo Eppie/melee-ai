@@ -2,34 +2,44 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, Sequence
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, SequentialSampler
+from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
 from config import get_config, init_config
 from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
-from train.batch_utils import quantize_controller_targets
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
-from feature_transforms import feature_spec_from_config
+from libmelee.melee.enums import Action
 from loss import compute_loss_components
 from model.nano_gpt import GPT
-from train.batch_utils import build_model_inputs as build_inputs_for_gpt
-from train.checkpoint import _latest_checkpoint
-from train.value_head import compute_frame_rewards, compute_value_targets
+from train import find_latest_checkpoint
+from train.batch_utils import (
+    SampleWeightRatios,
+    build_model_inputs as build_inputs_for_gpt,
+    compute_component_sample_weights,
+    quantize_controller_targets,
+)
+from train.metrics import multilabel_prf
+from train.value_head import (
+    RewardFeatureIdx,
+    build_reward_feature_index,
+    compute_frame_rewards,
+    compute_value_targets,
+)
 from utils import _resolve_device
-from window_dataset import WindowDataset, worker_init_fn
+from window_dataset import WindowDataset, make_dataloader
 
 _C_STICK_LABELS = [f"({float(x):.2f},{float(y):.2f})" for x, y in C_STICK_QUANTIZED]
 _SHOULDER_LABELS = [f"{float(v):.2f}" for v in SHOULDER_QUANTIZED]
@@ -37,15 +47,28 @@ _DEFAULT_THRESHOLD_PATH = Path(__file__).resolve().with_name("button_thresholds.
 
 _MAIN_PALETTE_T = torch.tensor(np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32))
 _C_PALETTE_T = torch.tensor(np.asarray(C_STICK_QUANTIZED, dtype=np.float32))
-_SHOULDER_PALETTE_T = torch.tensor(np.asarray(SHOULDER_QUANTIZED, dtype=np.float32))
+_BTN_BIT_WEIGHTS = torch.tensor(
+    [1 << idx for idx, _ in enumerate(CONTROLLER_KEY_GROUPS["buttons"])],
+    dtype=torch.int64,
+)
 
-from typing import Sequence
+_PALETTE_BASE = {"main": _MAIN_PALETTE_T, "c": _C_PALETTE_T}
+_PALETTE_CACHE: Dict[Tuple[str, str], torch.Tensor] = {}
+
+
+def _palette_on_device(name: str, device: torch.device) -> torch.Tensor:
+    key = (name, str(device))
+    tensor = _PALETTE_CACHE.get(key)
+    if tensor is None:
+        tensor = _PALETTE_BASE[name].to(device)
+        _PALETTE_CACHE[key] = tensor
+    return tensor
 
 
 def _nearest_diffs_within_window(
-    true_frames: Sequence[int],
-    pred_frames: Sequence[int],
-    window: int,
+        true_frames: Sequence[int],
+        pred_frames: Sequence[int],
+        window: int,
 ) -> np.ndarray:
     """Return pred-true latencies for each true frame using the nearest predicted
     frame within ±window. Inputs are assumed sorted ascending (they are by construction).
@@ -80,39 +103,20 @@ def _nearest_diffs_within_window(
     return best[keep].astype(np.int32)
 
 
-def _load_saved_button_thresholds(path: Path) -> Optional[List[float]]:
-    try:
-        with path.open("r") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError) as err:
-        print(f"Warning: failed to load button thresholds from {path}: {err}")
-        return None
+def _pack_button_states(buttons: torch.Tensor) -> torch.Tensor:
+    weights = _BTN_BIT_WEIGHTS.to(buttons.device)
+    return (buttons.to(torch.int64) * weights).sum(dim=-1)
 
-    buttons = data.get("buttons")
-    thresholds = data.get("thresholds")
-    threshold_map = data.get("threshold_map")
 
-    button_keys = list(CONTROLLER_KEY_GROUPS["buttons"])
-
-    values: Optional[List[float]] = None
-    if isinstance(thresholds, list) and len(thresholds) == len(button_keys):
-        values = [float(x) for x in thresholds]
-    elif isinstance(threshold_map, dict):
-        order = (
-            buttons
-            if isinstance(buttons, list) and len(buttons) == len(button_keys)
-            else button_keys
-        )
-        values = [float(threshold_map.get(key, 0.5)) for key in order]
-
-    if values is not None and len(values) == len(button_keys):
-        return values
-
-    print(f"Warning: threshold file {path} missing expected fields; ignoring.")
-    return None
-
+def _encode_state_codes(
+        main_idx: torch.Tensor, c_idx: torch.Tensor, buttons: torch.Tensor
+) -> torch.Tensor:
+    btn_codes = _pack_button_states(buttons)
+    return (
+            (main_idx.to(torch.int64) << 16)
+            | (c_idx.to(torch.int64) << 8)
+            | btn_codes
+    )
 
 @dataclass
 class ChangeHoldStats:
@@ -122,7 +126,7 @@ class ChangeHoldStats:
     hold_total: float = 0.0
 
     def update(
-        self, correct: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor
+            self, correct: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor
     ) -> None:
         change_correct = (
             correct[change_mask].float().sum().item() if change_mask.any() else 0.0
@@ -140,6 +144,58 @@ class ChangeHoldStats:
 
     def hold_acc(self) -> float:
         return _safe_div(self.hold_correct, self.hold_total)
+
+
+@dataclass
+class RunStats:
+    """Streaming run-length tracker to avoid storing every state."""
+
+    total_length: int = 0
+    run_count: int = 0
+    max_length: int = 0
+    pending_value: Optional[int] = None
+    pending_length: int = 0
+
+    def _record_run(self, length: int) -> None:
+        self.total_length += length
+        self.run_count += 1
+        if length > self.max_length:
+            self.max_length = length
+
+    def _close_pending(self) -> None:
+        if self.pending_length:
+            self._record_run(self.pending_length)
+            self.pending_length = 0
+            self.pending_value = None
+
+    def observe_runs(self, codes: np.ndarray) -> None:
+        if codes.size == 0:
+            return
+        idx = 0
+        if self.pending_value is not None:
+            while idx < codes.size and int(codes[idx]) == self.pending_value:
+                self.pending_length += 1
+                idx += 1
+            if idx == codes.size:
+                return
+            self._close_pending()
+            codes = codes[idx:]
+        if codes.size == 0:
+            return
+        diffs = np.diff(codes)
+        change_points = np.nonzero(diffs)[0] + 1
+        starts = np.concatenate(([0], change_points))
+        lengths = np.diff(np.concatenate((starts, [codes.size])))
+        if lengths.size == 0:
+            return
+        # Keep the last run pending so it can merge with the next batch.
+        for length in lengths[:-1]:
+            self._record_run(int(length))
+        self.pending_value = int(codes[starts[-1]])
+        self.pending_length = int(lengths[-1])
+
+    def finalize(self) -> None:
+        self._close_pending()
 
 
 @dataclass
@@ -172,8 +228,8 @@ class EnhancedMetrics:
     state_total: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
 
     # Action duration tracking (for "stuck" metric)
-    pred_states: List[Tuple] = field(default_factory=list)
-    true_states: List[Tuple] = field(default_factory=list)
+    pred_run_stats: RunStats = field(default_factory=RunStats)
+    true_run_stats: RunStats = field(default_factory=RunStats)
 
     # Latency tracking (button change detection)
     lr_button_changes_true: List[int] = field(default_factory=list)  # frame indices
@@ -214,7 +270,6 @@ def _format_value(value: object) -> str:
 
 def _format_action(value: object) -> str:
     """Format action enum values to their names."""
-    from libmelee.melee.enums import Action
 
     _ACTION_VALUE_TO_NAME = {action.value: action.name for action in Action}
     try:
@@ -225,12 +280,12 @@ def _format_action(value: object) -> str:
 
 
 def _print_table_block(
-    title: str,
-    headers: Sequence[str],
-    data: np.ndarray,
-    *,
-    max_columns: int = 8,
-    formatters: Optional[Dict[str, Callable[[object], str]]] = None,
+        title: str,
+        headers: Sequence[str],
+        data: np.ndarray,
+        *,
+        max_columns: int = 8,
+        formatters: Optional[Dict[str, Callable[[object], str]]] = None,
 ) -> None:
     """Print a table of data with headers and formatted values."""
     if data.size == 0 or not len(headers):
@@ -246,8 +301,8 @@ def _print_table_block(
     )
 
     for start in range(0, total_cols, max_columns):
-        cols = headers[start : start + max_columns]
-        block = data[:, start : start + len(cols)]
+        cols = headers[start: start + max_columns]
+        block = data[:, start: start + len(cols)]
         formatted_columns: List[List[str]] = []
         col_widths: List[int] = []
         for col_idx, col_name in enumerate(cols):
@@ -276,7 +331,7 @@ def _print_table_block(
 
 
 def _print_extreme_value_frames(
-    enhanced: EnhancedMetrics, colmap: ColumnMap, top_k: int = 1
+        enhanced: EnhancedMetrics, colmap: ColumnMap, top_k: int = 1
 ) -> None:
     """Print the top and bottom frames by predicted value, with context.
 
@@ -368,16 +423,16 @@ def _print_extreme_value_frames(
         frame_idx = None
         for idx, (vp, vt, r, f) in enumerate(enhanced.value_frame_data):
             if (
-                vp == v_pred
-                and vt == v_targ
-                and r == reward
-                and np.array_equal(f, features)
+                    vp == v_pred
+                    and vt == v_targ
+                    and r == reward
+                    and np.array_equal(f, features)
             ):
                 frame_idx = idx
                 break
 
         if frame_idx is not None:
-            print_frame_with_context(frame_idx, f"Top #{i+1} Frame")
+            print_frame_with_context(frame_idx, f"Top #{i + 1} Frame")
 
     # Print bottom frames (lowest value predictions)
     print("\n" + "=" * 80)
@@ -389,16 +444,16 @@ def _print_extreme_value_frames(
         frame_idx = None
         for idx, (vp, vt, r, f) in enumerate(enhanced.value_frame_data):
             if (
-                vp == v_pred
-                and vt == v_targ
-                and r == reward
-                and np.array_equal(f, features)
+                    vp == v_pred
+                    and vt == v_targ
+                    and r == reward
+                    and np.array_equal(f, features)
             ):
                 frame_idx = idx
                 break
 
         if frame_idx is not None:
-            print_frame_with_context(frame_idx, f"Bottom #{i+1} Frame")
+            print_frame_with_context(frame_idx, f"Bottom #{i + 1} Frame")
 
 
 # Action state categorization for per-state accuracy
@@ -441,22 +496,6 @@ def _categorize_action(action_value: int) -> str:
         return "other"
 
 
-def _get_run_lengths(sequence: List) -> List[int]:
-    """Calculate run lengths of consecutive identical elements."""
-    if not sequence:
-        return []
-    lengths = []
-    current_run = 1
-    for i in range(1, len(sequence)):
-        if sequence[i] == sequence[i - 1]:
-            current_run += 1
-        else:
-            lengths.append(current_run)
-            current_run = 1
-    lengths.append(current_run)
-    return lengths
-
-
 def _ensure_absolute(path: Path, anchor: Path) -> Path:
     path = path.expanduser()
     if path.is_absolute():
@@ -465,58 +504,309 @@ def _ensure_absolute(path: Path, anchor: Path) -> Path:
 
 
 def _prepare_dataloader(
-    data_root: Path,
-    batch_size: int,
-    num_workers: int,
-    pin_memory: bool,
-    prefetch_factor: Optional[int],
-    persistent_workers: bool,
+        data_root: Path,
+        batch_size: int,
+        num_workers: int,
+        pin_memory: bool,
+        prefetch_factor: Optional[int],
+        persistent_workers: bool,
+        window_stride: int,
 ) -> Tuple[DataLoader, WindowDataset]:
     config = get_config()
-    feature_spec = feature_spec_from_config(config.features)
-    dataset = WindowDataset(
-        data_dir=str(data_root),
-        feature_transforms=feature_spec,
-    )
-
-    mp_ctx = None
-    if num_workers and num_workers > 0:
-        try:
-            mp_ctx = torch.multiprocessing.get_context("spawn")
-        except RuntimeError:
-            mp_ctx = None
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=SequentialSampler(dataset),
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None,
-        persistent_workers=persistent_workers if num_workers > 0 else False,
-        worker_init_fn=worker_init_fn,
-        drop_last=False,
-        multiprocessing_context=mp_ctx,
-    )
+    cfg = config.model_copy(deep=True)
+    cfg.train.batch_size = batch_size
+    cfg.train.num_workers = num_workers
+    cfg.train.pin_memory = pin_memory
+    cfg.train.persistent_workers = persistent_workers
+    cfg.train.stride = window_stride
+    loader, dataset, _ = make_dataloader(cfg)
     return loader, dataset
 
 
+def _frame_rewards_from_batch(
+        X: torch.Tensor,
+        colmap: ColumnMap,
+        reward_features: Optional[RewardFeatureIdx],
+) -> torch.Tensor:
+    """Recompute per-frame rewards for logging."""
+    features = reward_features or build_reward_feature_index(colmap)
+    return compute_frame_rewards(X, colmap, idx=features)
+
+
+def _build_sample_weight_ratios(loss_cfg) -> SampleWeightRatios:
+    """Mirror the training-time ratios derived from LossConfig."""
+    button_overrides = {
+        "button_z": loss_cfg.button_z,
+        "button_b": loss_cfg.button_b,
+        "button_a": loss_cfg.button_a,
+        "button_xy": loss_cfg.button_xy,
+        "button_lr": loss_cfg.button_lr,
+    }
+    return SampleWeightRatios(
+        main_change=loss_cfg.main_change,
+        c_change=loss_cfg.c_change,
+        shoulder_change=loss_cfg.shoulder_change,
+        buttons_change_default=loss_cfg.buttons_change_default,
+        buttons_change_per_key=button_overrides,
+        hold_base=loss_cfg.hold_base,
+        value_change=loss_cfg.value_change,
+    )
+
+
+def _decode_stick_coords(
+        indices: torch.Tensor, palette: torch.Tensor
+) -> torch.Tensor:
+    """Map quantized stick indices to 2D coordinates."""
+    B, L = indices.shape
+    return palette.index_select(0, indices.reshape(-1)).reshape(B, L, 2)
+
+
+def _change_hold_masks(sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return bool masks for change vs hold events (first frame treated as hold)."""
+    change_mask = torch.zeros_like(sequence, dtype=torch.bool)
+    if sequence.shape[1] > 1:
+        change_mask[:, 1:] = sequence[:, 1:] != sequence[:, :-1]
+    return change_mask, ~change_mask
+
+
+def _accumulate_stick_errors(
+        enhanced: EnhancedMetrics,
+        errors: torch.Tensor,
+        change_mask: torch.Tensor,
+        hold_mask: torch.Tensor,
+        prefix: str,
+) -> None:
+    """Update stick error totals for either main or c stick."""
+    total_attr = f"total_{prefix}_stick_error"
+    change_attr = f"total_{prefix}_stick_error_change"
+    hold_attr = f"total_{prefix}_stick_error_hold"
+
+    setattr(enhanced, total_attr, getattr(enhanced, total_attr) + errors.sum().item())
+    if change_mask.any():
+        setattr(
+            enhanced,
+            change_attr,
+            getattr(enhanced, change_attr) + errors[change_mask].sum().item(),
+        )
+    if hold_mask.any():
+        setattr(
+            enhanced,
+            hold_attr,
+            getattr(enhanced, hold_attr) + errors[hold_mask].sum().item(),
+        )
+
+
+def _accumulate_jitter(
+        enhanced: EnhancedMetrics,
+        main_pred_coords: torch.Tensor,
+        main_true_coords: torch.Tensor,
+        c_pred_coords: torch.Tensor,
+        c_true_coords: torch.Tensor,
+        prev_pred_main_coords: Optional[torch.Tensor],
+        prev_true_main_coords: Optional[torch.Tensor],
+        prev_pred_c_coords: Optional[torch.Tensor],
+        prev_true_c_coords: Optional[torch.Tensor],
+) -> None:
+    """Track cross-batch and intra-batch jitter statistics."""
+    B, L, _ = main_pred_coords.shape
+
+    def _pairwise_sum(current: torch.Tensor, previous: torch.Tensor) -> float:
+        return torch.linalg.norm(current - previous, dim=-1).sum().item()
+
+    if (
+            prev_pred_main_coords is not None
+            and prev_true_main_coords is not None
+            and prev_pred_c_coords is not None
+            and prev_true_c_coords is not None
+            and prev_pred_main_coords.shape[0] == B
+    ):
+        enhanced.total_pred_main_jitter += _pairwise_sum(
+            main_pred_coords[:, 0], prev_pred_main_coords
+        )
+        enhanced.total_true_main_jitter += _pairwise_sum(
+            main_true_coords[:, 0], prev_true_main_coords
+        )
+        enhanced.total_pred_c_jitter += _pairwise_sum(
+            c_pred_coords[:, 0], prev_pred_c_coords
+        )
+        enhanced.total_true_c_jitter += _pairwise_sum(
+            c_true_coords[:, 0], prev_true_c_coords
+        )
+        enhanced.jitter_frames += B
+
+    enhanced.total_pred_main_jitter += torch.linalg.norm(
+        main_pred_coords[:, 1:] - main_pred_coords[:, :-1], dim=-1
+    ).sum().item()
+    enhanced.total_true_main_jitter += torch.linalg.norm(
+        main_true_coords[:, 1:] - main_true_coords[:, :-1], dim=-1
+    ).sum().item()
+    enhanced.total_pred_c_jitter += torch.linalg.norm(
+        c_pred_coords[:, 1:] - c_pred_coords[:, :-1], dim=-1
+    ).sum().item()
+    enhanced.total_true_c_jitter += torch.linalg.norm(
+        c_true_coords[:, 1:] - c_true_coords[:, :-1], dim=-1
+    ).sum().item()
+    enhanced.jitter_frames += B * (L - 1)
+
+
+def _entropy_sum(logits: torch.Tensor) -> float:
+    """Return total entropy for a batch of logits."""
+    probs = torch.softmax(logits, dim=-1)
+    entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1)
+    return entropy.sum().item()
+
+
+def _tally_action_categories(
+        enhanced: EnhancedMetrics, actions: np.ndarray, correct_mask: np.ndarray
+) -> None:
+    """Accumulate per-action-state accuracy statistics."""
+    for action_val, is_correct in zip(actions, correct_mask):
+        category = _categorize_action(int(action_val))
+        enhanced.state_total[category] += 1
+        if is_correct:
+            enhanced.state_correct[category] += 1
+
+
+def _update_run_stats(
+        enhanced: EnhancedMetrics,
+        pred_main_idx: torch.Tensor,
+        pred_c_idx: torch.Tensor,
+        btn_pred: torch.Tensor,
+        target_main: torch.Tensor,
+        target_c: torch.Tensor,
+        target_btn: torch.Tensor,
+) -> None:
+    """Track run-lengths for predicted and true controller states."""
+    pred_state_codes = _encode_state_codes(pred_main_idx, pred_c_idx, btn_pred)
+    true_state_codes = _encode_state_codes(target_main, target_c, target_btn)
+    enhanced.pred_run_stats.observe_runs(
+        pred_state_codes.reshape(-1).detach().cpu().numpy()
+    )
+    enhanced.true_run_stats.observe_runs(
+        true_state_codes.reshape(-1).detach().cpu().numpy()
+    )
+
+
+def _record_lr_latency(
+        enhanced: EnhancedMetrics, target_btn: torch.Tensor, btn_pred: torch.Tensor
+) -> None:
+    """Accumulate frame indices for L/R button press latency analysis."""
+    B, L, _ = target_btn.shape
+    lr_idx = 4
+    target_lr = target_btn[:, :, lr_idx]
+    pred_lr = btn_pred[:, :, lr_idx]
+
+    true_changes = (target_lr[:, :-1] == 0) & (target_lr[:, 1:] == 1)
+    pred_changes = (pred_lr[:, :-1] == 0) & (pred_lr[:, 1:] == 1)
+
+    batch_offsets = torch.arange(B, device=target_btn.device).unsqueeze(1) * L
+    frame_offsets = torch.arange(1, L, device=target_btn.device).unsqueeze(0)
+    frame_indices = batch_offsets + frame_offsets + enhanced.total_frames
+
+    enhanced.lr_button_changes_true.extend(frame_indices[true_changes].cpu().tolist())
+    enhanced.lr_button_changes_pred.extend(frame_indices[pred_changes].cpu().tolist())
+
+
+def _append_correlation_vectors(
+        enhanced: EnhancedMetrics,
+        main_pred_coords: torch.Tensor,
+        main_true_coords: torch.Tensor,
+        c_pred_coords: torch.Tensor,
+        c_true_coords: torch.Tensor,
+        btn_pred: torch.Tensor,
+        target_btn: torch.Tensor,
+) -> None:
+    """Store flattened controller states for later correlation analysis."""
+    pred_vecs = np.concatenate(
+        [
+            main_pred_coords.reshape(-1, 2).cpu().numpy(),
+            c_pred_coords.reshape(-1, 2).cpu().numpy(),
+            btn_pred.reshape(-1, btn_pred.shape[-1]).cpu().numpy().astype(np.float32),
+        ],
+        axis=1,
+    )
+    true_vecs = np.concatenate(
+        [
+            main_true_coords.reshape(-1, 2).cpu().numpy(),
+            c_true_coords.reshape(-1, 2).cpu().numpy(),
+            target_btn.reshape(-1, target_btn.shape[-1]).cpu().numpy(),
+        ],
+        axis=1,
+    )
+    enhanced.all_preds_list.append(pred_vecs)
+    enhanced.all_labels_list.append(true_vecs)
+
+
+def _accumulate_value_metrics(
+        enhanced: EnhancedMetrics,
+        X: torch.Tensor,
+        colmap: ColumnMap,
+        value_idx: Optional[int],
+        reward_features: Optional[RewardFeatureIdx],
+        value_pred: torch.Tensor,
+) -> None:
+    """Update all value-head related aggregates."""
+    config = get_config()
+    value_target = compute_value_targets(
+        X,
+        colmap,
+        gamma=config.rl.gamma,
+        reward_idx=value_idx,
+        reward_features=reward_features,
+    )
+    frame_rewards = _frame_rewards_from_batch(X, colmap, reward_features)
+
+    value_mse = ((value_pred - value_target) ** 2).mean().item()
+    value_mae = (value_pred - value_target).abs().mean().item()
+
+    frames = X.shape[0] * X.shape[1]
+    enhanced.total_value_mse += value_mse * frames
+    enhanced.total_value_mae += value_mae * frames
+    enhanced.total_value_pred += value_pred.sum().item()
+    enhanced.total_value_target += value_target.sum().item()
+
+    value_pred_flat = value_pred.cpu().numpy().flatten().tolist()
+    value_target_flat = value_target.cpu().numpy().flatten().tolist()
+    enhanced.value_pred_list.extend(value_pred_flat)
+    enhanced.value_target_list.extend(value_target_flat)
+    enhanced.value_frames += frames
+
+    value_pred_np = value_pred.squeeze(-1).cpu().numpy()
+    value_target_np = value_target.squeeze(-1).cpu().numpy()
+    frame_rewards_np = frame_rewards.cpu().numpy()
+    X_np = X.cpu().numpy()
+
+    B, L = value_pred_np.shape
+    for b in range(B):
+        for l in range(L):
+            enhanced.value_frame_data.append(
+                (
+                    float(value_pred_np[b, l]),
+                    float(value_target_np[b, l]),
+                    float(frame_rewards_np[b, l]),
+                    X_np[b, l, :].copy(),
+                )
+            )
+
+
 def _update_enhanced_metrics(
-    enhanced: EnhancedMetrics,
-    X: torch.Tensor,
-    target_info: Dict[str, torch.Tensor],
-    pred_main_idx: torch.Tensor,
-    pred_c_idx: torch.Tensor,
-    btn_pred: torch.Tensor,
-    logits_main: torch.Tensor,
-    logits_c: torch.Tensor,
-    logits_shoulder: Optional[torch.Tensor],
-    colmap: ColumnMap,
-    prev_pred_main_coords: Optional[torch.Tensor],
-    prev_pred_c_coords: Optional[torch.Tensor],
-    prev_true_main_coords: Optional[torch.Tensor],
-    prev_true_c_coords: Optional[torch.Tensor],
-    value_pred: Optional[torch.Tensor] = None,
+        enhanced: EnhancedMetrics,
+        X: torch.Tensor,
+        target_info: Dict[str, torch.Tensor],
+        pred_main_idx: torch.Tensor,
+        pred_c_idx: torch.Tensor,
+        btn_pred: torch.Tensor,
+        logits_main: torch.Tensor,
+        logits_c: torch.Tensor,
+        logits_shoulder: torch.Tensor,
+        colmap: ColumnMap,
+        value_idx: Optional[int],
+        reward_features: Optional[RewardFeatureIdx],
+        prev_pred_main_coords: Optional[torch.Tensor],
+        prev_pred_c_coords: Optional[torch.Tensor],
+        prev_true_main_coords: Optional[torch.Tensor],
+        prev_true_c_coords: Optional[torch.Tensor],
+        value_pred: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update enhanced metrics and return current stick coordinates for next iteration."""
     B, L = pred_main_idx.shape
@@ -526,264 +816,88 @@ def _update_enhanced_metrics(
     target_c = target_info["c_idx"].view(B, L)
     target_btn = target_info["buttons"]
 
+    if value_pred is None:
+        raise ValueError("value_pred must be provided for enhanced metrics")
+
     # Dequantize to get coordinates
     # Need to flatten indices, index, then reshape
-    main_pred_idx_flat = pred_main_idx.cpu().numpy().flatten()
-    main_pred_coords = (
-        torch.from_numpy(
-            np.array(CONTROL_STICK_QUANTIZED, dtype=np.float32)[main_pred_idx_flat]
-        )
-        .to(device)
-        .reshape(B, L, 2)
-    )
+    main_palette = _palette_on_device("main", device)
+    c_palette = _palette_on_device("c", device)
 
-    main_true_idx_flat = target_main.cpu().numpy().flatten()
-    main_true_coords = (
-        torch.from_numpy(
-            np.array(CONTROL_STICK_QUANTIZED, dtype=np.float32)[main_true_idx_flat]
-        )
-        .to(device)
-        .reshape(B, L, 2)
-    )
-
-    c_pred_idx_flat = pred_c_idx.cpu().numpy().flatten()
-    c_pred_coords = (
-        torch.from_numpy(np.array(C_STICK_QUANTIZED, dtype=np.float32)[c_pred_idx_flat])
-        .to(device)
-        .reshape(B, L, 2)
-    )
-
-    c_true_idx_flat = target_c.cpu().numpy().flatten()
-    c_true_coords = (
-        torch.from_numpy(np.array(C_STICK_QUANTIZED, dtype=np.float32)[c_true_idx_flat])
-        .to(device)
-        .reshape(B, L, 2)
-    )
+    main_pred_coords = _decode_stick_coords(pred_main_idx, main_palette)
+    main_true_coords = _decode_stick_coords(target_main, main_palette)
+    c_pred_coords = _decode_stick_coords(pred_c_idx, c_palette)
+    c_true_coords = _decode_stick_coords(target_c, c_palette)
 
     # 1. Mean Stick Error (Euclidean distance)
     main_errors = torch.linalg.norm(main_pred_coords - main_true_coords, dim=-1)
     c_errors = torch.linalg.norm(c_pred_coords - c_true_coords, dim=-1)
-    enhanced.total_main_stick_error += main_errors.sum().item()
-    enhanced.total_c_stick_error += c_errors.sum().item()
+    main_change_mask, main_hold_mask = _change_hold_masks(target_main)
+    c_change_mask, c_hold_mask = _change_hold_masks(target_c)
 
-    # Track error by change/hold
-    main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
-    main_change_mask[:, 1:] = target_main[:, 1:] != target_main[:, :-1]
-    main_hold_mask = ~main_change_mask
-
-    c_change_mask = torch.zeros_like(target_c, dtype=torch.bool)
-    c_change_mask[:, 1:] = target_c[:, 1:] != target_c[:, :-1]
-    c_hold_mask = ~c_change_mask
-
-    if main_change_mask.any():
-        enhanced.total_main_stick_error_change += (
-            main_errors[main_change_mask].sum().item()
-        )
-    if main_hold_mask.any():
-        enhanced.total_main_stick_error_hold += main_errors[main_hold_mask].sum().item()
-    if c_change_mask.any():
-        enhanced.total_c_stick_error_change += c_errors[c_change_mask].sum().item()
-    if c_hold_mask.any():
-        enhanced.total_c_stick_error_hold += c_errors[c_hold_mask].sum().item()
+    _accumulate_stick_errors(enhanced, main_errors, main_change_mask, main_hold_mask, "main")
+    _accumulate_stick_errors(enhanced, c_errors, c_change_mask, c_hold_mask, "c")
 
     # 2. Jitter (frame-to-frame distance)
-    if prev_pred_main_coords is not None and prev_pred_main_coords.shape[0] == B:
-        # Compute jitter across batch boundaries (only when batch sizes match)
-        pred_jitter_main = (
-            torch.linalg.norm(main_pred_coords[:, 0] - prev_pred_main_coords, dim=-1)
-            .sum()
-            .item()
-        )
-        true_jitter_main = (
-            torch.linalg.norm(main_true_coords[:, 0] - prev_true_main_coords, dim=-1)
-            .sum()
-            .item()
-        )
-        enhanced.total_pred_main_jitter += pred_jitter_main
-        enhanced.total_true_main_jitter += true_jitter_main
-
-        pred_jitter_c = (
-            torch.linalg.norm(c_pred_coords[:, 0] - prev_pred_c_coords, dim=-1)
-            .sum()
-            .item()
-        )
-        true_jitter_c = (
-            torch.linalg.norm(c_true_coords[:, 0] - prev_true_c_coords, dim=-1)
-            .sum()
-            .item()
-        )
-        enhanced.total_pred_c_jitter += pred_jitter_c
-        enhanced.total_true_c_jitter += true_jitter_c
-        enhanced.jitter_frames += B
-
-    # Within-batch jitter
-    if L > 1:
-        pred_jitter_main = (
-            torch.linalg.norm(
-                main_pred_coords[:, 1:] - main_pred_coords[:, :-1], dim=-1
-            )
-            .sum()
-            .item()
-        )
-        true_jitter_main = (
-            torch.linalg.norm(
-                main_true_coords[:, 1:] - main_true_coords[:, :-1], dim=-1
-            )
-            .sum()
-            .item()
-        )
-        enhanced.total_pred_main_jitter += pred_jitter_main
-        enhanced.total_true_main_jitter += true_jitter_main
-
-        pred_jitter_c = (
-            torch.linalg.norm(c_pred_coords[:, 1:] - c_pred_coords[:, :-1], dim=-1)
-            .sum()
-            .item()
-        )
-        true_jitter_c = (
-            torch.linalg.norm(c_true_coords[:, 1:] - c_true_coords[:, :-1], dim=-1)
-            .sum()
-            .item()
-        )
-        enhanced.total_pred_c_jitter += pred_jitter_c
-        enhanced.total_true_c_jitter += true_jitter_c
-        enhanced.jitter_frames += B * (L - 1)
+    _accumulate_jitter(
+        enhanced,
+        main_pred_coords,
+        main_true_coords,
+        c_pred_coords,
+        c_true_coords,
+        prev_pred_main_coords,
+        prev_true_main_coords,
+        prev_pred_c_coords,
+        prev_true_c_coords,
+    )
 
     # 3. Entropy
-    probs_main = torch.softmax(logits_main, dim=-1)
-    probs_c = torch.softmax(logits_c, dim=-1)
-    entropy_main = -torch.sum(probs_main * torch.log(probs_main + 1e-9), dim=-1)
-    entropy_c = -torch.sum(probs_c * torch.log(probs_c + 1e-9), dim=-1)
-    enhanced.total_main_entropy += entropy_main.sum().item()
-    enhanced.total_c_entropy += entropy_c.sum().item()
-
-    probs_shoulder = torch.softmax(logits_shoulder, dim=-1)
-    entropy_shoulder = -torch.sum(
-        probs_shoulder * torch.log(probs_shoulder + 1e-9), dim=-1
-    )
-    enhanced.total_shoulder_entropy += entropy_shoulder.sum().item()
-
+    enhanced.total_main_entropy += _entropy_sum(logits_main)
+    enhanced.total_c_entropy += _entropy_sum(logits_c)
+    enhanced.total_shoulder_entropy += _entropy_sum(logits_shoulder)
     enhanced.entropy_frames += B * L
 
     # 4. Per-action-state accuracy (vectorized)
     p1_actions = X[..., colmap.ego_action_idx].cpu().numpy().flatten()  # [B*L]
     correct_main = (pred_main_idx == target_main).cpu().numpy().flatten()  # [B*L]
-
-    # Vectorize the categorization
-    for action_val, is_correct in zip(p1_actions, correct_main):
-        category = _categorize_action(int(action_val))
-        enhanced.state_total[category] += 1
-        if is_correct:
-            enhanced.state_correct[category] += 1
+    _tally_action_categories(enhanced, p1_actions, correct_main)
 
     # 5. Controller state sequences for "stuck" duration (vectorized tuple creation)
-    pred_main_flat = pred_main_idx.cpu().numpy().flatten().tolist()
-    pred_c_flat = pred_c_idx.cpu().numpy().flatten().tolist()
-    target_main_flat = target_main.cpu().numpy().flatten().tolist()
-    target_c_flat = target_c.cpu().numpy().flatten().tolist()
-    btn_pred_flat = btn_pred.cpu().numpy().reshape(-1, btn_pred.shape[-1])
-    target_btn_flat = target_btn.cpu().numpy().reshape(-1, target_btn.shape[-1])
-
-    for i in range(B * L):
-        pred_state = (
-            pred_main_flat[i],
-            pred_c_flat[i],
-            tuple(btn_pred_flat[i].tolist()),
-        )
-        true_state = (
-            target_main_flat[i],
-            target_c_flat[i],
-            tuple(target_btn_flat[i].tolist()),
-        )
-        enhanced.pred_states.append(pred_state)
-        enhanced.true_states.append(true_state)
+    _update_run_stats(
+        enhanced,
+        pred_main_idx,
+        pred_c_idx,
+        btn_pred,
+        target_main,
+        target_c,
+        target_btn,
+    )
 
     # 6. Button change latency tracking (for L/R button) - vectorized
-    lr_idx = 4
-    if L > 1:
-        # Reshape to [B, L] for easier slicing
-        target_lr = target_btn[:, :, lr_idx]  # [B, L]
-        pred_lr = btn_pred[:, :, lr_idx]  # [B, L]
-
-        # Find button press events (0 -> 1 transitions)
-        true_changes = (target_lr[:, :-1] == 0) & (target_lr[:, 1:] == 1)  # [B, L-1]
-        pred_changes = (pred_lr[:, :-1] == 0) & (pred_lr[:, 1:] == 1)  # [B, L-1]
-
-        # Get frame indices (accounting for the batch structure)
-        batch_offsets = torch.arange(B, device=target_lr.device).unsqueeze(1) * L
-        frame_offsets = torch.arange(1, L, device=target_lr.device).unsqueeze(0)
-        frame_indices = batch_offsets + frame_offsets + enhanced.total_frames
-
-        true_change_frames = frame_indices[true_changes].cpu().tolist()
-        pred_change_frames = frame_indices[pred_changes].cpu().tolist()
-
-        enhanced.lr_button_changes_true.extend(true_change_frames)
-        enhanced.lr_button_changes_pred.extend(pred_change_frames)
+    _record_lr_latency(enhanced, target_btn, btn_pred)
 
     # 7. Collect data for correlation matrix (vectorized)
-    # Reshape everything to [B*L, features] and concatenate
-    main_pred_flat = main_pred_coords.reshape(-1, 2).cpu().numpy()
-    main_true_flat = main_true_coords.reshape(-1, 2).cpu().numpy()
-    c_pred_flat = c_pred_coords.reshape(-1, 2).cpu().numpy()
-    c_true_flat = c_true_coords.reshape(-1, 2).cpu().numpy()
-    btn_pred_np = (
-        btn_pred.reshape(-1, btn_pred.shape[-1]).cpu().numpy().astype(np.float32)
+    _append_correlation_vectors(
+        enhanced,
+        main_pred_coords,
+        main_true_coords,
+        c_pred_coords,
+        c_true_coords,
+        btn_pred,
+        target_btn,
     )
-    btn_true_np = target_btn.reshape(-1, target_btn.shape[-1]).cpu().numpy()
-
-    pred_vecs = np.concatenate(
-        [main_pred_flat, c_pred_flat, btn_pred_np], axis=1
-    )  # [B*L, 2+2+5]
-    true_vecs = np.concatenate(
-        [main_true_flat, c_true_flat, btn_true_np], axis=1
-    )  # [B*L, 2+2+5]
-
-    enhanced.all_preds_list.append(pred_vecs)
-    enhanced.all_labels_list.append(true_vecs)
 
     enhanced.total_frames += B * L
 
     # 8. Value head metrics
-    config = get_config()
-    value_target = compute_value_targets(
-        X, colmap, gamma=config.rl.gamma
-    )  # [B, L, 1]
-    # TODO: Import from value_head.
-    frame_rewards = compute_frame_rewards(X, colmap)  # [B, L]
-
-    # MSE and MAE
-    value_mse = ((value_pred - value_target) ** 2).mean().item()
-    value_mae = (value_pred - value_target).abs().mean().item()
-
-    enhanced.total_value_mse += value_mse * (B * L)
-    enhanced.total_value_mae += value_mae * (B * L)
-    enhanced.total_value_pred += value_pred.sum().item()
-    enhanced.total_value_target += value_target.sum().item()
-
-    # Store individual predictions and targets for correlation/distribution analysis
-    value_pred_flat = value_pred.cpu().numpy().flatten().tolist()
-    value_target_flat = value_target.cpu().numpy().flatten().tolist()
-    enhanced.value_pred_list.extend(value_pred_flat)
-    enhanced.value_target_list.extend(value_target_flat)
-    enhanced.value_frames += B * L
-
-    # Store frame-level data for detailed analysis (with context)
-    # For each frame, store (value_pred, value_target, reward, frame_features)
-    value_pred_np = value_pred.squeeze(-1).cpu().numpy()  # [B, L]
-    value_target_np = value_target.squeeze(-1).cpu().numpy()  # [B, L]
-    frame_rewards_np = frame_rewards.cpu().numpy()  # [B, L]
-    X_np = X.cpu().numpy()  # [B, L, F]
-
-    for b in range(B):
-        for l in range(L):
-            enhanced.value_frame_data.append(
-                (
-                    float(value_pred_np[b, l]),
-                    float(value_target_np[b, l]),
-                    float(frame_rewards_np[b, l]),
-                    X_np[b, l, :].copy(),  # Store full frame features
-                )
-            )
+    _accumulate_value_metrics(
+        enhanced,
+        X,
+        colmap,
+        value_idx,
+        reward_features,
+        value_pred,
+    )
 
     # Return last coordinates for next batch
     last_pred_main = main_pred_coords[:, -1]
@@ -795,21 +909,21 @@ def _update_enhanced_metrics(
 
 
 
-
-
-from collections import defaultdict
-from train.metrics import multilabel_prf
-
 def _evaluate(
-    model: GPT,
-    loader: DataLoader,
-    colmap: ColumnMap,
-    device: torch.device,
-    progress: bool,
-    report_every: int,
-    max_batches: Optional[int] = None,
+        model: GPT,
+        loader: DataLoader,
+        colmap: ColumnMap,
+        device: torch.device,
+        progress: bool,
+        report_every: int,
+        max_batches: Optional[int] = None,
 ) -> Dict[str, object]:
     config = get_config()
+    value_col_idx = colmap.value_idx
+    reward_features = (
+        None if value_col_idx is not None else build_reward_feature_index(colmap)
+    )
+    ratios = _build_sample_weight_ratios(config.loss_weights)
 
     metrics = defaultdict(float)
 
@@ -821,8 +935,6 @@ def _evaluate(
     )
     pred_counts_shoulder = (
         torch.zeros(config.model.target_shapes_by_head["shoulder"], dtype=torch.long)
-        if config.model.target_shapes_by_head["shoulder"] > 0
-        else None
     )
     pred_button_presses = torch.zeros(
         config.model.target_shapes_by_head["buttons"], dtype=torch.long
@@ -830,11 +942,7 @@ def _evaluate(
 
     raw_counts_main = torch.zeros_like(pred_counts_main)
     raw_counts_c = torch.zeros_like(pred_counts_c)
-    raw_counts_shoulder = (
-        torch.zeros_like(pred_counts_shoulder)
-        if pred_counts_shoulder is not None
-        else None
-    )
+    raw_counts_shoulder = torch.zeros_like(pred_counts_shoulder)
 
     change_stats_main = ChangeHoldStats()
     change_stats_c = ChangeHoldStats()
@@ -871,6 +979,13 @@ def _evaluate(
             target_info = quantize_controller_targets(
                 Y, colmap, input_domain="unit01"
             )
+            weights = compute_component_sample_weights(
+                target_info,
+                device,
+                ratios=ratios,
+                button_names=CONTROLLER_KEY_GROUPS["buttons"],
+                change_scale=1.0,
+            )
 
             pred = model(inputs_td)
 
@@ -883,7 +998,7 @@ def _evaluate(
                 pred,
                 target_info,
                 label_smoothing=config.train.label_smoothing,
-                sample_weights=None,
+                sample_weights=weights,
                 loss_config=config.loss_weights,
             )
 
@@ -914,7 +1029,7 @@ def _evaluate(
             metrics["btn_em_correct"] += em_b * B * L
             metrics["btn_total"] += B * L
             metrics["btn_f1_micro_sum"] += f1_b * B * L
-            metrics["btn_f1_macro_sum"] += f1_macro_b * B*L
+            metrics["btn_f1_macro_sum"] += f1_macro_b * B * L
 
             btn_exact_match = (btn_pred == target_btn).all(dim=-1)
 
@@ -956,6 +1071,8 @@ def _evaluate(
                 logits_c,
                 logits_shoulder,
                 colmap,
+                value_col_idx,
+                reward_features,
                 prev_pred_main_coords,
                 prev_pred_c_coords,
                 prev_true_main_coords,
@@ -969,39 +1086,28 @@ def _evaluate(
             pred_counts_c += torch.bincount(
                 pred_c_idx.reshape(-1).cpu(), minlength=pred_counts_c.shape[0]
             )
-            if pred_counts_shoulder is not None and logits_shoulder is not None:
-                sh_pred = logits_shoulder.argmax(dim=-1)
-                pred_counts_shoulder += torch.bincount(
-                    sh_pred.reshape(-1).cpu(), minlength=pred_counts_shoulder.shape[0]
-                )
+            sh_pred = logits_shoulder.argmax(dim=-1)
+            pred_counts_shoulder += torch.bincount(
+                sh_pred.reshape(-1).cpu(), minlength=pred_counts_shoulder.shape[0]
+            )
 
             pred_button_presses += btn_pred.sum(dim=(0, 1)).cpu().to(torch.long)
 
-            Y_cpu = batch["Y"].detach().cpu()
-            main_vals = Y_cpu[..., colmap.y_main]
-            main_idx_raw = _assign_to_palette(main_vals.reshape(-1, 2), _MAIN_PALETTE_T)
             raw_counts_main += torch.bincount(
-                main_idx_raw.cpu(), minlength=raw_counts_main.shape[0]
+                target_main.reshape(-1).detach().cpu(),
+                minlength=raw_counts_main.shape[0],
             )
 
-            c_vals = Y_cpu[..., colmap.y_c]
-            c_idx_raw = _assign_to_palette(c_vals.reshape(-1, 2), _C_PALETTE_T)
             raw_counts_c += torch.bincount(
-                c_idx_raw.cpu(), minlength=raw_counts_c.shape[0]
+                target_c.reshape(-1).detach().cpu(),
+                minlength=raw_counts_c.shape[0],
             )
 
-            if raw_counts_shoulder is not None and colmap.y_shoulder is not None:
-                s_vals = torch.clamp(
-                    Y_cpu[..., colmap.y_shoulder].to(torch.float32), 0.0, 1.0
-                )
-                s_vals = s_vals.reshape(-1)
-                s_idx = torch.searchsorted(
-                    _SHOULDER_PALETTE_T, s_vals, right=True
-                ) - 1
-                s_idx = torch.clamp(s_idx, min=0, max=_SHOULDER_PALETTE_T.shape[0] - 1)
-                raw_counts_shoulder += torch.bincount(
-                    s_idx.cpu(), minlength=raw_counts_shoulder.shape[0]
-                )
+            shoulder_idx = target_info.get("shoulder_idx")
+            raw_counts_shoulder += torch.bincount(
+                shoulder_idx.reshape(-1).detach().cpu(),
+                minlength=raw_counts_shoulder.shape[0],
+            )
 
             total_tokens += int(X.numel())
             total_frames += int(X.shape[0] * X.shape[1])
@@ -1024,16 +1130,9 @@ def _evaluate(
                     f"c acc {acc_c:.3f} (chg {change_stats_c.change_acc():.3f} hold {change_stats_c.hold_acc():.3f}) | "
                     f"btn EM {btn_em:.3f} (chg {change_stats_buttons.change_acc():.3f} hold {change_stats_buttons.hold_acc():.3f})"
                 )
-                # acc_shoulder = summary.get("acc_shoulder")
-                # if acc_shoulder is not None:
-                #     line += f" | shoulder acc {acc_shoulder:.3f}"
+
                 print(line, flush=True)
 
-                if report_every and batch_idx % report_every == 0:
-                    # _print_intermediate_summary(
-                    #     metrics, change_stats_main, change_stats_c, change_stats_buttons
-                    # )
-                    pass
 
     elapsed = time.time() - start_time
     batches_processed = (
@@ -1059,38 +1158,11 @@ def _evaluate(
 
     results["enhanced"] = enhanced
     return results
-
-
-
-
-
-
-
-
-def _assign_to_palette(
-    values: torch.Tensor, palette: torch.Tensor, *, from_unit_square: bool = False
-) -> torch.Tensor:
-    if values.numel() == 0:
-        return torch.empty(0, dtype=torch.long, device=values.device)
-    vals = values.to(torch.float32)
-    if from_unit_square:
-        vals = vals * 2.0 - 1.0
-    vals = torch.clamp(vals, -1.0, 1.0)
-    radius = torch.linalg.norm(vals, dim=-1, keepdim=True)
-    vals = vals / torch.clamp(radius, min=1.0)
-    norms = (vals**2).sum(dim=-1, keepdim=True)
-    palette = palette.to(vals.device)
-    palette_norm = (palette**2).sum(dim=-1).unsqueeze(0)
-    dot = vals @ palette.t()
-    d2 = norms - 2.0 * dot + palette_norm
-    return d2.argmin(dim=-1)
-
-
 def _format_distribution_comparison(
-    pred_counts: np.ndarray,
-    true_counts: np.ndarray,
-    labels: Optional[Iterable[str]] = None,
-    top_k: Optional[int] = 10,
+        pred_counts: np.ndarray,
+        true_counts: np.ndarray,
+        labels: Optional[Iterable[str]] = None,
+        top_k: Optional[int] = 10,
 ) -> str:
     pred = np.asarray(pred_counts, dtype=np.float64)
     true = np.asarray(true_counts, dtype=np.float64)
@@ -1115,14 +1187,14 @@ def _format_distribution_comparison(
         )
     remaining = len(indices) - top_k
     if remaining > 0:
-        lines.append(f"  … {remaining} additional bins suppressed")
+        lines.append(f"  ... {remaining} additional bins suppressed")
     return "\n".join(lines)
 
 
 def _print_button_press_distribution(
-    pred_press_counts: np.ndarray,
-    true_press_counts: np.ndarray,
-    total_frames: int,
+        pred_press_counts: np.ndarray,
+        true_press_counts: np.ndarray,
+        total_frames: int,
 ) -> None:
     if total_frames <= 0:
         print("  <no frames>")
@@ -1216,16 +1288,20 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
 
     # 5. Stuck action duration
     print("\n5. 'Stuck' Action Duration (Consecutive Identical States):")
-    if enhanced.pred_states and enhanced.true_states:
-        pred_runs = _get_run_lengths(enhanced.pred_states)
-        true_runs = _get_run_lengths(enhanced.true_states)
-        if pred_runs and true_runs:
-            print(f"  Predicted:")
-            print(f"    Mean: {np.mean(pred_runs):.2f} frames")
-            print(f"    Max:  {np.max(pred_runs)} frames")
-            print(f"  Ground Truth:")
-            print(f"    Mean: {np.mean(true_runs):.2f} frames")
-            print(f"    Max:  {np.max(true_runs)} frames")
+    enhanced.pred_run_stats.finalize()
+    enhanced.true_run_stats.finalize()
+    if enhanced.pred_run_stats.run_count:
+        print(f"  Predicted:")
+        print(
+            f"    Mean: {_safe_div(enhanced.pred_run_stats.total_length, enhanced.pred_run_stats.run_count):.2f} frames"
+        )
+        print(f"    Max:  {enhanced.pred_run_stats.max_length} frames")
+    if enhanced.true_run_stats.run_count:
+        print(f"  Ground Truth:")
+        print(
+            f"    Mean: {_safe_div(enhanced.true_run_stats.total_length, enhanced.true_run_stats.run_count):.2f} frames"
+        )
+        print(f"    Max:  {enhanced.true_run_stats.max_length} frames")
 
     # 6. Action change latency
     print("\n6. L/R Button Press Latency:")
@@ -1266,15 +1342,6 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
         print(
             f"  (Lower is better - means predicted correlations match true correlations)"
         )
-
-        # You could optionally save the matrices for visualization
-        # import matplotlib.pyplot as plt
-        # fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        # axes[0].imshow(pred_corr, cmap='coolwarm', vmin=-1, vmax=1)
-        # axes[0].set_title('Predicted Correlations')
-        # axes[1].imshow(true_corr, cmap='coolwarm', vmin=-1, vmax=1)
-        # axes[1].set_title('True Correlations')
-        # plt.savefig('correlation_matrices.png')
 
     # 8. Value Head Metrics (RL)
     if enhanced.value_frames > 0:
@@ -1353,7 +1420,7 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
 
 
 def _print_enhanced_metrics_with_colmap(
-    enhanced: EnhancedMetrics, colmap: ColumnMap
+        enhanced: EnhancedMetrics, colmap: ColumnMap
 ) -> None:
     """Print enhanced metrics and extreme value analysis."""
     _print_enhanced_metrics(enhanced)
@@ -1364,10 +1431,10 @@ def _print_enhanced_metrics_with_colmap(
 
 
 def _print_final_summary(
-    results: Dict[str, object],
-    checkpoint: Path,
-    data_root: Path,
-    colmap: ColumnMap,
+        results: Dict[str, object],
+        checkpoint: Path,
+        data_root: Path,
+        colmap: ColumnMap,
 ) -> None:
     batches = results["batches"]
     loss_sums: Dict[str, float] = results["loss_sums"]
@@ -1380,20 +1447,11 @@ def _print_final_summary(
     btn_stats: ChangeHoldStats = results["btn_change_stats"]
     main_pred_counts = results["pred_counts_main"].cpu().numpy()
     c_pred_counts = results["pred_counts_c"].cpu().numpy()
-    btn_press_counts = results["pred_button_presses"].cpu().numpy()
-    shoulder_pred_counts = None
-    if results.get("pred_counts_shoulder") is not None:
-        shoulder_pred_counts = results["pred_counts_shoulder"].cpu().numpy()
+    shoulder_pred_counts = results["pred_counts_shoulder"].cpu().numpy()
 
     main_true_counts = results["raw_counts_main"].cpu().numpy()
     c_true_counts = results["raw_counts_c"].cpu().numpy()
-    shoulder_true_counts = (
-        results["raw_counts_shoulder"].cpu().numpy()
-        if results.get("raw_counts_shoulder") is not None
-        else None
-    )
-    # btn_true_press_counts = metrics.btn_pos_counts.detach().cpu().numpy()
-
+    shoulder_true_counts = results["raw_counts_shoulder"].cpu().numpy()
 
     avg_loss = {
         k: (v / batches if batches else float("nan")) for k, v in loss_sums.items()
@@ -1418,7 +1476,6 @@ def _print_final_summary(
     print(
         f"Elapsed:    {elapsed:.2f}s | {total_tokens / max(elapsed, 1e-9):,.0f} tokens/s"
     )
-
 
     print("\nLoss (per batch):")
     for key in ("total", "main", "c", "buttons", "shoulder"):
@@ -1447,14 +1504,6 @@ def _print_final_summary(
         f"  EM {btn_em:.3f} | F1μ {btn_f1_micro:.3f} | F1_macro {btn_f1_macro:.3f}"
     )
     print(f"  change {btn_stats.change_acc():.3f} | hold {btn_stats.hold_acc():.3f}")
-
-    # acc_shoulder = summary.get("acc_shoulder")
-    # if acc_shoulder is not None:
-    #     print("\nShoulder:")
-    #     print(
-    #         f"  accuracy {acc_shoulder:.3f} | majority {summary['acc_shoulder_maj']:.3f}"
-    #     )
-
     print("\nPrediction distributions:")
     print("  Main stick (top bins):")
     print(
@@ -1469,18 +1518,13 @@ def _print_final_summary(
         )
     )
 
-    if shoulder_pred_counts is not None and shoulder_true_counts is not None:
-        print("  Shoulder:")
-        print(
-            _format_distribution_comparison(
-                shoulder_pred_counts, shoulder_true_counts, _SHOULDER_LABELS, top_k=None
-            )
-        )
 
-    # print("  Button press rates:")
-    # _print_button_press_distribution(
-    #     btn_press_counts, btn_true_press_counts, total_frames
-    # )
+    print("  Shoulder:")
+    print(
+        _format_distribution_comparison(
+            shoulder_pred_counts, shoulder_true_counts, _SHOULDER_LABELS, top_k=None
+        )
+    )
 
     # Value head summary
     enhanced: EnhancedMetrics = results.get("enhanced")
@@ -1528,22 +1572,16 @@ def parse_args() -> argparse.Namespace:
         help="Path to a checkpoint; defaults to the latest in train.out_dir.",
     )
     parser.add_argument(
-        "--data-root",
-        type=Path,
-        default=None,
-        help="Root directory of the validation Zarr dataset (defaults to validation_set under project root).",
-    )
-    parser.add_argument(
         "--batch-size",
         type=int,
-        default=None,
-        help="Evaluation batch size (defaults to train.batch_size).",
+        default=256,
+        help="Evaluation batch size (defaults to 256).",
     )
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=None,
-        help="Number of DataLoader workers (defaults to train.num_workers).",
+        default=0,
+        help="Number of DataLoader workers (defaults to 0 for in-process loading).",
     )
     parser.add_argument(
         "--prefetch-factor",
@@ -1569,6 +1607,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-progress", action="store_true", help="Disable per-batch progress output."
     )
+    parser.add_argument(
+        "--window-stride",
+        type=int,
+        default=256,
+        help="Stride between validation windows (defaults to seq_len for non-overlapping).",
+    )
 
     return parser.parse_args()
 
@@ -1580,10 +1624,10 @@ def main() -> None:
 
     project_root = Path(__file__).resolve().parent
 
-    data_root = args.data_root
-    if data_root is None:
-        data_root = project_root / "validation_set"
-    data_root = _ensure_absolute(data_root, project_root)
+    data_root = Path(config.zarr.validation_root)
+    if not data_root.is_absolute():
+        data_root = (project_root / data_root).resolve()
+    data_root = data_root.expanduser()
     if not data_root.exists():
         print(f"ERROR: validation data root {data_root} not found", file=sys.stderr)
         sys.exit(1)
@@ -1592,7 +1636,7 @@ def main() -> None:
     if checkpoint_path is None:
         ckpt_dir = Path(config.train.out_dir)
         ckpt_dir = _ensure_absolute(ckpt_dir, project_root)
-        checkpoint_path = _latest_checkpoint(ckpt_dir)
+        checkpoint_path = find_latest_checkpoint(ckpt_dir)
         if checkpoint_path is None:
             print(f"ERROR: no checkpoints found in {ckpt_dir}", file=sys.stderr)
             sys.exit(1)
@@ -1603,24 +1647,22 @@ def main() -> None:
     device = _resolve_device()
 
     batch_size = args.batch_size or config.train.batch_size
-    num_workers = (
-        args.num_workers if args.num_workers is not None else config.train.num_workers
-    )
-    prefetch_factor = (
-        args.prefetch_factor
-        if args.prefetch_factor is not None
-        else config.train.prefetch_factor
-    )
+    if args.num_workers is None:
+        num_workers = config.train.num_workers
+    else:
+        num_workers = args.num_workers
     pin_memory = config.train.pin_memory
-    persistent_workers = config.train.persistent_workers and num_workers > 0
+    persistent_workers = False
+    window_stride = max(1, args.window_stride)
 
     loader, dataset = _prepare_dataloader(
         data_root,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        prefetch_factor=prefetch_factor,
+        prefetch_factor=config.train.prefetch_factor,
         persistent_workers=persistent_workers,
+        window_stride=window_stride,
     )
 
     colmap = ColumnMap.from_dataset(dataset)
@@ -1630,11 +1672,11 @@ def main() -> None:
 
     # Update the config with the dynamic dimensions
     config.model.input_size = (
-        config.model.num_stages
-        + config.model.num_characters * 2
-        + config.model.num_actions * 2
-        + gamestate_dim
-        + controller_dim
+            config.model.num_stages
+            + config.model.num_characters * 2
+            + config.model.num_actions * 2
+            + gamestate_dim
+            + controller_dim
     )
 
     model = GPT(config)

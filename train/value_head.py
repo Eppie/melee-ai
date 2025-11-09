@@ -9,6 +9,7 @@ import torch
 
 from column_map import ColumnMap
 from config import get_config
+from libmelee.melee.enums import Action
 
 
 @dataclass(frozen=True)
@@ -96,10 +97,10 @@ def _compute_player_rewards(
         opp_percent_idx = getattr(idx, f"{opponent}_percent")
 
         d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
-        rewards[:, 1:].add_(d_opp.mul_(100.0).mul_(cfg.reward_damage_dealt))
+        d_opp.clamp_min_(0.0)
+        rewards[:, 1:].add_(d_opp.mul_(cfg.reward_damage_dealt))
 
-
-        # --- Stock changes ---
+        # --- Stock changes
         opp_stock_idx = getattr(idx, f"{opponent}_stock")
         d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
         stock_taken = (-d_opp_stock).clamp_min_(0)
@@ -124,7 +125,7 @@ def compute_frame_rewards(
     X: torch.Tensor,
     colmap: ColumnMap,
     *,
-    idx: Optional[RewardFeatureIdx] = None,
+    idx: RewardFeatureIdx
 ) -> torch.Tensor:
     """Compute zero-sum per-frame rewards as ego minus opponent reward.
 
@@ -142,11 +143,6 @@ def compute_frame_rewards(
     Returns:
         ``[B, L]`` tensor of per-frame rewards.
     """
-    # TODO: Make this mandatory
-    if idx is None:
-        # Resolve on the fly (still cheap), or pass a cached `idx` from caller for max perf.
-        idx = build_reward_feature_index(colmap)
-
     cfg = get_config().rl
 
     ego_rewards = _compute_player_rewards(X, idx, cfg, player="p1")
@@ -236,7 +232,9 @@ def compute_value_targets(
     X: torch.Tensor,
     colmap: ColumnMap,
     gamma: float,
-    reward_idx: RewardFeatureIdx,
+    reward_idx: Optional[int],
+    *,
+    reward_features: Optional[RewardFeatureIdx] = None,
 ) -> torch.Tensor:
     """Compute discounted returns by summing future rewards with geometric decay.
 
@@ -252,7 +250,10 @@ def compute_value_targets(
         X: ``[B, L, F]`` input features.
         colmap: Column mapping describing feature positions.
         gamma: Discount factor used for future rewards.
-        reward_idx: Optional cached feature indices for faster reward computation.
+        reward_idx: Column index of a precomputed discounted return (e.g., dataset-stored value
+            targets). When ``None`` the helper recomputes per-frame rewards and discounts them.
+        reward_features: Optional cached reward feature indices for the fallback path to avoid
+            rebuilding them on every call.
 
     Returns:
         ``[B, L, 1]`` tensor of discounted returns.
@@ -264,7 +265,12 @@ def compute_value_targets(
     if L == 0:
         return torch.empty((B, 0, 1), device=device, dtype=dtype)
 
-    rewards = compute_frame_rewards(X, colmap, idx=reward_idx)  # [B, L]
+    if reward_idx is not None:
+        stored = X[..., reward_idx].unsqueeze(-1)
+        return stored.to(device=device, dtype=dtype)
+
+    reward_features = reward_features or build_reward_feature_index(colmap)
+    rewards = compute_frame_rewards(X, colmap, idx=reward_features)
     gamma_powers = _get_gamma_powers(L, gamma, device, rewards.dtype)
 
     weighted = rewards * gamma_powers  # broadcast multiply

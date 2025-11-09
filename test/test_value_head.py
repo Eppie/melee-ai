@@ -105,8 +105,8 @@ def test_compute_frame_rewards_damage_and_stock(reward_setup):
     expected = torch.tensor(
         [
             0.0,  # no prior frame for damage calculation
-            2.0 * 100.0 * float(cfg.reward_damage_dealt),
-            3.0 * 100.0 * float(cfg.reward_damage_dealt) + float(cfg.reward_stock_taken),
+            2.0 * float(cfg.reward_damage_dealt),
+            3.0 * float(cfg.reward_damage_dealt) + float(cfg.reward_stock_taken),
             0.0,
         ],
         dtype=torch.float32,
@@ -172,6 +172,25 @@ def test_compute_frame_rewards_hitlag_terms(reward_setup):
 
 def test_compute_value_targets_sequence_gamma(reward_setup):
     """Discounted returns should honor the provided gamma factor."""
+    colmap, _ = reward_setup
+    seq_len = 4
+    X = _zeros_feature_tensor(colmap, seq_len)
+    reward_col = colmap.value_idx
+    assert reward_col is not None
+
+    stored_returns = torch.tensor([2.5, 1.5, 0.5, 0.25], dtype=torch.float32)
+    X[0, :, reward_col] = stored_returns
+
+    gamma = 0.9
+    returns = compute_value_targets(
+        X, colmap, gamma=gamma, reward_idx=reward_col
+    ).squeeze(0).squeeze(-1)
+
+    assert torch.allclose(returns, stored_returns, atol=1e-6)
+
+
+def test_compute_value_targets_fallback_reward_computation(reward_setup):
+    """Legacy datasets without stored rewards should recompute values on the fly."""
     colmap, idx = reward_setup
     seq_len = 4
     X = _zeros_feature_tensor(colmap, seq_len)
@@ -179,11 +198,18 @@ def test_compute_value_targets_sequence_gamma(reward_setup):
 
     gamma = 0.9
     returns = compute_value_targets(
-        X, colmap, gamma=gamma, reward_idx=idx
+        X,
+        colmap,
+        gamma=gamma,
+        reward_idx=None,
+        reward_features=idx,
     ).squeeze(0).squeeze(-1)
 
-    expected_rewards = torch.tensor([0.0, 2.0, 0.0, 2.0])
-
+    cfg = get_config().rl
+    expected_rewards = torch.tensor(
+        [0.0, float(cfg.reward_damage_dealt), 0.0, float(cfg.reward_damage_dealt)],
+        dtype=torch.float32,
+    )
     manual = torch.empty(seq_len)
     for t in range(seq_len):
         total = 0.0
@@ -191,21 +217,20 @@ def test_compute_value_targets_sequence_gamma(reward_setup):
             total += (gamma ** (k - t)) * expected_rewards[k]
         manual[t] = total
 
-    expected_returns = manual
-    assert torch.allclose(returns, expected_returns, atol=1e-6)
+    assert torch.allclose(returns, manual, atol=1e-6)
 
 
 def test_replay_rewards_shape_and_sparsity(replay_reward_data):
     rewards = replay_reward_data["rewards"]
     assert rewards.shape[0] == 6956
-    assert torch.count_nonzero(rewards).item() == 385
+    assert torch.count_nonzero(rewards).item() == 382
 
 
 @pytest.mark.parametrize(
     ("frame", "value"),
     [
-        (32, 0.02),
-        (37, 0.02),
+        (32, -0.0196),
+        (37, -0.0196),
         (6918, -0.25),
     ],
 )

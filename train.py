@@ -128,7 +128,10 @@ def _initialize_training_components(
     _report_amp_configuration(amp, device)
 
     colmap = ColumnMap.from_dataset(ds)
-    reward_idx = build_reward_feature_index(colmap)
+    value_idx = colmap.value_idx
+    reward_features = (
+        None if value_idx is not None else build_reward_feature_index(colmap)
+    )
     lw_cfg = config.loss_weights
     button_overrides = {
         "button_z": lw_cfg.button_z,
@@ -198,7 +201,8 @@ def _initialize_training_components(
         amp=amp,
         ratios=ratios,
         colmap=colmap,
-        reward_idx=reward_idx,
+        value_idx=value_idx,
+        reward_features=reward_features,
         loader=loader,
         sampler=sampler,
         total_steps=total_steps,
@@ -267,7 +271,11 @@ def _forward_pass(
 
         value_pred = pred.get("value")
         value_target = compute_value_targets(
-            X, components.colmap, gamma=config.rl.gamma, reward_idx=components.reward_idx
+            X,
+            components.colmap,
+            gamma=config.rl.gamma,
+            reward_idx=components.value_idx,
+            reward_features=components.reward_features,
         )
         value_loss_raw = torch.nn.functional.mse_loss(
             value_pred, value_target, reduction="none"
@@ -692,7 +700,8 @@ def _prepare_logging_bundle(
             forward_result.batch_inputs["X"],
             components.colmap,
             gamma=components.config.rl.gamma,
-            reward_idx=components.reward_idx,
+            reward_idx=components.value_idx,
+            reward_features=components.reward_features,
         )
     )
     value_pred_mean = forward_result.value_pred.mean().item()

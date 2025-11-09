@@ -11,30 +11,12 @@ from torch import Tensor
 if TYPE_CHECKING:
     from config import LossConfig
 
-
-_DEFAULT_CE_WEIGHT_MAX = 10.0
-_DEFAULT_CE_WEIGHT_MIN = 0.1
-_DEFAULT_POS_WEIGHT_MAX = 10.0
-
-
 def _compute_ce_weights(
-    labels: Tensor, num_classes: int, loss_config: Optional["LossConfig"]
+    labels: Tensor, num_classes: int, loss_config: "LossConfig"
 ) -> Optional[Tensor]:
     """Compute class-balanced weights for cross-entropy loss."""
-    if loss_config is not None and not loss_config.enable_class_balancing:
+    if not loss_config.enable_class_balancing:
         return None
-
-    ce_min = (
-        loss_config.ce_weight_min
-        if loss_config is not None
-        else _DEFAULT_CE_WEIGHT_MIN
-    )
-    ce_max = (
-        loss_config.ce_weight_max
-        if loss_config is not None
-        else _DEFAULT_CE_WEIGHT_MAX
-    )
-
     device = labels.device
     try:
         counts = torch.bincount(labels, minlength=num_classes)
@@ -42,34 +24,28 @@ def _compute_ce_weights(
         counts = torch.bincount(labels.cpu(), minlength=num_classes).to(device)
     counts = counts.float().clamp_min(1.0)
     weights = counts.sum() / (counts * num_classes)
-    return weights.clamp(min=ce_min, max=ce_max)
+    return weights.clamp(min=loss_config.ce_weight_min, max=loss_config.ce_weight_max)
 
 
 def _compute_pos_weights(
-    targets: Tensor, loss_config: Optional["LossConfig"]
+    targets: Tensor, loss_config: "LossConfig"
 ) -> Optional[Tensor]:
     """Compute positive class weights for multi-label BCE loss."""
-    if loss_config is not None and not loss_config.enable_pos_weighting:
+    if not loss_config.enable_pos_weighting:
         return None
-
-    pos_max = (
-        loss_config.pos_weight_max
-        if loss_config is not None
-        else _DEFAULT_POS_WEIGHT_MAX
-    )
 
     flat = targets.reshape(-1, targets.shape[-1])
     pos = flat.sum(dim=0)
     total = flat.shape[0]
     neg = total - pos
     pos_weight = neg / pos.clamp_min(1.0)
-    return pos_weight.clamp(min=1.0, max=pos_max).to(targets.device)
+    return pos_weight.clamp(min=1.0, max=loss_config.pos_weight_max).to(targets.device)
 
 
 def _mean_with_weights(
-    x: Tensor, w: Optional[Tensor], loss_config: Optional["LossConfig"]
+    x: Tensor, w: Tensor, loss_config: "LossConfig"
 ) -> Tensor:
-    if w is None or (loss_config is not None and not loss_config.use_weighted_component_means):
+    if not loss_config.use_weighted_component_means:
         return x.mean()
     # Match dims to broadcast, then true weighted mean:
     w = w.to(x.dtype)
@@ -78,13 +54,8 @@ def _mean_with_weights(
     return num / den
 
 
-def _blend_weights(weights: Optional[Tensor], scale: float) -> Optional[Tensor]:
-    if weights is None:
-        return None
-    if scale <= 0.0:
-        return torch.ones_like(weights)
-    if scale >= 1.0:
-        return weights
+def _blend_weights(weights: Tensor, scale: float) -> Tensor:
+    assert 0 < scale < 1, f"scale {scale} is invalid"
     return torch.ones_like(weights) + (weights - 1.0) * scale
 
 
@@ -94,7 +65,7 @@ def compute_loss_components(
     *,
     label_smoothing: float,
     sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
-    loss_config: Optional["LossConfig"] = None,
+    loss_config: "LossConfig",
     ce_weight_scale: float = 1.0,
     pos_weight_scale: float = 1.0,
 ) -> Dict[str, Tensor]:
@@ -106,7 +77,7 @@ def compute_loss_components(
     logits_main = pred["main_stick"]  # [B, L, K_main]
     logits_c = pred["c_stick"]  # [B, L, K_c]
     logits_btn = pred["buttons"]  # [B, L, K_btn]
-    shoulder_logits = pred.get("shoulder")  # [B, L, K_sh]? optional
+    shoulder_logits = pred.get("shoulder")  # [B, L, K_sh]
 
     B, L, _ = logits_main.shape
 
@@ -133,14 +104,6 @@ def compute_loss_components(
     w_c = _get_w("c", 2)  # [B, L]
     w_buttons = _get_w("buttons", 3)  # [B, L, K_btn]
     w_shoulder = _get_w("shoulder", 2)  # [B, L]
-
-    if loss_config is None:
-        try:
-            from config import get_config
-
-            loss_config = get_config().loss_weights
-        except Exception:
-            loss_config = None
 
     # --- MAIN ---
     main_targets = target_info["main_idx"].reshape(B * L)
@@ -222,20 +185,17 @@ class PolicyLossComputer:
         outputs: TensorDict,
         targets: Dict,
         weights: torch.Tensor,
-        mask: torch.Tensor = None,
     ) -> tuple:
         """
         Args:
             outputs: model outputs with keys (buttons, main_stick, c_stick, shoulder)
             targets: target_info dict from quantize_controller_targets
             weights: (B, L) sample weights from imitation strategy
-            mask: (B, L) optional mask for valid timesteps
 
         Returns:
             loss: scalar loss
             metrics: dict of per-component losses
         """
-        from loss import compute_loss_components
 
         # Convert weights to dict format expected by compute_loss_components
         # The existing function expects component-specific weights

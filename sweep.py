@@ -593,7 +593,7 @@ def run_training_once(
                         logits_main = pred["main_stick"].reshape(B * L, -1)
                         target_main = target_info["main_idx"].reshape(B * L)
                         main_weights = _compute_ce_weights(
-                            target_main, target_info["main_K"]
+                            target_main, target_info["main_K"], loss_config
                         )
                         loss_main = torch.nn.functional.cross_entropy(
                             logits_main,

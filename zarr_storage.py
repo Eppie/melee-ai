@@ -9,16 +9,33 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
+import torch
 import tqdm
 import zarr
 
+from column_map import ColumnMap
 from config import get_config, init_config
 from data_types import RawNumpyArray
 from libmelee.melee.console import Console
 from libmelee.melee.gamestate import GameState
 from schema import Row, extract_row, get_feature_names, get_target_names
+from train.value_head import (
+    build_reward_feature_index,
+    compute_frame_rewards,
+    compute_value_targets,
+)
 
 ROW_FIELDS = tuple(fields(Row))
+
+DERIVED_FEATURES = ("value_target",)
+
+
+def _ensure_config_initialized() -> None:
+    """Ensure the global config singleton exists (needed inside worker processes)."""
+    try:
+        get_config()
+    except RuntimeError:
+        init_config()
 
 # TODO: Rename this file
 
@@ -335,7 +352,9 @@ def _rows_to_dense(
     T = len(rows)
     if T < 2:
         raise ValueError(f"Need at least 2 frames for temporal shifting, got {T}")
-    base_feature_names = list(schema.features)
+    base_feature_names = [
+        name for name in schema.features if name not in DERIVED_FEATURES
+    ]
     base_target_names = list(schema.targets)
     F = len(base_feature_names)
     Yd = len(base_target_names)
@@ -390,8 +409,37 @@ def _process_episode_task(
     and returns the resulting arrays and metadata, exactly as consumed by the main
     dataset builder loop.
     """
+    _ensure_config_initialized()
+    config = get_config()
     rows = process_one_episode(raw_path)
-    return _rows_to_dense(rows, schema)
+    X, Y, feat_dtypes, targ_dtypes, feature_names, target_names = _rows_to_dense(
+        rows, schema
+    )
+
+    derived_features = [
+        name for name in schema.features if name in DERIVED_FEATURES
+    ]
+    if derived_features:
+        torch_X = torch.from_numpy(X).unsqueeze(0)  # [1, T, F]
+        colmap = ColumnMap(feature_names, target_names)
+        reward_features = build_reward_feature_index(colmap)
+
+        for name in derived_features:
+            if name != "value_target":
+                raise ValueError(f"Unsupported derived feature '{name}'.")
+            value_targets = compute_value_targets(
+                torch_X,
+                colmap,
+                gamma=config.rl.gamma,
+                reward_idx=None,
+                reward_features=reward_features,
+            ).squeeze(0).squeeze(-1)
+            value_column = value_targets.cpu().numpy().astype(np.float32, copy=False)
+            X = np.concatenate([X, value_column.reshape(value_column.shape[0], 1)], axis=1)
+            feat_dtypes.append("float32")
+            feature_names.append(name)
+
+    return X, Y, feat_dtypes, targ_dtypes, feature_names, target_names
 
 
 def _merge_and_write_metadata(

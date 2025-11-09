@@ -222,6 +222,8 @@ def get_feature_names() -> list[str]:
     for prefix in ["p1_", "p2_"]:
         for field_name, *_ in PLAYER_SPEC:
             names.append(f"{prefix}{field_name}")
+    # Derived features append at the end so legacy column indices remain stable.
+    names.append("value_target")
     return names
 
 

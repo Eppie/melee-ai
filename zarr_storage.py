@@ -434,23 +434,23 @@ def _merge_and_write_metadata(
         all_eps.extend(zip(r.episode_ids, r.frames))
     all_eps.sort(key=lambda x: x[0])
 
-    lengths = np.array([T for _, T in all_eps], dtype=np.int64)
+    lengths = np.array([T for _, T in all_eps], dtype=np.int32)
     wins_per_ep = np.clip(lengths - config.seq_len + 1, a_min=0, a_max=None).astype(
-        np.int64
+        np.int32
     )
     np.save(out_dir / "lengths.npy", lengths)
     np.save(out_dir / "wins_per_ep.npy", wins_per_ep)
 
     # Precompute every global window's (episode_index, local_offset) for O(1) lookups.
     total_windows = int(wins_per_ep.sum())
-    window_index = np.empty((total_windows, 2), dtype=np.int64)
+    window_index = np.empty((total_windows, 2), dtype=np.int32)
     cursor = 0
     for ep_idx, num_windows in enumerate(wins_per_ep.tolist()):
         if num_windows <= 0:
             continue
         next_cursor = cursor + num_windows
         window_index[cursor:next_cursor, 0] = ep_idx
-        window_index[cursor:next_cursor, 1] = np.arange(num_windows, dtype=np.int64)
+        window_index[cursor:next_cursor, 1] = np.arange(num_windows, dtype=np.int32)
         cursor = next_cursor
     np.save(out_dir / "window_index.npy", window_index)
 

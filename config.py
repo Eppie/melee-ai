@@ -45,7 +45,7 @@ class ZarrConfig(BaseModel):
     input_root: str = Field(default_factory=lambda: _get_default_paths()[0])
     out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
     validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
-    episode_count: int = Field(default=10, ge=1)
+    episode_count: int = Field(default=3500, ge=1)
     validation_count: int = Field(default=10, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
@@ -148,7 +148,7 @@ class TrainConfig(BaseModel):
     weight_decay: float = Field(default=0.002, ge=0)
     # TODO: Document the effect of this setting
     betas: Tuple[float, float] = Field(default=(0.9, 0.95))
-    warmup_steps: int = Field(default=5000, ge=0)
+    warmup_steps: int = Field(default=15000, ge=0)
     num_workers: int = Field(default=16, ge=0)
     prefetch_factor: int = Field(default=4, ge=1)
     pin_memory: bool = Field(default_factory=lambda: _should_pin_memory())

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import gc
+import os
+import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
@@ -12,6 +16,187 @@ from torch.utils.data import Dataset, Sampler
 
 from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor
 from feature_transforms import FeatureTransformSpec, feature_spec_from_config
+
+try:
+    from pympler import asizeof as pympler_asizeof
+except Exception:  # pragma: no cover - optional dependency
+    pympler_asizeof = None
+
+_PROFILE_LOCALS_ENABLED = os.environ.get("MELEE_PROFILE_WORKER_LOCALS", "0") == "1"
+_PROFILE_LOCALS_MAX = int(os.environ.get("MELEE_PROFILE_WORKER_LOCALS_MAX", "20"))
+_PROFILE_ATTRS_ENABLED = os.environ.get("MELEE_PROFILE_DATASET_ATTRS", "0") == "1"
+_PROFILE_ATTRS_MAX = int(os.environ.get("MELEE_PROFILE_DATASET_ATTRS_MAX", "20"))
+_PROFILED_WORKERS: Dict[int, bool] = {}
+_PROFILE_GC_TYPES_ENABLED = os.environ.get("MELEE_PROFILE_GC_TYPES", "0") == "1"
+_PROFILE_GC_TYPES_MAX = int(os.environ.get("MELEE_PROFILE_GC_TYPES_MAX", "15"))
+_PROFILE_COLLATE_ENABLED = os.environ.get("MELEE_PROFILE_COLLATE", "0") == "1"
+_COLLATE_PROFILE_MAX = int(os.environ.get("MELEE_PROFILE_COLLATE_MAX", "1"))
+_COLLATE_PROFILED: Dict[int, int] = {}
+_PROFILE_PYMPLER_ENABLED = os.environ.get("MELEE_PROFILE_PYMPLER_VARS", "0") == "1"
+
+
+def _shallow_size(obj: object) -> int:
+    """Approximate shallow size of ``obj`` including backing buffers."""
+    if isinstance(obj, np.ndarray):
+        return int(obj.nbytes)
+    if isinstance(obj, torch.Tensor):
+        return int(obj.element_size() * obj.nelement())
+    try:
+        return sys.getsizeof(obj)
+    except TypeError:
+        return 0
+
+
+def _deep_size(obj: object, seen: Optional[set[int]] = None, depth: int = 0) -> int:
+    """Compute rough deep size via referents, guarding against cycles."""
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+    total = _shallow_size(obj)
+
+    # Only descend into container-like objects; skip basic buffers to avoid double counting.
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            total += _deep_size(k, seen, depth + 1)
+            total += _deep_size(v, seen, depth + 1)
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        for item in obj:
+            total += _deep_size(item, seen, depth + 1)
+    return total
+
+
+def _maybe_profile_worker_locals(local_vars: Dict[str, object]) -> None:
+    """When enabled, log the largest locals within a DataLoader worker."""
+    if not _PROFILE_LOCALS_ENABLED:
+        return
+    worker_info = torch.utils.data.get_worker_info()
+    worker_id = worker_info.id if worker_info is not None else -1
+    if _PROFILED_WORKERS.get(worker_id):
+        return
+
+    rows: List[Tuple[str, int, str]] = []
+    for name, value in local_vars.items():
+        if name == "self":
+            continue
+        if isinstance(value, type(sys)):
+            continue  # skip modules
+        try:
+            size = _deep_size(value)
+        except Exception:
+            size = _shallow_size(value)
+        rows.append((name, size, type(value).__name__))
+
+    rows.sort(key=lambda x: x[1], reverse=True)
+    if _PROFILE_LOCALS_MAX > 0:
+        rows = rows[:_PROFILE_LOCALS_MAX]
+
+    lines = [f"[worker {worker_id}] local object sizes:"]
+    for name, size, typ in rows:
+        lines.append(f"  {name} ({typ}): {size / (1024**2):.2f} MB")
+
+    dataset_obj = local_vars.get("self")
+    if _PROFILE_ATTRS_ENABLED and dataset_obj is not None:
+        dataset_attr_rows: List[Tuple[str, int, str]] = []
+        for attr_name, attr_value in vars(dataset_obj).items():
+            try:
+                attr_size = _deep_size(attr_value)
+            except Exception:
+                attr_size = _shallow_size(attr_value)
+            dataset_attr_rows.append((attr_name, attr_size, type(attr_value).__name__))
+        dataset_attr_rows.sort(key=lambda x: x[1], reverse=True)
+        if _PROFILE_ATTRS_MAX > 0:
+            dataset_attr_rows = dataset_attr_rows[:_PROFILE_ATTRS_MAX]
+        lines.append(f"[worker {worker_id}] dataset attribute sizes:")
+        for name, size, typ in dataset_attr_rows:
+            lines.append(f"  self.{name} ({typ}): {size / (1024**2):.2f} MB")
+
+    if _PROFILE_GC_TYPES_ENABLED:
+        type_totals: Dict[str, int] = {}
+        for obj in gc.get_objects():
+            try:
+                type_name = type(obj).__name__
+            except Exception:
+                continue
+            try:
+                type_totals[type_name] = type_totals.get(type_name, 0) + _shallow_size(obj)
+            except Exception:
+                continue
+        gc_rows = sorted(type_totals.items(), key=lambda x: x[1], reverse=True)
+        if _PROFILE_GC_TYPES_MAX > 0:
+            gc_rows = gc_rows[:_PROFILE_GC_TYPES_MAX]
+        lines.append(f"[worker {worker_id}] GC-tracked types by shallow size:")
+        for type_name, total_bytes in gc_rows:
+            lines.append(f"  {type_name}: {total_bytes / (1024**2):.2f} MB")
+
+    if _PROFILE_PYMPLER_ENABLED:
+        if pympler_asizeof is None:
+            lines.append(
+                "[pympler disabled: package not available in environment]"
+            )
+        else:
+            lines.append(f"[worker {worker_id}] pympler locals (deep sizes):")
+            for name, value in local_vars.items():
+                try:
+                    size = pympler_asizeof.asizeof(value)
+                except Exception:
+                    size = _deep_size(value)
+                lines.append(
+                    f"  {name} ({type(value).__name__}): {size / (1024**2):.4f} MB"
+                )
+            if dataset_obj is not None:
+                lines.append(f"[worker {worker_id}] pympler dataset attrs:")
+                for attr_name, attr_value in vars(dataset_obj).items():
+                    try:
+                        attr_size = pympler_asizeof.asizeof(attr_value)
+                    except Exception:
+                        attr_size = _deep_size(attr_value)
+                    lines.append(
+                        f"  self.{attr_name} ({type(attr_value).__name__}): {attr_size / (1024**2):.4f} MB"
+                    )
+
+    print("\n".join(lines))
+    _PROFILED_WORKERS[worker_id] = True
+
+
+if _PROFILE_COLLATE_ENABLED:
+    from torch.utils.data._utils import collate as _torch_collate
+
+    _ORIG_DEFAULT_COLLATE = _torch_collate.default_collate
+
+    def _profiling_default_collate(batch):
+        result = _ORIG_DEFAULT_COLLATE(batch)
+        pid = os.getpid()
+        count = _COLLATE_PROFILED.get(pid, 0)
+        if count >= _COLLATE_PROFILE_MAX:
+            return result
+
+        printable: List[Tuple[str, int, str]] = []
+        if isinstance(result, dict):
+            iterable = result.items()
+        elif isinstance(result, (list, tuple)):
+            iterable = enumerate(result)
+        else:
+            iterable = [("value", result)]
+        for key, value in iterable:
+            try:
+                size = _deep_size(value)
+            except Exception:
+                size = _shallow_size(value)
+            printable.append((str(key), size, type(value).__name__))
+        printable.sort(key=lambda x: x[1], reverse=True)
+
+        lines = [f"[worker-pid {pid}] collate batch object sizes:"]
+        for name, size, typ in printable:
+            lines.append(f"  batch[{name}] ({typ}): {size / (1024**2):.2f} MB")
+        print("\n".join(lines))
+
+        _COLLATE_PROFILED[pid] = count + 1
+        return result
+
+    _torch_collate.default_collate = _profiling_default_collate
 
 
 @dataclass(frozen=True)
@@ -317,12 +502,14 @@ class WindowDataset(Dataset):
         targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
         targets_out = torch.from_numpy(targets_as_numpy.astype(np.float32, copy=False))
 
-        return {
+        result = {
             "X": features_out,
             "Y": targets_out,
             "episode_id": ep.episode_id,
             "start": start,
         }
+        _maybe_profile_worker_locals(dict(locals()))
+        return result
 
 
 class RandomWindowSampler(Sampler[int]):
@@ -433,31 +620,40 @@ class RandomWindowSampler(Sampler[int]):
         s = self.stride
         m = self.epoch % s
 
-        # Build the list of global indices that satisfy the stride condition for this epoch.
-        inds: List[int] = []
+        total = self._count_for_epoch(self.epoch)
+        if total == 0:
+            return
+
+        inds = np.empty(total, dtype=np.int64)
+        k = 0
         for epi, ep in enumerate(self.index.episodes):
             base = self.index.episode_start_global_index(epi)
             w = ep.num_windows
-            if m < w:
-                inds.extend(base + t for t in range(m, w, s))
+            if w <= m:
+                continue
+            count = ((w - 1 - m) // s) + 1
+            stop = m + count * s
+            inds[k : k + count] = base + np.arange(m, stop, s, dtype=np.int64)
+            k += count
 
-        start_offset = min(self._start_offset, len(inds)) if self._start_offset else 0
+        if k != total:
+            inds = inds[:k]
+
+        start_offset = min(self._start_offset, inds.size) if self._start_offset else 0
         self._start_offset = 0
         if start_offset:
             inds = inds[start_offset:]
 
-        if not inds:
+        if inds.size == 0:
             return
 
-        # Deterministic per-epoch shuffle
-        g = self.generator or torch.Generator()
-        seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) % (2**63 - 1)
-        g.manual_seed(seed)
-        if len(inds) > 1:
-            perm = torch.randperm(len(inds), generator=g).tolist()
-            inds = [inds[i] for i in perm]
+        seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) & ((1 << 63) - 1)
+        rng = np.random.default_rng(seed=seed)
+        if inds.size > 1:
+            rng.shuffle(inds)
 
-        yield from inds
+        for value in inds:
+            yield int(value)
         return
 
 
@@ -534,3 +730,8 @@ def make_dataloader(
         multiprocessing_context=mp_ctx,
     )
     return loader, ds, sampler
+warnings.filterwarnings(
+    "ignore",
+    message="`torch.distributed.reduce_op` is deprecated",
+    category=FutureWarning,
+)

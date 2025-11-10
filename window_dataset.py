@@ -55,7 +55,7 @@ class ZarrCorpusIndex:
             and index_path.exists()
         ):
             raise FileNotFoundError(
-                "Expected meta.json, lengths.npy, wins_per_ep.npy, index.jsonl in data_dir"
+                f"Expected meta.json, lengths.npy, wins_per_ep.npy, index.jsonl in {self.data_dir}"
             )
 
         with meta_path.open("r") as f:
@@ -280,7 +280,6 @@ class WindowDataset(Dataset):
         apply preprocessing before returning tensors.
         """
         super().__init__()
-        # TODO: Can we build this index faster? generator?
         self.index = ZarrCorpusIndex(data_dir)
         self.seq_len = self.index.seq_len
         self.transforms = feature_transforms

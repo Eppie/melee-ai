@@ -126,6 +126,12 @@ def profile_function(func):
 _DEFAULT_FEATURE_NAMES = get_feature_names()
 _DEFAULT_TARGET_NAMES = get_target_names()
 
+# Derived features are populated during dataset generation. They are not available in
+# live inference, so we provide safe fallbacks here.
+_DERIVED_FEATURE_DEFAULTS: Dict[str, float] = {
+    "value_target": 0.0,
+}
+
 # Global debug flag - set to False in production
 DEBUG_LOGGING = False
 
@@ -425,6 +431,9 @@ def collect_raw_inputs_from_gamestate(
     final: Dict[str, float] = {}
     for name in feature_names:
         if name not in transformed:
+            if name in _DERIVED_FEATURE_DEFAULTS:
+                final[name] = _DERIVED_FEATURE_DEFAULTS[name]
+                continue
             raise KeyError(f"Feature '{name}' missing from collected inputs.")
         final[name] = _safe_float(transformed[name])
 

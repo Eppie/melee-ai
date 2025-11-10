@@ -55,7 +55,9 @@ def _mean_with_weights(
 
 
 def _blend_weights(weights: Tensor, scale: float) -> Tensor:
-    assert 0 < scale < 1, f"scale {scale} is invalid"
+    assert scale > 0, f"scale {scale} is invalid"
+    if scale >= 1:
+        return weights
     return torch.ones_like(weights) + (weights - 1.0) * scale
 
 

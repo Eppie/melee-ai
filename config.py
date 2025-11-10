@@ -46,7 +46,7 @@ class ZarrConfig(BaseModel):
     out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
     validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
     episode_count: int = Field(default=10, ge=1)
-    validation_count: int = Field(default=10, ge=1)
+    validation_count: int = Field(default=1000, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
     seed: int = Field(default=42)

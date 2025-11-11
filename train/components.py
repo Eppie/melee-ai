@@ -11,7 +11,6 @@ from tensordict import TensorDict
 
 from column_map import ColumnMap
 from model.nano_gpt import GPT
-from train import RewardFeatureIdx
 from train.batch_utils import SampleWeightRatios
 from train.wandb_utils import WandbLogger
 
@@ -35,7 +34,6 @@ class TrainingComponents:
     ratios: SampleWeightRatios
     colmap: ColumnMap
     value_idx: Optional[int]
-    reward_features: Optional[RewardFeatureIdx]
     loader: any
     sampler: any
     total_steps: int

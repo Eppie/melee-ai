@@ -3,7 +3,7 @@ import math
 import os
 import shutil
 import time
-from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -482,23 +482,23 @@ def _merge_and_write_metadata(
         all_eps.extend(zip(r.episode_ids, r.frames))
     all_eps.sort(key=lambda x: x[0])
 
-    lengths = np.array([T for _, T in all_eps], dtype=np.int64)
+    lengths = np.array([T for _, T in all_eps], dtype=np.int32)
     wins_per_ep = np.clip(lengths - config.seq_len + 1, a_min=0, a_max=None).astype(
-        np.int64
+        np.int32
     )
     np.save(out_dir / "lengths.npy", lengths)
     np.save(out_dir / "wins_per_ep.npy", wins_per_ep)
 
     # Precompute every global window's (episode_index, local_offset) for O(1) lookups.
     total_windows = int(wins_per_ep.sum())
-    window_index = np.empty((total_windows, 2), dtype=np.int64)
+    window_index = np.empty((total_windows, 2), dtype=np.int32)
     cursor = 0
     for ep_idx, num_windows in enumerate(wins_per_ep.tolist()):
         if num_windows <= 0:
             continue
         next_cursor = cursor + num_windows
         window_index[cursor:next_cursor, 0] = ep_idx
-        window_index[cursor:next_cursor, 1] = np.arange(num_windows, dtype=np.int64)
+        window_index[cursor:next_cursor, 1] = np.arange(num_windows, dtype=np.int32)
         cursor = next_cursor
     np.save(out_dir / "window_index.npy", window_index)
 
@@ -567,57 +567,94 @@ def build_dataset(
     final_feature_names: List[str] | None = None
     final_target_names: List[str] | None = None
 
-    futures: Dict[Future, Tuple[int, int]] = {}
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    MAX_IN_FLIGHT = max(1, max_workers * 2)
+
+    def _job_iter():
         for shard_idx, shard_paths in enumerate(shards):
             for local_idx, raw_path in enumerate(shard_paths):
-                future = executor.submit(_process_episode_task, raw_path, schema)
-                futures[future] = (shard_idx, local_idx)
+                yield shard_idx, local_idx, raw_path
+
+    jobs = _job_iter()
+    futures: Dict[Future, Tuple[int, int]] = {}
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+
+        def submit_next() -> bool:
+            try:
+                sidx, lidx, rpath = next(jobs)
+            except StopIteration:
+                return False
+            fut = executor.submit(_process_episode_task, rpath, schema)
+            futures[fut] = (sidx, lidx)
+            return True
+
+        # Prime the queue with a bounded number of tasks
+        for _ in range(min(MAX_IN_FLIGHT, N)):
+            if not submit_next():
+                break
 
         with tqdm.tqdm(total=N, desc="Processing episodes", unit="episode") as progress:
-            for future in as_completed(futures):
-                shard_idx, local_idx = futures[future]
-                try:
-                    (
-                        X,
-                        Y,
-                        feat_dtypes,
-                        targ_dtypes,
-                        feature_names,
-                        target_names,
-                    ) = future.result()
-                except (
-                    Exception
-                ) as exc:  # pragma: no cover - include episode context when bubbling
-                    raise RuntimeError(
-                        f"Episode processing failed for shard {shard_idx}, index {local_idx}: {exc}"
-                    ) from exc
+            while futures:
+                done, _ = wait(list(futures.keys()), return_when=FIRST_COMPLETED)
+                for future in done:
+                    shard_idx, local_idx = futures.pop(future)
+                    try:
+                        (
+                            X,
+                            Y,
+                            feat_dtypes,
+                            targ_dtypes,
+                            feature_names,
+                            target_names,
+                        ) = future.result()
+                    except Exception as exc:  # pragma: no cover
+                        raise RuntimeError(
+                            f"Episode processing failed for shard {shard_idx}, index {local_idx}: {exc}"
+                        ) from exc
 
-                progress.update(1)
+                    progress.update(1)
 
-                if final_feature_names is None:
-                    final_feature_names = list(feature_names)
-                if final_target_names is None:
-                    final_target_names = list(target_names)
+                    if final_feature_names is None:
+                        final_feature_names = list(feature_names)
+                    if final_target_names is None:
+                        final_target_names = list(target_names)
 
-                writer = writers.get(shard_idx)
-                if writer is None:
-                    shard_path = Path(out_root) / f"shard_{shard_idx:05d}.zarr"
-                    writer = EpisodeWriter(schema, str(shard_path))
-                    writers[shard_idx] = writer
+                    writer = writers.get(shard_idx)
+                    if writer is None:
+                        shard_path = Path(out_root) / f"shard_{shard_idx:05d}.zarr"
+                        writer = EpisodeWriter(schema, str(shard_path))
+                        writers[shard_idx] = writer
 
-                episode_id = shard_idx * config.zarr.shard_size + local_idx
-                writer.write_episode(episode_id, X, Y)
+                    episode_id = shard_idx * config.zarr.shard_size + local_idx
+                    writer.write_episode(episode_id, X, Y)
 
-                if shard_feat_dtypes[shard_idx] is None:
-                    shard_feat_dtypes[shard_idx] = feat_dtypes
-                    shard_targ_dtypes[shard_idx] = targ_dtypes
-                if shard_feature_names[shard_idx] is None:
-                    shard_feature_names[shard_idx] = list(feature_names)
-                if shard_target_names[shard_idx] is None:
-                    shard_target_names[shard_idx] = list(target_names)
+                    if shard_feat_dtypes[shard_idx] is None:
+                        shard_feat_dtypes[shard_idx] = feat_dtypes
+                        shard_targ_dtypes[shard_idx] = targ_dtypes
+                    if shard_feature_names[shard_idx] is None:
+                        shard_feature_names[shard_idx] = list(feature_names)
+                    if shard_target_names[shard_idx] is None:
+                        shard_target_names[shard_idx] = list(target_names)
 
-                shard_episode_entries[shard_idx].append((episode_id, X.shape[0]))
+                    shard_episode_entries[shard_idx].append((episode_id, X.shape[0]))
+
+                    # (B) Finalize this shard as soon as all its episodes are written
+                    if len(shard_episode_entries[shard_idx]) == len(shards[shard_idx]):
+                        writer.finalize()
+                        # Try to close underlying store to free resources
+                        try:
+                            store = writer.root.store
+                            if hasattr(store, "close"):
+                                store.close()
+                        except Exception:
+                            pass
+                        # Remove from writers so it can be GC'd
+                        if shard_idx in writers:
+                            del writers[shard_idx]
+
+                # Top up the in-flight queue
+                while len(futures) < MAX_IN_FLIGHT and submit_next():
+                    pass
 
     results: List[ShardResult] = []
     for shard_idx in range(num_shards):
@@ -627,11 +664,14 @@ def build_dataset(
 
         entries.sort(key=lambda item: item[0])
         writer = writers.get(shard_idx)
-        if writer is None:
-            raise RuntimeError(
-                f"Writer missing for shard {shard_idx} despite recorded entries"
-            )
-        writer.finalize()
+        if writer is not None:
+            writer.finalize()
+            try:
+                store = writer.root.store
+                if hasattr(store, "close"):
+                    store.close()
+            except Exception:
+                pass
 
         episode_ids = [ep for ep, _ in entries]
         frames = [frames for _, frames in entries]
@@ -752,3 +792,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

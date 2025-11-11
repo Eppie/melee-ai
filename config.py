@@ -45,8 +45,8 @@ class ZarrConfig(BaseModel):
     input_root: str = Field(default_factory=lambda: _get_default_paths()[0])
     out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
     validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
-    episode_count: int = Field(default=10, ge=1)
-    validation_count: int = Field(default=1000, ge=1)
+    episode_count: int = Field(default=6500, ge=1)
+    validation_count: int = Field(default=200, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
     seed: int = Field(default=42)
@@ -142,18 +142,20 @@ class TrainConfig(BaseModel):
     )
 
     batch_size: int = Field(default=128, ge=1)
-    epochs: int = Field(default=10, ge=1)
+    epochs: int = Field(default=16, ge=1)
     lr: float = Field(default=1.3e-4, gt=0)
     # TODO: Document the effect of this setting
     weight_decay: float = Field(default=0.002, ge=0)
     # TODO: Document the effect of this setting
     betas: Tuple[float, float] = Field(default=(0.9, 0.95))
-    warmup_steps: int = Field(default=5000, ge=0)
+    warmup_steps: int = Field(default=30000, ge=0)
     num_workers: int = Field(default=16, ge=0)
     prefetch_factor: int = Field(default=4, ge=1)
+    max_loader_prefetch_mb: int = Field(default=2048, ge=1)
     pin_memory: bool = Field(default_factory=lambda: _should_pin_memory())
     persistent_workers: bool = True
-    stride: int = Field(default=1, ge=1)
+    stride: int = Field(default=8, ge=1)
+    worker_start_method: Optional[Literal["fork", "spawn", "forkserver"]] = None
 
     # Losses
     grad_clip: float = Field(default=5.0, gt=0)
@@ -215,7 +217,7 @@ class LossConfig(BaseModel):
     enable_class_balancing: bool = Field(default=True)
     ce_weight_min: float = Field(default=0.1, gt=0)
     ce_weight_max: float = Field(default=10.0, gt=0)
-    enable_pos_weighting: bool = Field(default=True)
+    enable_pos_weighting: bool = Field(default=False)
     pos_weight_max: float = Field(default=10.0, gt=0)
     use_weighted_component_means: bool = Field(default=True)
     main_change: float = Field(default=5.0, gt=0)

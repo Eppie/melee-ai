@@ -17,6 +17,8 @@ from feature_transforms import (
     feature_spec_from_config,
 )
 
+FLOAT32_BYTES = np.dtype(np.float32).itemsize
+
 
 @dataclass(frozen=True)
 class EpisodeInfo:
@@ -83,8 +85,8 @@ class ZarrCorpusIndex:
         self.episodes: List[EpisodeInfo] = ep_rows
 
         # Episode start offsets (needed by episode_start_global_index)
-        self._windows = windows.astype(np.int64)
-        starts = np.zeros(len(self._windows), dtype=np.int64)
+        self._windows = windows.astype(np.int32)
+        starts = np.zeros(len(self._windows), dtype=np.int32)
         total = 0
         for idx, count in enumerate(self._windows):
             starts[idx] = total
@@ -92,8 +94,8 @@ class ZarrCorpusIndex:
         self._episode_start_indices = starts
         self.total_windows = total
 
-        window_index_path = self.data_dir / "window_index.npy"
-        window_index = np.load(window_index_path, mmap_mode="r")
+        self._window_index_path = self.data_dir / "window_index.npy"
+        window_index = np.load(self._window_index_path, mmap_mode="r")
         if window_index.ndim != 2 or window_index.shape[1] != 2:
             raise ValueError(
                 f"window_index.npy must have shape (N, 2), got {window_index.shape}"
@@ -112,9 +114,23 @@ class ZarrCorpusIndex:
             sid = int(sdir.stem.split("_")[1])
             self._shard_paths[sid] = sdir
 
+    def _window_index_array(self) -> np.memmap:
+        if self._window_index is None:
+            self._window_index = np.load(self._window_index_path, mmap_mode="r")
+        return self._window_index
+
+    def __getstate__(self) -> Dict[str, object]:
+        state = self.__dict__.copy()
+        state["_window_index"] = None
+        return state
+
+    def __setstate__(self, state: Dict[str, object]) -> None:
+        self.__dict__.update(state)
+
     def window_to_episode(self, global_win_idx: int) -> Tuple[int, int]:
         """Map ``global_win_idx`` to an episode index and start offset in O(1)."""
-        row = self._window_index[global_win_idx]
+        window_index = self._window_index_array()
+        row = window_index[global_win_idx]
         return int(row[0]), int(row[1])
 
     def episode_start_global_index(self, ep_idx: int) -> int:
@@ -206,7 +222,7 @@ def _prepare_transform_plan(
         index_groups = _resolve_feature_groups(feature_names, step.features)
         if not index_groups:
             continue
-        idx_arrays = tuple(np.asarray(group, dtype=np.int64) for group in index_groups)
+        idx_arrays = tuple(np.asarray(group, dtype=np.int32) for group in index_groups)
         plan.append(_PreparedTransform(step, idx_arrays))
     return tuple(plan) if plan else None
 
@@ -300,6 +316,19 @@ class WindowDataset(Dataset):
         that value, matching how PyTorch uses ``len(dataset)`` to size an epoch.
         """
         return self.index.total_windows
+
+    def estimate_batch_bytes(self, batch_size: int) -> int:
+        """
+        Approximate how many bytes a single batch occupies in host memory.
+        Helps tune DataLoader prefetching so we avoid spawning too many inflight
+        batches when using multiple workers.
+        """
+        if batch_size <= 0:
+            return 0
+        feat_cols = len(self._feature_names_sel)
+        target_cols = len(self._target_names_sel)
+        floats_per_window = self.seq_len * (feat_cols + target_cols)
+        return batch_size * floats_per_window * FLOAT32_BYTES
 
     def __getitem__(self, i: int) -> Dict[str, object]:
         """Load window ``i`` and show each intermediate tensor transformation.
@@ -455,30 +484,38 @@ class RandomWindowSampler(Sampler[int]):
         m = self.epoch % s
 
         # Build the list of global indices that satisfy the stride condition for this epoch.
-        inds: List[int] = []
-        for epi, ep in enumerate(self.index.episodes):
-            base = self.index.episode_start_global_index(epi)
-            w = ep.num_windows
-            if m < w:
-                inds.extend(base + t for t in range(m, w, s))
-
-        start_offset = min(self._start_offset, len(inds)) if self._start_offset else 0
-        self._start_offset = 0
-        if start_offset:
-            inds = inds[start_offset:]
-
-        if not inds:
+        total = self._count_for_epoch(self.epoch)
+        if total == 0:
             return
-
-        # Deterministic per-epoch shuffle
-        g = self.generator or torch.Generator()
-        seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) % (2**63 - 1)
-        g.manual_seed(seed)
-        if len(inds) > 1:
-            perm = torch.randperm(len(inds), generator=g).tolist()
-            inds = [inds[i] for i in perm]
-
-        yield from inds
+        buffer = np.empty(total, dtype=np.int32)
+        cursor = 0
+        for epi, ep in enumerate(self.index.episodes):
+            w = ep.num_windows
+            if w <= m:
+                continue
+            local_offsets = np.arange(m, w, s, dtype=np.int32)
+            if local_offsets.size == 0:
+                continue
+            base = self.index.episode_start_global_index(epi)
+            buffer[cursor : cursor + local_offsets.size] = base + local_offsets
+            cursor += local_offsets.size
+        if cursor != total:
+            buffer = buffer[:cursor]
+        if self._start_offset:
+            start_offset = min(self._start_offset, buffer.size)
+            buffer = buffer[start_offset:]
+            self._start_offset = 0
+        else:
+            start_offset = 0
+            self._start_offset = 0
+        if buffer.size == 0:
+            return
+        if buffer.size > 1:
+            seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) % (2**63 - 1)
+            rng = np.random.default_rng(seed)
+            rng.shuffle(buffer)
+        for value in buffer:
+            yield int(value)
         return
 
 
@@ -530,13 +567,49 @@ def make_dataloader(
     )
 
     mp_ctx = None
-    if config.train.num_workers and config.train.num_workers > 0:
+    start_method = getattr(config.train, "worker_start_method", None)
+    if config.train.num_workers and config.train.num_workers > 0 and start_method:
         try:
-            mp_ctx = torch.multiprocessing.get_context("spawn")
-        except RuntimeError:
+            mp_ctx = torch.multiprocessing.get_context(start_method)
+        except RuntimeError as exc:
+            print(
+                f"[dataloader] Requested start method '{start_method}' unavailable "
+                f"({exc}); falling back to PyTorch default."
+            )
             mp_ctx = None
 
     pin_memory = config.train.pin_memory
+    prefetch_factor = None
+    if config.train.num_workers and config.train.num_workers > 0:
+        prefetch_factor = config.train.prefetch_factor
+        max_prefetch_mb = getattr(config.train, "max_loader_prefetch_mb", None)
+        if max_prefetch_mb:
+            batch_bytes = max(1, ds.estimate_batch_bytes(config.train.batch_size))
+            max_prefetch_bytes = max_prefetch_mb * 1024 * 1024
+            total_batches_budget = max_prefetch_bytes // batch_bytes
+            budget_saturated = False
+            if total_batches_budget == 0:
+                total_batches_budget = 1
+                budget_saturated = True
+            allowed_per_worker = total_batches_budget // config.train.num_workers
+            if allowed_per_worker == 0:
+                allowed_per_worker = 1
+                budget_saturated = True
+            if allowed_per_worker < prefetch_factor:
+                approx_batch_mb = batch_bytes / (1024**2)
+                print(
+                    "[dataloader] Reducing prefetch_factor from "
+                    f"{prefetch_factor} to {allowed_per_worker} to honor "
+                    f"{max_prefetch_mb} MiB prefetch budget (batch ≈ "
+                    f"{approx_batch_mb:.2f} MiB)."
+                )
+                if budget_saturated:
+                    print(
+                        "[dataloader] Consider lowering train.num_workers or "
+                        "batch_size, or increase train.max_loader_prefetch_mb "
+                        "if you need more throughput."
+                    )
+                prefetch_factor = allowed_per_worker
 
     loader = torch.utils.data.DataLoader(
         ds,
@@ -544,9 +617,7 @@ def make_dataloader(
         sampler=sampler,
         num_workers=config.train.num_workers,
         pin_memory=pin_memory,
-        prefetch_factor=(
-            config.train.prefetch_factor if config.train.num_workers > 0 else None
-        ),
+        prefetch_factor=prefetch_factor,
         persistent_workers=(
             config.train.persistent_workers if config.train.num_workers > 0 else False
         ),

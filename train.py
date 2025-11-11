@@ -48,7 +48,7 @@ from train.metrics import (
     compute_confusion_matrix,
     multilabel_prf,
 )
-from train.value_head import build_reward_feature_index, compute_value_targets
+from train.value_head import compute_value_targets
 from train.wandb_utils import (
     WandbConfig,
     WandbLogger,
@@ -74,7 +74,6 @@ def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
         k, v = item.split("=", 1)
         overrides[k.strip()] = v.strip()
     return overrides
-
 
 
 def _configure_amp(config, device: torch.device) -> AMPContext:
@@ -129,9 +128,10 @@ def _initialize_training_components(
 
     colmap = ColumnMap.from_dataset(ds)
     value_idx = colmap.value_idx
-    reward_features = (
-        None if value_idx is not None else build_reward_feature_index(colmap)
-    )
+    if value_idx is None:
+        raise RuntimeError(
+            "Dataset is missing 'value_target'; preprocessing must store discounted returns before training."
+        )
     lw_cfg = config.loss_weights
     button_overrides = {
         "button_z": lw_cfg.button_z,
@@ -202,7 +202,6 @@ def _initialize_training_components(
         ratios=ratios,
         colmap=colmap,
         value_idx=value_idx,
-        reward_features=reward_features,
         loader=loader,
         sampler=sampler,
         total_steps=total_steps,
@@ -226,6 +225,7 @@ def _forward_pass(
     batch_tensors: Dict[str, torch.Tensor],
     *,
     progress: float,
+    in_warmup: bool,
 ) -> ForwardPassResult:
     X = batch_tensors["X"]
     Y = batch_tensors["Y"]
@@ -243,11 +243,19 @@ def _forward_pass(
         )
         pred: TensorDict = components.model(inputs_td)
         base_smoothing = components.config.train.label_smoothing
-        final_smoothing = 0
-        label_smoothing = base_smoothing + (final_smoothing - base_smoothing) * progress
+        final_smoothing = 0.5 * base_smoothing
+        if in_warmup:
+            label_smoothing = base_smoothing
+        else:
+            label_smoothing = base_smoothing + (final_smoothing - base_smoothing) * progress
         label_smoothing = float(max(label_smoothing, 0.0))
 
-        imbalance_scale = float(max(0.0, 1.0 - progress))
+        final_change_scale = 0.5
+        if in_warmup:
+            imbalance_scale = 1.0
+        else:
+            imbalance_scale = 1.0 - (1.0 - final_change_scale) * progress
+        imbalance_scale = float(max(min(imbalance_scale, 1.0), final_change_scale))
 
         weights = compute_component_sample_weights(
             target_info,
@@ -270,12 +278,15 @@ def _forward_pass(
         loss_components = dict(policy_loss_components)
 
         value_pred = pred.get("value")
+        if components.value_idx is None:
+            raise RuntimeError(
+                "Training components must include a value target index; ensure datasets encode 'value_target'."
+            )
         value_target = compute_value_targets(
             X,
             components.colmap,
             gamma=config.rl.gamma,
             reward_idx=components.value_idx,
-            reward_features=components.reward_features,
         )
         value_loss_raw = torch.nn.functional.mse_loss(
             value_pred, value_target, reduction="none"
@@ -334,11 +345,11 @@ def _compute_training_progress(
     else:
         batch_fraction = (iteration + 1) / float(total_batches)
         progress = (epoch_offset + batch_fraction) / float(effective_epochs)
-    return float(min(max(progress, 0.3), 1.0))
+    return float(min(max(progress, 0.0), 1.0))
 
 
 def _should_log(current_iter: int) -> bool:
-    return current_iter % 50 == 0
+    return current_iter % 100 == 0
 
 
 def _backward_step(
@@ -693,17 +704,11 @@ def _prepare_logging_bundle(
         f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
     )
 
-    value_target_eval = (
-        forward_result.value_target
-        if forward_result.value_target is not None
-        else compute_value_targets(
-            forward_result.batch_inputs["X"],
-            components.colmap,
-            gamma=components.config.rl.gamma,
-            reward_idx=components.value_idx,
-            reward_features=components.reward_features,
+    if forward_result.value_target is None:
+        raise RuntimeError(
+            "Value targets were not populated during the forward pass; dataset-stored targets are required."
         )
-    )
+    value_target_eval = forward_result.value_target
     value_pred_mean = forward_result.value_pred.mean().item()
     value_target_mean = value_target_eval.mean().item()
     value_mse = ((forward_result.value_pred - value_target_eval) ** 2).mean().item()
@@ -885,6 +890,7 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             components,
             batch_tensors,
             progress=progress,
+            in_warmup=epoch < config.train.schedule_warmup_epochs,
         )
 
         current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
@@ -931,7 +937,6 @@ def _run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 global_step=state.global_step,
                 epoch_ctx=epoch_ctx,
             )
-
 
     if epoch == state.resume_epoch:
         state.resume_iter = 0

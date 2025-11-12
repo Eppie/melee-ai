@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import fields
 from typing import Optional, List
 
 import numpy as np
@@ -50,8 +49,3 @@ _BUTTON_PRETTY = {
     "button_z": "Z",
     "button_lr": "L/R",
 }
-_MAIN_STICK_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
-_C_STICK_PALETTE = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
-_SHOULDER_PALETTE = np.asarray(SHOULDER_QUANTIZED, dtype=np.float32)
-_MAIN_STICK_PALETTE_NORM = np.sum(_MAIN_STICK_PALETTE**2, axis=1, keepdims=True)
-_C_STICK_PALETTE_NORM = np.sum(_C_STICK_PALETTE**2, axis=1, keepdims=True)

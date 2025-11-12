@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from column_map import ColumnMap
 from constants import (
     _MAIN_STICK_PALETTE_CPU,
     _C_STICK_PALETTE_CPU,
@@ -87,7 +88,7 @@ def _device_cache_key(device: torch.device) -> Tuple[str, Optional[int]]:
         return device.type, index
     return device.type, device.index
 
-
+# TODO: Why do we need this function?
 def _palette_for_device(
     cpu_palette: torch.Tensor,
     cache: Dict[Tuple[str, Optional[int]], torch.Tensor],
@@ -118,14 +119,14 @@ def _palette_for_device(
     return cached
 
 
-# TODO: clamp needed? Maybe a better way to do this?
+# TODO: clamp needed? Maybe a better way to do this? Remove input_domain param!
 def _quantize_stick(
     xy: torch.Tensor,
     palette: torch.Tensor,
     palette_norm_sq: torch.Tensor,
     input_domain: str,
-    B: int,
-    L: int,
+    batch_size: int,
+    seq_len: int,
 ) -> torch.Tensor:
     """Convert continuous stick coordinates to palette indices via distance.
 
@@ -166,13 +167,13 @@ def _quantize_stick(
     v_norm_sq = (V * V).sum(dim=1, keepdim=True)
     dot = V @ palette.t()
     d2 = v_norm_sq - 2.0 * dot + palette_norm_sq.unsqueeze(0)
-    return torch.argmin(d2, dim=1).view(B, L)
+    return torch.argmin(d2, dim=1).view(batch_size, seq_len)
 
 
 # TODO: auto should not be needed. also we shouldn't have to touch buttons.
 def quantize_targets(
-    batch_Y: torch.FloatTensor,
-    colmap,
+    targets: torch.FloatTensor,
+    column_map: ColumnMap,
     *,
     input_domain: str = "auto",
 ) -> Dict[str, torch.Tensor]:
@@ -191,13 +192,13 @@ def quantize_targets(
 
     ``quantize_targets`` performs the following steps for each batch:
 
-    1. Slice stick blocks using ``colmap`` and move the precomputed palettes to
+    1. Slice stick blocks using ``column_map`` and move the precomputed palettes to
        the tensor's device with :func:`_palette_for_device`.
     2. Call :func:`_quantize_stick` to map every ``(x, y)`` vector to the nearest
        palette entry. For the first main-stick frame above the nearest palette
        might be ``[-0.125, 0.875]`` at index ``14``.
     3. Repeat for the C-stick and (optionally) shoulder analog values, producing
-       integer index tensors shaped like ``(B, L)``. Shoulder values are snapped
+       integer index tensors shaped like ``(batch_size, seq_len)``. Shoulder values are snapped
        to the largest palette element that does not exceed the raw value.
     4. Clamp button probabilities into ``[0, 1]`` without otherwise changing
        their shape, keeping them ready for BCE losses.
@@ -206,47 +207,40 @@ def quantize_targets(
     and metadata about palette cardinalities so callers can set up embeddings or
     classification heads without re-deriving these values.
     """
-    B, L, _ = batch_Y.shape
-    device = batch_Y.device
+    batch_size, seq_len, _ = targets.shape
+    device = targets.device
 
     # Main stick quantization
-    main_xy = batch_Y[..., list(colmap.y_main)]
+    main_xy = targets[..., list(column_map.y_main)]
     P_main = _palette_for_device(_MAIN_STICK_PALETTE_CPU, _MAIN_STICK_CACHE, device)
     P_main_norm_sq = _palette_for_device(
         _MAIN_STICK_NORM_SQ_CPU, _MAIN_STICK_NORM_CACHE, device
     )
-    y_main_idx = _quantize_stick(main_xy, P_main, P_main_norm_sq, input_domain, B, L)
+    y_main_idx = _quantize_stick(main_xy, P_main, P_main_norm_sq, input_domain, batch_size, seq_len)
 
     # C-stick quantization
-    c_xy = batch_Y[..., list(colmap.y_c)]
+    c_xy = targets[..., list(column_map.y_c)]
     P_c = _palette_for_device(_C_STICK_PALETTE_CPU, _C_STICK_CACHE, device)
     P_c_norm_sq = _palette_for_device(_C_STICK_NORM_SQ_CPU, _C_STICK_NORM_CACHE, device)
-    y_c_idx = _quantize_stick(c_xy, P_c, P_c_norm_sq, input_domain, B, L)
+    y_c_idx = _quantize_stick(c_xy, P_c, P_c_norm_sq, input_domain, batch_size, seq_len)
 
     # Buttons remain probabilistic targets
-    btn_cols = colmap.y_buttons
-    y_buttons = batch_Y[..., btn_cols].to(torch.float32)
+    btn_cols = column_map.y_buttons
+    y_buttons = targets[..., btn_cols].to(torch.float32)
     y_buttons = torch.clamp(y_buttons, 0.0, 1.0)
 
-    y_shoulder_idx = None
-    shoulder_K = 0
-    if getattr(colmap, "y_shoulder", None) is not None:
-        if _SHOULDER_PALETTE_CPU is None:
-            raise RuntimeError(
-                "Shoulder quantization palette requested but not defined."
-            )
-        centers = _palette_for_device(_SHOULDER_PALETTE_CPU, _SHOULDER_CACHE, device)
-        centers = centers.view(-1)
-        s = (
-            batch_Y[..., colmap.y_shoulder]
-            .to(dtype=centers.dtype)
-            .contiguous()
-        )
-        y_shoulder_idx = torch.searchsorted(centers, s, right=True) - 1
-        y_shoulder_idx = torch.clamp(
-            y_shoulder_idx, min=0, max=int(centers.shape[0] - 1)
-        )
-        shoulder_K = len(SHOULDER_QUANTIZED)
+    centers = _palette_for_device(_SHOULDER_PALETTE_CPU, _SHOULDER_CACHE, device)
+    centers = centers.view(-1)
+    s = (
+        targets[..., column_map.y_shoulder]
+        .to(dtype=centers.dtype)
+        .contiguous()
+    )
+    y_shoulder_idx = torch.searchsorted(centers, s, right=True) - 1
+    y_shoulder_idx = torch.clamp(
+        y_shoulder_idx, min=0, max=int(centers.shape[0] - 1)
+    )
+    shoulder_K = len(SHOULDER_QUANTIZED)
 
     return {
         "main_idx": y_main_idx,

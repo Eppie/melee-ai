@@ -46,7 +46,7 @@ class ZarrConfig(BaseModel):
     out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
     validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
     episode_count: int = Field(default=6500, ge=1)
-    validation_count: int = Field(default=200, ge=1)
+    validation_count: int = Field(default=10, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
     seed: int = Field(default=42)
@@ -246,7 +246,7 @@ class GPTConfig(BaseModel):
 
     block_size: int = Field(default=512, ge=1)
     n_embd: int = Field(default=512, ge=1)
-    n_layer: int = Field(default=4, ge=1)
+    n_layer: int = Field(default=8, ge=1)
     n_head: int = Field(default=8, ge=1)
     dropout: float = Field(default=0.03, ge=0, le=1)
     input_size: int = Field(default=-1)
@@ -265,6 +265,7 @@ class GPTConfig(BaseModel):
         }
     )
 
+    # TODO: This wasn't working before, so we might have implemented the same logic elsewhere, find it and remove it
     @model_validator(mode="before")
     def compute_input_size(cls, data: Any, info: ValidationInfo):
         """Dynamically compute input_size if context provides dimensions."""
@@ -294,7 +295,7 @@ class GPTConfig(BaseModel):
         )
         return data
 
-
+# TODO: Remove this over-engineering - we are going to stick with these feature transforms
 class FeatureConfig(BaseModel):
     """Pydantic version of FeatureConfig."""
 
@@ -358,12 +359,12 @@ class RLConfig(BaseModel):
     # TODO: Document what effect this has
     value_loss_coef: float = Field(default=0.5, ge=0)
     reward_damage_dealt: float = 0.02
-    # TODO: Check if we need to fix when this is actually applied
     reward_stock_taken: float = 1
     reward_hitlag_opponent: float = 0.02
     reward_low_shield: float = -0.1
 
 
+# TODO: This is almost totally untested
 class PPOConfig(BaseModel):
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
@@ -463,6 +464,7 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def apply_context_defaults(self, info: ValidationInfo):
+        # TODO: Do we want this, or do we want compute_input_size?
         """Propagate context-aware defaults to nested configs."""
         context = info.context or {}
         gamestate_dim = context.get("gamestate_dim")

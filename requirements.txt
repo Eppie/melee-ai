@@ -8,7 +8,7 @@ py-ubjson==0.16.1
 packaging==25.0
 py-slippi==1.6.2
 pyenet
-# For the melee_rust subproject, please see libmelee/melee_rust/README.md for instructions on how to build it.
 pydantic==2.8.2
 pydantic-settings==2.4.0
 pyyaml==6.0.1
+pyarrow~=21.0.0

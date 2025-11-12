@@ -6,6 +6,7 @@ import numpy as np
 Note that all stick values here are in the domain [-1,1], while the game/libmelee uses [0,1],
 so conversions will be needed.
 """
+# TODO: Move these to constants.py or schema.py
 CONTROL_STICK_QUANTIZED: np.ndarray = np.array(
     [
         # --- Essentials ---

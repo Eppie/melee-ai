@@ -78,33 +78,33 @@ def sanity_reason(game: Game) -> FilterFailure | None:
     """
     start = game.start
     if start is None:
-        return ("missing_start", "Missing game start metadata")
+        return "missing_start", "Missing game start metadata"
 
     end = game.end
     if end is not None and end.method == EndMethod.NO_CONTEST:
-        return ("no_contest", "Ended in no contest")
+        return "no_contest", "Ended in no contest"
     if start.is_raining_bombs:
-        return ("raining_bombs", "Raining bombs variant enabled")
+        return "raining_bombs", "Raining bombs variant enabled"
     if start.is_teams:
-        return ("teams", "Teams mode enabled")
+        return "teams", "Teams mode enabled"
     if start.item_spawn_frequency != -1:
-        return ("item_spawn", f"Item spawn frequency {start.item_spawn_frequency} != -1")
+        return "item_spawn", f"Item spawn frequency {start.item_spawn_frequency} != -1"
     if start.damage_ratio != 1.0:
-        return ("damage_ratio", f"Damage ratio {start.damage_ratio} != 1.0")
+        return "damage_ratio", f"Damage ratio {start.damage_ratio} != 1.0"
     if start.self_destruct_score != -1:
-        return ("self_destruct_score", f"Self-destruct score {start.self_destruct_score} != -1")
+        return "self_destruct_score", f"Self-destruct score {start.self_destruct_score} != -1"
     if start.timer != 60 * 8:
-        return ("timer", f"Timer {start.timer} != 8 minutes")
+        return "timer", f"Timer {start.timer} != 8 minutes"
     if start.is_pal:
-        return ("pal", "PAL region flag set")
+        return "pal", "PAL region flag set"
     if len(start.players) != 2:
-        return ("player_count", f"{len(start.players)} players present instead of 2")
+        return "player_count", f"{len(start.players)} players present instead of 2"
     if any(p.type != PlayerType.HUMAN for p in start.players):
-        return ("cpu_players", "Non-human player detected")
+        return "cpu_players", "Non-human player detected"
     if any(p.stocks != 4 for p in start.players):
-        return ("stock_count", "Starting stocks differ from 4")
+        return "stock_count", "Starting stocks differ from 4"
     if start.stage not in ALLOWED_STAGES:
-        return ("illegal_stage", f"Stage {start.stage:#04x} not in allowed list")
+        return "illegal_stage", f"Stage {start.stage:#04x} not in allowed list"
     return None
 
 
@@ -131,12 +131,12 @@ def _active_stick_ratio(joystick) -> float:
 def quality_reason(game: Game) -> FilterFailure | None:
     frames = game.frames
     if frames is None or not frames.ports:
-        return ("no_frame_data", "Missing per-frame controller data")
+        return "no_frame_data", "Missing per-frame controller data"
 
     try:
         total_frames = len(frames.ports[0].leader.pre.buttons)
     except Exception:
-        return ("frame_length_unreadable", "Unable to determine frame count from inputs")
+        return "frame_length_unreadable", "Unable to determine frame count from inputs"
 
     if total_frames < MIN_FRAME_COUNT:
         return ("short_match", f"{total_frames} frames < required {MIN_FRAME_COUNT}")

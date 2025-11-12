@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -70,6 +71,75 @@ def _palette_on_device(name: str, device: torch.device) -> torch.Tensor:
         tensor = _PALETTE_BASE[name].to(device)
         _PALETTE_CACHE[key] = tensor
     return tensor
+
+
+def _normalize_checkpoint_config(raw_config: Any) -> Optional[Dict[str, Any]]:
+    """Return a plain dict from various config payload formats."""
+    if raw_config is None:
+        return None
+    if hasattr(raw_config, "model_dump"):
+        try:
+            return raw_config.model_dump(mode="python")
+        except TypeError:
+            return raw_config.model_dump()
+    if isinstance(raw_config, (bytes, bytearray)):
+        raw_config = raw_config.decode("utf-8")
+    if isinstance(raw_config, str):
+        try:
+            return json.loads(raw_config)
+        except json.JSONDecodeError:
+            print("Warning: checkpoint config string is not valid JSON; ignoring.")
+            return None
+    if isinstance(raw_config, dict):
+        return dict(raw_config)
+    return None
+
+
+def _merge_config_section(target: Any, updates: Dict[str, Any]) -> bool:
+    """Recursively apply nested dict updates onto a Pydantic model."""
+    applied = False
+    for key, value in updates.items():
+        if not hasattr(target, key):
+            continue
+        current = getattr(target, key)
+        if isinstance(value, dict) and hasattr(current, "model_fields"):
+            if _merge_config_section(current, value):
+                applied = True
+        else:
+            setattr(target, key, value)
+            applied = True
+    return applied
+
+
+def _apply_checkpoint_config(config, raw_config: Any) -> None:
+    """Merge checkpoint config metadata into the active Config instance."""
+    cfg_dict = _normalize_checkpoint_config(raw_config)
+    if not cfg_dict:
+        return
+    applied = _merge_config_section(config, cfg_dict)
+    if not applied:
+        _merge_config_section(config.train, cfg_dict)
+
+
+def _patch_model_config_from_state_dict(config, state_dict: Optional[Dict[str, torch.Tensor]]) -> None:
+    """Infer critical model hyperparameters directly from checkpoint weights."""
+    if not isinstance(state_dict, dict):
+        return
+
+    proj_weight = state_dict.get("projection_down.weight")
+    if isinstance(proj_weight, torch.Tensor):
+        config.model.n_embd = proj_weight.shape[0]
+
+    block_indices = []
+    for key in state_dict.keys():
+        if not key.startswith("blocks."):
+            continue
+        parts = key.split(".")
+        if len(parts) > 1 and parts[1].isdigit():
+            block_indices.append(int(parts[1]))
+
+    if block_indices:
+        config.model.n_layer = max(block_indices) + 1
 
 
 def _nearest_diffs_within_window(
@@ -391,6 +461,58 @@ def _format_action(value: object) -> str:
     except (TypeError, ValueError):
         return str(value)
     return _ACTION_VALUE_TO_NAME.get(idx, str(idx))
+
+
+def _compute_lagged_cross_correlation(
+        preds: np.ndarray,
+        targets: np.ndarray,
+        *,
+        max_lag: int = 1,
+        window: Optional[int] = 4096,
+) -> Tuple[Dict[int, float], int]:
+    """Return normalized cross-correlation for lags in ``[-max_lag, max_lag]``.
+
+    When ``window`` is ``None`` the computation spans the entire series;
+    otherwise it is limited to the most recent ``window`` samples to keep the
+    diagnostic local in time (helpful when hunting for phase shifts).
+    """
+    if preds.size == 0 or targets.size == 0:
+        return {}, 0
+
+    if window is None:
+        usable = min(preds.size, targets.size)
+        preds = preds[-usable:]
+        targets = targets[-usable:]
+    else:
+        usable = min(window, preds.size, targets.size)
+        preds = preds[-usable:]
+        targets = targets[-usable:]
+
+    results: Dict[int, float] = {}
+    for lag in range(-max_lag, max_lag + 1):
+        if lag < 0:
+            x = preds[:lag]
+            y = targets[-lag:]
+        elif lag > 0:
+            x = preds[lag:]
+            y = targets[:-lag]
+        else:
+            x = preds
+            y = targets
+
+        if x.size < 2 or y.size < 2:
+            results[lag] = float("nan")
+            continue
+
+        x_centered = x - x.mean()
+        y_centered = y - y.mean()
+        denom = np.linalg.norm(x_centered) * np.linalg.norm(y_centered)
+        if denom == 0.0:
+            results[lag] = 0.0
+        else:
+            results[lag] = float(np.dot(x_centered, y_centered) / denom)
+
+    return results, usable
 
 
 def _print_table_block(
@@ -1515,6 +1637,41 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
             r2_score = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
             print(f"  R² Score:                     {r2_score:.4f}")
 
+            lag_corrs_full, corr_total = _compute_lagged_cross_correlation(
+                value_preds, value_targets, max_lag=1, window=None
+            )
+            if lag_corrs_full:
+                print(
+                    f"\n  Lagged Cross-Correlation (full run, lag=-1/0/+1, {corr_total} frames):"
+                )
+                for lag in sorted(lag_corrs_full.keys()):
+                    label = f"{lag:+d}"
+                    value = lag_corrs_full[lag]
+                    print(f"    lag {label}: {value:.4f}")
+
+            lag_corrs_recent, corr_window = _compute_lagged_cross_correlation(
+                value_preds, value_targets, max_lag=1, window=4096
+            )
+            if lag_corrs_recent and corr_window < corr_total:
+                print(
+                    f"\n  Lagged Cross-Correlation (last {corr_window} frames, lag=-1/0/+1):"
+                )
+                for lag in sorted(lag_corrs_recent.keys()):
+                    label = f"{lag:+d}"
+                    value = lag_corrs_recent[lag]
+                    print(f"    lag {label}: {value:.4f}")
+
+            sample = min(16, value_preds.size)
+            if sample > 0:
+                print(f"\n  Recent {sample} frames (target → pred):")
+                recent_targets = value_targets[-sample:]
+                recent_preds = value_preds[-sample:]
+                for idx in range(sample):
+                    frame_offset = sample - idx
+                    print(
+                        f"    t-{frame_offset:>2}: {recent_targets[idx]:+.4f} → {recent_preds[idx]:+.4f}"
+                    )
+
             # Distribution statistics
             print(f"\n  Prediction Distribution:")
             print(f"    Min:    {value_preds.min():.4f}")
@@ -1786,6 +1943,10 @@ def main() -> None:
     else:
         checkpoint_path = _ensure_absolute(checkpoint_path, Path.cwd())
 
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    _apply_checkpoint_config(config, ckpt.get("config"))
+    _patch_model_config_from_state_dict(config, ckpt.get("model"))
+
     device = _resolve_device()
 
     batch_size = args.batch_size or config.train.batch_size
@@ -1796,13 +1957,18 @@ def main() -> None:
     pin_memory = config.train.pin_memory
     persistent_workers = False
     window_stride = max(1, args.window_stride)
+    prefetch_factor = (
+        args.prefetch_factor
+        if args.prefetch_factor is not None
+        else config.train.prefetch_factor
+    )
 
     loader, dataset = _prepare_dataloader(
         data_root,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        prefetch_factor=config.train.prefetch_factor,
+        prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
         window_stride=window_stride,
     )
@@ -1823,7 +1989,6 @@ def main() -> None:
 
     model = GPT(config)
     # TODO: use loading from checkpoint.py
-    ckpt = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(ckpt["model"])
     model.to(device)
 

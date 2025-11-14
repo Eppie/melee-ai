@@ -195,6 +195,7 @@ def run_episode(
     # Play game
     print("Playing episode...")
     done = False
+    i = 0
     while not done:
         gamestate = env.console.step()
         if gamestate is None:

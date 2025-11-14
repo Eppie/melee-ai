@@ -10,8 +10,8 @@
 # Configuration
 DOLPHIN_PATH="${DOLPHIN_PATH:-/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu}"
 ISO_PATH="${ISO_PATH:-/home/eppie/melee-ai/melee.iso}"
-CHECKPOINT="${CHECKPOINT:-checkpoints/model_ep010_065002.pt}"
-OUT_DIR="checkpoints/ppo"
+CHECKPOINT="${CHECKPOINT:-checkpoints/model_ep016_055001.pt}"
+OUT_DIR="ppo_checkpoints"
 
 # PPO parameters
 NUM_EPISODES=10000

@@ -59,6 +59,7 @@ class EpochContext:
     frames_since_last_log: float = 0.0
     last_log_time: float = field(default_factory=time.time)
     skip_remaining: int = 0
+    progress_iter_base: int = 0
 
 
 @dataclass

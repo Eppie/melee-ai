@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import time
 
 import numpy as np
 import torch
@@ -28,10 +30,10 @@ from model_interface import (
     collect_raw_inputs_from_gamestate,
 )
 from ppo.opponent_pool import OpponentPool
-from ppo.trajectory import TrajectoryBuffer
+from ppo.trajectory import Step, TrajectoryBuffer
 from schema import get_feature_names, get_target_names
 from train.batch_utils import build_model_inputs
-from train.value_head import build_reward_feature_index
+from train.value_head import build_reward_feature_index, compute_value_targets
 
 
 class SelfPlayEnvironment:
@@ -102,6 +104,7 @@ class SelfPlayEnvironment:
         self.episode_reward = 0.0
         self.previous_gamestate: Optional[GameState] = None
         self.last_log_frame = 0  # For progress logging
+        self.last_log_time = time.time()
 
         # Track previous state for reward deltas
         self.prev_p1_percent = 0.0
@@ -110,7 +113,10 @@ class SelfPlayEnvironment:
         self.prev_p2_stock = 4
 
         # Reward computation
+        cfg = get_config()
         self.colmap = ColumnMap(self.feature_names, self.target_names)
+        self.reward_feature_idx = build_reward_feature_index(self.colmap)
+        self.rl_gamma = cfg.rl.gamma
 
         # Opponent model (loaded at episode start)
         self.opponent_model: Optional[GPT] = None
@@ -137,6 +143,7 @@ class SelfPlayEnvironment:
             blocking_input=True,
             gfx_backend="Null",
             disable_audio=True,
+            emulation_speed=0.0,  # unlock FPS cap
             infinite_time=False,  # Use normal time limit
             use_exi_inputs=True,
             enable_ffw=True,
@@ -207,6 +214,7 @@ class SelfPlayEnvironment:
         self.episode_reward = 0.0
         self.previous_gamestate = None
         self.last_log_frame = 0
+        self.last_log_time = time.time()
 
         # Reset reward tracking
         self.prev_p1_percent = 0.0
@@ -214,9 +222,9 @@ class SelfPlayEnvironment:
         self.prev_p1_stock = 4
         self.prev_p2_stock = 4
 
-        # Finish any incomplete trajectory
+        # Drop any incomplete trajectory from previous episode
         if len(self.trajectory_buffer.current_trajectory) > 0:
-            self.trajectory_buffer.finish_trajectory()
+            self.trajectory_buffer.discard_current()
 
         print(f"{'='*60}\n")
 
@@ -455,12 +463,7 @@ class SelfPlayEnvironment:
                 self.controllers[self.opponent_port], opponent_controller
             )
 
-        # Compute reward
-        # TODO: Use reward computation from value_head.py
-        reward = self._compute_reward(gamestate)
-        self.episode_reward += reward
-
-        # Check if episode is done
+        reward = 0.0
         done = False
 
         # Episode ends if:
@@ -492,6 +495,10 @@ class SelfPlayEnvironment:
                 done=done,
             )
 
+        if done:
+            reward, total_reward = self._finalize_episode_trajectory()
+            self.episode_reward = total_reward
+
         metrics = {
             "episode/frame": self.frame_count,
             "episode/reward": reward,
@@ -507,17 +514,62 @@ class SelfPlayEnvironment:
         self.previous_gamestate = gamestate
 
         # Progress logging every 1000 frames
-        if self.frame_count - self.last_log_frame >= 1000:
+        if self.frame_count - self.last_log_frame >= 1000 and p1 and p2:
+            now = time.time()
+            elapsed = max(now - self.last_log_time, 1e-6)
+            frames_since_log = self.frame_count - self.last_log_frame
+            fps = frames_since_log / elapsed
+            print(
+                f"  Frame {self.frame_count}: "
+                f"Learner({p1.stock} stocks, {p1.percent:.0f}%) vs "
+                f"Opponent({p2.stock} stocks, {p2.percent:.0f}%) | "
+                f"{fps:.1f} fps | Total reward: {self.episode_reward:.3f}"
+            )
             self.last_log_frame = self.frame_count
-            if p1 and p2:
-                print(
-                    f"  Frame {self.frame_count}: "
-                    f"Learner({p1.stock} stocks, {p1.percent:.0f}%) vs "
-                    f"Opponent({p2.stock} stocks, {p2.percent:.0f}%) | "
-                    f"Total reward: {self.episode_reward:.3f}"
-                )
+            self.last_log_time = now
 
         return done, metrics
+
+    def _finalize_episode_trajectory(self) -> Tuple[float, float]:
+        """Compute episode returns/rewards once and commit the trajectory."""
+        steps = self.trajectory_buffer.current_trajectory
+        if len(steps) == 0:
+            self.trajectory_buffer.finish_trajectory()
+            return 0.0, 0.0
+
+        returns = self._compute_episode_returns(steps)
+        rewards = self._returns_to_rewards(returns)
+
+        for step, reward in zip(steps, rewards.tolist()):
+            step.reward = float(reward)
+
+        total_reward = float(rewards.sum().item())
+        final_reward = float(rewards[-1].item())
+        self.trajectory_buffer.finish_trajectory(returns=returns)
+        return final_reward, total_reward
+
+    def _compute_episode_returns(self, steps: List[Step]) -> torch.Tensor:
+        """Use compute_value_targets to derive discounted returns for an episode."""
+        states = torch.stack([step.state for step in steps], dim=0).unsqueeze(0)
+        states = states.to(self.device)
+        returns = compute_value_targets(
+            states,
+            self.colmap,
+            gamma=self.rl_gamma,
+            reward_idx=None,
+            reward_features=self.reward_feature_idx,
+        )
+        return returns.squeeze(0).squeeze(-1).cpu()
+
+    def _returns_to_rewards(self, returns: torch.Tensor) -> torch.Tensor:
+        """Recover per-step rewards from cumulative returns."""
+        if returns.numel() == 0:
+            return returns
+        rewards = returns.clone()
+        if returns.numel() > 1:
+            rewards[:-1] = returns[:-1] - self.rl_gamma * returns[1:]
+        rewards[-1] = returns[-1]
+        return rewards
 
     def navigate_menu(self, gamestate: GameState) -> None:
         """Navigate menus to get into game."""

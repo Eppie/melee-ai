@@ -7,7 +7,14 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import wandb
+
+try:  # Import lazily so training can proceed without wandb installed
+    import wandb
+
+    WANDB_AVAILABLE = True
+except Exception:  # pragma: no cover - wandb missing in some environments
+    wandb = None  # type: ignore[assignment]
+    WANDB_AVAILABLE = False
 
 
 @dataclass
@@ -47,7 +54,7 @@ def init_wandb(
     Returns:
         Wandb run object or ``None`` if wandb is disabled.
     """
-    if config.mode == "disabled":
+    if config.mode == "disabled" or not WANDB_AVAILABLE:
         return None
 
     try:

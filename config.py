@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple, Union
 
@@ -9,6 +10,15 @@ from pydantic_settings import SettingsConfigDict
 from zarr.codecs import BloscCodec, BloscShuffle
 
 import torch
+
+from column_map import ColumnMap
+from constants import BUTTON_TARGET_NAMES
+from controller_utils import (
+    CONTROL_STICK_QUANTIZED,
+    C_STICK_QUANTIZED,
+    SHOULDER_QUANTIZED,
+)
+from schema import get_feature_names, get_target_names
 
 
 def _get_default_paths() -> tuple[str, str, str]:
@@ -133,6 +143,13 @@ class ZarrConfig(BaseModel):
         object.__setattr__(self, "out_root", f"{base_path}_{self.episode_count}")
 
 
+@lru_cache(maxsize=1)
+def _schema_feature_dims() -> Tuple[int, int]:
+    """Return canonical (gamestate_dim, controller_dim) from the schema."""
+    colmap = ColumnMap(get_feature_names(), get_target_names())
+    return len(colmap.gamestate_idxs), len(colmap.controller_idxs)
+
+
 class TrainConfig(BaseModel):
     """Pydantic version of TrainConfig with validation."""
 
@@ -233,14 +250,6 @@ class LossConfig(BaseModel):
     value_change: float = Field(default=8.0, gt=0)
 
 
-from constants import BUTTON_TARGET_NAMES
-from controller_utils import (
-    CONTROL_STICK_QUANTIZED,
-    C_STICK_QUANTIZED,
-    SHOULDER_QUANTIZED,
-)
-
-
 class GPTConfig(BaseModel):
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
@@ -281,7 +290,9 @@ class GPTConfig(BaseModel):
         controller_dim = context.get("controller_dim")
 
         if gamestate_dim is None or controller_dim is None:
-            return data
+            default_gamestate, default_controller = _schema_feature_dims()
+            gamestate_dim = gamestate_dim or default_gamestate
+            controller_dim = controller_dim or default_controller
 
         num_stages = data.get("num_stages", cls.model_fields["num_stages"].default)
         num_characters = data.get(
@@ -445,6 +456,10 @@ class Config(BaseModel):
         """Serialize to JSON string."""
         return self.model_dump_json(indent=indent)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a plain-Python representation (for checkpoints, etc.)."""
+        return self.model_dump()
+
     @classmethod
     def from_json(cls, s: str) -> "Config":
         """Deserialize from JSON string."""
@@ -470,11 +485,12 @@ class Config(BaseModel):
         gamestate_dim = context.get("gamestate_dim")
         controller_dim = context.get("controller_dim")
 
-        if (
-            gamestate_dim is not None
-            and controller_dim is not None
-            and self.model.input_size in (-1, None)
-        ):
+        if self.model.input_size in (-1, None):
+            if gamestate_dim is None or controller_dim is None:
+                default_gamestate, default_controller = _schema_feature_dims()
+                gamestate_dim = gamestate_dim or default_gamestate
+                controller_dim = controller_dim or default_controller
+
             self.model.input_size = (
                 self.model.num_stages
                 + self.model.num_characters * 2

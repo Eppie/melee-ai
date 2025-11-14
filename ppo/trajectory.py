@@ -20,8 +20,8 @@ class Step:
     ]  # actual actions taken (indices for sticks/shoulders, bool for buttons)
     log_prob: torch.Tensor  # [1] log probability of the action taken
     value: torch.Tensor  # [1] value estimate from critic
-    reward: float  # immediate reward
-    done: bool  # episode termination flag
+    reward: float = 0.0  # immediate reward (assigned post-episode)
+    done: bool = False  # episode termination flag
 
 
 @dataclass
@@ -58,6 +58,21 @@ class Trajectory:
 
         # Extract values and rewards
         values = torch.stack([step.value for step in self.steps]).squeeze(-1)  # [T]
+
+        if self.returns is not None and len(self.returns) == T:
+            returns = self.returns.to(values.dtype)
+            advantages = returns - values
+            if normalize and T > 1:
+                adv_mean = advantages.mean()
+                adv_std = advantages.std(unbiased=False)
+                if adv_std > 1e-8:
+                    advantages = (advantages - adv_mean) / (adv_std + 1e-8)
+                else:
+                    advantages = advantages - adv_mean
+            self.advantages = advantages
+            self.returns = returns
+            return
+
         rewards = torch.tensor(
             [step.reward for step in self.steps], dtype=values.dtype
         )  # [T]
@@ -170,13 +185,17 @@ class TrajectoryBuffer:
         )
         self.current_trajectory.append(step)
 
-        if done:
-            self.finish_trajectory()
-
-    def finish_trajectory(self) -> None:
+    def finish_trajectory(self, returns: Optional[torch.Tensor] = None) -> None:
         """Finish the current trajectory and add to completed list."""
         if len(self.current_trajectory) > 0:
             trajectory = Trajectory(steps=self.current_trajectory)
+            if returns is not None:
+                returns = returns.detach().clone().reshape(-1)
+                if returns.numel() != len(self.current_trajectory):
+                    raise ValueError(
+                        "Returns length does not match trajectory length"
+                    )
+                trajectory.returns = returns
             self.completed_trajectories.append(trajectory)
             self.current_trajectory = []
 
@@ -198,6 +217,10 @@ class TrajectoryBuffer:
         """Clear all trajectories."""
         self.current_trajectory = []
         self.completed_trajectories = []
+
+    def discard_current(self) -> None:
+        """Drop the in-progress trajectory without saving it."""
+        self.current_trajectory = []
 
     def __len__(self) -> int:
         return len(self.completed_trajectories)

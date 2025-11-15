@@ -49,7 +49,9 @@ def perform_forward_pass(
         if in_warmup:
             label_smoothing = base_smoothing
         else:
-            label_smoothing = base_smoothing + (final_smoothing - base_smoothing) * progress
+            label_smoothing = (
+                base_smoothing + (final_smoothing - base_smoothing) * progress
+            )
         label_smoothing = float(max(label_smoothing, 0.0))
 
         final_change_scale = 0.5
@@ -94,9 +96,7 @@ def perform_forward_pass(
             value_pred, value_target, reduction="none"
         ).squeeze(-1)
         value_w = weights.get("global", weights["main"])
-        loss_value = (
-            value_loss_raw * value_w
-        ).sum() / value_w.sum().clamp_min(1e-12)
+        loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
         loss = loss + config.rl.value_loss_coef * loss_value
         loss_components["value"] = loss_value
 
@@ -147,9 +147,7 @@ def perform_backward_pass(
         grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
         grad_stats["was_clipped"] = float(pre_clip_norm > grad_clip)
         grad_stats["clip_coef"] = (
-            grad_clip / max(pre_clip_norm, 1e-12)
-            if pre_clip_norm > grad_clip
-            else 1.0
+            grad_clip / max(pre_clip_norm, 1e-12) if pre_clip_norm > grad_clip else 1.0
         )
 
     scaler.step(optimizer)

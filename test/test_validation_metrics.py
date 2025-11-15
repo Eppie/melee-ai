@@ -6,7 +6,11 @@ from typing import Tuple
 from column_map import ColumnMap
 from config import get_config, init_config, reset_config
 from constants import CONTROLLER_KEY_GROUPS, BUTTON_TARGET_NAMES
-from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from controller_utils import (
+    CONTROL_STICK_QUANTIZED,
+    C_STICK_QUANTIZED,
+    SHOULDER_QUANTIZED,
+)
 from libmelee.melee.enums import Action
 from train.value_head import build_reward_feature_index, compute_value_targets
 from validation import (
@@ -82,7 +86,9 @@ def _set_feature(X: torch.Tensor, feat_idx: dict[str, int], name: str, values) -
     X[..., feat_idx[name]] = torch.as_tensor(values, dtype=X.dtype)
 
 
-def test_update_enhanced_metrics_accumulates_multimodal_statistics(column_map: ColumnMap):
+def test_update_enhanced_metrics_accumulates_multimodal_statistics(
+    column_map: ColumnMap,
+):
     reward_features = build_reward_feature_index(column_map)
     enhanced = EnhancedMetrics()
     B, L = 2, 3
@@ -94,7 +100,11 @@ def test_update_enhanced_metrics_accumulates_multimodal_statistics(column_map: C
         feat_idx,
         "p1_action",
         [
-            [Action.STANDING.value, Action.NEUTRAL_ATTACK_1.value, Action.DAMAGE_LOW_1.value],
+            [
+                Action.STANDING.value,
+                Action.NEUTRAL_ATTACK_1.value,
+                Action.DAMAGE_LOW_1.value,
+            ],
             [Action.WALK_SLOW.value, Action.CROUCHING.value, Action.DASH_ATTACK.value],
         ],
     )
@@ -133,13 +143,19 @@ def test_update_enhanced_metrics_accumulates_multimodal_statistics(column_map: C
 
     vocab_main = len(CONTROL_STICK_QUANTIZED)
     vocab_c = len(C_STICK_QUANTIZED)
-    logits_main = torch.linspace(-1.0, 1.0, vocab_main).repeat(B * L, 1).reshape(B, L, vocab_main)
+    logits_main = (
+        torch.linspace(-1.0, 1.0, vocab_main).repeat(B * L, 1).reshape(B, L, vocab_main)
+    )
     logits_main += torch.arange(B * L, dtype=torch.float32).reshape(B, L, 1) * 0.05
-    logits_c = torch.linspace(-0.5, 0.5, vocab_c).repeat(B * L, 1).reshape(B, L, vocab_c)
+    logits_c = (
+        torch.linspace(-0.5, 0.5, vocab_c).repeat(B * L, 1).reshape(B, L, vocab_c)
+    )
     logits_c += torch.arange(B * L, dtype=torch.float32).reshape(B, L, 1) * 0.1
     shoulder_vocab = len(SHOULDER_QUANTIZED)
-    logits_shoulder = torch.linspace(-0.2, 0.2, shoulder_vocab).repeat(B * L, 1).reshape(
-        B, L, shoulder_vocab
+    logits_shoulder = (
+        torch.linspace(-0.2, 0.2, shoulder_vocab)
+        .repeat(B * L, 1)
+        .reshape(B, L, shoulder_vocab)
     )
     logits_shoulder += torch.arange(B * L, dtype=torch.float32).reshape(B, L, 1) * 0.02
 
@@ -210,25 +226,45 @@ def test_update_enhanced_metrics_accumulates_multimodal_statistics(column_map: C
         c_errors[c_hold_mask].sum().item()
     )
 
-    cross_pred_main = torch.linalg.norm(main_pred_coords[:, 0] - prev_pred_main, dim=-1).sum().item()
-    cross_true_main = torch.linalg.norm(main_true_coords[:, 0] - prev_true_main, dim=-1).sum().item()
-    cross_pred_c = torch.linalg.norm(c_pred_coords[:, 0] - prev_pred_c, dim=-1).sum().item()
-    cross_true_c = torch.linalg.norm(c_true_coords[:, 0] - prev_true_c, dim=-1).sum().item()
-    within_pred_main = torch.linalg.norm(
-        main_pred_coords[:, 1:] - main_pred_coords[:, :-1], dim=-1
-    ).sum().item()
-    within_true_main = torch.linalg.norm(
-        main_true_coords[:, 1:] - main_true_coords[:, :-1], dim=-1
-    ).sum().item()
-    within_pred_c = torch.linalg.norm(
-        c_pred_coords[:, 1:] - c_pred_coords[:, :-1], dim=-1
-    ).sum().item()
-    within_true_c = torch.linalg.norm(
-        c_true_coords[:, 1:] - c_true_coords[:, :-1], dim=-1
-    ).sum().item()
+    cross_pred_main = (
+        torch.linalg.norm(main_pred_coords[:, 0] - prev_pred_main, dim=-1).sum().item()
+    )
+    cross_true_main = (
+        torch.linalg.norm(main_true_coords[:, 0] - prev_true_main, dim=-1).sum().item()
+    )
+    cross_pred_c = (
+        torch.linalg.norm(c_pred_coords[:, 0] - prev_pred_c, dim=-1).sum().item()
+    )
+    cross_true_c = (
+        torch.linalg.norm(c_true_coords[:, 0] - prev_true_c, dim=-1).sum().item()
+    )
+    within_pred_main = (
+        torch.linalg.norm(main_pred_coords[:, 1:] - main_pred_coords[:, :-1], dim=-1)
+        .sum()
+        .item()
+    )
+    within_true_main = (
+        torch.linalg.norm(main_true_coords[:, 1:] - main_true_coords[:, :-1], dim=-1)
+        .sum()
+        .item()
+    )
+    within_pred_c = (
+        torch.linalg.norm(c_pred_coords[:, 1:] - c_pred_coords[:, :-1], dim=-1)
+        .sum()
+        .item()
+    )
+    within_true_c = (
+        torch.linalg.norm(c_true_coords[:, 1:] - c_true_coords[:, :-1], dim=-1)
+        .sum()
+        .item()
+    )
 
-    assert enhanced.total_pred_main_jitter == pytest.approx(cross_pred_main + within_pred_main)
-    assert enhanced.total_true_main_jitter == pytest.approx(cross_true_main + within_true_main)
+    assert enhanced.total_pred_main_jitter == pytest.approx(
+        cross_pred_main + within_pred_main
+    )
+    assert enhanced.total_true_main_jitter == pytest.approx(
+        cross_true_main + within_true_main
+    )
     assert enhanced.total_pred_c_jitter == pytest.approx(cross_pred_c + within_pred_c)
     assert enhanced.total_true_c_jitter == pytest.approx(cross_true_c + within_true_c)
     assert enhanced.jitter_frames == B + B * (L - 1)
@@ -424,7 +460,9 @@ def test_update_enhanced_metrics_handles_single_frame_batches_and_copies_frame_f
         main_palette[pred_main_idx] - main_palette[target_main], dim=-1
     )
     c_errors = torch.linalg.norm(c_palette[pred_c_idx] - c_palette[target_c], dim=-1)
-    assert enhanced.total_main_stick_error_hold == pytest.approx(main_errors.sum().item())
+    assert enhanced.total_main_stick_error_hold == pytest.approx(
+        main_errors.sum().item()
+    )
     assert enhanced.total_main_stick_error_change == 0.0
     assert enhanced.total_c_stick_error_hold == pytest.approx(c_errors.sum().item())
     assert enhanced.total_c_stick_error_change == 0.0
@@ -448,15 +486,21 @@ def test_update_enhanced_metrics_handles_single_frame_batches_and_copies_frame_f
         reward_idx=None,
         reward_features=reward_features,
     )
-    expected_frame_rewards = _frame_rewards_from_batch(X_before, column_map, reward_features)
+    expected_frame_rewards = _frame_rewards_from_batch(
+        X_before, column_map, reward_features
+    )
     mse = ((value_pred - expected_value_target) ** 2).mean().item()
     mae = (value_pred - expected_value_target).abs().mean().item()
     assert enhanced.total_value_mse == pytest.approx(mse * (B * L))
     assert enhanced.total_value_mae == pytest.approx(mae * (B * L))
-    assert enhanced.total_value_target == pytest.approx(expected_value_target.sum().item())
+    assert enhanced.total_value_target == pytest.approx(
+        expected_value_target.sum().item()
+    )
 
     assert enhanced.value_pred_list == pytest.approx([value_pred.item()])
-    assert enhanced.value_target_list == pytest.approx(expected_value_target.flatten().tolist())
+    assert enhanced.value_target_list == pytest.approx(
+        expected_value_target.flatten().tolist()
+    )
 
     assert len(enhanced.value_frame_data) == 1
     frame_entry = enhanced.value_frame_data[0]
@@ -465,7 +509,9 @@ def test_update_enhanced_metrics_handles_single_frame_batches_and_copies_frame_f
     assert frame_entry[2] == pytest.approx(expected_frame_rewards.item())
     assert isinstance(frame_entry[3], np.ndarray)
     X[0, 0, feat_idx["stage"]] = 99.0
-    assert frame_entry[3][feat_idx["stage"]] == pytest.approx(X_before[0, 0, feat_idx["stage"]])
+    assert frame_entry[3][feat_idx["stage"]] == pytest.approx(
+        X_before[0, 0, feat_idx["stage"]]
+    )
 
     pred_codes = _encode_state_codes(pred_main_idx, pred_c_idx, btn_pred)
     true_codes = _encode_state_codes(target_main, target_c, target_btn)
@@ -524,10 +570,10 @@ def test_tally_jump_types_tracks_confusions_and_misses():
     _mark((17, 20), target_btn)
 
     # Model behavior
-    _mark((0, 3), btn_pred)    # Full hop when short desired
+    _mark((0, 3), btn_pred)  # Full hop when short desired
     # Missed short hop at [3,5)
-    _mark((6, 8), btn_pred)    # Correct short hop
-    _mark((9, 11), btn_pred)   # Short hop when full desired
+    _mark((6, 8), btn_pred)  # Correct short hop
+    _mark((9, 11), btn_pred)  # Short hop when full desired
     # Missed full hop at [13,16)
     _mark((17, 20), btn_pred)  # Correct full hop
 

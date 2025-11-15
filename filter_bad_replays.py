@@ -27,10 +27,11 @@ FilterFailure = tuple[str, str]
 
 class Character(Enum):
     """A Melee character External ID."""
-    FALCON = 0x00            # Captain Falcon
-    DK = 0x01                # Donkey Kong
+
+    FALCON = 0x00  # Captain Falcon
+    DK = 0x01  # Donkey Kong
     FOX = 0x02
-    GNW = 0x03               # Mr. Game & Watch
+    GNW = 0x03  # Mr. Game & Watch
     KIRBY = 0x04
     BOWSER = 0x05
     LINK = 0x06
@@ -40,19 +41,19 @@ class Character(Enum):
     MEWTWO = 0x0A
     NESS = 0x0B
     PEACH = 0x0C
-    PIKA = 0x0D              # Pikachu
-    ICS = 0x0E               # Ice Climbers
-    PUFF = 0x0F              # Jigglypuff
+    PIKA = 0x0D  # Pikachu
+    ICS = 0x0E  # Ice Climbers
+    PUFF = 0x0F  # Jigglypuff
     SAMUS = 0x10
     YOSHI = 0x11
     ZELDA = 0x12
     SHEIK = 0x13
     FALCO = 0x14
-    YLINK = 0x15             # Young Link
-    DOC = 0x16               # Dr. Mario
+    YLINK = 0x15  # Young Link
+    DOC = 0x16  # Dr. Mario
     ROY = 0x17
     PICHU = 0x18
-    GANON = 0x19             # Ganondorf
+    GANON = 0x19  # Ganondorf
     MASTER_HAND = 0x1A
     WIREFRAME_MALE = 0x1B
     WIREFRAME_FEMALE = 0x1C
@@ -92,7 +93,10 @@ def sanity_reason(game: Game) -> FilterFailure | None:
     if start.damage_ratio != 1.0:
         return "damage_ratio", f"Damage ratio {start.damage_ratio} != 1.0"
     if start.self_destruct_score != -1:
-        return "self_destruct_score", f"Self-destruct score {start.self_destruct_score} != -1"
+        return (
+            "self_destruct_score",
+            f"Self-destruct score {start.self_destruct_score} != -1",
+        )
     if start.timer != 60 * 8:
         return "timer", f"Timer {start.timer} != 8 minutes"
     if start.is_pal:
@@ -120,7 +124,9 @@ def _active_stick_ratio(joystick) -> float:
     finite_mask = np.isfinite(x) & np.isfinite(y)
     if not finite_mask.any():
         return 0.0
-    active = np.logical_or(np.abs(x) > MAIN_STICK_DEADZONE, np.abs(y) > MAIN_STICK_DEADZONE)
+    active = np.logical_or(
+        np.abs(x) > MAIN_STICK_DEADZONE, np.abs(y) > MAIN_STICK_DEADZONE
+    )
     active = active & finite_mask
     total = finite_mask.sum()
     if total == 0:

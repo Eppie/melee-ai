@@ -156,8 +156,7 @@ def finish_wandb() -> None:
 
 
 class WandbLogger:
-    """Optional wandb logger with no-op behavior. Provides a consistent interface.
-    """
+    """Optional wandb logger with no-op behavior. Provides a consistent interface."""
 
     def __init__(self, wandb_run: Optional[Any] = None, enabled: bool = True):
         """Wrap a wandb run with convenience methods that degrade to no-ops.

@@ -16,7 +16,9 @@ from train.step import perform_backward_pass, perform_forward_pass
 from train.wandb_utils import finish_wandb
 
 
-def _prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
+def _prepare_batch(
+    batch: Dict[str, torch.Tensor], device: torch.device
+) -> Dict[str, torch.Tensor]:
     return {
         "X": batch["X"].to(device, non_blocking=True),
         "Y": batch["Y"].to(device, non_blocking=True),
@@ -121,7 +123,9 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
         log_this_iter = _should_log(current_iter)
         lr = _update_learning_rate(components, state.global_step)
         grad_stats = perform_backward_pass(
-            components, forward_result.loss, collect_grad_stats=components.logger.enabled and log_this_iter
+            components,
+            forward_result.loss,
+            collect_grad_stats=components.logger.enabled and log_this_iter,
         )
 
         epoch_ctx.iters_processed += 1

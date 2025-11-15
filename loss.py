@@ -11,6 +11,7 @@ from torch import Tensor
 if TYPE_CHECKING:
     from config import LossConfig
 
+
 def _compute_ce_weights(
     labels: Tensor, num_classes: int, loss_config: "LossConfig"
 ) -> Optional[Tensor]:
@@ -42,9 +43,7 @@ def _compute_pos_weights(
     return pos_weight.clamp(min=1.0, max=loss_config.pos_weight_max).to(targets.device)
 
 
-def _mean_with_weights(
-    x: Tensor, w: Tensor, loss_config: "LossConfig"
-) -> Tensor:
+def _mean_with_weights(x: Tensor, w: Tensor, loss_config: "LossConfig") -> Tensor:
     if not loss_config.use_weighted_component_means:
         return x.mean()
     # Match dims to broadcast, then true weighted mean:
@@ -126,9 +125,7 @@ def compute_loss_components(
     # --- C-STICK ---
     c_targets = target_info["c_idx"].reshape(B * L)
     c_logits = logits_c.reshape(B * L, -1)
-    c_weights = _compute_ce_weights(
-        c_targets, int(target_info["c_K"]), loss_config
-    )
+    c_weights = _compute_ce_weights(c_targets, int(target_info["c_K"]), loss_config)
     c_weights = _blend_weights(c_weights, ce_weight_scale)
     loss_c_vec = F.cross_entropy(
         c_logits,

@@ -22,7 +22,9 @@ from train.display import format_confusion_matrix
 from train.metrics import compute_confusion_matrix, multilabel_prf
 
 
-def append_tensor_stats(prefix: str, tensor: Optional[torch.Tensor], out: Dict[str, float]) -> None:
+def append_tensor_stats(
+    prefix: str, tensor: Optional[torch.Tensor], out: Dict[str, float]
+) -> None:
     if tensor is None:
         return
     flat = tensor.detach()
@@ -60,16 +62,26 @@ def get_head_bias(module: Optional[nn.Module]) -> Optional[torch.Tensor]:
 
 def gather_bias_metrics(model: GPT) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
-    append_tensor_stats("bias/input_projection", getattr(model.projection_down, "bias", None), metrics)
+    append_tensor_stats(
+        "bias/input_projection", getattr(model.projection_down, "bias", None), metrics
+    )
     append_tensor_stats("bias/buttons_out", get_head_bias(model.button_head), metrics)
-    append_tensor_stats("bias/main_stick_out", get_head_bias(model.main_stick_head), metrics)
+    append_tensor_stats(
+        "bias/main_stick_out", get_head_bias(model.main_stick_head), metrics
+    )
     append_tensor_stats("bias/c_stick_out", get_head_bias(model.c_stick_head), metrics)
-    append_tensor_stats("bias/shoulder_out", get_head_bias(model.shoulder_head), metrics)
-    append_tensor_stats("bias/value_out", get_head_bias(getattr(model, "value_head", None)), metrics)
+    append_tensor_stats(
+        "bias/shoulder_out", get_head_bias(model.shoulder_head), metrics
+    )
+    append_tensor_stats(
+        "bias/value_out", get_head_bias(getattr(model, "value_head", None)), metrics
+    )
     return metrics
 
 
-def extract_loss_breakdown(loss_components: Dict[str, torch.Tensor]) -> Dict[str, float]:
+def extract_loss_breakdown(
+    loss_components: Dict[str, torch.Tensor]
+) -> Dict[str, float]:
     keys = ["main", "c", "buttons", "shoulder", "value"]
     summary = {}
     for key in keys:
@@ -113,7 +125,9 @@ def prepare_logging_bundle(
     btn_probs = torch.sigmoid(btn_logits)
 
     main_change_mask = torch.zeros((B, L), dtype=torch.bool, device=device)
-    main_change_mask[:, 1:] = target_main.view(B, L)[:, 1:] != target_main.view(B, L)[:, :-1]
+    main_change_mask[:, 1:] = (
+        target_main.view(B, L)[:, 1:] != target_main.view(B, L)[:, :-1]
+    )
     main_hold_mask = ~main_change_mask
     main_hold_mask[:, 0] = True
 
@@ -171,14 +185,63 @@ def prepare_logging_bundle(
     c_pred = c_pred_idx.view(B, L)
 
     acc_main_b = float((main_pred == target_main.view(B, L)).float().mean().item())
-    acc_main_chg = float((main_pred[main_change_mask] == target_main.view(B, L)[main_change_mask]).float().mean().item()) if main_change_mask.any() else 0.0
-    acc_main_hold = float((main_pred[main_hold_mask] == target_main.view(B, L)[main_hold_mask]).float().mean().item()) if main_hold_mask.any() else 0.0
-    acc_main_rep_b = float((main_rep[rep_mask] == target_main.view(B, L)[rep_mask]).float().mean().item()) if rep_mask.any() else 0.0
+    acc_main_chg = (
+        float(
+            (main_pred[main_change_mask] == target_main.view(B, L)[main_change_mask])
+            .float()
+            .mean()
+            .item()
+        )
+        if main_change_mask.any()
+        else 0.0
+    )
+    acc_main_hold = (
+        float(
+            (main_pred[main_hold_mask] == target_main.view(B, L)[main_hold_mask])
+            .float()
+            .mean()
+            .item()
+        )
+        if main_hold_mask.any()
+        else 0.0
+    )
+    acc_main_rep_b = (
+        float(
+            (main_rep[rep_mask] == target_main.view(B, L)[rep_mask])
+            .float()
+            .mean()
+            .item()
+        )
+        if rep_mask.any()
+        else 0.0
+    )
 
     acc_c_b = float((c_pred == target_c.view(B, L)).float().mean().item())
-    acc_c_chg = float((c_pred[c_change_mask] == target_c.view(B, L)[c_change_mask]).float().mean().item()) if c_change_mask.any() else 0.0
-    acc_c_hold = float((c_pred[c_hold_mask] == target_c.view(B, L)[c_hold_mask]).float().mean().item()) if c_hold_mask.any() else 0.0
-    acc_c_rep_b = float((c_rep[rep_mask] == target_c.view(B, L)[rep_mask]).float().mean().item()) if rep_mask.any() else 0.0
+    acc_c_chg = (
+        float(
+            (c_pred[c_change_mask] == target_c.view(B, L)[c_change_mask])
+            .float()
+            .mean()
+            .item()
+        )
+        if c_change_mask.any()
+        else 0.0
+    )
+    acc_c_hold = (
+        float(
+            (c_pred[c_hold_mask] == target_c.view(B, L)[c_hold_mask])
+            .float()
+            .mean()
+            .item()
+        )
+        if c_hold_mask.any()
+        else 0.0
+    )
+    acc_c_rep_b = (
+        float((c_rep[rep_mask] == target_c.view(B, L)[rep_mask]).float().mean().item())
+        if rep_mask.any()
+        else 0.0
+    )
 
     btn_pred = (btn_probs >= 0.5).to(target_btn.dtype)
     em_b, _, _, f1_b, _ = multilabel_prf(target_btn, btn_pred)
@@ -228,7 +291,9 @@ def prepare_logging_bundle(
     sh_rep = torch.zeros_like(sh_true_idx)
     acc_sh = float((sh_pred_idx == sh_true_idx).float().mean().item())
     sh_flat = sh_true_idx.reshape(-1).cpu()
-    sh_major_lbl = int(torch.bincount(sh_flat).argmax().item()) if sh_flat.numel() else 0
+    sh_major_lbl = (
+        int(torch.bincount(sh_flat).argmax().item()) if sh_flat.numel() else 0
+    )
     acc_sh_maj = float((sh_true_idx == sh_major_lbl).float().mean().item())
     if L > 1:
         sh_rep[:, 1:] = sh_true_idx[:, :-1]
@@ -250,9 +315,7 @@ def prepare_logging_bundle(
         f"  C-STICK:  acc {acc_c_b:.3f} (chg: {acc_c_chg:.3f}, hold: {acc_c_hold:.3f}) | rep {acc_c_rep_b:.3f}",
     ]
 
-    btn_line1 = (
-        f"  BUTTONS:  EM {em_b:.3f} (chg: {em_btn_chg:.3f}, hold: {em_btn_hold:.3f}) | F1μ {f1_b:.3f}"
-    )
+    btn_line1 = f"  BUTTONS:  EM {em_b:.3f} (chg: {em_btn_chg:.3f}, hold: {em_btn_hold:.3f}) | F1μ {f1_b:.3f}"
     btn_line2 = (
         f"            maj F1μ {f1_maj:.3f} | rep F1μ {f1_rep:.3f} | EM_rep {em_rep:.3f}"
     )
@@ -278,9 +341,7 @@ def prepare_logging_bundle(
     value_pred_mean = forward_result.value_pred.mean().item()
     value_target_mean = value_target_eval.mean().item()
     value_mse = ((forward_result.value_pred - value_target_eval) ** 2).mean().item()
-    value_mae = (
-        (forward_result.value_pred - value_target_eval).abs().mean().item()
-    )
+    value_mae = (forward_result.value_pred - value_target_eval).abs().mean().item()
     vp_flat = forward_result.value_pred.reshape(-1)
     vt_flat = value_target_eval.reshape(-1)
     vp_centered = vp_flat - vp_flat.mean()

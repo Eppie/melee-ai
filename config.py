@@ -302,9 +302,14 @@ class GPTConfig(BaseModel):
 
         data = dict(data)
         data["input_size"] = (
-            num_stages + num_characters * 2 + num_actions * 2 + gamestate_dim + controller_dim
+            num_stages
+            + num_characters * 2
+            + num_actions * 2
+            + gamestate_dim
+            + controller_dim
         )
         return data
+
 
 # TODO: Remove this over-engineering - we are going to stick with these feature transforms
 class FeatureConfig(BaseModel):

@@ -289,11 +289,12 @@ class MetricsAccumulator:
         Returns:
             Dictionary of scalar metrics such as ``acc_main`` and ``btn_f1_micro``.
         """
-        summary = {"acc_main": float(self.main_correct.item()) / max(
-            1.0, float(self.main_total.item())
-        ), "acc_main_maj": float(self.main_maj_correct.item()) / max(
-            1.0, float(self.main_total.item())
-        )}
+        summary = {
+            "acc_main": float(self.main_correct.item())
+            / max(1.0, float(self.main_total.item())),
+            "acc_main_maj": float(self.main_maj_correct.item())
+            / max(1.0, float(self.main_total.item())),
+        }
 
         # Main stick
         if self.main_rep_total.item() > 0:

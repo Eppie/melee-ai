@@ -75,7 +75,9 @@ def replay_reward_data():
 
     swapped_rows = [_swap_row_players(row) for row in rows]
     X_swapped, _, _, _, _, _ = _rows_to_dense(swapped_rows, schema)
-    swapped_rewards = compute_frame_rewards(torch.from_numpy(transform(X_swapped)).unsqueeze(0), idx=idx).squeeze(0)
+    swapped_rewards = compute_frame_rewards(
+        torch.from_numpy(transform(X_swapped)).unsqueeze(0), idx=idx
+    ).squeeze(0)
 
     reset_config()
     return {
@@ -180,9 +182,11 @@ def test_compute_value_targets_sequence_gamma(reward_setup):
     X[0, :, reward_col] = stored_returns
 
     gamma = 0.9
-    returns = compute_value_targets(
-        X, colmap, gamma=gamma, reward_idx=reward_col
-    ).squeeze(0).squeeze(-1)
+    returns = (
+        compute_value_targets(X, colmap, gamma=gamma, reward_idx=reward_col)
+        .squeeze(0)
+        .squeeze(-1)
+    )
 
     assert torch.allclose(returns, stored_returns, atol=1e-6)
 
@@ -195,13 +199,17 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
     X[0, :, idx.p2_percent] = torch.tensor([0.0, 1.0, 1.0, 2.0])
 
     gamma = 0.9
-    returns = compute_value_targets(
-        X,
-        colmap,
-        gamma=gamma,
-        reward_idx=None,
-        reward_features=idx,
-    ).squeeze(0).squeeze(-1)
+    returns = (
+        compute_value_targets(
+            X,
+            colmap,
+            gamma=gamma,
+            reward_idx=None,
+            reward_features=idx,
+        )
+        .squeeze(0)
+        .squeeze(-1)
+    )
 
     cfg = get_config().rl
     expected_rewards = torch.tensor(

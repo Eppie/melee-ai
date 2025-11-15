@@ -12,10 +12,10 @@ def unit11_to_sticks01_py(x: float) -> float:
 
 
 def quantize_unit11_to_palette_py(
-        x: Sequence[float],
-        palette11: Sequence[Sequence[float]],
-        *,
-        return_index: bool = False,
+    x: Sequence[float],
+    palette11: Sequence[Sequence[float]],
+    *,
+    return_index: bool = False,
 ) -> list[float] | tuple[list[float], int]:
     """
     Quantize a single point in [-1,1]^D to the nearest palette entry (pure Python).

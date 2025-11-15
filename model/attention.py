@@ -16,7 +16,7 @@ class CausalSelfAttention(nn.Module):
         self.dropout = dropout
         assert embedding_dim % num_heads == 0
         assert num_key_value_heads <= num_heads and num_heads % num_key_value_heads == 0
-        
+
         # Query, key, and value projections
         self.query_projection = nn.Linear(
             embedding_dim, num_heads * self.head_dim, bias=False
@@ -81,7 +81,9 @@ class CausalSelfAttention(nn.Module):
             .contiguous()
             .view(batch_size, sequence_length, channels)
         )
-        attention_output = self.residual_dropout(self.output_projection(attention_output))
+        attention_output = self.residual_dropout(
+            self.output_projection(attention_output)
+        )
         return attention_output
 
 
@@ -89,15 +91,19 @@ def repeat_key_value_heads(hidden_states, num_repetitions):
     """
     Repeats key/value heads to match the number of query heads.
     This is used for grouped-query attention where multiple query heads share the same key/value heads.
-    
+
     Equivalent to: torch.repeat_interleave(hidden_states, dim=1, repeats=num_repetitions)
     """
     if num_repetitions == 1:
         return hidden_states
-    
+
     batch_size, num_key_value_heads, sequence_length, head_dim = hidden_states.shape
     return (
         hidden_states[:, :, None, :, :]
-        .expand(batch_size, num_key_value_heads, num_repetitions, sequence_length, head_dim)
-        .reshape(batch_size, num_key_value_heads * num_repetitions, sequence_length, head_dim)
+        .expand(
+            batch_size, num_key_value_heads, num_repetitions, sequence_length, head_dim
+        )
+        .reshape(
+            batch_size, num_key_value_heads * num_repetitions, sequence_length, head_dim
+        )
     )

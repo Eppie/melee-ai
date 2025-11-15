@@ -223,7 +223,9 @@ def compute_component_sample_weights(
     sh_change = torch.zeros((B, L), device=device, dtype=torch.bool)
     if L > 1:
         sh_change[:, 1:] = sh_idx[:, 1:] != sh_idx[:, :-1]
-    w_shoulder = torch.where(sh_change, shoulder_change_weight, hold_weight).to(torch.float32)
+    w_shoulder = torch.where(sh_change, shoulder_change_weight, hold_weight).to(
+        torch.float32
+    )
     w_shoulder = _normalize(w_shoulder)
 
     # --- BUTTONS (per-button) ---
@@ -263,9 +265,7 @@ def compute_component_sample_weights(
     union_change = union_change | btn_change.any(dim=-1)
 
     value_ratio = (
-        value_change_weight
-        if value_change_weight is not None
-        else main_change_weight
+        value_change_weight if value_change_weight is not None else main_change_weight
     )
     w_global = torch.where(
         union_change,

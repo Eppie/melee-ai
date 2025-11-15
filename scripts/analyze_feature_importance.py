@@ -155,9 +155,7 @@ def _build_label_catalog(
     return catalog
 
 
-def _summarize_head_deltas(
-    baseline, ablated
-) -> Dict[str, Dict[str, float]]:
+def _summarize_head_deltas(baseline, ablated) -> Dict[str, Dict[str, float]]:
     """Return absolute + relative differences per output head."""
 
     def _stats(key: str) -> Dict[str, float]:
@@ -198,7 +196,10 @@ def main() -> None:
     colmap = ColumnMap(feature_names, target_names)
 
     batch = _load_windows(
-        seq_len=seq_len, feature_names=feature_names, feature_spec=feature_spec, limit=NUM_WINDOWS
+        seq_len=seq_len,
+        feature_names=feature_names,
+        feature_spec=feature_spec,
+        limit=NUM_WINDOWS,
     )
     inputs = build_model_inputs(batch, colmap)
 
@@ -210,7 +211,9 @@ def main() -> None:
     weight_abs_sum = model.projection_down.weight.abs().sum(dim=0)
     importance = (avg_abs_values * weight_abs_sum).tolist()
 
-    catalog = _build_label_catalog(config=config, feature_names=feature_names, colmap=colmap)
+    catalog = _build_label_catalog(
+        config=config, feature_names=feature_names, colmap=colmap
+    )
     if len(catalog) != len(importance):
         raise RuntimeError(
             f"Label catalog mismatch: {len(catalog)} entries vs {len(importance)} columns."
@@ -219,7 +222,9 @@ def main() -> None:
     with torch.no_grad():
         baseline_outputs = model(inputs)
 
-    non_one_hot_start = len(catalog) - (len(colmap.gamestate_idxs) + len(colmap.controller_idxs))
+    non_one_hot_start = len(catalog) - (
+        len(colmap.gamestate_idxs) + len(colmap.controller_idxs)
+    )
     feature_results: List[Dict[str, object]] = []
 
     for idx, meta_row in enumerate(catalog):

@@ -250,9 +250,18 @@ def test_quantize_targets_shoulders_floor_palette():
     expected_indices = torch.tensor(
         [
             [
-                max(0, min(len(palette) - 1, bisect_right(palette, shoulder_vals[0]) - 1)),
-                max(0, min(len(palette) - 1, bisect_right(palette, shoulder_vals[1]) - 1)),
-                max(0, min(len(palette) - 1, bisect_right(palette, shoulder_vals[2]) - 1)),
+                max(
+                    0,
+                    min(len(palette) - 1, bisect_right(palette, shoulder_vals[0]) - 1),
+                ),
+                max(
+                    0,
+                    min(len(palette) - 1, bisect_right(palette, shoulder_vals[1]) - 1),
+                ),
+                max(
+                    0,
+                    min(len(palette) - 1, bisect_right(palette, shoulder_vals[2]) - 1),
+                ),
             ]
         ],
         dtype=torch.long,
@@ -268,9 +277,7 @@ def test_quantize_targets_no_shoulder(monkeypatch):
 
     monkeypatch.setattr("controller_quantization._SHOULDER_PALETTE_CPU", None)
 
-    with pytest.raises(
-        AttributeError
-    ):
+    with pytest.raises(AttributeError):
         quantize_targets(batch_Y, colmap)
 
 

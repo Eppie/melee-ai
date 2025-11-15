@@ -284,6 +284,7 @@ def _activation_ffn_flops(
         + gelu_cost
     )
 
+
 def estimate_forward_flops(cfg: Config, batch_size: int, seq_len: int) -> float:
     if batch_size == 0 or seq_len == 0:
         return 0.0

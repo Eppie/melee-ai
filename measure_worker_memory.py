@@ -118,8 +118,18 @@ def _read_smaps_rollup(pid: int) -> Dict[str, int]:
 
 
 def _print_rollup(stats: Dict[str, int]) -> None:
-    keys = ("Rss", "Pss", "Private_Clean", "Private_Dirty", "Shared_Clean", "Shared_Dirty", "Swap")
-    summary = ", ".join(f"{k}={stats.get(k, 0)/1024:.1f} MB" for k in keys if k in stats)
+    keys = (
+        "Rss",
+        "Pss",
+        "Private_Clean",
+        "Private_Dirty",
+        "Shared_Clean",
+        "Shared_Dirty",
+        "Swap",
+    )
+    summary = ", ".join(
+        f"{k}={stats.get(k, 0)/1024:.1f} MB" for k in keys if k in stats
+    )
     if summary:
         print(f"    rollup: {summary}")
 
@@ -212,10 +222,26 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--num-batches", type=int, default=4)
     parser.add_argument("--sleep", type=float, default=0.0)
-    parser.add_argument("--top-maps", type=int, default=5, help="How many smaps entries to report per worker.")
-    parser.add_argument("--data-root", type=Path, default=Path("processed_data_3500"), help="Zarr dataset root to load.")
-    parser.add_argument("--profile-loader", action="store_true", help="Run the first batch inside torch.profiler.")
-    parser.add_argument("--profile-rows", type=int, default=25, help="Row limit for the profiler table.")
+    parser.add_argument(
+        "--top-maps",
+        type=int,
+        default=5,
+        help="How many smaps entries to report per worker.",
+    )
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path("processed_data_3500"),
+        help="Zarr dataset root to load.",
+    )
+    parser.add_argument(
+        "--profile-loader",
+        action="store_true",
+        help="Run the first batch inside torch.profiler.",
+    )
+    parser.add_argument(
+        "--profile-rows", type=int, default=25, help="Row limit for the profiler table."
+    )
     return parser.parse_args(argv)
 
 

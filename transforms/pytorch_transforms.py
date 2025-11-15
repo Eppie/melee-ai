@@ -16,7 +16,7 @@ def unit11_to_sticks01_torch(xy11: Tensor) -> Tensor:
 
 
 def quantize_unit11_to_palette_torch(
-        xy11: Tensor, palette11: Tensor, *, return_index: bool = False
+    xy11: Tensor, palette11: Tensor, *, return_index: bool = False
 ) -> Tensor | Tuple[Tensor, Tensor]:
     """
     Quantize inputs in [-1,1]^D to nearest palette vector (PyTorch).

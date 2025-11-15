@@ -55,13 +55,12 @@ from functools import wraps
 from pathlib import Path
 
 # Check if profiling is enabled via environment variable
-ENABLE_PROFILING = os.environ.get('PROFILE_MODEL_INTERFACE', '0') == '1'
+ENABLE_PROFILING = os.environ.get("PROFILE_MODEL_INTERFACE", "0") == "1"
 
 if ENABLE_PROFILING:
     print("[PROFILING] model_interface.py profiling enabled")
     _profiler = cProfile.Profile()
     _profiler.enable()
-
 
     def _save_profile_stats():
         """Save profiling stats on exit"""
@@ -76,7 +75,7 @@ if ENABLE_PROFILING:
 
         # Save human-readable report
         report_file = output_dir / "model_interface_profile.txt"
-        with open(report_file, 'w') as f:
+        with open(report_file, "w") as f:
             ps = pstats.Stats(_profiler, stream=f)
 
             # Filter to only show model_interface.py functions
@@ -84,17 +83,17 @@ if ENABLE_PROFILING:
             f.write("=" * 80 + "\n")
             f.write("TOP 50 FUNCTIONS BY CUMULATIVE TIME\n")
             f.write("=" * 80 + "\n")
-            ps.sort_stats('cumulative').print_stats('model_interface', 50)
+            ps.sort_stats("cumulative").print_stats("model_interface", 50)
 
             f.write("\n" + "=" * 80 + "\n")
             f.write("TOP 50 FUNCTIONS BY TOTAL TIME\n")
             f.write("=" * 80 + "\n")
-            ps.sort_stats('tottime').print_stats('model_interface', 50)
+            ps.sort_stats("tottime").print_stats("model_interface", 50)
 
             f.write("\n" + "=" * 80 + "\n")
             f.write("TOP 30 CALLERS\n")
             f.write("=" * 80 + "\n")
-            ps.print_callers('model_interface', 30)
+            ps.print_callers("model_interface", 30)
 
         print(f"[PROFILING] Human-readable report saved to: {report_file}")
 
@@ -104,8 +103,7 @@ if ENABLE_PROFILING:
         print("=" * 80)
         ps = pstats.Stats(_profiler)
         ps.strip_dirs()
-        ps.sort_stats('cumulative').print_stats('model_interface', 20)
-
+        ps.sort_stats("cumulative").print_stats("model_interface", 20)
 
     atexit.register(_save_profile_stats)
 else:
@@ -122,6 +120,7 @@ def profile_function(func):
         return func(*args, **kwargs)
 
     return wrapper
+
 
 _DEFAULT_FEATURE_NAMES = get_feature_names()
 _DEFAULT_TARGET_NAMES = get_target_names()
@@ -325,13 +324,21 @@ def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float
 
 # Cache controller feature template
 _CONTROLLER_FEATURE_TEMPLATE = [
-    "button_a", "button_b", "button_xy", "button_lr", "button_z",
-    "main_stick_x", "main_stick_y", "c_stick_x", "c_stick_y", "shoulder_analog"
+    "button_a",
+    "button_b",
+    "button_xy",
+    "button_lr",
+    "button_z",
+    "main_stick_x",
+    "main_stick_y",
+    "c_stick_x",
+    "c_stick_y",
+    "shoulder_analog",
 ]
 
 
 def _controller_state_to_features(
-        prefix: str, state: ControllerState
+    prefix: str, state: ControllerState
 ) -> Dict[str, float]:
     """Convert a ControllerState into prefixed feature values."""
     # Use list comprehension for faster dictionary construction
@@ -356,7 +363,9 @@ _ZERO_PLAYER_CACHE: Dict[str, Dict[str, float]] = {}
 def _zero_player_fields(prefix: str) -> Dict[str, float]:
     """Return zero-valued player features for prefix (cached)."""
     if prefix not in _ZERO_PLAYER_CACHE:
-        _ZERO_PLAYER_CACHE[prefix] = {f"{prefix}_{name}": dtype(0) for name, dtype in PLAYER_SPEC}
+        _ZERO_PLAYER_CACHE[prefix] = {
+            f"{prefix}_{name}": dtype(0) for name, dtype in PLAYER_SPEC
+        }
     return _ZERO_PLAYER_CACHE[prefix].copy()
 
 
@@ -375,8 +384,8 @@ def _prefixed_player_fields(player, prefix: str) -> Dict[str, float]:
 
 
 def model_to_dolphin01(
-        model_out: np.ndarray,
-        palette11: np.ndarray | None = None,
+    model_out: np.ndarray,
+    palette11: np.ndarray | None = None,
 ) -> np.ndarray:
     """Convert model outputs to Dolphin's [0, 1] coordinate space."""
     arr = np.asarray(model_out)
@@ -404,9 +413,9 @@ def model_to_dolphin01(
 
 
 def collect_raw_inputs_from_gamestate(
-        gamestate: GameState,
-        bot_port: int,
-        opp_port: int,
+    gamestate: GameState,
+    bot_port: int,
+    opp_port: int,
 ) -> ModelFrameInputs:
     """Extract both raw and transformed feature dictionaries."""
     ego_player = gamestate.players.get(bot_port)
@@ -444,11 +453,13 @@ class GPTInferenceEngine:
     """Online inference helper around the GPT controller model."""
 
     def __init__(
-            self,
-            checkpoint_path: str | Path,
+        self,
+        checkpoint_path: str | Path,
     ) -> None:
         """Load the GPT checkpoint and initialize inference buffers."""
-        print_cached(f"[TRACE:GPTInferenceEngine.__init__] Loading checkpoint from {checkpoint_path}")
+        print_cached(
+            f"[TRACE:GPTInferenceEngine.__init__] Loading checkpoint from {checkpoint_path}"
+        )
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})
 
@@ -524,12 +535,17 @@ class GPTInferenceEngine:
                 if key in self.feature_names and key not in controller_feature_keys:
                     controller_feature_keys.append(key)
         shoulder_key = "p1_shoulder_analog"
-        if shoulder_key in self.feature_names and shoulder_key not in controller_feature_keys:
+        if (
+            shoulder_key in self.feature_names
+            and shoulder_key not in controller_feature_keys
+        ):
             controller_feature_keys.append(shoulder_key)
         self._controller_feature_keys: Tuple[str, ...] = tuple(controller_feature_keys)
 
         # Create index mapping for fast tensor construction
-        self._feature_name_to_idx = {name: idx for idx, name in enumerate(self.feature_names)}
+        self._feature_name_to_idx = {
+            name: idx for idx, name in enumerate(self.feature_names)
+        }
 
         self._prev_controller_features: Dict[str, float] = {}
         self._update_prev_controller_features(ControllerState.neutral())
@@ -562,7 +578,7 @@ class GPTInferenceEngine:
         return build_model_inputs(batch_X, self.colmap)
 
     def _override_controller_features(
-            self, features: Mapping[str, float]
+        self, features: Mapping[str, float]
     ) -> Dict[str, float]:
         """Prefer live controller readings, only fall back to cached values if missing."""
         if not self._controller_feature_keys:
@@ -606,7 +622,7 @@ class GPTInferenceEngine:
         return {name: float(raw_inputs[name]) for name in self.target_names}
 
     def _record_frame(
-            self, model_features: Mapping[str, float], raw_inputs: Mapping[str, float]
+        self, model_features: Mapping[str, float], raw_inputs: Mapping[str, float]
     ) -> FrameRecord:
         """Append the current frame's data to history."""
         record = FrameRecord(
@@ -672,9 +688,7 @@ class GPTInferenceEngine:
         self._prev_stock = stock_value
 
     # TODO: Raw or processed here?
-    def _decode_stick(
-            self, logits: torch.Tensor, palette: np.ndarray
-    ) -> np.ndarray:
+    def _decode_stick(self, logits: torch.Tensor, palette: np.ndarray) -> np.ndarray:
         """Convert stick logits into palette coordinates."""
         idx = torch.argmax(logits.detach(), dim=-1)
         idx_np = idx.cpu().numpy().astype(np.int32)
@@ -728,7 +742,7 @@ class GPTInferenceEngine:
         return self._build_inputs(batch)
 
     def predict_from_raw(
-            self, frame_inputs: Mapping[str, float] | ModelFrameInputs
+        self, frame_inputs: Mapping[str, float] | ModelFrameInputs
     ) -> ControllerState:
         """Run inference on raw or preprocessed frame inputs."""
         # Fast path type checking
@@ -764,7 +778,7 @@ _ACTIVE_ENGINE: Optional[GPTInferenceEngine] = None
 
 
 def apply_model_outputs_to_game(
-        controller: Controller, model_outputs: ControllerState
+    controller: Controller, model_outputs: ControllerState
 ) -> None:
     """Apply model_outputs to the Dolphin controller."""
     controller.release_all()

@@ -159,9 +159,7 @@ def initialize_training_components(
                 "seq_len": getattr(config, "seq_len", None),
             },
         )
-    logger = WandbLogger(
-        wandb_run, enabled=not debug and wandb_run is not None
-    )
+    logger = WandbLogger(wandb_run, enabled=not debug and wandb_run is not None)
 
     start_epoch, global_step, start_iter = _load_latest_checkpoint(
         out_dir, model, optimizer, scaler, device

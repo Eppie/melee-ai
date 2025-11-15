@@ -192,9 +192,7 @@ class TrajectoryBuffer:
             if returns is not None:
                 returns = returns.detach().clone().reshape(-1)
                 if returns.numel() != len(self.current_trajectory):
-                    raise ValueError(
-                        "Returns length does not match trajectory length"
-                    )
+                    raise ValueError("Returns length does not match trajectory length")
                 trajectory.returns = returns
             self.completed_trajectories.append(trajectory)
             self.current_trajectory = []

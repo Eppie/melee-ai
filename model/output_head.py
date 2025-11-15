@@ -13,4 +13,3 @@ class SimpleHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
-

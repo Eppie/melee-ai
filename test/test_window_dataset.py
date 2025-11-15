@@ -95,18 +95,26 @@ def test_window_dataset_double_quantization(zarr_corpus: Path):
     original_y = root["ep_000000/Y"][:4]
 
     # Assert that the X tensor has been transformed (i.e., it's different from the original)
-    assert not np.allclose(x_window.numpy(), original_x), "X tensor should be transformed"
+    assert not np.allclose(
+        x_window.numpy(), original_x
+    ), "X tensor should be transformed"
 
     # Assert that the Y tensor has NOT been transformed (i.e., it's the same as the original)
-    assert np.allclose(y_window.numpy(), original_y), "Y tensor should not be transformed"
+    assert np.allclose(
+        y_window.numpy(), original_y
+    ), "Y tensor should not be transformed"
 
 
-def test_window_to_episode_prefers_window_index(monkeypatch: pytest.MonkeyPatch, zarr_corpus: Path) -> None:
+def test_window_to_episode_prefers_window_index(
+    monkeypatch: pytest.MonkeyPatch, zarr_corpus: Path
+) -> None:
     dataset = window_dataset.WindowDataset(zarr_corpus)
     assert dataset.index._window_index is not None
 
     def fail_searchsorted(*args, **kwargs):
-        raise AssertionError("searchsorted should not be invoked when window_index is available")
+        raise AssertionError(
+            "searchsorted should not be invoked when window_index is available"
+        )
 
     monkeypatch.setattr(window_dataset.np, "searchsorted", fail_searchsorted)
     for idx in range(dataset.index.total_windows):

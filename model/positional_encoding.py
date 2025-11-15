@@ -1,6 +1,7 @@
 import torch
 from torch import Tensor
 
+
 def apply_rotary_emb(states: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
     """
     Apply Rotary Positional Embeddings (RoPE) to a 4-D multi-head tensor.

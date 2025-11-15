@@ -17,6 +17,7 @@ from transforms.pytorch_transforms import (
     quantize_unit11_to_palette_torch,
 )
 
+
 def test_sticks01_to_unit11_equivalence():
     # Python
     py_val = 0.25
@@ -77,12 +78,16 @@ def test_quantize_unit11_to_palette_equivalence():
     # NumPy
     np_palette = np.array(palette, dtype=np.float32)
     np_point = np.array(point, dtype=np.float32)
-    np_quant, np_idx = quantize_unit11_to_palette_np(np_point, np_palette, return_index=True)
+    np_quant, np_idx = quantize_unit11_to_palette_np(
+        np_point, np_palette, return_index=True
+    )
 
     # PyTorch
     torch_palette = torch.tensor(palette, dtype=torch.float32)
     torch_point = torch.tensor(point, dtype=torch.float32)
-    torch_quant, torch_idx = quantize_unit11_to_palette_torch(torch_point, torch_palette, return_index=True)
+    torch_quant, torch_idx = quantize_unit11_to_palette_torch(
+        torch_point, torch_palette, return_index=True
+    )
 
     expected_quant = [0.0, 0.0]
     expected_idx = 4
@@ -94,7 +99,9 @@ def test_quantize_unit11_to_palette_equivalence():
     np.testing.assert_allclose(np_quant, expected_quant, atol=1e-6)
 
     assert torch_idx == expected_idx
-    torch.testing.assert_close(torch_quant, torch.tensor(expected_quant, dtype=torch.float32))
+    torch.testing.assert_close(
+        torch_quant, torch.tensor(expected_quant, dtype=torch.float32)
+    )
 
     # Check equivalence
     assert py_idx == np_idx
@@ -109,12 +116,15 @@ def test_quantize_unit11_to_palette_equivalence():
 
     assert py_quant_no_idx == expected_quant
     np.testing.assert_allclose(np_quant_no_idx, expected_quant, atol=1e-6)
-    torch.testing.assert_close(torch_quant_no_idx, torch.tensor(expected_quant, dtype=torch.float32))
+    torch.testing.assert_close(
+        torch_quant_no_idx, torch.tensor(expected_quant, dtype=torch.float32)
+    )
 
 
 from transforms.numpy_transforms import scale_np
 from transforms.python_transforms import scale
 from transforms.pytorch_transforms import scale_torch
+
 
 def test_scale_equivalence():
     # Test with a single scalar
@@ -153,6 +163,7 @@ def test_scale_equivalence():
 from transforms.numpy_transforms import bit01_to_sign11_np
 from transforms.python_transforms import bit01_to_sign11
 from transforms.pytorch_transforms import bit01_to_sign11_torch
+
 
 def test_bit01_to_sign11_equivalence():
     # Test with 0.0

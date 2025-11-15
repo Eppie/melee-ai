@@ -35,7 +35,9 @@ def _ensure_config_initialized() -> None:
     except RuntimeError:
         init_config()
 
+
 # TODO: Rename this file
+
 
 def _row_to_winner_first(rows: List[Row]) -> List[Row]:
     """Reorder ``rows`` so the winner consistently appears as player 1.
@@ -95,7 +97,9 @@ class Schema:
     targets: List[str]
 
 
-def _player_active(rows: List[Row], prefix: str, *, stick_eps: float = 0.05, min_frames: int = 10) -> bool:
+def _player_active(
+    rows: List[Row], prefix: str, *, stick_eps: float = 0.05, min_frames: int = 10
+) -> bool:
     """Return True if the specified player shows meaningful controller input."""
     stick_x = f"{prefix}main_stick_x"
     stick_y = f"{prefix}main_stick_y"
@@ -212,7 +216,9 @@ def _choose_chunk_t(num_features: int, elem_bytes: int) -> int:
     ``config.seq_len`` so sliding windows rarely straddle chunk boundaries.
     """
     config = get_config()
-    approx_t = int((config.zarr.target_chunk_mb * (1024**2)) / (num_features * elem_bytes))
+    approx_t = int(
+        (config.zarr.target_chunk_mb * (1024**2)) / (num_features * elem_bytes)
+    )
     approx_t = max(config.seq_len, approx_t)
     # align to a multiple of seq len to minimize boundary splits
     if config.seq_len > 0:
@@ -259,7 +265,9 @@ class EpisodeWriter:
             self._chunk_t_cache[num_features] = ct
         return self._chunk_t_cache[num_features]
 
-    def write_episode(self, episode_id: int, features: RawNumpyArray, targets: RawNumpyArray) -> str:
+    def write_episode(
+        self, episode_id: int, features: RawNumpyArray, targets: RawNumpyArray
+    ) -> str:
         """Write ``features``/``targets`` arrays for ``episode_id`` into the shard.
 
         Example
@@ -336,7 +344,9 @@ def _rows_to_dense(
     """
     num_frames = len(rows)
     if num_frames < 2:
-        raise ValueError(f"Need at least 2 frames for temporal shifting, got {num_frames}")
+        raise ValueError(
+            f"Need at least 2 frames for temporal shifting, got {num_frames}"
+        )
     base_feature_names = [
         name for name in schema.features if name not in DERIVED_FEATURES
     ]
@@ -397,9 +407,7 @@ def _process_episode_task(
         rows, schema
     )
 
-    derived_features = [
-        name for name in schema.features if name in DERIVED_FEATURES
-    ]
+    derived_features = [name for name in schema.features if name in DERIVED_FEATURES]
     if derived_features:
         torch_X = torch.from_numpy(X).unsqueeze(0)  # [1, T, F]
         colmap = ColumnMap(feature_names, target_names)
@@ -408,15 +416,21 @@ def _process_episode_task(
         for name in derived_features:
             if name != "value_target":
                 raise ValueError(f"Unsupported derived feature '{name}'.")
-            value_targets = compute_value_targets(
-                torch_X,
-                colmap,
-                gamma=config.rl.gamma,
-                reward_idx=None,
-                reward_features=reward_features,
-            ).squeeze(0).squeeze(-1)
+            value_targets = (
+                compute_value_targets(
+                    torch_X,
+                    colmap,
+                    gamma=config.rl.gamma,
+                    reward_idx=None,
+                    reward_features=reward_features,
+                )
+                .squeeze(0)
+                .squeeze(-1)
+            )
             value_column = value_targets.cpu().numpy().astype(np.float32, copy=False)
-            X = np.concatenate([X, value_column.reshape(value_column.shape[0], 1)], axis=1)
+            X = np.concatenate(
+                [X, value_column.reshape(value_column.shape[0], 1)], axis=1
+            )
             feat_dtypes.append("float32")
             feature_names.append(name)
 
@@ -708,9 +722,9 @@ def main():
     init_config()
     config = get_config()
 
-    train_slp_files = sorted(glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp")))[
-        : config.zarr.episode_count
-    ]
+    train_slp_files = sorted(
+        glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp"))
+    )[: config.zarr.episode_count]
     validation_slp_files = sorted(
         glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp"))
     )[
@@ -773,4 +787,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

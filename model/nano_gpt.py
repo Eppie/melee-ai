@@ -40,7 +40,9 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, embedding_dim, num_heads, num_key_value_heads, dropout):
         super().__init__()
-        self.attention = CausalSelfAttention(embedding_dim, num_heads, num_key_value_heads, dropout)
+        self.attention = CausalSelfAttention(
+            embedding_dim, num_heads, num_key_value_heads, dropout
+        )
         self.mlp = MLP(embedding_dim)
 
     def forward(
@@ -65,7 +67,12 @@ class GPT(nn.Module):
 
         self.blocks = nn.ModuleList(
             [
-                Block(self.embedding_dim, model_config.n_head, model_config.n_kv_head, model_config.dropout)
+                Block(
+                    self.embedding_dim,
+                    model_config.n_head,
+                    model_config.n_kv_head,
+                    model_config.dropout,
+                )
                 for _ in range(model_config.n_layer)
             ]
         )
@@ -86,7 +93,9 @@ class GPT(nn.Module):
 
         main_stick_input_size = self.embedding_dim + self.button_output_size
         self.main_stick_head = SimpleHead(
-            main_stick_input_size, self.main_stick_output_size, hidden=head_hidden_dim
+            main_stick_input_size,
+            self.main_stick_output_size,
+            hidden=head_hidden_dim
             # self.embedding_dim, self.main_stick_output_size, hidden=head_hidden_dim
         )
 
@@ -94,7 +103,9 @@ class GPT(nn.Module):
             self.embedding_dim + self.button_output_size + self.main_stick_output_size
         )
         self.c_stick_head = SimpleHead(
-            c_stick_input_size, self.c_stick_output_size, hidden=head_hidden_dim
+            c_stick_input_size,
+            self.c_stick_output_size,
+            hidden=head_hidden_dim
             # self.embedding_dim, self.c_stick_output_size, hidden=head_hidden_dim
         )
 
@@ -105,7 +116,9 @@ class GPT(nn.Module):
             + self.c_stick_output_size
         )
         self.shoulder_head = SimpleHead(
-            shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
+            shoulder_input_size,
+            self.shoulder_output_size,
+            hidden=head_hidden_dim
             # self.embedding_dim, self.shoulder_output_size, hidden=head_hidden_dim
         )
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim)
@@ -113,7 +126,9 @@ class GPT(nn.Module):
 
         self.rotary_sequence_length = self.block_size * 2
         head_dim = model_config.n_embd // model_config.n_head
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_sequence_length, head_dim)
+        cos, sin = self._precompute_rotary_embeddings(
+            self.rotary_sequence_length, head_dim
+        )
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
@@ -137,7 +152,7 @@ class GPT(nn.Module):
 
     # TODO: Lower base since we have shorter sequences?
     def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=10000.0):
-    # def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=256.0):
+        # def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=256.0):
         device = _resolve_device()
         # stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
@@ -211,16 +226,24 @@ class GPT(nn.Module):
         )
 
         c_stick = self.c_stick_head(
-            torch.cat((base_hidden_states, button_logits.detach(), main_stick.detach()), dim=-1)
+            torch.cat(
+                (base_hidden_states, button_logits.detach(), main_stick.detach()),
+                dim=-1,
+            )
             # base_hidden_states,
         )
 
         shoulder = self.shoulder_head(
             torch.cat(
-                (base_hidden_states, button_logits.detach(), main_stick.detach(), c_stick.detach()),
+                (
+                    base_hidden_states,
+                    button_logits.detach(),
+                    main_stick.detach(),
+                    c_stick.detach(),
+                ),
                 dim=-1,
             )
-        # base_hidden_states,
+            # base_hidden_states,
         )
 
         outputs = TensorDict(

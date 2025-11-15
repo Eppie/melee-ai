@@ -53,35 +53,67 @@ def log_player_snapshot(gamestate, ports, death_counts, death_percents, fps=None
         percent_str = percent if percent is not None else "?"
         deaths = death_counts.get(port, 0)
         ko_window = _format_ko_window(death_percents.get(port))
-        snapshot.append(f"P{port}: {deaths} deaths (KO% min/med/max: {ko_window}), {percent_str}%")
+        snapshot.append(
+            f"P{port}: {deaths} deaths (KO% min/med/max: {ko_window}), {percent_str}%"
+        )
     fps_str = "FPS: n/a" if fps is None else f"FPS: {fps:.2f}"
     print(f"[Frame {gamestate.frame} | {fps_str}] " + " | ".join(snapshot))
 
 
 if __name__ == "__main__":
     init_config()
-    default_dolphin_path = Path("/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu")
-    default_dolphin_path = str(default_dolphin_path) if default_dolphin_path.exists() else None
+    default_dolphin_path = Path(
+        "/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu"
+    )
+    default_dolphin_path = (
+        str(default_dolphin_path) if default_dolphin_path.exists() else None
+    )
     default_dolphin_home = REPO_ROOT / "dolphin-home" / "User"
     default_dolphin_home.mkdir(parents=True, exist_ok=True)
-    parser = argparse.ArgumentParser(description='Example of libmelee in action')
-    parser.add_argument('--debug', '-d', action='store_true',
-                        help='Debug mode. Creates a CSV of all game states')
-    parser.add_argument('--address', '-a', default="127.0.0.1",
-                        help='IP address of Slippi/Wii')
-    parser.add_argument('--dolphin_executable_path', '-e', default=default_dolphin_path,
-                        help='Path to the dolphin-emu-nogui executable')
-    parser.add_argument('--iso', default=None, type=str,
-                        help='Path to melee iso.')
-    parser.add_argument('--checkpoint', '-c', type=Path,
-                        default=Path('/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep006_025002.pt'),
-                        help='Path to trained model checkpoint (.pt)')
-    parser.add_argument('--button-threshold', default=0.45, type=float,
-                        help='Sigmoid threshold for button activation')
-    parser.add_argument('--warmup-frames', default=256, type=int,
-                        help='Number of frames to buffer before using the model output')
-    parser.add_argument('--data-root', default=None, type=str,
-                        help='Dataset directory with meta.json; defaults to checkpoint config value')
+    parser = argparse.ArgumentParser(description="Example of libmelee in action")
+    parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        help="Debug mode. Creates a CSV of all game states",
+    )
+    parser.add_argument(
+        "--address", "-a", default="127.0.0.1", help="IP address of Slippi/Wii"
+    )
+    parser.add_argument(
+        "--dolphin_executable_path",
+        "-e",
+        default=default_dolphin_path,
+        help="Path to the dolphin-emu-nogui executable",
+    )
+    parser.add_argument("--iso", default=None, type=str, help="Path to melee iso.")
+    parser.add_argument(
+        "--checkpoint",
+        "-c",
+        type=Path,
+        default=Path(
+            "/Users/eppie/PycharmProjects/nano-melee/checkpoints/model_ep006_025002.pt"
+        ),
+        help="Path to trained model checkpoint (.pt)",
+    )
+    parser.add_argument(
+        "--button-threshold",
+        default=0.45,
+        type=float,
+        help="Sigmoid threshold for button activation",
+    )
+    parser.add_argument(
+        "--warmup-frames",
+        default=256,
+        type=int,
+        help="Number of frames to buffer before using the model output",
+    )
+    parser.add_argument(
+        "--data-root",
+        default=None,
+        type=str,
+        help="Dataset directory with meta.json; defaults to checkpoint config value",
+    )
 
     args = parser.parse_args()
     engine = GPTInferenceEngine(
@@ -109,19 +141,14 @@ if __name__ == "__main__":
             port=1,
             type=ControllerType.STANDARD,
         ),
-        2: Controller(
-            console=console,
-            port=2,
-            type=ControllerType.STANDARD)
+        2: Controller(console=console, port=2, type=ControllerType.STANDARD),
     }
-
 
     def signal_handler(sig, frame):
         for controller in controllers.values():
             controller.disconnect()
         console.stop()
         sys.exit(0)
-
 
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -183,10 +210,14 @@ if __name__ == "__main__":
                 if last_log_time is not None and now > last_log_time:
                     elapsed = now - last_log_time
                     fps = frames_since_last_log / elapsed
-                log_player_snapshot(gamestate, ports, death_counts, death_percents, fps=fps)
+                log_player_snapshot(
+                    gamestate, ports, death_counts, death_percents, fps=fps
+                )
                 last_log_time = now
                 frames_since_last_log = 0
-            raw_model_inputs = collect_raw_inputs_from_gamestate(gamestate, BOT_PORT, OPP_PORT)
+            raw_model_inputs = collect_raw_inputs_from_gamestate(
+                gamestate, BOT_PORT, OPP_PORT
+            )
             controller_state = engine.predict_from_raw(raw_model_inputs)
             apply_model_outputs_to_game(controllers[BOT_PORT], controller_state)
             previous_gamestate = gamestate

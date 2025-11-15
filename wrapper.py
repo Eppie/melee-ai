@@ -37,9 +37,11 @@ class NoneCheckInstrumenter(ast.NodeTransformer):
         comparator = node.comparators[0]
 
         # Check if comparing with None using 'is' or 'is not'
-        if not (isinstance(op, (ast.Is, ast.IsNot)) and
-                isinstance(comparator, ast.Constant) and
-                comparator.value is None):
+        if not (
+            isinstance(op, (ast.Is, ast.IsNot))
+            and isinstance(comparator, ast.Constant)
+            and comparator.value is None
+        ):
             return False
 
         return True
@@ -58,7 +60,7 @@ class NoneCheckInstrumenter(ast.NodeTransformer):
                 current = current.value
             if isinstance(current, ast.Name):
                 parts.append(current.id)
-            return '.'.join(reversed(parts))
+            return ".".join(reversed(parts))
         elif isinstance(left, ast.Subscript):
             # For subscripts like dict[key], approximate
             return ast.unparse(left)
@@ -71,8 +73,8 @@ class NoneCheckInstrumenter(ast.NodeTransformer):
         check_id = f"check_{self.counter}"
 
         # Get line number from original node
-        lineno = getattr(original_node, 'lineno', 1)
-        col_offset = getattr(original_node, 'col_offset', 0)
+        lineno = getattr(original_node, "lineno", 1)
+        col_offset = getattr(original_node, "col_offset", 0)
 
         # Create a helper function to pretty print locals
         # This function will be defined inline and then called
@@ -94,17 +96,17 @@ def _pretty_print_locals(locals_dict):
         except Exception:
             print(f'  {key} = <unprintable>', file=sys.stdout, flush=True)
 """
-        
+
         # Parse the helper function
         pretty_print_tree = ast.parse(pretty_print_locals_code)
         pretty_print_func = pretty_print_tree.body[0]
         ast.fix_missing_locations(pretty_print_func)
-        
+
         # Create a check key for tracking (filename, line_number, variable_name)
         check_key = f"{self.filename}:{lineno}:{var_name}"
         # Escape the check_key for use in Python code
         check_key_repr = repr(check_key)
-        
+
         # The print statement we want to inject
         # We only print if the variable IS None AND we haven't printed this check before
         # First, check if we should print (only once per unique check)
@@ -122,60 +124,60 @@ if check_key not in _none_check_printed:
 else:
     _should_print = False
 """
-        
+
         # Parse the tracking code
         tracking_tree = ast.parse(check_tracking_code)
         tracking_stmts = tracking_tree.body
         for stmt in tracking_stmts:
             ast.fix_missing_locations(stmt)
-        
+
         # The print statement we want to inject (wrapped in if _should_print)
         print_header = ast.Expr(
             value=ast.Call(
-                func=ast.Name(id='print', ctx=ast.Load()),
+                func=ast.Name(id="print", ctx=ast.Load()),
                 args=[
-                    ast.JoinedStr(values=[
-                        ast.Constant(value=f"\n{'=' * 60}\n"),
-                        ast.Constant(value=f"[NONE-CHECK] File: {self.filename}\n"),
-                        ast.Constant(value=f"Line: {lineno}\n"),
-                        ast.Constant(value=f"Variable: {var_name}\n"),
-                        ast.Constant(value=f"Check type: {check_type}\n"),
-                        ast.Constant(value=f"Locals:\n"),
-                    ])
+                    ast.JoinedStr(
+                        values=[
+                            ast.Constant(value=f"\n{'=' * 60}\n"),
+                            ast.Constant(value=f"[NONE-CHECK] File: {self.filename}\n"),
+                            ast.Constant(value=f"Line: {lineno}\n"),
+                            ast.Constant(value=f"Variable: {var_name}\n"),
+                            ast.Constant(value=f"Check type: {check_type}\n"),
+                            ast.Constant(value=f"Locals:\n"),
+                        ]
+                    )
                 ],
-                keywords=[]
+                keywords=[],
             ),
             lineno=lineno,
-            col_offset=col_offset
+            col_offset=col_offset,
         )
-        
+
         # Call the pretty print function
         print_locals = ast.Expr(
             value=ast.Call(
-                func=ast.Name(id='_pretty_print_locals', ctx=ast.Load()),
+                func=ast.Name(id="_pretty_print_locals", ctx=ast.Load()),
                 args=[
                     ast.Call(
-                        func=ast.Name(id='locals', ctx=ast.Load()),
-                        args=[],
-                        keywords=[]
+                        func=ast.Name(id="locals", ctx=ast.Load()), args=[], keywords=[]
                     )
                 ],
-                keywords=[]
+                keywords=[],
             ),
             lineno=lineno,
-            col_offset=col_offset
+            col_offset=col_offset,
         )
-        
+
         # Wrap print statements in if _should_print
         print_block = ast.If(
-            test=ast.Name(id='_should_print', ctx=ast.Load()),
+            test=ast.Name(id="_should_print", ctx=ast.Load()),
             body=[print_header, print_locals],
             orelse=[],
             lineno=lineno,
-            col_offset=col_offset
+            col_offset=col_offset,
         )
         ast.fix_missing_locations(print_block)
-        
+
         # Combine: tracking code, define function, then conditional print statements
         print_call = tracking_stmts + [pretty_print_func, print_block]
 
@@ -183,7 +185,11 @@ else:
         for stmt in print_call:
             ast.fix_missing_locations(stmt)
             # Ensure end_lineno is valid (must be >= lineno)
-            if hasattr(stmt, 'end_lineno') and stmt.end_lineno and stmt.end_lineno < stmt.lineno:
+            if (
+                hasattr(stmt, "end_lineno")
+                and stmt.end_lineno
+                and stmt.end_lineno < stmt.lineno
+            ):
                 stmt.end_lineno = stmt.lineno
 
         return print_call
@@ -220,24 +226,28 @@ else:
                 compare_node = ast.Compare(
                     left=var_node,
                     ops=[ast.Is()],
-                    comparators=[ast.Constant(value=None)]
+                    comparators=[ast.Constant(value=None)],
                 )
                 # Set location for Compare node
                 compare_node.lineno = node.test.lineno
                 compare_node.col_offset = node.test.col_offset
-                
+
                 none_check = ast.If(
                     test=compare_node,
                     body=self._create_check_code(var_name, check_type, node.test),
                     orelse=[],
                     lineno=node.lineno,
-                    col_offset=node.col_offset
+                    col_offset=node.col_offset,
                 )
 
                 # Fix location info - ensure end_lineno is valid
                 ast.fix_missing_locations(none_check)
                 # Ensure end_lineno is valid (must be >= lineno)
-                if hasattr(none_check, 'end_lineno') and none_check.end_lineno and none_check.end_lineno < none_check.lineno:
+                if (
+                    hasattr(none_check, "end_lineno")
+                    and none_check.end_lineno
+                    and none_check.end_lineno < none_check.lineno
+                ):
                     none_check.end_lineno = none_check.lineno
 
                 # We can't return multiple statements from a single node visit
@@ -253,10 +263,15 @@ else:
                         pass
                     else:
                         # Regular else block
-                        node.orelse = self._create_check_code(var_name, check_type, node.test) + node.orelse
+                        node.orelse = (
+                            self._create_check_code(var_name, check_type, node.test)
+                            + node.orelse
+                        )
                 else:
                     # No else block, create one with just the logging
-                    node.orelse = self._create_check_code(var_name, check_type, node.test)
+                    node.orelse = self._create_check_code(
+                        var_name, check_type, node.test
+                    )
 
         return node
 
@@ -283,12 +298,15 @@ def instrument_code(source_code, filename):
             """Ensure all nodes have valid line and column ranges."""
             for child in ast.walk(node):
                 # Fix line ranges (end_lineno must be >= lineno)
-                if hasattr(child, 'lineno') and hasattr(child, 'end_lineno'):
+                if hasattr(child, "lineno") and hasattr(child, "end_lineno"):
                     if child.end_lineno and child.end_lineno < child.lineno:
                         child.end_lineno = child.lineno
                 # Fix column ranges (end_col_offset must be >= col_offset)
-                if hasattr(child, 'col_offset') and hasattr(child, 'end_col_offset'):
-                    if child.end_col_offset is not None and child.col_offset is not None:
+                if hasattr(child, "col_offset") and hasattr(child, "end_col_offset"):
+                    if (
+                        child.end_col_offset is not None
+                        and child.col_offset is not None
+                    ):
                         if child.end_col_offset < child.col_offset:
                             child.end_col_offset = child.col_offset
 
@@ -313,7 +331,11 @@ def should_instrument_file(filepath):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python wrapper.py target_script.py [args...]", file=sys.stdout, flush=True)
+        print(
+            "Usage: python wrapper.py target_script.py [args...]",
+            file=sys.stdout,
+            flush=True,
+        )
         sys.exit(1)
 
     target_script = sys.argv[1]
@@ -332,36 +354,50 @@ def main():
         os.chdir(target_dir)
 
     # Add target directory to path
-    sys.path.insert(0, target_dir if target_dir else '.')
+    sys.path.insert(0, target_dir if target_dir else ".")
 
     # Check if we should instrument this file
     if not should_instrument_file(target_script):
-        print(f"Note: {target_script} is outside project root, running without instrumentation", file=sys.stdout, flush=True)
+        print(
+            f"Note: {target_script} is outside project root, running without instrumentation",
+            file=sys.stdout,
+            flush=True,
+        )
         # Just run it normally using runpy
         try:
-            runpy.run_path(target_script, run_name='__main__')
+            runpy.run_path(target_script, run_name="__main__")
         except Exception as e:
-            print(f"\nError executing {target_script}: {e}", file=sys.stdout, flush=True)
+            print(
+                f"\nError executing {target_script}: {e}", file=sys.stdout, flush=True
+            )
             traceback.print_exc()
             sys.exit(1)
     else:
-        print(f"Instrumenting {target_script} for None-check logging...", file=sys.stdout, flush=True)
+        print(
+            f"Instrumenting {target_script} for None-check logging...",
+            file=sys.stdout,
+            flush=True,
+        )
         # Read and instrument the code
-        with open(target_script, 'r') as f:
+        with open(target_script, "r") as f:
             source_code = f.read()
 
         instrumented_code = instrument_code(source_code, target_script)
 
         # Write instrumented code to a temporary file and execute it
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as tmp_file:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False
+        ) as tmp_file:
             tmp_file.write(instrumented_code)
             tmp_file_path = tmp_file.name
 
         try:
             # Execute the temporary file using runpy
-            runpy.run_path(tmp_file_path, run_name='__main__')
+            runpy.run_path(tmp_file_path, run_name="__main__")
         except Exception as e:
-            print(f"\nError executing {target_script}: {e}", file=sys.stdout, flush=True)
+            print(
+                f"\nError executing {target_script}: {e}", file=sys.stdout, flush=True
+            )
             traceback.print_exc()
             sys.exit(1)
         finally:
@@ -372,5 +408,5 @@ def main():
                 pass
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

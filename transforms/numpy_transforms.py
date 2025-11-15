@@ -13,10 +13,10 @@ def unit11_to_sticks01_np(xy11: NDArray[np.floating]) -> NDArray[np.floating]:
 
 
 def quantize_unit11_to_palette_np(
-        xy11: NDArray[np.floating],
-        palette11: NDArray[np.floating],
-        *,
-        return_index: bool = False,
+    xy11: NDArray[np.floating],
+    palette11: NDArray[np.floating],
+    *,
+    return_index: bool = False,
 ) -> NDArray[np.floating] | tuple[NDArray[np.floating], NDArray[np.intp]]:
     """
     Quantize inputs in [-1,1]^D to nearest palette vector (NumPy).

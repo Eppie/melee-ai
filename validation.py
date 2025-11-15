@@ -124,7 +124,9 @@ def _apply_checkpoint_config(config, raw_config: Any) -> None:
         _merge_config_section(config.train, cfg_dict)
 
 
-def _patch_model_config_from_state_dict(config, state_dict: Optional[Dict[str, torch.Tensor]]) -> None:
+def _patch_model_config_from_state_dict(
+    config, state_dict: Optional[Dict[str, torch.Tensor]]
+) -> None:
     """Infer critical model hyperparameters directly from checkpoint weights."""
     if not isinstance(state_dict, dict):
         return
@@ -146,9 +148,9 @@ def _patch_model_config_from_state_dict(config, state_dict: Optional[Dict[str, t
 
 
 def _nearest_diffs_within_window(
-        true_frames: Sequence[int],
-        pred_frames: Sequence[int],
-        window: int,
+    true_frames: Sequence[int],
+    pred_frames: Sequence[int],
+    window: int,
 ) -> np.ndarray:
     """Return pred-true latencies for each true frame using the nearest predicted
     frame within ±window. Inputs are assumed sorted ascending (they are by construction).
@@ -194,14 +196,10 @@ def _angle_diff(a1: torch.Tensor, a2: torch.Tensor) -> torch.Tensor:
 
 
 def _encode_state_codes(
-        main_idx: torch.Tensor, c_idx: torch.Tensor, buttons: torch.Tensor
+    main_idx: torch.Tensor, c_idx: torch.Tensor, buttons: torch.Tensor
 ) -> torch.Tensor:
     btn_codes = _pack_button_states(buttons)
-    return (
-            (main_idx.to(torch.int64) << 16)
-            | (c_idx.to(torch.int64) << 8)
-            | btn_codes
-    )
+    return (main_idx.to(torch.int64) << 16) | (c_idx.to(torch.int64) << 8) | btn_codes
 
 
 @dataclass(frozen=True)
@@ -235,7 +233,9 @@ class PreloadedWindowDataset(WindowDataset):
         progress: bool = True,
     ) -> None:
         super().__init__(data_dir, feature_transforms=feature_transforms)
-        self._episode_cache: List[_CachedEpisode] = self._materialize_all_episodes(progress=progress)
+        self._episode_cache: List[_CachedEpisode] = self._materialize_all_episodes(
+            progress=progress
+        )
 
     def _materialize_all_episodes(self, *, progress: bool) -> List[_CachedEpisode]:
         total_eps = len(self.index.episodes)
@@ -256,7 +256,9 @@ class PreloadedWindowDataset(WindowDataset):
             features_np = np.asarray(feat_arr[:], dtype=np.float32, order="C")
             features_np = np.ascontiguousarray(features_np)
             features_np = _apply_prepared_transforms(features_np, self._transform_plan)
-            features_np = np.ascontiguousarray(features_np.astype(np.float32, copy=False))
+            features_np = np.ascontiguousarray(
+                features_np.astype(np.float32, copy=False)
+            )
 
             if target_arr is None:
                 targets_np = np.zeros((ep.num_frames, 0), dtype=np.float32)
@@ -278,7 +280,9 @@ class PreloadedWindowDataset(WindowDataset):
             if progress:
                 now = time.perf_counter()
                 if now - last_log >= 0.5 or ep_idx == total_eps - 1:
-                    pct = (frames_loaded / total_frames) * 100 if total_frames else 100.0
+                    pct = (
+                        (frames_loaded / total_frames) * 100 if total_frames else 100.0
+                    )
                     elapsed = now - start_time
                     print(
                         f"[preload] {ep_idx + 1}/{total_eps} episodes | "
@@ -310,6 +314,7 @@ class PreloadedWindowDataset(WindowDataset):
             "start": start,
         }
 
+
 @dataclass
 class ChangeHoldStats:
     change_correct: float = 0.0
@@ -318,7 +323,7 @@ class ChangeHoldStats:
     hold_total: float = 0.0
 
     def update(
-            self, correct: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor
+        self, correct: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor
     ) -> None:
         change_correct = (
             correct[change_mask].float().sum().item() if change_mask.any() else 0.0
@@ -502,11 +507,11 @@ def _format_action(value: object) -> str:
 
 
 def _compute_lagged_cross_correlation(
-        preds: np.ndarray,
-        targets: np.ndarray,
-        *,
-        max_lag: int = 1,
-        window: Optional[int] = 4096,
+    preds: np.ndarray,
+    targets: np.ndarray,
+    *,
+    max_lag: int = 1,
+    window: Optional[int] = 4096,
 ) -> Tuple[Dict[int, float], int]:
     """Return normalized cross-correlation for lags in ``[-max_lag, max_lag]``.
 
@@ -555,12 +560,12 @@ def _compute_lagged_cross_correlation(
 
 # TODO: Deduplicate with version in display.py
 def _print_table_block(
-        title: str,
-        headers: Sequence[str],
-        data: np.ndarray,
-        *,
-        max_columns: int = 8,
-        formatters: Optional[Dict[str, Callable[[object], str]]] = None,
+    title: str,
+    headers: Sequence[str],
+    data: np.ndarray,
+    *,
+    max_columns: int = 8,
+    formatters: Optional[Dict[str, Callable[[object], str]]] = None,
 ) -> None:
     """Print a table of data with headers and formatted values."""
     if data.size == 0 or not len(headers):
@@ -576,8 +581,8 @@ def _print_table_block(
     )
 
     for start in range(0, total_cols, max_columns):
-        cols = headers[start: start + max_columns]
-        block = data[:, start: start + len(cols)]
+        cols = headers[start : start + max_columns]
+        block = data[:, start : start + len(cols)]
         formatted_columns: List[List[str]] = []
         col_widths: List[int] = []
         for col_idx, col_name in enumerate(cols):
@@ -606,10 +611,10 @@ def _print_table_block(
 
 
 def _print_extreme_value_frames(
-        enhanced: EnhancedMetrics,
-        colmap: ColumnMap,
-        reward_features: Optional[RewardFeatureIdx],
-        top_k: int = 1,
+    enhanced: EnhancedMetrics,
+    colmap: ColumnMap,
+    reward_features: Optional[RewardFeatureIdx],
+    top_k: int = 1,
 ) -> None:
     """Print the top and bottom frames by predicted value, with context.
 
@@ -711,10 +716,10 @@ def _print_extreme_value_frames(
         frame_idx = None
         for idx, (vp, vt, r, f) in enumerate(enhanced.value_frame_data):
             if (
-                    vp == v_pred
-                    and vt == v_targ
-                    and r == reward
-                    and np.array_equal(f, features)
+                vp == v_pred
+                and vt == v_targ
+                and r == reward
+                and np.array_equal(f, features)
             ):
                 frame_idx = idx
                 break
@@ -732,10 +737,10 @@ def _print_extreme_value_frames(
         frame_idx = None
         for idx, (vp, vt, r, f) in enumerate(enhanced.value_frame_data):
             if (
-                    vp == v_pred
-                    and vt == v_targ
-                    and r == reward
-                    and np.array_equal(f, features)
+                vp == v_pred
+                and vt == v_targ
+                and r == reward
+                and np.array_equal(f, features)
             ):
                 frame_idx = idx
                 break
@@ -792,13 +797,13 @@ def _ensure_absolute(path: Path, anchor: Path) -> Path:
 
 
 def _prepare_dataloader(
-        data_root: Path,
-        batch_size: int,
-        num_workers: int,
-        pin_memory: bool,
-        prefetch_factor: Optional[int],
-        persistent_workers: bool,
-        window_stride: int,
+    data_root: Path,
+    batch_size: int,
+    num_workers: int,
+    pin_memory: bool,
+    prefetch_factor: Optional[int],
+    persistent_workers: bool,
+    window_stride: int,
 ) -> Tuple[DataLoader, WindowDataset]:
     config = get_config()
     feature_spec = feature_spec_from_config(config.features)
@@ -840,9 +845,9 @@ def _prepare_dataloader(
 
 
 def _frame_rewards_from_batch(
-        X: torch.Tensor,
-        colmap: ColumnMap,
-        reward_features: Optional[RewardFeatureIdx],
+    X: torch.Tensor,
+    colmap: ColumnMap,
+    reward_features: Optional[RewardFeatureIdx],
 ) -> torch.Tensor:
     """Recompute per-frame rewards for logging."""
     features = reward_features or build_reward_feature_index(colmap)
@@ -869,9 +874,7 @@ def _build_sample_weight_ratios(loss_cfg) -> SampleWeightRatios:
     )
 
 
-def _decode_stick_coords(
-        indices: torch.Tensor, palette: torch.Tensor
-) -> torch.Tensor:
+def _decode_stick_coords(indices: torch.Tensor, palette: torch.Tensor) -> torch.Tensor:
     """Map quantized stick indices to 2D coordinates."""
     B, L = indices.shape
     return palette.index_select(0, indices.reshape(-1)).reshape(B, L, 2)
@@ -886,11 +889,11 @@ def _change_hold_masks(sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tens
 
 
 def _accumulate_stick_errors(
-        enhanced: EnhancedMetrics,
-        errors: torch.Tensor,
-        change_mask: torch.Tensor,
-        hold_mask: torch.Tensor,
-        prefix: str,
+    enhanced: EnhancedMetrics,
+    errors: torch.Tensor,
+    change_mask: torch.Tensor,
+    hold_mask: torch.Tensor,
+    prefix: str,
 ) -> None:
     """Update stick error totals for either main or c stick."""
     total_attr = f"total_{prefix}_stick_error"
@@ -913,15 +916,15 @@ def _accumulate_stick_errors(
 
 
 def _accumulate_jitter(
-        enhanced: EnhancedMetrics,
-        main_pred_coords: torch.Tensor,
-        main_true_coords: torch.Tensor,
-        c_pred_coords: torch.Tensor,
-        c_true_coords: torch.Tensor,
-        prev_pred_main_coords: Optional[torch.Tensor],
-        prev_true_main_coords: Optional[torch.Tensor],
-        prev_pred_c_coords: Optional[torch.Tensor],
-        prev_true_c_coords: Optional[torch.Tensor],
+    enhanced: EnhancedMetrics,
+    main_pred_coords: torch.Tensor,
+    main_true_coords: torch.Tensor,
+    c_pred_coords: torch.Tensor,
+    c_true_coords: torch.Tensor,
+    prev_pred_main_coords: Optional[torch.Tensor],
+    prev_true_main_coords: Optional[torch.Tensor],
+    prev_pred_c_coords: Optional[torch.Tensor],
+    prev_true_c_coords: Optional[torch.Tensor],
 ) -> None:
     """Track cross-batch and intra-batch jitter statistics."""
     B, L, _ = main_pred_coords.shape
@@ -930,11 +933,11 @@ def _accumulate_jitter(
         return torch.linalg.norm(current - previous, dim=-1).sum().item()
 
     if (
-            prev_pred_main_coords is not None
-            and prev_true_main_coords is not None
-            and prev_pred_c_coords is not None
-            and prev_true_c_coords is not None
-            and prev_pred_main_coords.shape[0] == B
+        prev_pred_main_coords is not None
+        and prev_true_main_coords is not None
+        and prev_pred_c_coords is not None
+        and prev_true_c_coords is not None
+        and prev_pred_main_coords.shape[0] == B
     ):
         enhanced.total_pred_main_jitter += _pairwise_sum(
             main_pred_coords[:, 0], prev_pred_main_coords
@@ -950,18 +953,26 @@ def _accumulate_jitter(
         )
         enhanced.jitter_frames += B
 
-    enhanced.total_pred_main_jitter += torch.linalg.norm(
-        main_pred_coords[:, 1:] - main_pred_coords[:, :-1], dim=-1
-    ).sum().item()
-    enhanced.total_true_main_jitter += torch.linalg.norm(
-        main_true_coords[:, 1:] - main_true_coords[:, :-1], dim=-1
-    ).sum().item()
-    enhanced.total_pred_c_jitter += torch.linalg.norm(
-        c_pred_coords[:, 1:] - c_pred_coords[:, :-1], dim=-1
-    ).sum().item()
-    enhanced.total_true_c_jitter += torch.linalg.norm(
-        c_true_coords[:, 1:] - c_true_coords[:, :-1], dim=-1
-    ).sum().item()
+    enhanced.total_pred_main_jitter += (
+        torch.linalg.norm(main_pred_coords[:, 1:] - main_pred_coords[:, :-1], dim=-1)
+        .sum()
+        .item()
+    )
+    enhanced.total_true_main_jitter += (
+        torch.linalg.norm(main_true_coords[:, 1:] - main_true_coords[:, :-1], dim=-1)
+        .sum()
+        .item()
+    )
+    enhanced.total_pred_c_jitter += (
+        torch.linalg.norm(c_pred_coords[:, 1:] - c_pred_coords[:, :-1], dim=-1)
+        .sum()
+        .item()
+    )
+    enhanced.total_true_c_jitter += (
+        torch.linalg.norm(c_true_coords[:, 1:] - c_true_coords[:, :-1], dim=-1)
+        .sum()
+        .item()
+    )
     enhanced.jitter_frames += B * (L - 1)
 
 
@@ -973,7 +984,7 @@ def _entropy_sum(logits: torch.Tensor) -> float:
 
 
 def _tally_action_categories(
-        enhanced: EnhancedMetrics, actions: np.ndarray, correct_mask: np.ndarray
+    enhanced: EnhancedMetrics, actions: np.ndarray, correct_mask: np.ndarray
 ) -> None:
     """Accumulate per-action-state accuracy statistics."""
     for action_val, is_correct in zip(actions, correct_mask):
@@ -984,13 +995,13 @@ def _tally_action_categories(
 
 
 def _update_run_stats(
-        enhanced: EnhancedMetrics,
-        pred_main_idx: torch.Tensor,
-        pred_c_idx: torch.Tensor,
-        btn_pred: torch.Tensor,
-        target_main: torch.Tensor,
-        target_c: torch.Tensor,
-        target_btn: torch.Tensor,
+    enhanced: EnhancedMetrics,
+    pred_main_idx: torch.Tensor,
+    pred_c_idx: torch.Tensor,
+    btn_pred: torch.Tensor,
+    target_main: torch.Tensor,
+    target_c: torch.Tensor,
+    target_btn: torch.Tensor,
 ) -> None:
     """Track run-lengths for predicted and true controller states."""
     pred_state_codes = _encode_state_codes(pred_main_idx, pred_c_idx, btn_pred)
@@ -1004,7 +1015,7 @@ def _update_run_stats(
 
 
 def _record_lr_latency(
-        enhanced: EnhancedMetrics, target_btn: torch.Tensor, btn_pred: torch.Tensor
+    enhanced: EnhancedMetrics, target_btn: torch.Tensor, btn_pred: torch.Tensor
 ) -> None:
     """Accumulate frame indices for L/R button press latency analysis."""
     B, L, _ = target_btn.shape
@@ -1024,10 +1035,10 @@ def _record_lr_latency(
 
 
 def _tally_jump_types(
-        enhanced: EnhancedMetrics,
-        target_btn: torch.Tensor,
-        btn_pred: torch.Tensor,
-        grounded_mask: torch.Tensor,
+    enhanced: EnhancedMetrics,
+    target_btn: torch.Tensor,
+    btn_pred: torch.Tensor,
+    grounded_mask: torch.Tensor,
 ) -> None:
     """Classify grounded X/Y presses as short (≤2f) or full (≥3f) hops."""
     if target_btn.numel() == 0:
@@ -1079,13 +1090,13 @@ def _tally_jump_types(
 
 
 def _append_correlation_vectors(
-        enhanced: EnhancedMetrics,
-        main_pred_coords: torch.Tensor,
-        main_true_coords: torch.Tensor,
-        c_pred_coords: torch.Tensor,
-        c_true_coords: torch.Tensor,
-        btn_pred: torch.Tensor,
-        target_btn: torch.Tensor,
+    enhanced: EnhancedMetrics,
+    main_pred_coords: torch.Tensor,
+    main_true_coords: torch.Tensor,
+    c_pred_coords: torch.Tensor,
+    c_true_coords: torch.Tensor,
+    btn_pred: torch.Tensor,
+    target_btn: torch.Tensor,
 ) -> None:
     """Store flattened controller states for later correlation analysis."""
     pred_vecs = np.concatenate(
@@ -1109,12 +1120,12 @@ def _append_correlation_vectors(
 
 
 def _accumulate_value_metrics(
-        enhanced: EnhancedMetrics,
-        X: torch.Tensor,
-        colmap: ColumnMap,
-        value_idx: Optional[int],
-        reward_features: Optional[RewardFeatureIdx],
-        value_pred: torch.Tensor,
+    enhanced: EnhancedMetrics,
+    X: torch.Tensor,
+    colmap: ColumnMap,
+    value_idx: Optional[int],
+    reward_features: Optional[RewardFeatureIdx],
+    value_pred: torch.Tensor,
 ) -> None:
     """Update all value-head related aggregates."""
     config = get_config()
@@ -1161,23 +1172,23 @@ def _accumulate_value_metrics(
 
 
 def _update_enhanced_metrics(
-        enhanced: EnhancedMetrics,
-        X: torch.Tensor,
-        target_info: Dict[str, torch.Tensor],
-        pred_main_idx: torch.Tensor,
-        pred_c_idx: torch.Tensor,
-        btn_pred: torch.Tensor,
-        logits_main: torch.Tensor,
-        logits_c: torch.Tensor,
-        logits_shoulder: torch.Tensor,
-        colmap: ColumnMap,
-        value_idx: Optional[int],
-        reward_features: Optional[RewardFeatureIdx],
-        prev_pred_main_coords: Optional[torch.Tensor],
-        prev_pred_c_coords: Optional[torch.Tensor],
-        prev_true_main_coords: Optional[torch.Tensor],
-        prev_true_c_coords: Optional[torch.Tensor],
-        value_pred: Optional[torch.Tensor] = None,
+    enhanced: EnhancedMetrics,
+    X: torch.Tensor,
+    target_info: Dict[str, torch.Tensor],
+    pred_main_idx: torch.Tensor,
+    pred_c_idx: torch.Tensor,
+    btn_pred: torch.Tensor,
+    logits_main: torch.Tensor,
+    logits_c: torch.Tensor,
+    logits_shoulder: torch.Tensor,
+    colmap: ColumnMap,
+    value_idx: Optional[int],
+    reward_features: Optional[RewardFeatureIdx],
+    prev_pred_main_coords: Optional[torch.Tensor],
+    prev_pred_c_coords: Optional[torch.Tensor],
+    prev_true_main_coords: Optional[torch.Tensor],
+    prev_true_c_coords: Optional[torch.Tensor],
+    value_pred: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Update enhanced metrics and return current stick coordinates for next iteration."""
     B, L = pred_main_idx.shape
@@ -1206,7 +1217,9 @@ def _update_enhanced_metrics(
     main_change_mask, main_hold_mask = _change_hold_masks(target_main)
     c_change_mask, c_hold_mask = _change_hold_masks(target_c)
 
-    _accumulate_stick_errors(enhanced, main_errors, main_change_mask, main_hold_mask, "main")
+    _accumulate_stick_errors(
+        enhanced, main_errors, main_change_mask, main_hold_mask, "main"
+    )
     _accumulate_stick_errors(enhanced, c_errors, c_change_mask, c_hold_mask, "c")
 
     # New: Stick Error by Vector Components
@@ -1215,8 +1228,12 @@ def _update_enhanced_metrics(
     main_true_mag = torch.linalg.norm(main_true_coords, dim=-1)
     c_pred_mag = torch.linalg.norm(c_pred_coords, dim=-1)
     c_true_mag = torch.linalg.norm(c_true_coords, dim=-1)
-    enhanced.total_main_stick_magnitude_error += (main_pred_mag - main_true_mag).abs().sum().item()
-    enhanced.total_c_stick_magnitude_error += (c_pred_mag - c_true_mag).abs().sum().item()
+    enhanced.total_main_stick_magnitude_error += (
+        (main_pred_mag - main_true_mag).abs().sum().item()
+    )
+    enhanced.total_c_stick_magnitude_error += (
+        (c_pred_mag - c_true_mag).abs().sum().item()
+    )
 
     # Angles (handle zero-magnitude vectors)
     main_pred_angle = torch.atan2(main_pred_coords[..., 1], main_pred_coords[..., 0])
@@ -1228,13 +1245,19 @@ def _update_enhanced_metrics(
     main_angle_mask = (main_true_mag > 0.1) & (main_pred_mag > 0.1)
     c_angle_mask = (c_true_mag > 0.1) & (c_pred_mag > 0.1)
     if main_angle_mask.any():
-        enhanced.total_main_stick_angle_error += _angle_diff(
-            main_pred_angle[main_angle_mask], main_true_angle[main_angle_mask]
-        ).sum().item()
+        enhanced.total_main_stick_angle_error += (
+            _angle_diff(
+                main_pred_angle[main_angle_mask], main_true_angle[main_angle_mask]
+            )
+            .sum()
+            .item()
+        )
     if c_angle_mask.any():
-        enhanced.total_c_stick_angle_error += _angle_diff(
-            c_pred_angle[c_angle_mask], c_true_angle[c_angle_mask]
-        ).sum().item()
+        enhanced.total_c_stick_angle_error += (
+            _angle_diff(c_pred_angle[c_angle_mask], c_true_angle[c_angle_mask])
+            .sum()
+            .item()
+        )
 
     # 2. Jitter (frame-to-frame distance)
     _accumulate_jitter(
@@ -1261,8 +1284,8 @@ def _update_enhanced_metrics(
     _tally_action_categories(enhanced, p1_actions, main_correct_mask_flat)
 
     # New: Situational Accuracy
-    p1_off_stage = X[..., feat_names.index('p1_off_stage')] > 0.5
-    p2_off_stage = X[..., feat_names.index('p2_off_stage')] > 0.5
+    p1_off_stage = X[..., feat_names.index("p1_off_stage")] > 0.5
+    p2_off_stage = X[..., feat_names.index("p2_off_stage")] > 0.5
     recovery_mask = p1_off_stage
     edgeguard_mask = p2_off_stage & ~p1_off_stage
     neutral_mask = ~p1_off_stage & ~p2_off_stage
@@ -1271,16 +1294,20 @@ def _update_enhanced_metrics(
         "edgeguard": edgeguard_mask,
         "neutral": neutral_mask,
     }
-    main_correct_mask = (pred_main_idx == target_main)
+    main_correct_mask = pred_main_idx == target_main
     btn_em_mask = (btn_pred == target_btn).all(dim=-1)
 
     for name, mask in situations.items():
         if mask.any():
             frames = mask.sum().item()
             enhanced.situational_stats[name]["frames"] += frames
-            enhanced.situational_stats[name]["main_correct"] += main_correct_mask[mask].sum().item()
+            enhanced.situational_stats[name]["main_correct"] += (
+                main_correct_mask[mask].sum().item()
+            )
             enhanced.situational_stats[name]["main_total"] += frames
-            enhanced.situational_stats[name]["btn_em_correct"] += btn_em_mask[mask].sum().item()
+            enhanced.situational_stats[name]["btn_em_correct"] += (
+                btn_em_mask[mask].sum().item()
+            )
             enhanced.situational_stats[name]["btn_total"] += frames
 
     # 5. Controller state sequences for "stuck" duration
@@ -1292,12 +1319,14 @@ def _update_enhanced_metrics(
     _record_lr_latency(enhanced, target_btn, btn_pred)
 
     # New: L-Cancel Tracking
-    l_cancel_status = X[..., feat_names.index('p1_l_cancel_status')]
+    l_cancel_status = X[..., feat_names.index("p1_l_cancel_status")]
     # Opportunity is when a cancel was successful (1) or missed (2)
     opportunity_mask = (l_cancel_status > 0) & (l_cancel_status < 3)
     if opportunity_mask.any():
         enhanced.l_cancel_opportunities += opportunity_mask.sum().item()
-        enhanced.l_cancel_true_success += (l_cancel_status[opportunity_mask] == 1).sum().item()
+        enhanced.l_cancel_true_success += (
+            (l_cancel_status[opportunity_mask] == 1).sum().item()
+        )
         # Check if model predicted L/R (shield) or Z.
         lr_idx = _BUTTON_NAME_TO_INDEX["button_lr"]
         z_idx = _BUTTON_NAME_TO_INDEX["button_z"]
@@ -1305,7 +1334,7 @@ def _update_enhanced_metrics(
         enhanced.l_cancel_pred_success += pred_any_cancel[opportunity_mask].sum().item()
 
     # New: Short hop vs full hop accuracy
-    grounded_mask = X[..., feat_names.index('p1_on_ground')] > 0.5
+    grounded_mask = X[..., feat_names.index("p1_on_ground")] > 0.5
     _tally_jump_types(enhanced, target_btn, btn_pred, grounded_mask)
 
     # 7. Collect data for correlation matrix
@@ -1336,12 +1365,12 @@ def _update_enhanced_metrics(
 
 
 def _evaluate(
-        model: GPT,
-        loader: DataLoader,
-        colmap: ColumnMap,
-        device: torch.device,
-        progress: bool,
-        max_batches: Optional[int] = None,
+    model: GPT,
+    loader: DataLoader,
+    colmap: ColumnMap,
+    device: torch.device,
+    progress: bool,
+    max_batches: Optional[int] = None,
 ) -> Dict[str, object]:
     config = get_config()
     value_col_idx = colmap.value_idx
@@ -1401,9 +1430,7 @@ def _evaluate(
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
             inputs_td = build_inputs_for_gpt(X, colmap)
-            target_info = quantize_controller_targets(
-                Y, colmap, input_domain="unit01"
-            )
+            target_info = quantize_controller_targets(Y, colmap, input_domain="unit01")
             weights = compute_component_sample_weights(
                 target_info,
                 device,
@@ -1462,7 +1489,9 @@ def _evaluate(
             main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
             main_change_mask[:, 1:] = target_main[:, 1:] != target_main[:, :-1]
             main_hold_mask = ~main_change_mask
-            change_stats_main.update(main_correct_mask, main_change_mask, main_hold_mask)
+            change_stats_main.update(
+                main_correct_mask, main_change_mask, main_hold_mask
+            )
 
             c_change_mask = torch.zeros_like(target_c, dtype=torch.bool)
             c_change_mask[:, 1:] = target_c[:, 1:] != target_c[:, :-1]
@@ -1558,7 +1587,6 @@ def _evaluate(
 
                 print(line, flush=True)
 
-
     elapsed = time.time() - start_time
     batches_processed = (
         min(total_batches, max_batches) if max_batches is not None else total_batches
@@ -1583,11 +1611,13 @@ def _evaluate(
 
     results["enhanced"] = enhanced
     return results
+
+
 def _format_distribution_comparison(
-        pred_counts: np.ndarray,
-        true_counts: np.ndarray,
-        labels: Optional[Iterable[str]] = None,
-        top_k: Optional[int] = 10,
+    pred_counts: np.ndarray,
+    true_counts: np.ndarray,
+    labels: Optional[Iterable[str]] = None,
+    top_k: Optional[int] = 10,
 ) -> str:
     pred = np.asarray(pred_counts, dtype=np.float64)
     true = np.asarray(true_counts, dtype=np.float64)
@@ -1617,9 +1647,9 @@ def _format_distribution_comparison(
 
 
 def _print_button_press_distribution(
-        pred_press_counts: np.ndarray,
-        true_press_counts: np.ndarray,
-        total_frames: int,
+    pred_press_counts: np.ndarray,
+    true_press_counts: np.ndarray,
+    total_frames: int,
 ) -> None:
     if total_frames <= 0:
         print("  <no frames>")
@@ -1655,15 +1685,26 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
     print(f"  C-Stick (Euclidean):    {avg_c_error:.4f}")
 
     # New: Stick Error by component
-    avg_main_mag_error = _safe_div(enhanced.total_main_stick_magnitude_error, enhanced.total_frames)
-    avg_main_angle_error = _safe_div(enhanced.total_main_stick_angle_error, enhanced.total_frames)
-    avg_c_mag_error = _safe_div(enhanced.total_c_stick_magnitude_error, enhanced.total_frames)
-    avg_c_angle_error = _safe_div(enhanced.total_c_stick_angle_error, enhanced.total_frames)
+    avg_main_mag_error = _safe_div(
+        enhanced.total_main_stick_magnitude_error, enhanced.total_frames
+    )
+    avg_main_angle_error = _safe_div(
+        enhanced.total_main_stick_angle_error, enhanced.total_frames
+    )
+    avg_c_mag_error = _safe_div(
+        enhanced.total_c_stick_magnitude_error, enhanced.total_frames
+    )
+    avg_c_angle_error = _safe_div(
+        enhanced.total_c_stick_angle_error, enhanced.total_frames
+    )
     print(f"  Main Stick (Magnitude): {avg_main_mag_error:.4f}")
-    print(f"  Main Stick (Angle rad): {avg_main_angle_error:.4f} (~{np.rad2deg(avg_main_angle_error):.2f}°)")
+    print(
+        f"  Main Stick (Angle rad): {avg_main_angle_error:.4f} (~{np.rad2deg(avg_main_angle_error):.2f}°)"
+    )
     print(f"  C-Stick (Magnitude):    {avg_c_mag_error:.4f}")
-    print(f"  C-Stick (Angle rad):    {avg_c_angle_error:.4f} (~{np.rad2deg(avg_c_angle_error):.2f}°)")
-
+    print(
+        f"  C-Stick (Angle rad):    {avg_c_angle_error:.4f} (~{np.rad2deg(avg_c_angle_error):.2f}°)"
+    )
 
     # 2. Jitter
     print("\n2. Stick Stability (Jitter - Avg Frame-to-Frame Distance):")
@@ -1710,8 +1751,12 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
         total = stats.get("main_total", 0)
         if total > 0:
             main_acc = _safe_div(stats.get("main_correct", 0), total)
-            btn_em = _safe_div(stats.get("btn_em_correct", 0), stats.get("btn_total", 0))
-            print(f"  {name.capitalize():<10}: Main Acc {main_acc:.3f} | Btn EM {btn_em:.3f} ({int(total):,} frames)")
+            btn_em = _safe_div(
+                stats.get("btn_em_correct", 0), stats.get("btn_total", 0)
+            )
+            print(
+                f"  {name.capitalize():<10}: Main Acc {main_acc:.3f} | Btn EM {btn_em:.3f} ({int(total):,} frames)"
+            )
 
     # 6. Stuck action duration
     print("\n6. 'Stuck' Action Duration (Consecutive Identical States):")
@@ -1755,8 +1800,12 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
     # New: L-Cancel Rate
     print("\n8. L-Cancel Success Rate:")
     if enhanced.l_cancel_opportunities > 0:
-        true_rate = _safe_div(enhanced.l_cancel_true_success, enhanced.l_cancel_opportunities)
-        pred_rate = _safe_div(enhanced.l_cancel_pred_success, enhanced.l_cancel_opportunities)
+        true_rate = _safe_div(
+            enhanced.l_cancel_true_success, enhanced.l_cancel_opportunities
+        )
+        pred_rate = _safe_div(
+            enhanced.l_cancel_pred_success, enhanced.l_cancel_opportunities
+        )
         print(f"  Opportunities: {enhanced.l_cancel_opportunities:,}")
         print(f"  Human Success Rate:   {true_rate:.3f}")
         print(f"  Model Attempt Rate:   {pred_rate:.3f} (predicts L/R/Z during window)")
@@ -1776,7 +1825,9 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
     if short_total > 0:
         short_acc = _safe_div(short_correct, short_total)
         print("  Short-hop opportunities (≤2f hold):")
-        print(f"    Correct short hops: {short_correct}/{short_total} ({short_acc:.3f})")
+        print(
+            f"    Correct short hops: {short_correct}/{short_total} ({short_acc:.3f})"
+        )
         print(f"    Full hopped instead: {short_full_instead}/{short_total}")
         print(f"    No jump: {short_missed}/{short_total}")
     else:
@@ -1789,7 +1840,6 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
         print(f"    No jump: {full_missed}/{full_total}")
     else:
         print("  Full-hop opportunities (≥3f hold): No grounded attempts detected.")
-
 
     # 8. Correlation matrix
     print("\n10. Controller Input Correlation Matrix:")
@@ -1921,7 +1971,7 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
 
 
 def _print_enhanced_metrics_with_colmap(
-        enhanced: EnhancedMetrics, colmap: ColumnMap
+    enhanced: EnhancedMetrics, colmap: ColumnMap
 ) -> None:
     """Print enhanced metrics and extreme value analysis."""
     _print_enhanced_metrics(enhanced)
@@ -1933,10 +1983,10 @@ def _print_enhanced_metrics_with_colmap(
 
 
 def _print_final_summary(
-        results: Dict[str, object],
-        checkpoint: Path,
-        data_root: Path,
-        column_map: ColumnMap,
+    results: Dict[str, object],
+    checkpoint: Path,
+    data_root: Path,
+    column_map: ColumnMap,
 ) -> None:
     batches = results["batches"]
     loss_sums: Dict[str, float] = results["loss_sums"]
@@ -1988,23 +2038,17 @@ def _print_final_summary(
         print(f"  {key:>8}: {per_frame_loss[key]:.8f}")
 
     print("\nMain Stick:")
-    print(
-        f"  accuracy {acc_main:.3f}"
-    )
+    print(f"  accuracy {acc_main:.3f}")
     print(
         f"  change   {main_stats.change_acc():.3f} | hold {main_stats.hold_acc():.3f}"
     )
 
     print("\nC-Stick:")
-    print(
-        f"  accuracy {acc_c:.3f}"
-    )
+    print(f"  accuracy {acc_c:.3f}")
     print(f"  change   {c_stats.change_acc():.3f} | hold {c_stats.hold_acc():.3f}")
 
     print("\nButtons:")
-    print(
-        f"  EM {btn_em:.3f} | F1μ {btn_f1_micro:.3f} | F1_macro {btn_f1_macro:.3f}"
-    )
+    print(f"  EM {btn_em:.3f} | F1μ {btn_f1_micro:.3f} | F1_macro {btn_f1_macro:.3f}")
     print(f"  change {btn_stats.change_acc():.3f} | hold {btn_stats.hold_acc():.3f}")
     print("\nPrediction distributions:")
     print("  Main stick (top bins):")
@@ -2019,7 +2063,6 @@ def _print_final_summary(
             c_pred_counts, c_true_counts, _C_STICK_LABELS, top_k=None
         )
     )
-
 
     print("  Shoulder:")
     print(
@@ -2183,11 +2226,11 @@ def main() -> None:
 
     # Update the config with the dynamic dimensions
     config.model.input_size = (
-            config.model.num_stages
-            + config.model.num_characters * 2
-            + config.model.num_actions * 2
-            + gamestate_dim
-            + controller_dim
+        config.model.num_stages
+        + config.model.num_characters * 2
+        + config.model.num_actions * 2
+        + gamestate_dim
+        + controller_dim
     )
 
     model = GPT(config)

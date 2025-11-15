@@ -88,6 +88,7 @@ def _device_cache_key(device: torch.device) -> Tuple[str, Optional[int]]:
         return device.type, index
     return device.type, device.index
 
+
 # TODO: Why do we need this function?
 def _palette_for_device(
     cpu_palette: torch.Tensor,
@@ -216,7 +217,9 @@ def quantize_targets(
     P_main_norm_sq = _palette_for_device(
         _MAIN_STICK_NORM_SQ_CPU, _MAIN_STICK_NORM_CACHE, device
     )
-    y_main_idx = _quantize_stick(main_xy, P_main, P_main_norm_sq, input_domain, batch_size, seq_len)
+    y_main_idx = _quantize_stick(
+        main_xy, P_main, P_main_norm_sq, input_domain, batch_size, seq_len
+    )
 
     # C-stick quantization
     c_xy = targets[..., list(column_map.y_c)]
@@ -231,15 +234,9 @@ def quantize_targets(
 
     centers = _palette_for_device(_SHOULDER_PALETTE_CPU, _SHOULDER_CACHE, device)
     centers = centers.view(-1)
-    s = (
-        targets[..., column_map.y_shoulder]
-        .to(dtype=centers.dtype)
-        .contiguous()
-    )
+    s = targets[..., column_map.y_shoulder].to(dtype=centers.dtype).contiguous()
     y_shoulder_idx = torch.searchsorted(centers, s, right=True) - 1
-    y_shoulder_idx = torch.clamp(
-        y_shoulder_idx, min=0, max=int(centers.shape[0] - 1)
-    )
+    y_shoulder_idx = torch.clamp(y_shoulder_idx, min=0, max=int(centers.shape[0] - 1))
     shoulder_K = len(SHOULDER_QUANTIZED)
 
     return {

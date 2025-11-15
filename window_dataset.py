@@ -138,8 +138,7 @@ class ZarrCorpusIndex:
         return int(self._episode_start_indices[ep_idx])
 
     def open_episode_arrays(
-        self,
-        ep: EpisodeInfo
+        self, ep: EpisodeInfo
     ) -> Tuple[zarr.Array, Optional[zarr.Array]]:
         """Open the ``features``/``targets`` arrays for ``ep``.
 
@@ -260,7 +259,9 @@ def _apply_prepared_transforms(
 
 
 def _apply_feature_transforms(
-    features: RawNumpyArray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
+    features: RawNumpyArray,
+    feature_names: Sequence[str],
+    spec: Optional[FeatureTransformSpec],
 ) -> ProcessedNumpyArray:
     """Backward-compatible wrapper that prepares a plan on demand."""
     plan = _prepare_transform_plan(feature_names, spec) if spec else None
@@ -284,7 +285,7 @@ class WindowDataset(Dataset):
         self,
         data_dir: str | Path,
         *,
-        feature_transforms: Optional[FeatureTransformSpec] = None
+        feature_transforms: Optional[FeatureTransformSpec] = None,
     ) -> None:
         """Prepare the dataset by indexing shards and wiring transforms.
 
@@ -353,15 +354,23 @@ class WindowDataset(Dataset):
 
         feature_array, target_array = self.index.open_episode_arrays(ep)
         # Slice contiguous window; arrays are (T, F) and (T, Yd)
-        feature_window = feature_array[start : start + self.seq_len, :]  # (seq_len, num_features)
-        target_window = target_array[start : start + self.seq_len, :]  # (seq_len, num_targets)
+        feature_window = feature_array[
+            start : start + self.seq_len, :
+        ]  # (seq_len, num_features)
+        target_window = target_array[
+            start : start + self.seq_len, :
+        ]  # (seq_len, num_targets)
 
         # Apply per-feature transforms (in-place on view)
-        feature_window: RawNumpyArray = np.ascontiguousarray(feature_window)  # ensure contiguous for in-place ops
+        feature_window: RawNumpyArray = np.ascontiguousarray(
+            feature_window
+        )  # ensure contiguous for in-place ops
         feature_window: ProcessedNumpyArray = _apply_prepared_transforms(
             feature_window, self._transform_plan
         )
-        features_out: ProcessedTorchTensor = torch.from_numpy(feature_window.astype(np.float32, copy=False))
+        features_out: ProcessedTorchTensor = torch.from_numpy(
+            feature_window.astype(np.float32, copy=False)
+        )
         targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
         targets_out = torch.from_numpy(targets_as_numpy.astype(np.float32, copy=False))
 

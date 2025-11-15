@@ -110,7 +110,7 @@ class TestPrintEnhancedMetrics:
         """Test L/R button press latency with no matched events."""
         enhanced = EnhancedMetrics(
             lr_button_changes_true=[10, 20, 30],
-            lr_button_changes_pred=[100, 200, 300], # No matches within window
+            lr_button_changes_pred=[100, 200, 300],  # No matches within window
         )
         output = run_print_and_capture(enhanced)
         assert "No matched events" in output
@@ -146,7 +146,6 @@ class TestPrintEnhancedMetrics:
         # Check that the "Ground Truth" header for stuck action is not there
         assert "Ground Truth:" not in output_pred.split("5. 'Stuck' Action Duration")[1]
 
-
         enhanced_true = EnhancedMetrics(
             true_run_stats=RunStats(total_length=220, run_count=45, max_length=12),
         )
@@ -177,7 +176,9 @@ class TestPrintEnhancedMetrics:
         assert "Controller Input Correlation Matrix" in output
         assert "Frobenius norm" not in output
 
-        enhanced = EnhancedMetrics(all_preds_list=[np.random.rand(10, 9)], all_labels_list=[])
+        enhanced = EnhancedMetrics(
+            all_preds_list=[np.random.rand(10, 9)], all_labels_list=[]
+        )
         output = run_print_and_capture(enhanced)
         assert "Controller Input Correlation Matrix" in output
         assert "Frobenius norm" not in output

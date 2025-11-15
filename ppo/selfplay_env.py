@@ -326,7 +326,7 @@ class SelfPlayEnvironment:
         log_prob = compute_log_probs(logits_batched, actions_batched)
         return log_prob.squeeze(0)
 
-    # TODO: Some of this might be duplicated from model_interface.py
+    # TODO: Some of this is duplicated from model_interface.py
     def _actions_to_controller_state(
         self,
         actions: Dict[str, torch.Tensor],
@@ -341,12 +341,8 @@ class SelfPlayEnvironment:
         c_xy = self._c_stick_palette[c_idx]
         c_xy = (c_xy * 0.5 + 0.5).astype(np.float32)
 
-        # Shoulder
-        if "shoulder" in actions:
-            shoulder_idx = int(actions["shoulder"].item())
-            shoulder_val = float(self._shoulder_centers[shoulder_idx])
-        else:
-            shoulder_val = 0.0
+        shoulder_idx = int(actions["shoulder"].item())
+        shoulder_val = float(self._shoulder_centers[shoulder_idx])
 
         # Buttons
         buttons = actions["buttons"].cpu().tolist()

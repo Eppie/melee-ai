@@ -59,7 +59,7 @@ def log_player_snapshot(gamestate, ports, death_counts, death_percents, fps=None
 
 
 if __name__ == "__main__":
-    init_config(cli_overrides={"model.num_stages": 6, "model.num_characters": 26})
+    init_config()
     default_dolphin_path = Path("/home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu")
     default_dolphin_path = str(default_dolphin_path) if default_dolphin_path.exists() else None
     default_dolphin_home = REPO_ROOT / "dolphin-home" / "User"
@@ -86,8 +86,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     engine = GPTInferenceEngine(
         checkpoint_path=args.checkpoint,
-        warmup_frames=args.warmup_frames,
-        data_root=args.data_root,
     )
     console = Console(
         path=args.dolphin_executable_path,

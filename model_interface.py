@@ -496,24 +496,11 @@ class GPTInferenceEngine:
 
         config = get_config()
         ckpt_cfg = ckpt.get("config")
-        model_cfg_from_ckpt: Optional[Mapping[str, Any]] = None
         if isinstance(ckpt_cfg, Mapping):
             maybe_model_cfg = ckpt_cfg.get("model")
             if isinstance(maybe_model_cfg, Mapping):
-                model_cfg_from_ckpt = maybe_model_cfg
                 for field, value in maybe_model_cfg.items():
                     setattr(config.model, field, value)
-
-        if getattr(config.model, "input_size", -1) < 0:
-            gamestate_dim = len(self.colmap.gamestate_idxs)
-            controller_dim = len(self.colmap.controller_idxs)
-            config.model.input_size = (
-                    config.model.num_stages
-                    + config.model.num_characters * 2
-                    + config.model.num_actions * 2
-                    + gamestate_dim
-                    + controller_dim
-            )
 
         self.model = GPT(config).to(self.device)
         load_result = self.model.load_state_dict(ckpt["model"], strict=False)
@@ -686,7 +673,7 @@ class GPTInferenceEngine:
 
     # TODO: Raw or processed here?
     def _decode_stick(
-            self, logits: torch.Tensor, palette: np.ndarray, stick_name: str
+            self, logits: torch.Tensor, palette: np.ndarray
     ) -> np.ndarray:
         """Convert stick logits into palette coordinates."""
         idx = torch.argmax(logits.detach(), dim=-1)
@@ -710,8 +697,8 @@ class GPTInferenceEngine:
 
         shoulder_logits = outputs.get("shoulder")
 
-        main_xy = self._decode_stick(main_logits, self._main_stick_palette, "main_stick")
-        c_xy = self._decode_stick(c_logits, self._c_stick_palette, "c_stick")
+        main_xy = self._decode_stick(main_logits, self._main_stick_palette)
+        c_xy = self._decode_stick(c_logits, self._c_stick_palette)
         buttons_bool = self._decode_buttons(button_probs)
 
         s_idx = int(torch.argmax(shoulder_logits[0, -1]).item())

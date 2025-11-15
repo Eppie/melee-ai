@@ -14,7 +14,7 @@ from column_map import ColumnMap
 from controller_quantization import quantize_targets
 
 
-def build_model_inputs(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorDict:
+def build_model_inputs(batch_X: torch.FloatTensor, column_map: ColumnMap) -> TensorDict:
     """Convert raw feature tensors into the structured ``TensorDict`` expected by the model.
 
     The function slices the ``batch_X`` tensor using indices stored in ``colmap`` and casts
@@ -46,7 +46,7 @@ def build_model_inputs(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorD
 
     Args:
         batch_X: ``[B, L, F]`` float32 features of the current frame sequence.
-        colmap: Column mapping for feature indices.
+        column_map: Column mapping for feature indices.
 
     Returns:
         ``TensorDict`` with the keys the model expects: ``stage``, ``ego_character``,
@@ -56,14 +56,14 @@ def build_model_inputs(batch_X: torch.FloatTensor, colmap: ColumnMap) -> TensorD
     B, L, _ = batch_X.shape
 
     # Categoricals back to long indices
-    stage = batch_X[..., colmap.stage_idx].to(torch.long).unsqueeze(-1)  # [B,L,1]
-    ego_character = batch_X[..., colmap.ego_char_idx].to(torch.long).unsqueeze(-1)
-    opp_character = batch_X[..., colmap.opp_char_idx].to(torch.long).unsqueeze(-1)
-    ego_action = batch_X[..., colmap.ego_action_idx].to(torch.long).unsqueeze(-1)
-    opp_action = batch_X[..., colmap.opp_action_idx].to(torch.long).unsqueeze(-1)
+    stage = batch_X[..., column_map.stage_idx].to(torch.long).unsqueeze(-1)  # [B,L,1]
+    ego_character = batch_X[..., column_map.ego_char_idx].to(torch.long).unsqueeze(-1)
+    opp_character = batch_X[..., column_map.opp_char_idx].to(torch.long).unsqueeze(-1)
+    ego_action = batch_X[..., column_map.ego_action_idx].to(torch.long).unsqueeze(-1)
+    opp_action = batch_X[..., column_map.opp_action_idx].to(torch.long).unsqueeze(-1)
 
-    gamestate = batch_X[..., colmap.gamestate_idxs]  # [B,L,Gg]
-    controller = batch_X[..., colmap.controller_idxs]  # [B,L,Gc]
+    gamestate = batch_X[..., column_map.gamestate_idxs]  # [B,L,Gg]
+    controller = batch_X[..., column_map.controller_idxs]  # [B,L,Gc]
 
     return TensorDict(
         {
@@ -140,7 +140,8 @@ def _normalize(w: Tensor) -> Tensor:
     return w / (w.mean() + 1e-12)
 
 
-# TODO: Make this optional via config
+# TODO: Make this optional via config (might be done already?)
+# TODO: Reduce duplication within this function
 def compute_component_sample_weights(
     target_info: Mapping[str, Tensor],
     device: torch.device,

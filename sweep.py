@@ -426,7 +426,7 @@ def run_training_once(
     time_limit_seconds: Optional[float] = None,
 ) -> TrainingRunResult:
     reset_config()
-    cfg = init_config(initial=base_initial, cli_overrides=overrides, freeze=False)
+    cfg = init_config()
 
     if time_limit_seconds is not None and time_limit_seconds <= 0:
         raise ValueError(
@@ -504,7 +504,7 @@ def run_training_once(
     parameter_count = sum(p.numel() for p in model.parameters())
     if verbose:
         print(f"[{run_id}] model parameter count: {parameter_count:,}")
-    loader, ds, sampler = make_dataloader()
+    loader, ds, sampler = make_dataloader(cfg)
     colmap = ColumnMap.from_dataset(ds)
 
     opt = torch.optim.AdamW(
@@ -593,7 +593,7 @@ def run_training_once(
                         logits_main = pred["main_stick"].reshape(B * L, -1)
                         target_main = target_info["main_idx"].reshape(B * L)
                         main_weights = _compute_ce_weights(
-                            target_main, target_info["main_K"], loss_config
+                            target_main, target_info["main_K"], cfg.loss_weights
                         )
                         loss_main = torch.nn.functional.cross_entropy(
                             logits_main,
@@ -624,20 +624,14 @@ def run_training_once(
                             pos_weight=pos_weight,
                         )
 
-                        loss_s = torch.zeros((), device=device)
-                        if (
-                            "shoulder" in pred.keys()
-                            and target_info["shoulder_K"] > 0
-                            and target_info["shoulder_idx"] is not None
-                        ):
-                            logits_s = pred["shoulder"].reshape(B * L, -1)
-                            target_s = target_info["shoulder_idx"].reshape(B * L)
-                            loss_s = torch.nn.functional.cross_entropy(
-                                logits_s,
-                                target_s,
-                                reduction="mean",
-                                label_smoothing=cfg.train.label_smoothing,
-                            )
+                        logits_s = pred["shoulder"].reshape(B * L, -1)
+                        target_s = target_info["shoulder_idx"].reshape(B * L)
+                        loss_s = torch.nn.functional.cross_entropy(
+                            logits_s,
+                            target_s,
+                            reduction="mean",
+                            label_smoothing=cfg.train.label_smoothing,
+                        )
 
                         loss = loss_main + loss_c + loss_btn + loss_s
 

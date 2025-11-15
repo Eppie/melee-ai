@@ -317,6 +317,7 @@ class Controller:
         All buttons are released, all sticks set to 0.5, all shoulders set to 0
         """
         # Set the internal state back to neutral
+        # TODO: Just iterate over the button enum
         self.current.button[enums.Button.BUTTON_A] = False
         self.current.button[enums.Button.BUTTON_B] = False
         self.current.button[enums.Button.BUTTON_X] = False

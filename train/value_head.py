@@ -9,7 +9,6 @@ import torch
 
 from column_map import ColumnMap
 from config import get_config
-from libmelee.melee.enums import Action
 
 
 @dataclass(frozen=True)
@@ -28,7 +27,7 @@ class RewardFeatureIdx:
     p2_shield_strength: Optional[int] = None
 
 
-def build_reward_feature_index(colmap: ColumnMap) -> RewardFeatureIdx:
+def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
     """Resolve frequently accessed feature indices from a :class:`ColumnMap` in one pass.
 
     Example:
@@ -39,15 +38,15 @@ def build_reward_feature_index(colmap: ColumnMap) -> RewardFeatureIdx:
         position so later reward computations can index into tensors without repeated list lookups.
 
     Args:
-        colmap: Column mapping that lists feature names in order.
+        column_map: Column mapping that lists feature names in order.
 
     Returns:
         :class:`RewardFeatureIdx` populated with index values where available.
     """
-    names = colmap.feat_names
+    names = column_map.feat_names
 
     def idx(name: str) -> Optional[int]:
-        return names.index(name) if name in names else None
+        return names.index(name)
 
     return RewardFeatureIdx(
         p1_stock=idx("p1_stock"),
@@ -121,12 +120,7 @@ def _compute_player_rewards(
     return rewards
 
 
-def compute_frame_rewards(
-    X: torch.Tensor,
-    colmap: ColumnMap,
-    *,
-    idx: RewardFeatureIdx
-) -> torch.Tensor:
+def compute_frame_rewards(X: torch.Tensor, idx: RewardFeatureIdx) -> torch.Tensor:
     """Compute zero-sum per-frame rewards as ego minus opponent reward.
 
     Example:
@@ -137,7 +131,6 @@ def compute_frame_rewards(
 
     Args:
         X: ``[B, L, F]`` input feature tensor.
-        colmap: Column mapping describing feature positions.
         idx: Optional cached feature indices from :func:`build_reward_feature_index`.
 
     Returns:
@@ -270,7 +263,7 @@ def compute_value_targets(
         return stored.to(device=device, dtype=dtype)
 
     reward_features = reward_features or build_reward_feature_index(colmap)
-    rewards = compute_frame_rewards(X, colmap, idx=reward_features)
+    rewards = compute_frame_rewards(X, idx=reward_features)
     gamma_powers = _get_gamma_powers(L, gamma, device, rewards.dtype)
 
     weighted = rewards * gamma_powers  # broadcast multiply

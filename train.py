@@ -128,10 +128,6 @@ def _initialize_training_components(
 
     colmap = ColumnMap.from_dataset(ds)
     value_idx = colmap.value_idx
-    if value_idx is None:
-        raise RuntimeError(
-            "Dataset is missing 'value_target'; preprocessing must store discounted returns before training."
-        )
     lw_cfg = config.loss_weights
     button_overrides = {
         "button_z": lw_cfg.button_z,
@@ -436,17 +432,12 @@ def _append_tensor_stats(prefix: str, tensor: Optional[torch.Tensor], out: Dict[
     out[f"{prefix}_abs_max"] = float(flat.abs().max().item())
 
 
-def _gather_logit_metrics(pred: TensorDict, model: GPT) -> Dict[str, float]:
+def _gather_logit_metrics(pred: TensorDict) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
-    logits_main = pred["main_stick"]
-    logits_c = pred["c_stick"]
-    logits_buttons = pred["buttons"]
-    logits_shoulder = pred.get("shoulder")
-
-    _append_tensor_stats("logits/main", logits_main, metrics)
-    _append_tensor_stats("logits/c", logits_c, metrics)
-    _append_tensor_stats("logits/buttons", logits_buttons, metrics)
-    _append_tensor_stats("logits/shoulder", logits_shoulder, metrics)
+    _append_tensor_stats("logits/main", pred["main_stick"], metrics)
+    _append_tensor_stats("logits/c", pred["c_stick"], metrics)
+    _append_tensor_stats("logits/buttons", pred["buttons"], metrics)
+    _append_tensor_stats("logits/shoulder", pred["shoulder"], metrics)
     return metrics
 
 
@@ -580,11 +571,6 @@ def _prepare_logging_bundle(
     c_true_flat = target_c
     c_pred_flat = logits_c.argmax(dim=-1)
     acc_c_b = float((c_pred_flat == c_true_flat).float().mean().item())
-    c_major_lbl = (
-        int(torch.bincount(c_true_flat.cpu()).argmax().item())
-        if c_true_flat.numel()
-        else 0
-    )
     acc_c_rep_b = (
         float(
             (
@@ -748,7 +734,7 @@ def _prepare_logging_bundle(
                                      "schedule/label_smoothing": float(forward_result.label_smoothing),
                                      "schedule/change_weight_scale": float(forward_result.change_scale)}
 
-    log_payload.update(_gather_logit_metrics(pred, components.model))
+    log_payload.update(_gather_logit_metrics(pred))
     log_payload.update(_gather_bias_metrics(components.model))
 
     if grad_stats is not None:
@@ -1021,9 +1007,9 @@ if __name__ == "__main__":
     loader, ds, sampler = make_dataloader(get_config())
     feature_names = getattr(ds, "_feature_names_sel", ds.index.feature_names)
     target_names = getattr(ds, "_target_names_sel", ds.index.target_names)
-    colmap = ColumnMap(feature_names, target_names)
-    gamestate_dim = len(colmap.gamestate_idxs)
-    controller_dim = len(colmap.controller_idxs)
+    column_map = ColumnMap(feature_names, target_names)
+    gamestate_dim = len(column_map.gamestate_idxs)
+    controller_dim = len(column_map.controller_idxs)
 
     # Update the config with the dynamic dimensions
     config = get_config()

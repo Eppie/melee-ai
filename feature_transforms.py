@@ -240,9 +240,7 @@ def _resolve_registered_transform(name: str, params: Mapping[str, Any]) -> Featu
     * Passing ``'unknown'`` raises ``ValueError("Unknown feature transform 'unknown'.")``,
       so configuration errors are surfaced immediately instead of at runtime.
     """
-    factory = _TRANSFORM_FACTORIES.get(name)
-    if factory is None:
-        raise ValueError(f"Unknown feature transform '{name}'.")
+    factory = _TRANSFORM_FACTORIES[name]
     return factory(params)
 
 

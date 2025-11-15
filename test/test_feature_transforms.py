@@ -1,25 +1,13 @@
 import numpy as np
 import pytest
 
+from controller_utils import CONTROL_STICK_QUANTIZED
 from feature_transforms import (
     _transform_scale,
     _transform_offset,
     _sticks01_to_unit11_np,
     _stick_palette_apply,
-    _factory_stick_palette,
-    _factory_scale,
-    _factory_offset,
-    _resolve_registered_transform,
-    _normalize_features,
-    _extract_params,
-    _parse_step_mapping,
-    _parse_step,
-    build_transform_spec,
-    feature_spec_from_config,
-    FeatureTransformSpec,
-    FeatureTransformStep,
 )
-from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED
 
 
 def test_transform_scale():

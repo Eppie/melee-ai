@@ -71,13 +71,11 @@ def replay_reward_data():
         return _apply_feature_transforms(buf, feat_names, feature_spec)
 
     X = torch.from_numpy(transform(X_np)).unsqueeze(0)
-    rewards = compute_frame_rewards(X, colmap, idx=idx).squeeze(0)
+    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
 
     swapped_rows = [_swap_row_players(row) for row in rows]
     X_swapped, _, _, _, _, _ = _rows_to_dense(swapped_rows, schema)
-    swapped_rewards = compute_frame_rewards(
-        torch.from_numpy(transform(X_swapped)).unsqueeze(0), colmap, idx=idx
-    ).squeeze(0)
+    swapped_rewards = compute_frame_rewards(torch.from_numpy(transform(X_swapped)).unsqueeze(0), idx=idx).squeeze(0)
 
     reset_config()
     return {
@@ -99,7 +97,7 @@ def test_compute_frame_rewards_damage_and_stock(reward_setup):
     # Opponent loses one stock between frames 1 and 2.
     X[0, :, idx.p2_stock] = torch.tensor([4.0, 4.0, 3.0, 3.0])
 
-    rewards = compute_frame_rewards(X, colmap, idx=idx).squeeze(0)
+    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
 
     cfg = get_config().rl
     expected = torch.tensor(
@@ -125,7 +123,7 @@ def test_compute_frame_rewards_shield_penalty(reward_setup):
     X[0, :, idx.p2_shield_strength] = 1.0  # keep opponent shielded to avoid penalties
     X[0, :, idx.p1_shield_strength] = torch.tensor([1.0, 0.1, 0.4])
 
-    rewards = compute_frame_rewards(X, colmap, idx=idx).squeeze(0)
+    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
 
     cfg = get_config().rl
     # penalty = clamp(1 - 2 * shield, 0, 1) * reward_low_shield
@@ -156,7 +154,7 @@ def test_compute_frame_rewards_hitlag_terms(reward_setup):
     # Frame 2: roles swap, p2 hits p1.
     X[0, 2, idx.p1_is_in_hitlag] = 1.0
 
-    rewards = compute_frame_rewards(X, colmap, idx=idx).squeeze(0)
+    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
 
     cfg = get_config().rl
     expected = torch.tensor(

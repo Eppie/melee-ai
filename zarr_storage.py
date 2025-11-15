@@ -3,7 +3,7 @@ import math
 import os
 import shutil
 import time
-from concurrent.futures import Future, ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from concurrent.futures import Future, ProcessPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -17,11 +17,9 @@ from column_map import ColumnMap
 from config import get_config, init_config
 from data_types import RawNumpyArray
 from libmelee.melee.console import Console
-from libmelee.melee.gamestate import GameState
 from schema import Row, extract_row, get_feature_names, get_target_names
 from train.value_head import (
     build_reward_feature_index,
-    compute_frame_rewards,
     compute_value_targets,
 )
 
@@ -38,18 +36,6 @@ def _ensure_config_initialized() -> None:
         init_config()
 
 # TODO: Rename this file
-
-def extract(game_state: GameState) -> Row:
-    """Extract a :class:`Row` of schema-aligned fields from ``game_state``.
-
-    Example
-    -------
-    For a frame where player 1 is at ``30%`` and holding right, the resulting
-    ``Row`` contains ``p1_percent=30`` and ``p1_main_stick_x≈1``. This matches the
-    row objects consumed by :func:`process_one_episode`.
-    """
-    return extract_row(game_state)
-
 
 def _row_to_winner_first(rows: List[Row]) -> List[Row]:
     """Reorder ``rows`` so the winner consistently appears as player 1.
@@ -127,6 +113,7 @@ def _player_active(rows: List[Row], prefix: str, *, stick_eps: float = 0.05, min
     active_frames = 0
     for row in rows:
         try:
+            # TODO: Duplicate
             if abs(getattr(row, stick_x, 0.5) - 0.5) > stick_eps:
                 active_frames += 1
                 if active_frames >= min_frames:
@@ -137,6 +124,7 @@ def _player_active(rows: List[Row], prefix: str, *, stick_eps: float = 0.05, min
                 if active_frames >= min_frames:
                     return True
                 continue
+            # TODO: Duplicate
             if abs(getattr(row, c_x, 0.5) - 0.5) > stick_eps:
                 active_frames += 1
                 if active_frames >= min_frames:
@@ -192,7 +180,7 @@ def process_one_episode(raw_path: str) -> List[Row]:
                 continue
 
             try:
-                row = extract(gamestate)
+                row = extract_row(gamestate)
                 rows.append(row)
             except (ValueError, KeyError, AttributeError):
                 continue
@@ -214,17 +202,17 @@ def process_one_episode(raw_path: str) -> List[Row]:
     return _row_to_winner_first(rows)
 
 
-def _choose_chunk_t(F: int, elem_bytes: int) -> int:
-    """Pick the temporal chunk size ``T`` for Zarr arrays given ``F`` features.
+def _choose_chunk_t(num_features: int, elem_bytes: int) -> int:
+    """Pick the temporal chunk size ``T`` for Zarr arrays given ``num_features`` features.
 
     Example
     -------
-    With ``F=512`` and ``elem_bytes=4`` the helper approximates how many frames fit
+    With ``num_features=512`` and ``elem_bytes=4`` the helper approximates how many frames fit
     in ``config.zarr.target_chunk_mb`` megabytes, then rounds to a multiple of
     ``config.seq_len`` so sliding windows rarely straddle chunk boundaries.
     """
     config = get_config()
-    approx_t = int((config.zarr.target_chunk_mb * (1024**2)) / (F * elem_bytes))
+    approx_t = int((config.zarr.target_chunk_mb * (1024**2)) / (num_features * elem_bytes))
     approx_t = max(config.seq_len, approx_t)
     # align to a multiple of seq len to minimize boundary splits
     if config.seq_len > 0:
@@ -254,7 +242,7 @@ class EpisodeWriter:
 
         self._chunk_t_cache: dict[int, int] = {}
 
-    def _chunk_t(self, F: int, elem_bytes: int = 4) -> int:
+    def _chunk_t(self, num_features: int, elem_bytes: int = 4) -> int:
         """Memoize the chunk length for feature dimension ``F``.
 
         Example
@@ -263,52 +251,49 @@ class EpisodeWriter:
         :func:`_choose_chunk_t` and caches it. Subsequent calls with the same ``F``
         reuse the cached value, avoiding repeated configuration math.
         """
-        if F not in self._chunk_t_cache:
+        if num_features not in self._chunk_t_cache:
             ct = _choose_chunk_t(
-                F=F,
+                num_features=num_features,
                 elem_bytes=elem_bytes,
             )
-            self._chunk_t_cache[F] = ct
-        return self._chunk_t_cache[F]
+            self._chunk_t_cache[num_features] = ct
+        return self._chunk_t_cache[num_features]
 
-    def write_episode(self, episode_id: int, X: RawNumpyArray, Y: RawNumpyArray) -> str:
-        """Write ``X``/``Y`` arrays for ``episode_id`` into the shard.
+    def write_episode(self, episode_id: int, features: RawNumpyArray, targets: RawNumpyArray) -> str:
+        """Write ``features``/``targets`` arrays for ``episode_id`` into the shard.
 
         Example
         -------
-        Given ``X`` with shape ``(300, F)`` and ``Y`` with ``(300, Yd)``, the method
+        Given ``features`` with shape ``(300, num_features)`` and ``targets`` with ``(300, Yd)``, the method
         creates ``ep_000123/X`` and ``ep_000123/Y`` arrays (chunked along time),
-        fills them with the provided data, and returns the episode group name. If
-        ``Y`` is empty the feature array is still written while the target dataset
-        is omitted.
+        fills them with the provided data, and returns the episode group name.
         """
         config = get_config()
-        assert X.dtype == np.float32 and (Y.size == 0 or Y.dtype == np.float32)
+        assert features.dtype == np.float32 and targets.dtype == np.float32
         ep_name = f"ep_{episode_id:06d}"
         epg = self.root.require_group(ep_name)
         for name in ("X", "Y"):
             if name in epg:
                 del epg[name]
-        chunk_t = self._chunk_t(X.shape[1], elem_bytes=4)
-        arrX = epg.create_array(
+        chunk_t = self._chunk_t(features.shape[1], elem_bytes=4)
+        features_array = epg.create_array(
             "X",
-            shape=X.shape,
-            chunks=(min(chunk_t, X.shape[0]), X.shape[1]),
+            shape=features.shape,
+            chunks=(min(chunk_t, features.shape[0]), features.shape[1]),
             compressors=[config.zarr.compressor],
             dtype="float32",
             overwrite=True,
         )
-        arrX[:] = X
-        if Y.shape[1] > 0:
-            arrY = epg.create_array(
-                "Y",
-                shape=Y.shape,
-                chunks=(min(chunk_t, Y.shape[0]), Y.shape[1]),
-                compressors=[config.zarr.compressor],
-                dtype="float32",
-                overwrite=True,
-            )
-            arrY[:] = Y
+        features_array[:] = features
+        targets_array = epg.create_array(
+            "Y",
+            shape=targets.shape,
+            chunks=(min(chunk_t, targets.shape[0]), targets.shape[1]),
+            compressors=[config.zarr.compressor],
+            dtype="float32",
+            overwrite=True,
+        )
+        targets_array[:] = targets
         return ep_name
 
     def finalize(self) -> None:
@@ -349,26 +334,22 @@ def _rows_to_dense(
     ``float32`` arrays alongside the feature/target names and dtypes, matching the
     tensors written into the final Zarr shards.
     """
-    T = len(rows)
-    if T < 2:
-        raise ValueError(f"Need at least 2 frames for temporal shifting, got {T}")
+    num_frames = len(rows)
+    if num_frames < 2:
+        raise ValueError(f"Need at least 2 frames for temporal shifting, got {num_frames}")
     base_feature_names = [
         name for name in schema.features if name not in DERIVED_FEATURES
     ]
     base_target_names = list(schema.targets)
-    F = len(base_feature_names)
-    Yd = len(base_target_names)
+    num_features = len(base_feature_names)
+    num_targets = len(base_target_names)
 
     feat_dtypes: List[str] = []
     targ_dtypes: List[str] = []
 
-    T_out = T - 1
-    X = np.empty((T_out, F), dtype=np.float32)
-    Y = (
-        np.empty((T_out, Yd), dtype=np.float32)
-        if Yd
-        else np.empty((T_out, 0), dtype=np.float32)
-    )
+    T_out = num_frames - 1
+    X = np.empty((T_out, num_features), dtype=np.float32)
+    Y = np.empty((T_out, num_targets), dtype=np.float32)
 
     for name in base_feature_names:
         v0 = getattr(rows[0], name)

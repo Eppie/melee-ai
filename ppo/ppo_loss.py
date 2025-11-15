@@ -261,7 +261,6 @@ def compute_entropy(action_logits: Dict[str, torch.Tensor]) -> torch.Tensor:
 
 def compute_ppo_loss(
     new_action_logits: Dict[str, torch.Tensor],
-    old_action_logits: Dict[str, torch.Tensor],
     actions_taken: Dict[str, torch.Tensor],
     old_log_probs: torch.Tensor,
     advantages: torch.Tensor,
@@ -272,7 +271,6 @@ def compute_ppo_loss(
 
     Args:
         new_action_logits: Current policy action logits
-        old_action_logits: Old policy action logits (for logging)
         actions_taken: Actions that were taken
         old_log_probs: Log probs from old policy
         advantages: GAE advantages
@@ -505,7 +503,6 @@ def compute_total_ppo_loss(
     # Policy loss
     policy_loss, policy_metrics = compute_ppo_loss(
         new_action_logits=new_action_logits,
-        old_action_logits=old_action_logits,
         actions_taken=actions_taken,
         old_log_probs=old_log_probs,
         advantages=advantages,

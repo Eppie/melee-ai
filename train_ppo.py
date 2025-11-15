@@ -136,7 +136,6 @@ def run_episode_worker(
         seq_len=seq_len,
         warmup_frames=128,
         max_episode_frames=max_episode_frames,
-        slippi_port=51441 + worker_id,  # Offset port for each worker
     )
 
     # Initialize console

@@ -6,7 +6,7 @@ import json
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -59,6 +59,9 @@ _BTN_BIT_WEIGHTS = torch.tensor(
     [1 << idx for idx, _ in enumerate(CONTROLLER_KEY_GROUPS["buttons"])],
     dtype=torch.int64,
 )
+_BUTTON_NAME_TO_INDEX = {
+    name: idx for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"])
+}
 
 _PALETTE_BASE = {"main": _MAIN_PALETTE_T, "c": _C_PALETTE_T}
 _PALETTE_CACHE: Dict[Tuple[str, str], torch.Tensor] = {}
@@ -183,6 +186,11 @@ def _nearest_diffs_within_window(
 def _pack_button_states(buttons: torch.Tensor) -> torch.Tensor:
     weights = _BTN_BIT_WEIGHTS.to(buttons.device)
     return (buttons.to(torch.int64) * weights).sum(dim=-1)
+
+
+def _angle_diff(a1: torch.Tensor, a2: torch.Tensor) -> torch.Tensor:
+    """Computes the shortest angle difference between two angles in radians."""
+    return torch.atan2(torch.sin(a1 - a2), torch.cos(a1 - a2)).abs()
 
 
 def _encode_state_codes(
@@ -394,6 +402,12 @@ class EnhancedMetrics:
     total_c_stick_error_change: float = 0.0
     total_c_stick_error_hold: float = 0.0
 
+    # New: Stick error by component
+    total_main_stick_magnitude_error: float = 0.0
+    total_main_stick_angle_error: float = 0.0
+    total_c_stick_magnitude_error: float = 0.0
+    total_c_stick_angle_error: float = 0.0
+
     # Jitter metrics
     total_pred_main_jitter: float = 0.0
     total_true_main_jitter: float = 0.0
@@ -411,6 +425,15 @@ class EnhancedMetrics:
     state_correct: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
     state_total: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
 
+    # New: Situational accuracy tracking
+    situational_stats: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            "recovery": defaultdict(float),
+            "edgeguard": defaultdict(float),
+            "neutral": defaultdict(float),
+        }
+    )
+
     # Action duration tracking (for "stuck" metric)
     pred_run_stats: RunStats = field(default_factory=RunStats)
     true_run_stats: RunStats = field(default_factory=RunStats)
@@ -418,6 +441,21 @@ class EnhancedMetrics:
     # Latency tracking (button change detection)
     lr_button_changes_true: List[int] = field(default_factory=list)  # frame indices
     lr_button_changes_pred: List[int] = field(default_factory=list)
+
+    # New: L-Cancel tracking
+    l_cancel_opportunities: int = 0
+    l_cancel_true_success: int = 0
+    l_cancel_pred_success: int = 0
+
+    # New: Jump type tracking
+    jumps_true_short: int = 0
+    jumps_true_full: int = 0
+    jumps_pred_short_correct: int = 0
+    jumps_pred_full_correct: int = 0
+    jumps_pred_full_when_short: int = 0
+    jumps_pred_short_when_full: int = 0
+    jumps_missed_short: int = 0
+    jumps_missed_full: int = 0
 
     # Correlation matrix data
     all_preds_list: List[np.ndarray] = field(default_factory=list)
@@ -515,6 +553,7 @@ def _compute_lagged_cross_correlation(
     return results, usable
 
 
+# TODO: Deduplicate with version in display.py
 def _print_table_block(
         title: str,
         headers: Sequence[str],
@@ -567,7 +606,10 @@ def _print_table_block(
 
 
 def _print_extreme_value_frames(
-        enhanced: EnhancedMetrics, colmap: ColumnMap, top_k: int = 1
+        enhanced: EnhancedMetrics,
+        colmap: ColumnMap,
+        reward_features: Optional[RewardFeatureIdx],
+        top_k: int = 1,
 ) -> None:
     """Print the top and bottom frames by predicted value, with context.
 
@@ -589,6 +631,20 @@ def _print_extreme_value_frames(
     bottom_frames = sorted_frames[:top_k]
     top_frames = sorted_frames[-top_k:][::-1]  # Reverse to show highest first
 
+    reward_idx = reward_features or build_reward_feature_index(colmap)
+    reward_columns: List[Tuple[str, int]] = []
+    for field_info in fields(RewardFeatureIdx):
+        col_idx = getattr(reward_idx, field_info.name)
+        if col_idx is not None:
+            reward_columns.append((field_info.name, col_idx))
+
+    if reward_columns:
+        selected_headers = [name for name, _ in reward_columns]
+        selected_indices = [idx for _, idx in reward_columns]
+    else:
+        selected_headers = list(colmap.feat_names)
+        selected_indices = list(range(len(colmap.feat_names)))
+
     # Helper to print a frame with context
     def print_frame_with_context(frame_idx: int, label: str):
         value_pred, value_target, reward, features = enhanced.value_frame_data[
@@ -601,11 +657,11 @@ def _print_extreme_value_frames(
         print(f"  Frame Reward:    {reward:.4f}")
         print(f"  Frame Index:     {frame_idx}")
 
-        # Get context (30 frames before and 30 frames after)
-        context_start = max(0, frame_idx - 30)
+        # Get context (15 frames before and 15 frames after)
+        context_start = max(0, frame_idx - 15)
         context_end = min(
-            len(enhanced.value_frame_data), frame_idx + 31
-        )  # +31 to include frame_idx and 30 after
+            len(enhanced.value_frame_data), frame_idx + 16
+        )  # include frame_idx and up to 15 after
         context_frames = []
         context_values = []
         context_targets = []
@@ -621,7 +677,9 @@ def _print_extreme_value_frames(
 
         if context_frames:
             # Build data array for printing
-            context_array = np.array(context_frames)  # [N, F]
+            context_array = np.stack(
+                [frame[selected_indices] for frame in context_frames], axis=0
+            ).astype(np.float32)
             num_context = len(context_frames)
 
             # Add value and reward columns
@@ -632,21 +690,15 @@ def _print_extreme_value_frames(
             extended_array[:, -1] = context_rewards
 
             # Extended headers
-            extended_headers = colmap.feat_names + ["val_pred", "val_targ", "reward"]
-
-            # Formatters for actions
-            formatters: Dict[str, Callable[[object], str]] = {}
-            for key in colmap.feat_names:
-                if key.endswith("_action"):
-                    formatters[key] = _format_action
+            extended_headers = selected_headers + ["val_pred", "val_targ", "reward"]
 
             # Print the context frames
             _print_table_block(
                 f"  Context frames ({context_start} to {context_end - 1})",
                 extended_headers,
                 extended_array,
-                max_columns=10,
-                formatters=formatters,
+                max_columns=len(extended_headers),
+                formatters={},
             )
 
     # Print top frames (highest value predictions)
@@ -794,7 +846,7 @@ def _frame_rewards_from_batch(
 ) -> torch.Tensor:
     """Recompute per-frame rewards for logging."""
     features = reward_features or build_reward_feature_index(colmap)
-    return compute_frame_rewards(X, colmap, idx=features)
+    return compute_frame_rewards(X, idx=features)
 
 
 def _build_sample_weight_ratios(loss_cfg) -> SampleWeightRatios:
@@ -956,7 +1008,7 @@ def _record_lr_latency(
 ) -> None:
     """Accumulate frame indices for L/R button press latency analysis."""
     B, L, _ = target_btn.shape
-    lr_idx = 4
+    lr_idx = _BUTTON_NAME_TO_INDEX["button_lr"]
     target_lr = target_btn[:, :, lr_idx]
     pred_lr = btn_pred[:, :, lr_idx]
 
@@ -969,6 +1021,61 @@ def _record_lr_latency(
 
     enhanced.lr_button_changes_true.extend(frame_indices[true_changes].cpu().tolist())
     enhanced.lr_button_changes_pred.extend(frame_indices[pred_changes].cpu().tolist())
+
+
+def _tally_jump_types(
+        enhanced: EnhancedMetrics,
+        target_btn: torch.Tensor,
+        btn_pred: torch.Tensor,
+        grounded_mask: torch.Tensor,
+) -> None:
+    """Classify grounded X/Y presses as short (≤2f) or full (≥3f) hops."""
+    if target_btn.numel() == 0:
+        return
+
+    xy_idx = _BUTTON_NAME_TO_INDEX["button_xy"]
+    true_xy = target_btn[:, :, xy_idx].bool() & grounded_mask
+    pred_xy = btn_pred[:, :, xy_idx].bool() & grounded_mask
+
+    true_np = true_xy.detach().cpu().numpy()
+    pred_np = pred_xy.detach().cpu().numpy()
+
+    for seq_true, seq_pred in zip(true_np, pred_np):
+        idx = 0
+        length = seq_true.shape[0]
+        while idx < length:
+            if not seq_true[idx]:
+                idx += 1
+                continue
+            end = idx + 1
+            while end < length and seq_true[end]:
+                end += 1
+            run_len = end - idx
+
+            pred_len = 0
+            pred_cursor = idx
+            while pred_cursor < length and seq_pred[pred_cursor]:
+                pred_len += 1
+                pred_cursor += 1
+
+            if 1 <= run_len <= 2:
+                enhanced.jumps_true_short += 1
+                if pred_len == 0:
+                    enhanced.jumps_missed_short += 1
+                elif 1 <= pred_len <= 2:
+                    enhanced.jumps_pred_short_correct += 1
+                elif pred_len >= 3:
+                    enhanced.jumps_pred_full_when_short += 1
+            elif run_len >= 3:
+                enhanced.jumps_true_full += 1
+                if pred_len == 0:
+                    enhanced.jumps_missed_full += 1
+                elif 1 <= pred_len <= 2:
+                    enhanced.jumps_pred_short_when_full += 1
+                elif pred_len >= 3:
+                    enhanced.jumps_pred_full_correct += 1
+
+            idx = end
 
 
 def _append_correlation_vectors(
@@ -1079,12 +1186,12 @@ def _update_enhanced_metrics(
     target_main = target_info["main_idx"].view(B, L)
     target_c = target_info["c_idx"].view(B, L)
     target_btn = target_info["buttons"]
+    feat_names = colmap.feat_names
 
     if value_pred is None:
         raise ValueError("value_pred must be provided for enhanced metrics")
 
     # Dequantize to get coordinates
-    # Need to flatten indices, index, then reshape
     main_palette = _palette_on_device("main", device)
     c_palette = _palette_on_device("c", device)
 
@@ -1101,6 +1208,33 @@ def _update_enhanced_metrics(
 
     _accumulate_stick_errors(enhanced, main_errors, main_change_mask, main_hold_mask, "main")
     _accumulate_stick_errors(enhanced, c_errors, c_change_mask, c_hold_mask, "c")
+
+    # New: Stick Error by Vector Components
+    # Magnitudes
+    main_pred_mag = torch.linalg.norm(main_pred_coords, dim=-1)
+    main_true_mag = torch.linalg.norm(main_true_coords, dim=-1)
+    c_pred_mag = torch.linalg.norm(c_pred_coords, dim=-1)
+    c_true_mag = torch.linalg.norm(c_true_coords, dim=-1)
+    enhanced.total_main_stick_magnitude_error += (main_pred_mag - main_true_mag).abs().sum().item()
+    enhanced.total_c_stick_magnitude_error += (c_pred_mag - c_true_mag).abs().sum().item()
+
+    # Angles (handle zero-magnitude vectors)
+    main_pred_angle = torch.atan2(main_pred_coords[..., 1], main_pred_coords[..., 0])
+    main_true_angle = torch.atan2(main_true_coords[..., 1], main_true_coords[..., 0])
+    c_pred_angle = torch.atan2(c_pred_coords[..., 1], c_pred_coords[..., 0])
+    c_true_angle = torch.atan2(c_true_coords[..., 1], c_true_coords[..., 0])
+
+    # Only compute angle error for non-neutral sticks
+    main_angle_mask = (main_true_mag > 0.1) & (main_pred_mag > 0.1)
+    c_angle_mask = (c_true_mag > 0.1) & (c_pred_mag > 0.1)
+    if main_angle_mask.any():
+        enhanced.total_main_stick_angle_error += _angle_diff(
+            main_pred_angle[main_angle_mask], main_true_angle[main_angle_mask]
+        ).sum().item()
+    if c_angle_mask.any():
+        enhanced.total_c_stick_angle_error += _angle_diff(
+            c_pred_angle[c_angle_mask], c_true_angle[c_angle_mask]
+        ).sum().item()
 
     # 2. Jitter (frame-to-frame distance)
     _accumulate_jitter(
@@ -1122,25 +1256,59 @@ def _update_enhanced_metrics(
     enhanced.entropy_frames += B * L
 
     # 4. Per-action-state accuracy (vectorized)
-    p1_actions = X[..., colmap.ego_action_idx].cpu().numpy().flatten()  # [B*L]
-    correct_main = (pred_main_idx == target_main).cpu().numpy().flatten()  # [B*L]
-    _tally_action_categories(enhanced, p1_actions, correct_main)
+    p1_actions = X[..., colmap.ego_action_idx].cpu().numpy().flatten()
+    main_correct_mask_flat = (pred_main_idx == target_main).cpu().numpy().flatten()
+    _tally_action_categories(enhanced, p1_actions, main_correct_mask_flat)
 
-    # 5. Controller state sequences for "stuck" duration (vectorized tuple creation)
+    # New: Situational Accuracy
+    p1_off_stage = X[..., feat_names.index('p1_off_stage')] > 0.5
+    p2_off_stage = X[..., feat_names.index('p2_off_stage')] > 0.5
+    recovery_mask = p1_off_stage
+    edgeguard_mask = p2_off_stage & ~p1_off_stage
+    neutral_mask = ~p1_off_stage & ~p2_off_stage
+    situations = {
+        "recovery": recovery_mask,
+        "edgeguard": edgeguard_mask,
+        "neutral": neutral_mask,
+    }
+    main_correct_mask = (pred_main_idx == target_main)
+    btn_em_mask = (btn_pred == target_btn).all(dim=-1)
+
+    for name, mask in situations.items():
+        if mask.any():
+            frames = mask.sum().item()
+            enhanced.situational_stats[name]["frames"] += frames
+            enhanced.situational_stats[name]["main_correct"] += main_correct_mask[mask].sum().item()
+            enhanced.situational_stats[name]["main_total"] += frames
+            enhanced.situational_stats[name]["btn_em_correct"] += btn_em_mask[mask].sum().item()
+            enhanced.situational_stats[name]["btn_total"] += frames
+
+    # 5. Controller state sequences for "stuck" duration
     _update_run_stats(
-        enhanced,
-        pred_main_idx,
-        pred_c_idx,
-        btn_pred,
-        target_main,
-        target_c,
-        target_btn,
+        enhanced, pred_main_idx, pred_c_idx, btn_pred, target_main, target_c, target_btn
     )
 
-    # 6. Button change latency tracking (for L/R button) - vectorized
+    # 6. Button change latency tracking (for L/R button)
     _record_lr_latency(enhanced, target_btn, btn_pred)
 
-    # 7. Collect data for correlation matrix (vectorized)
+    # New: L-Cancel Tracking
+    l_cancel_status = X[..., feat_names.index('p1_l_cancel_status')]
+    # Opportunity is when a cancel was successful (1) or missed (2)
+    opportunity_mask = (l_cancel_status > 0) & (l_cancel_status < 3)
+    if opportunity_mask.any():
+        enhanced.l_cancel_opportunities += opportunity_mask.sum().item()
+        enhanced.l_cancel_true_success += (l_cancel_status[opportunity_mask] == 1).sum().item()
+        # Check if model predicted L/R (shield) or Z.
+        lr_idx = _BUTTON_NAME_TO_INDEX["button_lr"]
+        z_idx = _BUTTON_NAME_TO_INDEX["button_z"]
+        pred_any_cancel = btn_pred[..., lr_idx].bool() | btn_pred[..., z_idx].bool()
+        enhanced.l_cancel_pred_success += pred_any_cancel[opportunity_mask].sum().item()
+
+    # New: Short hop vs full hop accuracy
+    grounded_mask = X[..., feat_names.index('p1_on_ground')] > 0.5
+    _tally_jump_types(enhanced, target_btn, btn_pred, grounded_mask)
+
+    # 7. Collect data for correlation matrix
     _append_correlation_vectors(
         enhanced,
         main_pred_coords,
@@ -1155,12 +1323,7 @@ def _update_enhanced_metrics(
 
     # 8. Value head metrics
     _accumulate_value_metrics(
-        enhanced,
-        X,
-        colmap,
-        value_idx,
-        reward_features,
-        value_pred,
+        enhanced, X, colmap, value_idx, reward_features, value_pred
     )
 
     # Return last coordinates for next batch
@@ -1172,14 +1335,12 @@ def _update_enhanced_metrics(
     return last_pred_main, last_pred_c, last_true_main, last_true_c
 
 
-
 def _evaluate(
         model: GPT,
         loader: DataLoader,
         colmap: ColumnMap,
         device: torch.device,
         progress: bool,
-        report_every: int,
         max_batches: Optional[int] = None,
 ) -> Dict[str, object]:
     config = get_config()
@@ -1487,29 +1648,22 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
     print("\n===== Enhanced Metrics =====")
 
     # 1. Mean Stick Error
-    print("\n1. Mean Stick Error (Euclidean Distance):")
+    print("\n1. Mean Stick Error:")
     avg_main_error = _safe_div(enhanced.total_main_stick_error, enhanced.total_frames)
     avg_c_error = _safe_div(enhanced.total_c_stick_error, enhanced.total_frames)
-    print(f"  Main Stick: {avg_main_error:.4f}")
-    print(f"  C-Stick:    {avg_c_error:.4f}")
+    print(f"  Main Stick (Euclidean): {avg_main_error:.4f}")
+    print(f"  C-Stick (Euclidean):    {avg_c_error:.4f}")
 
-    # Error by change/hold
-    change_frames_main = enhanced.total_main_stick_error_change
-    hold_frames_main = enhanced.total_main_stick_error_hold
-    # We need to track the count of change/hold frames for proper averaging
-    # For now, use the total as denominator (this is an approximation)
-    print(
-        f"  Main Stick (change frames): {_safe_div(enhanced.total_main_stick_error_change, enhanced.total_frames):.4f}"
-    )
-    print(
-        f"  Main Stick (hold frames):   {_safe_div(enhanced.total_main_stick_error_hold, enhanced.total_frames):.4f}"
-    )
-    print(
-        f"  C-Stick (change frames):    {_safe_div(enhanced.total_c_stick_error_change, enhanced.total_frames):.4f}"
-    )
-    print(
-        f"  C-Stick (hold frames):      {_safe_div(enhanced.total_c_stick_error_hold, enhanced.total_frames):.4f}"
-    )
+    # New: Stick Error by component
+    avg_main_mag_error = _safe_div(enhanced.total_main_stick_magnitude_error, enhanced.total_frames)
+    avg_main_angle_error = _safe_div(enhanced.total_main_stick_angle_error, enhanced.total_frames)
+    avg_c_mag_error = _safe_div(enhanced.total_c_stick_magnitude_error, enhanced.total_frames)
+    avg_c_angle_error = _safe_div(enhanced.total_c_stick_angle_error, enhanced.total_frames)
+    print(f"  Main Stick (Magnitude): {avg_main_mag_error:.4f}")
+    print(f"  Main Stick (Angle rad): {avg_main_angle_error:.4f} (~{np.rad2deg(avg_main_angle_error):.2f}°)")
+    print(f"  C-Stick (Magnitude):    {avg_c_mag_error:.4f}")
+    print(f"  C-Stick (Angle rad):    {avg_c_angle_error:.4f} (~{np.rad2deg(avg_c_angle_error):.2f}°)")
+
 
     # 2. Jitter
     print("\n2. Stick Stability (Jitter - Avg Frame-to-Frame Distance):")
@@ -1541,7 +1695,7 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
         print(f"  Shoulder:   {avg_shoulder_entropy:.4f}")
 
     # 4. Per-action-state accuracy
-    print("\n4. Accuracy by Player State:")
+    print("\n4. Accuracy by Player State (Main Stick):")
     for state_type in ["idle", "hitstun", "attack", "other"]:
         if state_type in enhanced.state_total and enhanced.state_total[state_type] > 0:
             acc = _safe_div(
@@ -1550,8 +1704,17 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
             count = int(enhanced.state_total[state_type])
             print(f"  {state_type.capitalize():<8}: {acc:.3f} ({count:,} frames)")
 
-    # 5. Stuck action duration
-    print("\n5. 'Stuck' Action Duration (Consecutive Identical States):")
+    # New: Situational Accuracy
+    print("\n5. Accuracy by Game Situation:")
+    for name, stats in enhanced.situational_stats.items():
+        total = stats.get("main_total", 0)
+        if total > 0:
+            main_acc = _safe_div(stats.get("main_correct", 0), total)
+            btn_em = _safe_div(stats.get("btn_em_correct", 0), stats.get("btn_total", 0))
+            print(f"  {name.capitalize():<10}: Main Acc {main_acc:.3f} | Btn EM {btn_em:.3f} ({int(total):,} frames)")
+
+    # 6. Stuck action duration
+    print("\n6. 'Stuck' Action Duration (Consecutive Identical States):")
     enhanced.pred_run_stats.finalize()
     enhanced.true_run_stats.finalize()
     if enhanced.pred_run_stats.run_count:
@@ -1567,8 +1730,8 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
         )
         print(f"    Max:  {enhanced.true_run_stats.max_length} frames")
 
-    # 6. Action change latency
-    print("\n6. L/R Button Press Latency:")
+    # 7. Action change latency
+    print("\n7. L/R Button Press Latency:")
     if enhanced.lr_button_changes_true:
         window = 10  # Search ±10 frames
         latencies = _nearest_diffs_within_window(
@@ -1589,8 +1752,47 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
     else:
         print("  No L/R button press events detected")
 
-    # 7. Correlation matrix
-    print("\n7. Controller Input Correlation Matrix:")
+    # New: L-Cancel Rate
+    print("\n8. L-Cancel Success Rate:")
+    if enhanced.l_cancel_opportunities > 0:
+        true_rate = _safe_div(enhanced.l_cancel_true_success, enhanced.l_cancel_opportunities)
+        pred_rate = _safe_div(enhanced.l_cancel_pred_success, enhanced.l_cancel_opportunities)
+        print(f"  Opportunities: {enhanced.l_cancel_opportunities:,}")
+        print(f"  Human Success Rate:   {true_rate:.3f}")
+        print(f"  Model Attempt Rate:   {pred_rate:.3f} (predicts L/R/Z during window)")
+    else:
+        print("  No L-cancel opportunities found in validation set.")
+
+    # New: Short Hop Accuracy
+    print("\n9. Short Hop vs. Full Hop Accuracy:")
+    short_total = int(enhanced.jumps_true_short)
+    full_total = int(enhanced.jumps_true_full)
+    short_correct = int(enhanced.jumps_pred_short_correct)
+    full_correct = int(enhanced.jumps_pred_full_correct)
+    short_full_instead = int(enhanced.jumps_pred_full_when_short)
+    short_missed = int(enhanced.jumps_missed_short)
+    full_short_instead = int(enhanced.jumps_pred_short_when_full)
+    full_missed = int(enhanced.jumps_missed_full)
+    if short_total > 0:
+        short_acc = _safe_div(short_correct, short_total)
+        print("  Short-hop opportunities (≤2f hold):")
+        print(f"    Correct short hops: {short_correct}/{short_total} ({short_acc:.3f})")
+        print(f"    Full hopped instead: {short_full_instead}/{short_total}")
+        print(f"    No jump: {short_missed}/{short_total}")
+    else:
+        print("  Short-hop opportunities (≤2f hold): No grounded attempts detected.")
+    if full_total > 0:
+        full_acc = _safe_div(full_correct, full_total)
+        print("  Full-hop opportunities (≥3f hold):")
+        print(f"    Correct full hops: {full_correct}/{full_total} ({full_acc:.3f})")
+        print(f"    Short hopped instead: {full_short_instead}/{full_total}")
+        print(f"    No jump: {full_missed}/{full_total}")
+    else:
+        print("  Full-hop opportunities (≥3f hold): No grounded attempts detected.")
+
+
+    # 8. Correlation matrix
+    print("\n10. Controller Input Correlation Matrix:")
     if enhanced.all_preds_list and enhanced.all_labels_list:
         # Concatenate all batches
         all_preds = np.vstack(enhanced.all_preds_list)  # [total_frames, features]
@@ -1607,9 +1809,9 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
             f"  (Lower is better - means predicted correlations match true correlations)"
         )
 
-    # 8. Value Head Metrics (RL)
+    # 9. Value Head Metrics (RL)
     if enhanced.value_frames > 0:
-        print("\n8. Value Head Metrics (RL Critic):")
+        print("\n11. Value Head Metrics (RL Critic):")
 
         avg_value_mse = _safe_div(enhanced.total_value_mse, enhanced.value_frames)
         avg_value_mae = _safe_div(enhanced.total_value_mae, enhanced.value_frames)
@@ -1726,14 +1928,15 @@ def _print_enhanced_metrics_with_colmap(
 
     # Print extreme value frames if value head is enabled
     if enhanced.value_frame_data:
-        _print_extreme_value_frames(enhanced, colmap, top_k=1)
+        reward_features = build_reward_feature_index(colmap)
+        _print_extreme_value_frames(enhanced, colmap, reward_features, top_k=1)
 
 
 def _print_final_summary(
         results: Dict[str, object],
         checkpoint: Path,
         data_root: Path,
-        colmap: ColumnMap,
+        column_map: ColumnMap,
 ) -> None:
     batches = results["batches"]
     loss_sums: Dict[str, float] = results["loss_sums"]
@@ -1856,7 +2059,7 @@ def _print_final_summary(
     # Print enhanced metrics
     enhanced: EnhancedMetrics = results.get("enhanced")
     if enhanced:
-        _print_enhanced_metrics_with_colmap(enhanced, colmap)
+        _print_enhanced_metrics_with_colmap(enhanced, column_map)
 
 
 def parse_args() -> argparse.Namespace:
@@ -2007,7 +2210,6 @@ def main() -> None:
         colmap,
         device,
         progress=not args.no_progress,
-        report_every=args.report_every,
         max_batches=args.max_batches,
     )
 

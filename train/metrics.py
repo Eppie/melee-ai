@@ -289,15 +289,13 @@ class MetricsAccumulator:
         Returns:
             Dictionary of scalar metrics such as ``acc_main`` and ``btn_f1_micro``.
         """
-        summary = {}
+        summary = {"acc_main": float(self.main_correct.item()) / max(
+            1.0, float(self.main_total.item())
+        ), "acc_main_maj": float(self.main_maj_correct.item()) / max(
+            1.0, float(self.main_total.item())
+        )}
 
         # Main stick
-        summary["acc_main"] = float(self.main_correct.item()) / max(
-            1, float(self.main_total.item())
-        )
-        summary["acc_main_maj"] = float(self.main_maj_correct.item()) / max(
-            1, float(self.main_total.item())
-        )
         if self.main_rep_total.item() > 0:
             summary["acc_main_rep"] = float(self.main_rep_correct.item()) / float(
                 self.main_rep_total.item()
@@ -307,11 +305,12 @@ class MetricsAccumulator:
 
         # C-stick
         summary["acc_c"] = float(self.c_correct.item()) / max(
-            1, float(self.c_total.item())
+            1.0, float(self.c_total.item())
         )
         summary["acc_c_maj"] = float(self.c_maj_correct.item()) / max(
-            1, float(self.c_total.item())
+            1.0, float(self.c_total.item())
         )
+        # TODO: Why is this conditional needed?
         if self.c_rep_total.item() > 0:
             summary["acc_c_rep"] = float(self.c_rep_correct.item()) / float(
                 self.c_rep_total.item()
@@ -328,6 +327,7 @@ class MetricsAccumulator:
         tp_sum = tp.sum()
         fp_sum = fp.sum()
         fn_sum = fn.sum()
+        # TODO: Why are these conditionals needed?
         prec_micro = tp_sum / (tp_sum + fp_sum) if (tp_sum + fp_sum) > 0 else 0.0
         rec_micro = tp_sum / (tp_sum + fn_sum) if (tp_sum + fn_sum) > 0 else 0.0
         f1_micro = (
@@ -352,14 +352,14 @@ class MetricsAccumulator:
         f1_macro = f1_per_button.mean()
 
         summary["btn_em"] = float(self.btn_em_correct.item()) / max(
-            1, float(self.btn_total.item())
+            1.0, float(self.btn_total.item())
         )
         summary["btn_prec_micro"] = float(prec_micro)
         summary["btn_rec_micro"] = float(rec_micro)
         summary["btn_f1_micro"] = float(f1_micro)
         summary["btn_f1_macro"] = float(f1_macro)
         summary["btn_em_maj"] = float(self.btn_maj_em_correct.item()) / max(
-            1, float(self.btn_total.item())
+            1.0, float(self.btn_total.item())
         )
         if self.btn_rep_total.item() > 0:
             summary["btn_em_rep"] = float(self.btn_rep_em_correct.item()) / float(
@@ -371,10 +371,10 @@ class MetricsAccumulator:
         # Shoulder
         if self.K_shoulder > 0:
             summary["acc_shoulder"] = float(self.shoulder_correct.item()) / max(
-                1, float(self.shoulder_total.item())
+                1.0, float(self.shoulder_total.item())
             )
             summary["acc_shoulder_maj"] = float(self.shoulder_maj_correct.item()) / max(
-                1, float(self.shoulder_total.item())
+                1.0, float(self.shoulder_total.item())
             )
 
         return summary

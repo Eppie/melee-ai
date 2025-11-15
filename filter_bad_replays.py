@@ -139,9 +139,9 @@ def quality_reason(game: Game) -> FilterFailure | None:
         return "frame_length_unreadable", "Unable to determine frame count from inputs"
 
     if total_frames < MIN_FRAME_COUNT:
-        return ("short_match", f"{total_frames} frames < required {MIN_FRAME_COUNT}")
+        return "short_match", f"{total_frames} frames < required {MIN_FRAME_COUNT}"
     if total_frames > MAX_FRAME_COUNT:
-        return ("long_match", f"{total_frames} frames > allowed {MAX_FRAME_COUNT}")
+        return "long_match", f"{total_frames} frames > allowed {MAX_FRAME_COUNT}"
 
     for idx, port in enumerate(frames.ports, start=1):
         leader = port.leader

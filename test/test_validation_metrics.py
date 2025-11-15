@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import torch
+from typing import Tuple
 
 from column_map import ColumnMap
 from config import get_config, init_config, reset_config
@@ -13,6 +14,7 @@ from validation import (
     _categorize_action,
     _encode_state_codes,
     _frame_rewards_from_batch,
+    _tally_jump_types,
     _update_enhanced_metrics,
 )
 
@@ -34,6 +36,11 @@ def _build_feature_names(include_value_target: bool = True) -> list[str]:
         "p2_is_defender_in_hitlag",
         "p1_shield_strength",
         "p2_shield_strength",
+        "p1_off_stage",
+        "p2_off_stage",
+        "p1_l_cancel_status",
+        "p1_on_ground",
+        "p2_on_ground",
     ]
 
     controller_features: list[str] = []
@@ -493,3 +500,45 @@ def test_update_enhanced_metrics_handles_single_frame_batches_and_copies_frame_f
     assert torch.allclose(last_pred_c, c_palette[pred_c_idx].reshape(B, 2))
     assert torch.allclose(last_true_main, main_palette[target_main].reshape(B, 2))
     assert torch.allclose(last_true_c, c_palette[target_c].reshape(B, 2))
+
+
+def test_tally_jump_types_tracks_confusions_and_misses():
+    enhanced = EnhancedMetrics()
+    num_buttons = len(BUTTON_TARGET_NAMES)
+    B, L = 1, 20
+    target_btn = torch.zeros((B, L, num_buttons), dtype=torch.long)
+    btn_pred = torch.zeros_like(target_btn)
+    xy_idx = BUTTON_TARGET_NAMES.index("p1_button_xy")
+
+    def _mark(window: Tuple[int, int], tensor: torch.Tensor) -> None:
+        start, end = window
+        tensor[:, start:end, xy_idx] = 1
+
+    # Short-hop runs: [0-2), [3-5), [6-8)
+    _mark((0, 2), target_btn)
+    _mark((3, 5), target_btn)
+    _mark((6, 8), target_btn)
+    # Full-hop runs: [9-12), [13-16), [17-20)
+    _mark((9, 12), target_btn)
+    _mark((13, 16), target_btn)
+    _mark((17, 20), target_btn)
+
+    # Model behavior
+    _mark((0, 3), btn_pred)    # Full hop when short desired
+    # Missed short hop at [3,5)
+    _mark((6, 8), btn_pred)    # Correct short hop
+    _mark((9, 11), btn_pred)   # Short hop when full desired
+    # Missed full hop at [13,16)
+    _mark((17, 20), btn_pred)  # Correct full hop
+
+    grounded_mask = torch.ones((B, L), dtype=torch.bool)
+    _tally_jump_types(enhanced, target_btn, btn_pred, grounded_mask)
+
+    assert enhanced.jumps_true_short == 3
+    assert enhanced.jumps_true_full == 3
+    assert enhanced.jumps_pred_short_correct == 1
+    assert enhanced.jumps_pred_full_correct == 1
+    assert enhanced.jumps_pred_full_when_short == 1
+    assert enhanced.jumps_missed_short == 1
+    assert enhanced.jumps_pred_short_when_full == 1
+    assert enhanced.jumps_missed_full == 1

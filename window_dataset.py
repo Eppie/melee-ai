@@ -141,15 +141,14 @@ class ZarrCorpusIndex:
         self,
         ep: EpisodeInfo
     ) -> Tuple[zarr.Array, Optional[zarr.Array]]:
-        """Open the ``X``/``Y`` arrays for ``ep``.
+        """Open the ``features``/``targets`` arrays for ``ep``.
 
         Example
         -------
         When ``ep`` describes ``episode_id=7`` in ``shard_00002.zarr``, the method
         locates the shard directory, opens ``root['ep_000007']``, and returns the
-        ``X`` and ``Y`` arrays.
+        ``features`` and ``targets`` arrays.
         """
-        key = (ep.shard_id, ep.episode_id)
         shard_path = self._shard_paths.get(ep.shard_id)
         if shard_path is None:
             raise FileNotFoundError(f"Shard path not found for shard_id={ep.shard_id}")
@@ -159,10 +158,10 @@ class ZarrCorpusIndex:
 
         ep_name = f"ep_{ep.episode_id:06d}"
         epg = root[ep_name]
-        X = epg["X"]  # shape (T, F), float32
-        Y = epg.get("Y", None)  # shape (T, Yd) or missing
+        features = epg["X"]  # shape (T, F), float32
+        targets = epg["Y"]
 
-        return X, Y
+        return features, targets
 
 
 @dataclass(frozen=True)
@@ -228,12 +227,12 @@ def _prepare_transform_plan(
 
 
 def _apply_prepared_transforms(
-    X: RawNumpyArray, plan: Optional[Tuple[_PreparedTransform, ...]]
+    features: RawNumpyArray, plan: Optional[Tuple[_PreparedTransform, ...]]
 ) -> ProcessedNumpyArray:
-    """Apply pre-resolved transform indices to ``X``."""
+    """Apply pre-resolved transform indices to ``features``."""
     if not plan:
-        return X
-    out = X
+        return features
+    out = features
     for prepared in plan:
         for idxs in prepared.index_groups:
             if idxs.size == 1:
@@ -261,11 +260,11 @@ def _apply_prepared_transforms(
 
 
 def _apply_feature_transforms(
-    X: RawNumpyArray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
+    features: RawNumpyArray, feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
 ) -> ProcessedNumpyArray:
     """Backward-compatible wrapper that prepares a plan on demand."""
     plan = _prepare_transform_plan(feature_names, spec) if spec else None
-    return _apply_prepared_transforms(X, plan)
+    return _apply_prepared_transforms(features, plan)
 
 
 class WindowDataset(Dataset):
@@ -351,12 +350,11 @@ class WindowDataset(Dataset):
         ep_idx, offset = self.index.window_to_episode(i)
         ep = self.index.episodes[ep_idx]
         start = offset  # within episode, window starts at this index
-        L = self.seq_len
 
         feature_array, target_array = self.index.open_episode_arrays(ep)
         # Slice contiguous window; arrays are (T, F) and (T, Yd)
-        feature_window = feature_array[start : start + L, :]  # (L, F)
-        target_window = target_array[start : start + L, :]  # (L, Yd)
+        feature_window = feature_array[start : start + self.seq_len, :]  # (seq_len, num_features)
+        target_window = target_array[start : start + self.seq_len, :]  # (seq_len, num_targets)
 
         # Apply per-feature transforms (in-place on view)
         feature_window: RawNumpyArray = np.ascontiguousarray(feature_window)  # ensure contiguous for in-place ops
@@ -506,7 +504,6 @@ class RandomWindowSampler(Sampler[int]):
             buffer = buffer[start_offset:]
             self._start_offset = 0
         else:
-            start_offset = 0
             self._start_offset = 0
         if buffer.size == 0:
             return

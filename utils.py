@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Dict, List, Optional, TextIO, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -89,9 +89,6 @@ def _module_label(module: nn.Module, cache: Dict[int, Tuple[int, int]]) -> str:
 
 def print_model_diagram(
     model: nn.Module,
-    *,
-    max_depth: Optional[int] = None,
-    stream: Optional[TextIO] = None,
 ) -> str:
     """Print an ASCII diagram of ``model`` and return the rendered text.
 
@@ -99,18 +96,11 @@ def print_model_diagram(
     ----------
     model:
         The module to render.
-    max_depth:
-        Optional limit on recursion depth (root is depth 0). ``None`` prints
-        the full module tree.
-    stream:
-        Optional stream to print to. Defaults to ``sys.stdout``.
     """
 
     param_cache: Dict[int, Tuple[int, int]] = {}
     visited: set[int] = {id(model)}
-    lines: List[str] = []
-
-    lines.append(_module_label(model, param_cache))
+    lines: list[str] = [_module_label(model, param_cache)]
 
     def _render(module: nn.Module, indent: str, depth: int) -> None:
         children = list(module.named_children())
@@ -131,19 +121,11 @@ def print_model_diagram(
             if not grand_children:
                 continue
 
-            if max_depth is not None and depth + 1 >= max_depth:
-                continuation_indent = indent + ("    " if is_last else "│   ")
-                lines.append(
-                    f"{continuation_indent}└── … ({len(grand_children)} submodules)"
-                )
-                continue
-
             new_indent = indent + ("    " if is_last else "│   ")
             _render(child, new_indent, depth + 1)
 
     _render(model, "", 0)
 
     diagram = "\n".join(lines)
-    destination = stream if stream is not None else sys.stdout
-    print(diagram, file=destination)
+    print(diagram, file=sys.stdout)
     return diagram

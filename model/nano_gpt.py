@@ -87,6 +87,7 @@ class GPT(nn.Module):
         main_stick_input_size = self.embedding_dim + self.button_output_size
         self.main_stick_head = SimpleHead(
             main_stick_input_size, self.main_stick_output_size, hidden=head_hidden_dim
+            # self.embedding_dim, self.main_stick_output_size, hidden=head_hidden_dim
         )
 
         c_stick_input_size = (
@@ -94,6 +95,7 @@ class GPT(nn.Module):
         )
         self.c_stick_head = SimpleHead(
             c_stick_input_size, self.c_stick_output_size, hidden=head_hidden_dim
+            # self.embedding_dim, self.c_stick_output_size, hidden=head_hidden_dim
         )
 
         shoulder_input_size = (
@@ -104,8 +106,10 @@ class GPT(nn.Module):
         )
         self.shoulder_head = SimpleHead(
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
+            # self.embedding_dim, self.shoulder_output_size, hidden=head_hidden_dim
         )
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim)
+        # self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
 
         self.rotary_sequence_length = self.block_size * 2
         head_dim = model_config.n_embd // model_config.n_head
@@ -133,6 +137,7 @@ class GPT(nn.Module):
 
     # TODO: Lower base since we have shorter sequences?
     def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=10000.0):
+    # def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=256.0):
         device = _resolve_device()
         # stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
@@ -202,10 +207,12 @@ class GPT(nn.Module):
 
         main_stick = self.main_stick_head(
             torch.cat((base_hidden_states, button_logits.detach()), dim=-1)
+            # base_hidden_states,
         )
 
         c_stick = self.c_stick_head(
             torch.cat((base_hidden_states, button_logits.detach(), main_stick.detach()), dim=-1)
+            # base_hidden_states,
         )
 
         shoulder = self.shoulder_head(
@@ -213,6 +220,7 @@ class GPT(nn.Module):
                 (base_hidden_states, button_logits.detach(), main_stick.detach(), c_stick.detach()),
                 dim=-1,
             )
+        # base_hidden_states,
         )
 
         outputs = TensorDict(

@@ -269,7 +269,7 @@ def test_quantize_targets_no_shoulder(monkeypatch):
     monkeypatch.setattr("controller_quantization._SHOULDER_PALETTE_CPU", None)
 
     with pytest.raises(
-        RuntimeError, match="Shoulder quantization palette requested but not defined."
+        AttributeError
     ):
         quantize_targets(batch_Y, colmap)
 

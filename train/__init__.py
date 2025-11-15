@@ -26,6 +26,8 @@ from train.checkpoint import (
     _prune_checkpoints as prune_checkpoints,
     _load_latest_checkpoint as load_latest_checkpoint,
     save_checkpoint,
+    maybe_checkpoint_batch,
+    maybe_checkpoint_epoch,
 )
 
 # Display and formatting
@@ -66,6 +68,21 @@ from train.value_head import (
 )
 
 # Wandb integration (optional)
+from train.setup import (
+    build_optimizer,
+    configure_amp,
+    initialize_training_components,
+    parse_cli_overrides,
+    print_config,
+)
+from train.logging import (
+    prepare_logging_bundle,
+    emit_logging,
+)
+from train.step import (
+    perform_forward_pass,
+    perform_backward_pass,
+)
 from train.wandb_utils import (
     WandbConfig,
     WandbLogger,
@@ -80,6 +97,8 @@ __all__ = [
     "prune_checkpoints",
     "load_latest_checkpoint",
     "save_checkpoint",
+    "maybe_checkpoint_batch",
+    "maybe_checkpoint_epoch",
     # Metrics
     "MetricsAccumulator",
     "compute_confusion_matrix",
@@ -105,6 +124,18 @@ __all__ = [
     "format_loss_summary",
     "format_training_progress",
     "print_batch_preview",
+    # Setup helpers
+    "parse_cli_overrides",
+    "print_config",
+    "configure_amp",
+    "build_optimizer",
+    "initialize_training_components",
+    # Logging
+    "prepare_logging_bundle",
+    "emit_logging",
+    # Step helpers
+    "perform_forward_pass",
+    "perform_backward_pass",
     # Wandb
     "WandbConfig",
     "WandbLogger",

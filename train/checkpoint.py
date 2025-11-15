@@ -8,6 +8,7 @@ from torch.cuda.amp import GradScaler
 from torch.optim import Optimizer
 
 from train.gradients import _move_optimizer_state_to_device
+from train.components import TrainingComponents
 
 
 def _sorted_checkpoint_paths(directory: Path) -> List[Path]:
@@ -216,3 +217,60 @@ def save_checkpoint(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(ckpt, path)
+
+
+def maybe_checkpoint_batch(
+    components: TrainingComponents,
+    epoch: int,
+    iteration_index: int,
+    completed_batches: int,
+    global_step: int,
+) -> None:
+    """Save a checkpoint mid-epoch on a fixed interval."""
+    if iteration_index % 5000 != 0:
+        return
+    ckpt_path = (
+        components.out_dir / f"model_ep{epoch + 1:03d}_{completed_batches:06d}.pt"
+    )
+    save_checkpoint(
+        path=ckpt_path,
+        model=components.model,
+        optimizer=components.optimizer,
+        scaler=components.scaler,
+        epoch=epoch + 1,
+        global_step=global_step,
+        config=components.config.train.__dict__,
+        resume_epoch=epoch,
+        resume_iter=completed_batches,
+        iteration=completed_batches,
+    )
+    _prune_checkpoints(components.out_dir, keep=10)
+
+
+def maybe_checkpoint_epoch(
+    components: TrainingComponents,
+    epoch: int,
+    global_step: int,
+    save_condition: bool,
+) -> None:
+    """Persist a checkpoint at the end of an epoch when requested."""
+    if not save_condition:
+        return
+    ckpt_path = components.out_dir / f"model_ep{epoch + 1:03d}_000000.pt"
+    save_checkpoint(
+        path=ckpt_path,
+        model=components.model,
+        optimizer=components.optimizer,
+        scaler=components.scaler,
+        epoch=epoch + 1,
+        global_step=global_step,
+        config=components.config.train.__dict__,
+        resume_epoch=epoch + 1,
+        resume_iter=0,
+        iteration=0,
+    )
+    _prune_checkpoints(components.out_dir, keep=10)
+    try:
+        components.last_step_file.write_text(str(global_step))
+    except Exception:
+        pass

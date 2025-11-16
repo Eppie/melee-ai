@@ -14,23 +14,23 @@ from column_map import ColumnMap
 from controller_quantization import quantize_targets
 
 
-def build_model_inputs(batch_X: torch.FloatTensor, column_map: ColumnMap) -> TensorDict:
+def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorDict:
     """Convert raw feature tensors into the structured ``TensorDict`` expected by the model.
 
-    The function slices the ``batch_X`` tensor using indices stored in ``colmap`` and casts
+    The function slices the ``features_batch`` tensor using indices stored in ``column_map`` and casts
     categorical features to ``torch.long`` so they can be consumed by embedding layers. Continuous
     features (game state and controller values) remain floating point. The resulting dictionary is
     wrapped in a ``TensorDict`` with the same batch shape as the input so downstream code can rely
     on consistent key names.
 
     Example:
-        Suppose ``batch_X`` is shaped ``[2, 3, 6]`` and the column map encodes indices such that
+        Suppose ``features_batch`` is shaped ``[2, 3, 6]`` and the column map encodes indices such that
         stage is at column 0, ego character at column 1, opponent character at column 2, ego action
         at column 3, opponent action at column 4, and the remaining columns correspond to
         ``gamestate`` (column 5 onwards) and ``controller`` (the last two columns). The first batch
         might look like::
 
-            batch_X = torch.tensor([
+            features_batch = torch.tensor([
                 [
                     [3.0, 10.0, 20.0, 4.0, 12.0, 0.1, 0.2],
                     [3.0, 10.0, 20.0, 4.0, 12.0, 0.3, 0.4],
@@ -45,7 +45,7 @@ def build_model_inputs(batch_X: torch.FloatTensor, column_map: ColumnMap) -> Ten
         slice of the original tensor is repackaged for the model.
 
     Args:
-        batch_X: ``[B, L, F]`` float32 features of the current frame sequence.
+        features_batch: ``[B, L, F]`` float32 features of the current frame sequence.
         column_map: Column mapping for feature indices.
 
     Returns:
@@ -53,17 +53,17 @@ def build_model_inputs(batch_X: torch.FloatTensor, column_map: ColumnMap) -> Ten
         ``opponent_character``, ``ego_action``, ``opponent_action``, ``gamestate``, and
         ``controller``.
     """
-    B, L, _ = batch_X.shape
+    B, L, _ = features_batch.shape
 
     # Categoricals back to long indices
-    stage = batch_X[..., column_map.stage_idx].to(torch.long).unsqueeze(-1)  # [B,L,1]
-    ego_character = batch_X[..., column_map.ego_char_idx].to(torch.long).unsqueeze(-1)
-    opp_character = batch_X[..., column_map.opp_char_idx].to(torch.long).unsqueeze(-1)
-    ego_action = batch_X[..., column_map.ego_action_idx].to(torch.long).unsqueeze(-1)
-    opp_action = batch_X[..., column_map.opp_action_idx].to(torch.long).unsqueeze(-1)
+    stage = features_batch[..., column_map.stage_idx].to(torch.long).unsqueeze(-1)  # [B,L,1]
+    ego_character = features_batch[..., column_map.ego_char_idx].to(torch.long).unsqueeze(-1)
+    opp_character = features_batch[..., column_map.opp_char_idx].to(torch.long).unsqueeze(-1)
+    ego_action = features_batch[..., column_map.ego_action_idx].to(torch.long).unsqueeze(-1)
+    opp_action = features_batch[..., column_map.opp_action_idx].to(torch.long).unsqueeze(-1)
 
-    gamestate = batch_X[..., column_map.gamestate_idxs]  # [B,L,Gg]
-    controller = batch_X[..., column_map.controller_idxs]  # [B,L,Gc]
+    gamestate = features_batch[..., column_map.gamestate_idxs]  # [B,L,Gg]
+    controller = features_batch[..., column_map.controller_idxs]  # [B,L,Gc]
 
     return TensorDict(
         {
@@ -81,7 +81,7 @@ def build_model_inputs(batch_X: torch.FloatTensor, column_map: ColumnMap) -> Ten
 
 # TODO: What is the point of this?
 def quantize_controller_targets(
-    batch_Y: torch.Tensor, colmap: ColumnMap, input_domain: str = "unit11"
+    targets_batch: torch.Tensor, column_map: ColumnMap, input_domain: str = "unit11"
 ) -> Dict[str, torch.Tensor]:
     """Quantize controller outputs to the discrete bins used by the loss functions.
 
@@ -98,14 +98,14 @@ def quantize_controller_targets(
         transformed step by step before being returned.
 
     Args:
-        batch_Y: ``[B, L, Y]`` target controller values to quantize.
-        colmap: Column mapping for the target indices.
+        targets_batch: ``[B, L, Y]`` target controller values to quantize.
+        column_map: Column mapping for the target indices.
         input_domain: Domain of input values (``"unit11"`` or ``"unit01"``).
 
     Returns:
         Dictionary with quantized targets and metadata as produced by the underlying quantizer.
     """
-    return quantize_targets(batch_Y, colmap, input_domain=input_domain)
+    return quantize_targets(targets_batch, column_map, input_domain=input_domain)
 
 
 @dataclass(frozen=True)

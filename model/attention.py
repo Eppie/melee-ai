@@ -86,7 +86,7 @@ class CausalSelfAttention(nn.Module):
         )
         return attention_output
 
-
+# TODO: Should we be using repeat_interleave?
 def repeat_key_value_heads(hidden_states, num_repetitions):
     """
     Repeats key/value heads to match the number of query heads.

@@ -145,23 +145,12 @@ def _load_latest_checkpoint(
     if scaler_state:
         scaler.load_state_dict(scaler_state)
 
-    resume_epoch = ckpt.get("resume_epoch", None)
-    if resume_epoch is None:
-        raw_epoch = int(ckpt.get("epoch", 0))
-        resume_epoch = raw_epoch
-        resume_iter = ckpt.get("resume_iter", ckpt.get("iteration", 0))
-        if "resume_iter" not in ckpt and "iteration" not in ckpt:
-            # Legacy checkpoints stored the *next* epoch to run. Adjust so we resume from the
-            # previous epoch and start at the beginning of that epoch.
-            if raw_epoch > 0:
-                resume_epoch = raw_epoch - 1
-            resume_iter = 0
-    else:
-        resume_iter = ckpt.get("resume_iter", 0)
+    resume_epoch = ckpt["resume_epoch"]
+    resume_iter = ckpt["resume_iter"]
 
     start_epoch = int(resume_epoch)
     start_iter = max(int(resume_iter), 0)
-    global_step = int(ckpt.get("global_step", 0))
+    global_step = int(ckpt["global_step"])
     return max(start_epoch, 0), max(global_step, 0), start_iter
 
 
@@ -178,7 +167,7 @@ def save_checkpoint(
     """Persist the model state and optional training metadata to ``path``.
 
     Example:
-        Calling ``save_checkpoint(Path("ckpts/epoch_5.pt"), model, optimizer, epoch=5, global_step=640)``
+        Calling ``save_checkpoint(Path("checkpoints/epoch_5.pt"), model, optimizer, epoch=5, global_step=640)``
         produces a dictionary containing at least the keys ``"model"``, ``"epoch"``,
         ``"resume_epoch"``, ``"resume_iter"``, and ``"global_step"``. The helper ensures the parent
         directory exists, then uses :func:`torch.save` to serialize the dictionary. Reloading the file
@@ -251,11 +240,8 @@ def maybe_checkpoint_epoch(
     components: TrainingComponents,
     epoch: int,
     global_step: int,
-    save_condition: bool,
 ) -> None:
     """Persist a checkpoint at the end of an epoch when requested."""
-    if not save_condition:
-        return
     ckpt_path = components.out_dir / f"model_ep{epoch + 1:03d}_000000.pt"
     save_checkpoint(
         path=ckpt_path,
@@ -270,7 +256,4 @@ def maybe_checkpoint_epoch(
         iteration=0,
     )
     _prune_checkpoints(components.out_dir, keep=10)
-    try:
-        components.last_step_file.write_text(str(global_step))
-    except Exception:
-        pass
+    components.last_step_file.write_text(str(global_step))

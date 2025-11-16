@@ -180,7 +180,7 @@ def initialize_training_components(
         device=device,
         amp=amp,
         ratios=ratios,
-        colmap=colmap,
+        column_map=colmap,
         value_idx=value_idx,
         loader=loader,
         sampler=sampler,

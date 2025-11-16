@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Optional, Tuple
 
 import torch
+from torch import Tensor
 
 from column_map import ColumnMap
 from constants import (
@@ -24,7 +25,7 @@ from controller_utils import (
 
 # TODO: Do we need clamp here?
 def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:
-    """Map controller coordinates from ``[0, 1]`` to ``[-1, 1]`` with a worked example.
+    """Map controller coordinates from ``[0, 1]`` to ``[-1, 1]``.
 
     Example
     -------
@@ -173,7 +174,7 @@ def _quantize_stick(
 
 # TODO: auto should not be needed. also we shouldn't have to touch buttons.
 def quantize_targets(
-    targets: torch.FloatTensor,
+    targets: Tensor,
     column_map: ColumnMap,
     *,
     input_domain: str = "auto",

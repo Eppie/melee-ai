@@ -1,9 +1,9 @@
 import torch
-from torch import nn as nn
+from torch import nn
 
 
 class SimpleHead(nn.Module):
-    def __init__(self, input_size, output_size, hidden=128):
+    def __init__(self, input_size: int, output_size: int, hidden: int = 128):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden, bias=True),

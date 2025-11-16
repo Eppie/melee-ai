@@ -32,7 +32,7 @@ class TrainingComponents:
     device: torch.device
     amp: AMPContext
     ratios: SampleWeightRatios
-    colmap: ColumnMap
+    column_map: ColumnMap
     value_idx: Optional[int]
     loader: any
     sampler: any

@@ -38,9 +38,9 @@ def perform_forward_pass(
         dtype=amp.dtype,
         enabled=amp.enabled,
     ):
-        inputs_td = build_model_inputs(X, components.colmap)
+        inputs_td = build_model_inputs(X, components.column_map)
         target_info = quantize_controller_targets(
-            Y, components.colmap, input_domain="unit01"
+            Y, components.column_map, input_domain="unit01"
         )
         pred = components.model(inputs_td)
 
@@ -88,7 +88,7 @@ def perform_forward_pass(
             )
         value_target = compute_value_targets(
             X,
-            components.colmap,
+            components.column_map,
             gamma=config.rl.gamma,
             reward_idx=components.value_idx,
         )

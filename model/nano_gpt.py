@@ -77,7 +77,7 @@ class GPT(nn.Module):
             ]
         )
 
-        self.target_shapes_by_head = model_config.target_shapes_by_head
+        self.target_shapes_by_head: dict[str, int] = model_config.target_shapes_by_head
         self.shoulder_output_size = self.target_shapes_by_head["shoulder"]
         self.c_stick_output_size = self.target_shapes_by_head["c_stick"]
         self.main_stick_output_size = self.target_shapes_by_head["main_stick"]

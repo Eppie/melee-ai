@@ -175,7 +175,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             f"[epoch {epoch + 1}] avg_loss {avg_epoch_loss:.4f} ({epoch_ctx.iters_processed} iters)"
         )
 
-    maybe_checkpoint_epoch(components, epoch, state.global_step, True)
+    maybe_checkpoint_epoch(components, epoch, state.global_step)
 
     return state
 

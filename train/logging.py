@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from textwrap import indent
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
@@ -23,10 +23,8 @@ from train.metrics import compute_confusion_matrix, multilabel_prf
 
 
 def append_tensor_stats(
-    prefix: str, tensor: Optional[torch.Tensor], out: Dict[str, float]
+    prefix: str, tensor: torch.Tensor, out: Dict[str, float]
 ) -> None:
-    if tensor is None:
-        return
     flat = tensor.detach()
     if not torch.is_floating_point(flat):
         flat = flat.float()
@@ -39,7 +37,6 @@ def append_tensor_stats(
         out[f"{prefix}_std"] = float(flat.std(unbiased=False).item())
     else:
         out[f"{prefix}_std"] = 0.0
-    out[f"{prefix}_abs_max"] = float(flat.abs().max().item())
 
 
 def gather_logit_metrics(pred: TensorDict) -> Dict[str, float]:
@@ -51,20 +48,16 @@ def gather_logit_metrics(pred: TensorDict) -> Dict[str, float]:
     return metrics
 
 
-def get_head_bias(module: Optional[nn.Module]) -> Optional[torch.Tensor]:
-    if module is None:
-        return None
-    net = getattr(module, "net", None)
+def get_head_bias(module: nn.Module) -> torch.Tensor:
+    net = module.net
     if isinstance(net, (nn.Sequential, list, tuple)) and len(net) > 0:
-        return getattr(net[-1], "bias", None)
-    return getattr(module, "bias", None)
+        return net[-1].bias
+    return module.bias
 
 
 def gather_bias_metrics(model: GPT) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
-    append_tensor_stats(
-        "bias/input_projection", getattr(model.projection_down, "bias", None), metrics
-    )
+    append_tensor_stats("bias/input_projection", model.projection_down.bias, metrics)
     append_tensor_stats("bias/buttons_out", get_head_bias(model.button_head), metrics)
     append_tensor_stats(
         "bias/main_stick_out", get_head_bias(model.main_stick_head), metrics
@@ -73,9 +66,7 @@ def gather_bias_metrics(model: GPT) -> Dict[str, float]:
     append_tensor_stats(
         "bias/shoulder_out", get_head_bias(model.shoulder_head), metrics
     )
-    append_tensor_stats(
-        "bias/value_out", get_head_bias(getattr(model, "value_head", None)), metrics
-    )
+    append_tensor_stats("bias/value_out", get_head_bias(model.value_head), metrics)
     return metrics
 
 
@@ -83,13 +74,7 @@ def extract_loss_breakdown(
     loss_components: Dict[str, torch.Tensor]
 ) -> Dict[str, float]:
     keys = ["main", "c", "buttons", "shoulder", "value"]
-    summary = {}
-    for key in keys:
-        tensor = loss_components.get(key)
-        if tensor is None:
-            continue
-        summary[key] = float(tensor.item())
-    return summary
+    return {key: float(loss_components[key].item()) for key in keys}
 
 
 def prepare_logging_bundle(
@@ -100,14 +85,14 @@ def prepare_logging_bundle(
     lr: float,
     frames_per_s: float,
     avg_loss_running: float,
-    grad_stats: Optional[Dict[str, float]],
+    grad_stats: Dict[str, float],
     global_step: int,
 ) -> LoggingBundle:
     pred = forward_result.pred
     target_info = forward_result.target_info
     config = components.config
     device = components.device
-    B, L, _ = pred["main_stick"].shape
+    batch_size, sequence_length, _ = pred["main_stick"].shape
 
     def _to_float(val) -> float:
         if isinstance(val, (float, int)):
@@ -116,46 +101,44 @@ def prepare_logging_bundle(
             return float(val.item())
         return float(val)
 
-    logits_main = pred["main_stick"].reshape(B * L, -1)
-    target_main = target_info["main_idx"].reshape(B * L)
-    logits_c = pred["c_stick"].reshape(B * L, -1)
-    target_c = target_info["c_idx"].reshape(B * L)
+    logits_main = pred["main_stick"].reshape(batch_size * sequence_length, -1)
+    target_main = target_info["main_idx"].reshape(batch_size * sequence_length)
+    logits_c = pred["c_stick"].reshape(batch_size * sequence_length, -1)
+    target_c = target_info["c_idx"].reshape(batch_size * sequence_length)
     btn_logits = pred["buttons"]
     target_btn = target_info["buttons"]
     btn_probs = torch.sigmoid(btn_logits)
 
-    main_change_mask = torch.zeros((B, L), dtype=torch.bool, device=device)
+    main_change_mask = torch.zeros((batch_size, sequence_length), dtype=torch.bool, device=device)
     main_change_mask[:, 1:] = (
-        target_main.view(B, L)[:, 1:] != target_main.view(B, L)[:, :-1]
+        target_main.view(batch_size, sequence_length)[:, 1:] != target_main.view(batch_size, sequence_length)[:, :-1]
     )
     main_hold_mask = ~main_change_mask
     main_hold_mask[:, 0] = True
 
-    c_change_mask = torch.zeros((B, L), dtype=torch.bool, device=device)
-    c_change_mask[:, 1:] = target_c.view(B, L)[:, 1:] != target_c.view(B, L)[:, :-1]
+    c_change_mask = torch.zeros((batch_size, sequence_length), dtype=torch.bool, device=device)
+    c_change_mask[:, 1:] = target_c.view(batch_size, sequence_length)[:, 1:] != target_c.view(batch_size, sequence_length)[:, :-1]
     c_hold_mask = ~c_change_mask
     c_hold_mask[:, 0] = True
 
-    btn_change_mask = torch.zeros((B, L), device=device, dtype=torch.bool)
+    btn_change_mask = torch.zeros((batch_size, sequence_length), device=device, dtype=torch.bool)
     btn_change_mask[:, 1:] = torch.any(target_btn[:, 1:] != target_btn[:, :-1], dim=-1)
     btn_hold_mask = ~btn_change_mask
     btn_hold_mask[:, 0] = True
 
-    rep_mask = torch.ones((B, L), dtype=torch.bool, device=device)
+    rep_mask = torch.ones((batch_size, sequence_length), dtype=torch.bool, device=device)
     rep_mask[:, 0] = False
-    main_rep = torch.zeros_like(target_main.view(B, L))
-    c_rep = torch.zeros_like(target_c.view(B, L))
+    main_rep = torch.zeros_like(target_main.view(batch_size, sequence_length))
+    c_rep = torch.zeros_like(target_c.view(batch_size, sequence_length))
     btn_rep = torch.zeros_like(target_btn)
 
-    if L > 1:
-        main_rep[:, 1:] = target_main.view(B, L)[:, :-1]
-        c_rep[:, 1:] = target_c.view(B, L)[:, :-1]
-        btn_rep[:, 1:, :] = target_btn[:, :-1, :]
+    main_rep[:, 1:] = target_main.view(batch_size, sequence_length)[:, :-1]
+    c_rep[:, 1:] = target_c.view(batch_size, sequence_length)[:, :-1]
+    btn_rep[:, 1:, :] = target_btn[:, :-1, :]
 
     logits_main_flat = logits_main
     target_main_flat = target_main
     logits_c_flat = logits_c
-    target_c_flat = target_c
     main_pred_idx = logits_main_flat.argmax(dim=-1)
     c_pred_idx = logits_c_flat.argmax(dim=-1)
 
@@ -170,24 +153,13 @@ def prepare_logging_bundle(
         labels=_MAIN_STICK_LABELS[:K_main],
     )
 
-    K_c = int(target_info.get("c_K", logits_c.shape[-1]))
-    c_true_flat = target_c_flat
-    c_pred_flat = c_pred_idx
-    cm_c_b = compute_confusion_matrix(c_true_flat, c_pred_flat, K_c)
-    c_conf_str = format_confusion_matrix(
-        cm_c_b,
-        max_size=10,
-        title="C-STICK confusion",
-        labels=_MAIN_STICK_LABELS[:K_c],
-    )
+    main_pred = main_pred_idx.view(batch_size, sequence_length)
+    c_pred = c_pred_idx.view(batch_size, sequence_length)
 
-    main_pred = main_pred_idx.view(B, L)
-    c_pred = c_pred_idx.view(B, L)
-
-    acc_main_b = float((main_pred == target_main.view(B, L)).float().mean().item())
+    acc_main_b = float((main_pred == target_main.view(batch_size, sequence_length)).float().mean().item())
     acc_main_chg = (
         float(
-            (main_pred[main_change_mask] == target_main.view(B, L)[main_change_mask])
+            (main_pred[main_change_mask] == target_main.view(batch_size, sequence_length)[main_change_mask])
             .float()
             .mean()
             .item()
@@ -197,7 +169,7 @@ def prepare_logging_bundle(
     )
     acc_main_hold = (
         float(
-            (main_pred[main_hold_mask] == target_main.view(B, L)[main_hold_mask])
+            (main_pred[main_hold_mask] == target_main.view(batch_size, sequence_length)[main_hold_mask])
             .float()
             .mean()
             .item()
@@ -207,7 +179,7 @@ def prepare_logging_bundle(
     )
     acc_main_rep_b = (
         float(
-            (main_rep[rep_mask] == target_main.view(B, L)[rep_mask])
+            (main_rep[rep_mask] == target_main.view(batch_size, sequence_length)[rep_mask])
             .float()
             .mean()
             .item()
@@ -216,10 +188,10 @@ def prepare_logging_bundle(
         else 0.0
     )
 
-    acc_c_b = float((c_pred == target_c.view(B, L)).float().mean().item())
+    acc_c_b = float((c_pred == target_c.view(batch_size, sequence_length)).float().mean().item())
     acc_c_chg = (
         float(
-            (c_pred[c_change_mask] == target_c.view(B, L)[c_change_mask])
+            (c_pred[c_change_mask] == target_c.view(batch_size, sequence_length)[c_change_mask])
             .float()
             .mean()
             .item()
@@ -229,7 +201,7 @@ def prepare_logging_bundle(
     )
     acc_c_hold = (
         float(
-            (c_pred[c_hold_mask] == target_c.view(B, L)[c_hold_mask])
+            (c_pred[c_hold_mask] == target_c.view(batch_size, sequence_length)[c_hold_mask])
             .float()
             .mean()
             .item()
@@ -238,7 +210,7 @@ def prepare_logging_bundle(
         else 0.0
     )
     acc_c_rep_b = (
-        float((c_rep[rep_mask] == target_c.view(B, L)[rep_mask]).float().mean().item())
+        float((c_rep[rep_mask] == target_c.view(batch_size, sequence_length)[rep_mask]).float().mean().item())
         if rep_mask.any()
         else 0.0
     )
@@ -275,15 +247,12 @@ def prepare_logging_bundle(
     btn_maj_pred = (pos_rate >= 0.5).to(target_btn.dtype).expand_as(target_btn)
     _, _, _, f1_maj, _ = multilabel_prf(target_btn, btn_maj_pred)
     f1_maj = _to_float(f1_maj)
-    if L > 1:
-        mask_flat = rep_mask.view(B * L)
-        t_flat = target_btn.reshape(B * L, -1)[mask_flat]
-        p_flat = btn_rep.reshape(B * L, -1)[mask_flat]
-        em_rep, _, _, f1_rep, _ = multilabel_prf(t_flat, p_flat)
-        em_rep = _to_float(em_rep)
-        f1_rep = _to_float(f1_rep)
-    else:
-        em_rep = f1_rep = 0.0
+    mask_flat = rep_mask.view(batch_size * sequence_length)
+    t_flat = target_btn.reshape(batch_size * sequence_length, -1)[mask_flat]
+    p_flat = btn_rep.reshape(batch_size * sequence_length, -1)[mask_flat]
+    em_rep, _, _, f1_rep, _ = multilabel_prf(t_flat, p_flat)
+    em_rep = _to_float(em_rep)
+    f1_rep = _to_float(f1_rep)
 
     sh_logits = pred["shoulder"]
     sh_true_idx = target_info["shoulder_idx"]
@@ -295,13 +264,10 @@ def prepare_logging_bundle(
         int(torch.bincount(sh_flat).argmax().item()) if sh_flat.numel() else 0
     )
     acc_sh_maj = float((sh_true_idx == sh_major_lbl).float().mean().item())
-    if L > 1:
-        sh_rep[:, 1:] = sh_true_idx[:, :-1]
-        acc_sh_rep = float(
-            (sh_rep[rep_mask] == sh_true_idx[rep_mask]).float().mean().item()
-        )
-    else:
-        acc_sh_rep = 0.0
+    sh_rep[:, 1:] = sh_true_idx[:, :-1]
+    acc_sh_rep = float(
+        (sh_rep[rep_mask] == sh_true_idx[rep_mask]).float().mean().item()
+    )
 
     loss_summary = extract_loss_breakdown(forward_result.loss_components)
     log_lines: List[str] = [
@@ -333,10 +299,6 @@ def prepare_logging_bundle(
         f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
     )
 
-    if forward_result.value_target is None:
-        raise RuntimeError(
-            "Value targets were not populated during the forward pass; dataset-stored targets are required."
-        )
     value_target_eval = forward_result.value_target
     value_pred_mean = forward_result.value_pred.mean().item()
     value_target_mean = value_target_eval.mean().item()
@@ -388,14 +350,6 @@ def prepare_logging_bundle(
     log_payload.update(gather_logit_metrics(pred))
     log_payload.update(gather_bias_metrics(components.model))
 
-    if grad_stats is not None:
-        grad_elems = grad_stats.get("num_elements", 0.0)
-        nonfinite = grad_stats.get("nonfinite_count", 0.0)
-        if grad_elems:
-            log_payload["gradients/nonfinite_fraction"] = float(
-                nonfinite / max(grad_elems, 1.0)
-            )
-
     log_payload["optimizer/loss_scale"] = float(components.scaler.get_scale())
 
     for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
@@ -422,15 +376,14 @@ def prepare_logging_bundle(
 def emit_logging(
     components: TrainingComponents,
     bundle: LoggingBundle,
-    grad_stats: Optional[Dict[str, float]],
+    grad_stats: Dict[str, float],
     global_step: int,
     epoch_ctx: EpochContext,
 ) -> None:
     print("\n".join(bundle.log_lines))
 
     if components.logger.enabled:
-        if grad_stats is not None:
-            components.logger.log_gradients(grad_stats, step=global_step)
+        components.logger.log_gradients(grad_stats, step=global_step)
         components.logger.log_metrics(bundle.payload, step=global_step)
         try:
             components.last_step_file.write_text(str(global_step))

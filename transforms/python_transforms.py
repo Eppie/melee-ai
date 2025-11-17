@@ -23,6 +23,7 @@ def quantize_unit11_to_palette_py(
     Args:
         x: D-length sequence (e.g., [x, y] for sticks).
         palette11: sequence of K entries, each a D-length sequence.
+        return_index: If True, also return the index of the entry in the palette.
 
     Returns:
         The nearest palette vector as a list[float], and optionally the index.

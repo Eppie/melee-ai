@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional
+from typing import Dict
 
 import torch
-from torch.cuda.amp import GradScaler
-from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 
 
@@ -31,6 +29,7 @@ def _move_optimizer_state_to_device(optimizer: Optimizer, device: torch.device) 
                 state[key] = value.to(device)
 
 
+# TODO: This seems a bit inelegant and/or unoptimized?
 def collect_gradient_diagnostics(
     model: torch.nn.Module, eps: float = 1e-12
 ) -> Dict[str, float]:
@@ -59,7 +58,6 @@ def collect_gradient_diagnostics(
     nan_elems = 0
     inf_elems = 0
     max_grad_abs = 0.0
-    params_with_grad = 0
 
     total_param_sq = 0.0
     max_param_abs = 0.0
@@ -72,7 +70,6 @@ def collect_gradient_diagnostics(
         grad = param.grad
         if grad is None:
             continue
-        params_with_grad += 1
 
         grad_data = grad.detach()
         grad_float = grad_data.float()
@@ -128,12 +125,9 @@ def collect_gradient_diagnostics(
         "std": float(std_val),
         "max_abs": float(max_grad_abs),
         "zero_fraction": float(zero_fraction),
-        "num_elements": float(grad_elems),
         "zero_count": float(zero_elems),
         "nan_count": float(nan_elems),
         "inf_count": float(inf_elems),
-        "nonfinite_count": float(nan_elems + inf_elems),
-        "params_with_grad": float(params_with_grad),
         "param_total_norm": float(param_total_norm),
         "param_max_abs": float(max_param_abs),
         "grad_param_ratio_mean": float(ratio_avg),

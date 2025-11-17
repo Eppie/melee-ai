@@ -13,13 +13,10 @@ This package provides modular, loosely-coupled utilities for training:
 
 from __future__ import annotations
 
-# Batch processing
 from train.batch_utils import (
     build_model_inputs,
     quantize_controller_targets,
 )
-
-# Checkpoint management
 from train.checkpoint import (
     _sorted_checkpoint_paths as sorted_checkpoint_paths,
     _latest_checkpoint as find_latest_checkpoint,
@@ -29,8 +26,6 @@ from train.checkpoint import (
     maybe_checkpoint_batch,
     maybe_checkpoint_epoch,
 )
-
-# Display and formatting
 from train.display import (
     format_confusion_matrix,
     format_metrics_dict,
@@ -38,36 +33,25 @@ from train.display import (
     format_training_progress,
     print_batch_preview,
 )
-
-# Gradient utilities
 from train.gradients import (
     _move_optimizer_state_to_device as move_optimizer_state_to_device,
     collect_gradient_diagnostics,
 )
-
-# Learning rate schedules
 from train.lr_schedule import (
     cosine_lr_schedule,
-    linear_warmup,
 )
-
-# Metrics
 from train.metrics import (
     MetricsAccumulator,
     compute_confusion_matrix,
     compute_change_hold_accuracy,
     multilabel_prf,
 )
-
-# Value head (RL)
 from train.value_head import (
     RewardFeatureIdx,
     build_reward_feature_index,
     compute_frame_rewards,
     compute_value_targets,
 )
-
-# Wandb integration (optional)
 from train.setup import (
     build_optimizer,
     configure_amp,
@@ -104,9 +88,8 @@ __all__ = [
     "compute_confusion_matrix",
     "compute_change_hold_accuracy",
     "multilabel_prf",
-    # LR schedules
+    # LR schedule
     "cosine_lr_schedule",
-    "linear_warmup",
     # Gradients
     "move_optimizer_state_to_device",
     "collect_gradient_diagnostics",

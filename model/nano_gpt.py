@@ -124,6 +124,7 @@ class GPT(nn.Module):
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim)
         # self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
 
+        # TODO: Do we need this multiplier?
         self.rotary_sequence_length = self.block_size * 2
         head_dim = model_config.n_embd // model_config.n_head
         cos, sin = self._precompute_rotary_embeddings(
@@ -151,8 +152,8 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
 
     # TODO: Lower base since we have shorter sequences?
-    def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=10000.0):
-        # def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=256.0):
+    # def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=10000.0):
+    def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=256.0):
         device = _resolve_device()
         # stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
@@ -15,6 +15,45 @@ class MetricsAccumulator:
     Tracks stick, button, and shoulder metrics with running tallies.
     Replaces the old RunningMetrics pattern with cleaner implementation.
     """
+
+    device: torch.device
+    K_main: int
+    K_c: int
+    K_buttons: int
+    K_shoulder: int
+
+    # Main stick metrics
+    main_correct: torch.Tensor
+    main_total: torch.Tensor
+    main_label_counts: torch.Tensor
+    main_maj_correct: torch.Tensor
+    main_rep_correct: torch.Tensor
+    main_rep_total: torch.Tensor
+
+    # C-stick metrics
+    c_correct: torch.Tensor
+    c_total: torch.Tensor
+    c_label_counts: torch.Tensor
+    c_maj_correct: torch.Tensor
+    c_rep_correct: torch.Tensor
+    c_rep_total: torch.Tensor
+
+    # Button metrics
+    btn_true_positives: torch.Tensor
+    btn_false_positives: torch.Tensor
+    btn_false_negatives: torch.Tensor
+    btn_pos_counts: torch.Tensor
+    btn_total: torch.Tensor
+    btn_em_correct: torch.Tensor
+    btn_maj_em_correct: torch.Tensor
+    btn_rep_em_correct: torch.Tensor
+    btn_rep_total: torch.Tensor
+
+    # Shoulder metrics
+    shoulder_correct: torch.Tensor
+    shoulder_total: torch.Tensor
+    shoulder_label_counts: torch.Tensor
+    shoulder_maj_correct: torch.Tensor
 
     def __init__(
         self,
@@ -64,9 +103,9 @@ class MetricsAccumulator:
         self.c_rep_total = torch.tensor(0, dtype=torch.long, device=device)
 
         # Button metrics
-        self.btn_tp = torch.zeros(K_buttons, dtype=torch.float32, device=device)
-        self.btn_fp = torch.zeros(K_buttons, dtype=torch.float32, device=device)
-        self.btn_fn = torch.zeros(K_buttons, dtype=torch.float32, device=device)
+        self.btn_true_positives = torch.zeros(K_buttons, dtype=torch.float32, device=device)
+        self.btn_false_positives = torch.zeros(K_buttons, dtype=torch.float32, device=device)
+        self.btn_false_negatives = torch.zeros(K_buttons, dtype=torch.float32, device=device)
         self.btn_pos_counts = torch.zeros(K_buttons, dtype=torch.float32, device=device)
         self.btn_total = torch.tensor(0, dtype=torch.long, device=device)
         self.btn_em_correct = torch.tensor(0, dtype=torch.long, device=device)
@@ -77,11 +116,7 @@ class MetricsAccumulator:
         # Shoulder metrics
         self.shoulder_correct = torch.tensor(0, dtype=torch.long, device=device)
         self.shoulder_total = torch.tensor(0, dtype=torch.long, device=device)
-        self.shoulder_label_counts = (
-            torch.zeros(K_shoulder, dtype=torch.long, device=device)
-            if K_shoulder > 0
-            else None
-        )
+        self.shoulder_label_counts = torch.zeros(K_shoulder, dtype=torch.long, device=device)
         self.shoulder_maj_correct = torch.tensor(0, dtype=torch.long, device=device)
 
     def _majority_label(self, label_counts: torch.Tensor) -> int:
@@ -108,9 +143,9 @@ class MetricsAccumulator:
         pred_idx: torch.Tensor,
         true_idx: torch.Tensor,
         stick_type: str,
-        majority_baseline: Optional[int] = None,
-        repeat_baseline: Optional[torch.Tensor] = None,
-        repeat_mask: Optional[torch.Tensor] = None,
+        majority_baseline: int,
+        repeat_baseline: torch.Tensor,
+        repeat_mask: torch.Tensor,
     ) -> None:
         """Update running accuracy counters for either the main stick or C-stick outputs.
 
@@ -128,9 +163,9 @@ class MetricsAccumulator:
             pred_idx: Predicted indices ``[N]``.
             true_idx: True indices ``[N]``.
             stick_type: ``"main"`` or ``"c"`` selecting which counters to update.
-            majority_baseline: Optional majority label accuracy baseline.
-            repeat_baseline: Optional repeat prediction vector ``[N]``.
-            repeat_mask: Optional boolean mask ``[N]`` for frames eligible for repeat accuracy.
+            majority_baseline: Majority label accuracy baseline.
+            repeat_baseline: Repeat prediction vector ``[N]``.
+            repeat_mask: Boolean mask ``[N]`` for frames eligible for repeat accuracy.
         """
         if stick_type == "main":
             correct_attr = "main_correct"
@@ -160,37 +195,34 @@ class MetricsAccumulator:
         setattr(self, counts_attr, label_counts + bincount[: label_counts.shape[0]])
 
         # Majority baseline
-        if majority_baseline is not None:
-            maj_correct = (true_idx == majority_baseline).sum()
-            setattr(self, maj_attr, getattr(self, maj_attr) + maj_correct)
+        maj_correct = (true_idx == majority_baseline).sum()
+        setattr(self, maj_attr, getattr(self, maj_attr) + maj_correct)
 
         # Repeat baseline
-        if repeat_baseline is not None and repeat_mask is not None:
-            if repeat_mask.any():
-                rep_correct = (
-                    repeat_baseline[repeat_mask] == true_idx[repeat_mask]
-                ).sum()
-                setattr(
-                    self,
-                    rep_correct_attr,
-                    getattr(self, rep_correct_attr) + rep_correct,
-                )
-                setattr(
-                    self,
-                    rep_total_attr,
-                    getattr(self, rep_total_attr) + repeat_mask.sum(),
-                )
+        if repeat_mask.any():
+            rep_correct = (
+                repeat_baseline[repeat_mask] == true_idx[repeat_mask]
+            ).sum()
+            setattr(
+                self,
+                rep_correct_attr,
+                getattr(self, rep_correct_attr) + rep_correct,
+            )
+            setattr(
+                self,
+                rep_total_attr,
+                getattr(self, rep_total_attr) + repeat_mask.sum(),
+            )
 
     def update_button_metrics(
         self,
         pred_buttons: torch.Tensor,
         true_buttons: torch.Tensor,
-        logits: torch.Tensor,
     ) -> None:
         """Update precision/recall-style counters and exact match for button predictions.
 
         Example:
-            For a batch with ``B=1``, ``L=2``, ``K=2`` where ``true_buttons`` equals
+            For a batch with ``batch_size=1``, ``sequence_length=2``, ``num_buttons=2`` where ``true_buttons`` equals
             ``[[[1, 0], [0, 1]]]`` and ``pred_buttons`` equals ``[[[1, 0], [1, 1]]]``:
 
             * The method flattens both tensors to ``[[1, 0], [0, 1]]`` vs. ``[[1, 0], [1, 1]]``.
@@ -202,26 +234,25 @@ class MetricsAccumulator:
             The example shows how each accumulation is derived step by step.
 
         Args:
-            pred_buttons: Predicted button states ``[B, L, K]``.
-            true_buttons: True button states ``[B, L, K]``.
-            logits: Button logits ``[B, L, K]`` included for interface parity with callers.
+            pred_buttons: Predicted button states ``[batch_size, sequence_length, num_buttons]``.
+            true_buttons: True button states ``[batch_size, sequence_length, num_buttons]``.
         """
-        B, L, K = pred_buttons.shape
+        batch_size, sequence_length, num_buttons = pred_buttons.shape
 
         # Flatten
-        pred_flat = pred_buttons.reshape(-1, K).float()
-        true_flat = true_buttons.reshape(-1, K).float()
+        pred_flat = pred_buttons.reshape(-1, num_buttons).float()
+        true_flat = true_buttons.reshape(-1, num_buttons).float()
 
         # TP, FP, FN
-        self.btn_tp += (pred_flat * true_flat).sum(dim=0)
-        self.btn_fp += (pred_flat * (1 - true_flat)).sum(dim=0)
-        self.btn_fn += ((1 - pred_flat) * true_flat).sum(dim=0)
+        self.btn_true_positives += (pred_flat * true_flat).sum(dim=0)
+        self.btn_false_positives += (pred_flat * (1 - true_flat)).sum(dim=0)
+        self.btn_false_negatives += ((1 - pred_flat) * true_flat).sum(dim=0)
 
         # Positive counts
         self.btn_pos_counts += true_flat.sum(dim=0)
 
         # Total frames
-        self.btn_total += B * L
+        self.btn_total += batch_size * sequence_length
 
         # Exact match
         em_correct = (pred_buttons == true_buttons).all(dim=-1).sum()
@@ -230,14 +261,14 @@ class MetricsAccumulator:
         # Majority baseline (all zeros or all ones depending on majority)
         pos_rate = true_flat.mean(dim=0)
         maj_pred = (pos_rate >= 0.5).float().unsqueeze(0).expand_as(pred_flat)
-        maj_em = (maj_pred.reshape(B, L, K) == true_buttons).all(dim=-1).sum()
+        maj_em = (maj_pred.reshape(batch_size, sequence_length, num_buttons) == true_buttons).all(dim=-1).sum()
         self.btn_maj_em_correct += maj_em
 
     def update_shoulder_metrics(
         self,
         pred_idx: torch.Tensor,
         true_idx: torch.Tensor,
-        majority_baseline: Optional[int] = None,
+        majority_baseline: int,
     ) -> None:
         """Track accuracy for shoulder trigger quantization bins.
 
@@ -253,11 +284,8 @@ class MetricsAccumulator:
         Args:
             pred_idx: Predicted indices ``[B, L]``.
             true_idx: True indices ``[B, L]``.
-            majority_baseline: Optional majority label for baseline comparisons.
+            majority_baseline: Majority label for baseline comparisons.
         """
-        if self.K_shoulder <= 0:
-            return
-
         pred_flat = pred_idx.reshape(-1)
         true_flat = true_idx.reshape(-1)
 
@@ -267,14 +295,12 @@ class MetricsAccumulator:
         self.shoulder_total += true_flat.numel()
 
         # Label counts
-        if self.shoulder_label_counts is not None:
-            bincount = torch.bincount(true_flat, minlength=self.K_shoulder)
-            self.shoulder_label_counts += bincount[: self.K_shoulder]
+        bincount = torch.bincount(true_flat, minlength=self.K_shoulder)
+        self.shoulder_label_counts += bincount[: self.K_shoulder]
 
         # Majority baseline
-        if majority_baseline is not None:
-            maj_correct = (true_flat == majority_baseline).sum()
-            self.shoulder_maj_correct += maj_correct
+        maj_correct = (true_flat == majority_baseline).sum()
+        self.shoulder_maj_correct += maj_correct
 
     def get_summary(self) -> Dict[str, float]:
         """Convert accumulated counters into scalar metrics ready for logging.
@@ -320,9 +346,9 @@ class MetricsAccumulator:
             summary["acc_c_rep"] = 0.0
 
         # Buttons
-        tp = self.btn_tp.cpu().numpy()
-        fp = self.btn_fp.cpu().numpy()
-        fn = self.btn_fn.cpu().numpy()
+        tp: np.ndarray = self.btn_true_positives.cpu().numpy()
+        fp: np.ndarray = self.btn_false_positives.cpu().numpy()
+        fn: np.ndarray = self.btn_false_negatives.cpu().numpy()
 
         # Micro-averaged
         tp_sum = tp.sum()
@@ -406,9 +432,9 @@ class MetricsAccumulator:
         self.c_rep_total.zero_()
 
         # Buttons
-        self.btn_tp.zero_()
-        self.btn_fp.zero_()
-        self.btn_fn.zero_()
+        self.btn_true_positives.zero_()
+        self.btn_false_positives.zero_()
+        self.btn_false_negatives.zero_()
         self.btn_pos_counts.zero_()
         self.btn_total.zero_()
         self.btn_em_correct.zero_()
@@ -419,8 +445,7 @@ class MetricsAccumulator:
         # Shoulder
         self.shoulder_correct.zero_()
         self.shoulder_total.zero_()
-        if self.shoulder_label_counts is not None:
-            self.shoulder_label_counts.zero_()
+        self.shoulder_label_counts.zero_()
         self.shoulder_maj_correct.zero_()
 
 
@@ -542,9 +567,9 @@ def multilabel_prf(
     f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
 
     # Macro metrics (per class)
-    tp_c = (t & p).sum(dim=(0, 1)).cpu().numpy()
-    fp_c = ((~t) & p).sum(dim=(0, 1)).cpu().numpy()
-    fn_c = (t & (~p)).sum(dim=(0, 1)).cpu().numpy()
+    tp_c: np.ndarray = (t & p).sum(dim=(0, 1)).cpu().numpy()
+    fp_c: np.ndarray = ((~t) & p).sum(dim=(0, 1)).cpu().numpy()
+    fn_c: np.ndarray = (t & (~p)).sum(dim=(0, 1)).cpu().numpy()
     f1_c = []
     for a, b, c in zip(tp_c, fp_c, fn_c):
         pr = a / (a + b) if (a + b) > 0 else 0.0

@@ -14,7 +14,6 @@ from torch.amp.autocast_mode import is_autocast_available
 
 from column_map import ColumnMap
 from config import get_config
-from constants import CONTROLLER_KEY_GROUPS
 from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
 from train.checkpoint import _load_latest_checkpoint
@@ -112,8 +111,8 @@ def initialize_training_components(
 
     amp = configure_amp(config, device)
 
-    colmap = ColumnMap.from_dataset(ds)
-    value_idx = colmap.value_idx
+    column_map = ColumnMap.from_dataset(ds)
+    value_idx = column_map.value_idx
     lw_cfg = config.loss_weights
     button_overrides = {
         "button_z": lw_cfg.button_z,
@@ -156,7 +155,7 @@ def initialize_training_components(
             hyperparameters={
                 "train": dict(vars(config.train)),
                 "model": dict(vars(config.model)),
-                "seq_len": getattr(config, "seq_len", None),
+                "seq_len": config.seq_len,
             },
         )
     logger = WandbLogger(wandb_run, enabled=not debug and wandb_run is not None)
@@ -180,7 +179,7 @@ def initialize_training_components(
         device=device,
         amp=amp,
         ratios=ratios,
-        column_map=colmap,
+        column_map=column_map,
         value_idx=value_idx,
         loader=loader,
         sampler=sampler,

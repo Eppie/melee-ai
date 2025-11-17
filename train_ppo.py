@@ -20,7 +20,7 @@ from ppo.ppo_loss import compute_total_ppo_loss
 from ppo.selfplay_env import SelfPlayEnvironment
 from ppo.trajectory import Trajectory
 from schema import get_target_names
-from train.wandb_utils import WandbConfig, WandbLogger, init_wandb, WANDB_AVAILABLE
+from train.wandb_utils import WandbConfig, WandbLogger, init_wandb
 from utils import _resolve_device
 
 
@@ -597,7 +597,7 @@ def main():
             "rl": dict(vars(config.rl)),
         },
     )
-    logger = WandbLogger(wandb_run, enabled=WANDB_AVAILABLE and wandb_run is not None)
+    logger = WandbLogger(wandb_run, enabled=wandb_run is not None)
 
     # Determine if we're using parallel or sequential collection
     num_workers = config.ppo.num_workers

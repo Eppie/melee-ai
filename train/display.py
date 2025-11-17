@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numbers
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -28,10 +29,9 @@ def _format_value(value: object) -> str:
     Returns:
         String representation with limited significant figures for numeric inputs.
     """
-    try:
+    if isinstance(value, numbers.Number):
         return f"{float(value):.6g}"
-    except (TypeError, ValueError):
-        return str(value)
+    return str(value)
 
 
 def _format_action(value: object) -> str:
@@ -49,11 +49,10 @@ def _format_action(value: object) -> str:
     Returns:
         Action name string if available, otherwise the original value as a string.
     """
-    try:
+    if isinstance(value, numbers.Number):
         idx = int(float(value))
-    except (TypeError, ValueError):
-        return str(value)
-    return _ACTION_VALUE_TO_NAME.get(idx, str(idx))
+        return _ACTION_VALUE_TO_NAME.get(idx, str(idx))
+    return str(value)
 
 
 def _print_table_block(

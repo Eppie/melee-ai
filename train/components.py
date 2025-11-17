@@ -3,11 +3,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 import torch
-from torch.amp import GradScaler
 from tensordict import TensorDict
+from torch.amp import GradScaler
 
 from column_map import ColumnMap
 from model.nano_gpt import GPT
@@ -33,7 +33,7 @@ class TrainingComponents:
     amp: AMPContext
     ratios: SampleWeightRatios
     column_map: ColumnMap
-    value_idx: Optional[int]
+    value_idx: int
     loader: any
     sampler: any
     total_steps: int
@@ -69,8 +69,8 @@ class ForwardPassResult:
     weights: Dict[str, torch.Tensor]
     loss: torch.Tensor
     loss_components: Dict[str, torch.Tensor]
-    value_pred: Optional[torch.Tensor]
-    value_target: Optional[torch.Tensor]
+    value_pred: torch.Tensor
+    value_target: torch.Tensor
     batch_inputs: Dict[str, torch.Tensor]
     batch_targets: Dict[str, torch.Tensor]
     label_smoothing: float

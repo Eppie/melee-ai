@@ -221,6 +221,10 @@ def _get_gamma_powers(
     return powers
 
 
+# TODO: Separate this into two functions:
+#   one for pulling the value from the dataset
+#   one for pre-computing it to store in the dataset
+
 def compute_value_targets(
     X: torch.Tensor,
     colmap: ColumnMap,
@@ -254,9 +258,6 @@ def compute_value_targets(
     B, L, _ = X.shape
     device = X.device
     dtype = X.dtype
-
-    if L == 0:
-        return torch.empty((B, 0, 1), device=device, dtype=dtype)
 
     if reward_idx is not None:
         stored = X[..., reward_idx].unsqueeze(-1)

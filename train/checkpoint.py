@@ -157,11 +157,11 @@ def _load_latest_checkpoint(
 def save_checkpoint(
     path: Path,
     model: torch.nn.Module,
+    config: dict,
     optimizer: Optional[Optimizer] = None,
     scaler: Optional[GradScaler] = None,
     epoch: int = 0,
     global_step: int = 0,
-    config: Optional[dict] = None,
     **kwargs,
 ) -> None:
     """Persist the model state and optional training metadata to ``path``.
@@ -181,7 +181,7 @@ def save_checkpoint(
         scaler: Optional gradient scaler to persist for mixed precision runs.
         epoch: Epoch number to record.
         global_step: Global training step to record.
-        config: Optional configuration dictionary to embed in the checkpoint.
+        config: Configuration dictionary to embed in the checkpoint.
         **kwargs: Additional key-value pairs to merge into the saved dictionary.
     """
     ckpt = {
@@ -190,6 +190,7 @@ def save_checkpoint(
         "resume_epoch": epoch,
         "resume_iter": 0,
         "global_step": global_step,
+        "config": config,
     }
 
     if optimizer is not None:
@@ -197,9 +198,6 @@ def save_checkpoint(
 
     if scaler is not None:
         ckpt["scaler"] = scaler.state_dict()
-
-    if config is not None:
-        ckpt["config"] = config
 
     # Add any extra kwargs
     ckpt.update(kwargs)

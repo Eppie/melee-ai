@@ -76,11 +76,6 @@ __all__ = ["ColumnMap"]
 
 
 """
-Of course. Let's break down the usage and purpose of column_map.py and explore architectural patterns that could make it obsolete.
-
-Analysis of column_map.py
-What Purpose Does It Serve?
-
 ColumnMap acts as a translator or a schema resolver. Its primary purpose is to bridge the gap between a high-dimensional, flat array of numerical data and the structured, semantic understanding of that data required by the model and other parts of the codebase.
 
 The data is stored and loaded as a single large tensor X with many columns (features). The model, however, doesn't treat this as one big vector; it needs to know which specific columns correspond to the ego player's actions, the opponent's state, controller inputs, etc.
@@ -105,11 +100,6 @@ In the current architecture, ColumnMap is absolutely necessary. The entire data 
 
 Without ColumnMap, every part of the code would need to hardcode the integer indices for every feature. For example, in train/batch_utils.py, this line:
 
-code
-Python
-download
-content_copy
-expand_less
 stage = batch_X[..., colmap.stage_idx].to(torch.long).unsqueeze(-1)
 
 would have to be something like:
@@ -142,11 +132,6 @@ epg.create_array("categorical", data=categorical_array)
 
 Dataset (window_dataset.py): The __getitem__ method would load these named arrays and bundle them into a TensorDict.
 
-code
-Python
-download
-content_copy
-expand_less
 # Instead of returning {'X': tensor, 'Y': tensor}
 return TensorDict({
     'gamestate': gamestate_tensor,   # shape [L, NumGameStateFeatures]
@@ -157,11 +142,6 @@ return TensorDict({
 
 Model Input (train/batch_utils.py): The build_model_inputs function becomes trivial or disappears entirely, as the data is already in the structured format the model needs. The model's forward pass would directly access features by name.
 
-code
-Python
-download
-content_copy
-expand_less
 # Before
 inputs_td = build_model_inputs(batch_X, colmap)
 pred = model(inputs_td)
@@ -188,11 +168,6 @@ How It Would Work:
 
 Define a Richer Schema: Instead of just a list of names, the schema would include tags or groups for each column.
 
-code
-Python
-download
-content_copy
-expand_less
 # In a new schema.py
 SCHEMA_DEFINITION = [
     ('stage', {'group': 'categorical', 'type': 'int'}),
@@ -204,11 +179,6 @@ SCHEMA_DEFINITION = [
 
 Create a Dynamic DataSchema Class: This class would replace ColumnMap. Its __init__ would parse the SCHEMA_DEFINITION to build the name-to-index map. It would provide methods to query indices based on tags instead of having hardcoded attributes.
 
-code
-Python
-download
-content_copy
-expand_less
 class DataSchema:
     def __init__(self, definition):
         self.name_to_idx = {name: i for i, (name, _) in enumerate(definition)}

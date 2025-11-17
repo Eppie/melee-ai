@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
 import torch
 from torch.amp import autocast
@@ -81,11 +81,7 @@ def perform_forward_pass(
         loss = policy_loss_components["total"]
         loss_components = dict(policy_loss_components)
 
-        value_pred = pred.get("value")
-        if components.value_idx is None:
-            raise RuntimeError(
-                "Training components must include a value target index; ensure datasets encode 'value_target'."
-            )
+        value_pred = pred["value"]
         value_target = compute_value_targets(
             X,
             components.column_map,
@@ -122,7 +118,7 @@ def perform_forward_pass(
         change_scale=imbalance_scale,
     )
 
-
+# TODO: We are probably failing to call clip_grad_norm if collect_grad_stats is False
 def perform_backward_pass(
     components: TrainingComponents,
     loss: torch.Tensor,
@@ -145,10 +141,6 @@ def perform_backward_pass(
         pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
         grad_stats["total_norm_pre_clip"] = pre_clip_norm
         grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
-        grad_stats["was_clipped"] = float(pre_clip_norm > grad_clip)
-        grad_stats["clip_coef"] = (
-            grad_clip / max(pre_clip_norm, 1e-12) if pre_clip_norm > grad_clip else 1.0
-        )
 
     scaler.step(optimizer)
     scaler.update()

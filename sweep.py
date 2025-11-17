@@ -786,7 +786,7 @@ def run_training_once(
                                     if btn_probs is None:
                                         btn_probs = torch.sigmoid(btn_logits)
                                     metrics_tracker.update_button_metrics(
-                                        btn_true, btn_probs > 0.5, btn_logits
+                                        btn_true, btn_probs > 0.5
                                     )
 
                                 if need_shoulder_metrics:

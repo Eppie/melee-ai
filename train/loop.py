@@ -59,8 +59,8 @@ def _should_log(current_iter: int) -> bool:
 
 def _update_epoch_statistics(epoch_ctx: EpochContext, forward_result) -> None:
     epoch_ctx.epoch_loss += forward_result.loss.item()
-    B, L, _ = forward_result.pred["main_stick"].shape
-    epoch_ctx.frames_since_last_log += float(B * L)
+    batch_size, sequence_length, _ = forward_result.pred["main_stick"].shape
+    epoch_ctx.frames_since_last_log += float(batch_size * sequence_length)
 
 
 def run_epoch(state: TrainingState, epoch: int) -> TrainingState:

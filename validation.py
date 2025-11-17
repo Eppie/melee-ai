@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -22,6 +22,7 @@ from controller_utils import (
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
+from feature_transforms import feature_spec_from_config
 from libmelee.melee.enums import Action
 from loss import compute_loss_components
 from model.nano_gpt import GPT
@@ -32,6 +33,7 @@ from train.batch_utils import (
     compute_component_sample_weights,
     quantize_controller_targets,
 )
+from train.display import _print_table_block
 from train.metrics import multilabel_prf
 from train.value_head import (
     RewardFeatureIdx,
@@ -47,7 +49,6 @@ from window_dataset import (
     EpisodeInfo,
     _apply_prepared_transforms,
 )
-from feature_transforms import feature_spec_from_config
 
 _C_STICK_LABELS = [f"({float(x):.2f},{float(y):.2f})" for x, y in C_STICK_QUANTIZED]
 _SHOULDER_LABELS = [f"{float(v):.2f}" for v in SHOULDER_QUANTIZED]
@@ -556,58 +557,6 @@ def _compute_lagged_cross_correlation(
             results[lag] = float(np.dot(x_centered, y_centered) / denom)
 
     return results, usable
-
-
-# TODO: Deduplicate with version in display.py
-def _print_table_block(
-    title: str,
-    headers: Sequence[str],
-    data: np.ndarray,
-    *,
-    max_columns: int = 8,
-    formatters: Optional[Dict[str, Callable[[object], str]]] = None,
-) -> None:
-    """Print a table of data with headers and formatted values."""
-    if data.size == 0 or not len(headers):
-        print(f"{title}: <empty>")
-        return
-
-    total_cols = len(headers)
-    num_rows = data.shape[0]
-    frame_label = "frame"
-    formatters = formatters or {}
-    frame_width = max(
-        len(frame_label), len(str(num_rows - 1)) if num_rows else len(frame_label)
-    )
-
-    for start in range(0, total_cols, max_columns):
-        cols = headers[start : start + max_columns]
-        block = data[:, start : start + len(cols)]
-        formatted_columns: List[List[str]] = []
-        col_widths: List[int] = []
-        for col_idx, col_name in enumerate(cols):
-            formatter = formatters.get(col_name, _format_value)
-            col_values: List[str] = []
-            for row_idx in range(num_rows):
-                value = block[row_idx, col_idx]
-                col_values.append(str(formatter(value)))
-            max_value_width = max((len(val) for val in col_values), default=0)
-            col_width = max(len(col_name), max_value_width, 6)
-            formatted_columns.append(col_values)
-            col_widths.append(col_width)
-
-        print(f"{title} (columns {start + 1}-{start + len(cols)} of {total_cols}):")
-        widths = [frame_width + 2] + col_widths
-        header_cells = [frame_label.rjust(widths[0])]
-        header_cells.extend(col.rjust(width) for col, width in zip(cols, widths[1:]))
-        print(" ".join(header_cells))
-
-        for row_idx in range(num_rows):
-            row_cells = [str(row_idx).rjust(widths[0])]
-            for col_values, width in zip(formatted_columns, widths[1:]):
-                row_cells.append(col_values[row_idx].rjust(width))
-            print(" ".join(row_cells))
-        print()
 
 
 def _print_extreme_value_frames(

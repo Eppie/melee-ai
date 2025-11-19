@@ -216,9 +216,13 @@ def _choose_chunk_t(num_features: int, elem_bytes: int) -> int:
     ``config.seq_len`` so sliding windows rarely straddle chunk boundaries.
     """
     config = get_config()
-    approx_t = int(
-        (config.zarr.target_chunk_mb * (1024**2)) / (num_features * elem_bytes)
-    )
+    chunk_frames = getattr(config.zarr, "chunk_frames", None)
+    if chunk_frames and chunk_frames > 0:
+        approx_t = int(chunk_frames)
+    else:
+        approx_t = int(
+            (config.zarr.target_chunk_mb * (1024**2)) / (num_features * elem_bytes)
+        )
     approx_t = max(config.seq_len, approx_t)
     # align to a multiple of seq len to minimize boundary splits
     if config.seq_len > 0:

@@ -59,6 +59,14 @@ class ZarrConfig(BaseModel):
     validation_count: int = Field(default=400, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
+    chunk_frames: int = Field(
+        default=512,
+        ge=1,
+        description=(
+            "Preferred number of frames per Zarr chunk along the time axis. "
+            "Defaults to 512 so 256-frame windows typically stay within a single chunk."
+        ),
+    )
     seed: int = Field(default=42)
     compressor: BloscCodec = Field(
         default_factory=lambda: BloscCodec(

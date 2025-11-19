@@ -86,43 +86,23 @@ class GPT(nn.Module):
         # TODO: Move this to config
         head_hidden_dim = 128
 
-        # TODO: Is there a way to make the sizes of these heads nicer / more even?
+        # Controller output heads share the same transformer features instead of chaining
+        # their outputs, which keeps the predictions independent/parallel.
         self.button_head = SimpleHead(
             self.embedding_dim, self.button_output_size, hidden=head_hidden_dim
         )
-
-        main_stick_input_size = self.embedding_dim + self.button_output_size
         self.main_stick_head = SimpleHead(
-            main_stick_input_size,
-            self.main_stick_output_size,
-            hidden=head_hidden_dim
-            # self.embedding_dim, self.main_stick_output_size, hidden=head_hidden_dim
+            self.embedding_dim, self.main_stick_output_size, hidden=head_hidden_dim
         )
 
-        c_stick_input_size = (
-            self.embedding_dim + self.button_output_size + self.main_stick_output_size
-        )
         self.c_stick_head = SimpleHead(
-            c_stick_input_size,
-            self.c_stick_output_size,
-            hidden=head_hidden_dim
-            # self.embedding_dim, self.c_stick_output_size, hidden=head_hidden_dim
+            self.embedding_dim, self.c_stick_output_size, hidden=head_hidden_dim
         )
 
-        shoulder_input_size = (
-            self.embedding_dim
-            + self.button_output_size
-            + self.main_stick_output_size
-            + self.c_stick_output_size
-        )
         self.shoulder_head = SimpleHead(
-            shoulder_input_size,
-            self.shoulder_output_size,
-            hidden=head_hidden_dim
-            # self.embedding_dim, self.shoulder_output_size, hidden=head_hidden_dim
+            self.embedding_dim, self.shoulder_output_size, hidden=head_hidden_dim
         )
-        self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim)
-        # self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
+        self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
 
         # TODO: Do we need this multiplier?
         self.rotary_sequence_length = self.block_size * 2
@@ -151,8 +131,6 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
 
-    # TODO: Lower base since we have shorter sequences?
-    # def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=10000.0):
     def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=256.0):
         device = _resolve_device()
         # stride the channels
@@ -220,32 +198,9 @@ class GPT(nn.Module):
 
         base_hidden_states = hidden_states
         button_logits = self.button_head(base_hidden_states)
-
-        main_stick = self.main_stick_head(
-            torch.cat((base_hidden_states, button_logits.detach()), dim=-1)
-            # base_hidden_states,
-        )
-
-        c_stick = self.c_stick_head(
-            torch.cat(
-                (base_hidden_states, button_logits.detach(), main_stick.detach()),
-                dim=-1,
-            )
-            # base_hidden_states,
-        )
-
-        shoulder = self.shoulder_head(
-            torch.cat(
-                (
-                    base_hidden_states,
-                    button_logits.detach(),
-                    main_stick.detach(),
-                    c_stick.detach(),
-                ),
-                dim=-1,
-            )
-            # base_hidden_states,
-        )
+        main_stick = self.main_stick_head(base_hidden_states)
+        c_stick = self.c_stick_head(base_hidden_states)
+        shoulder = self.shoulder_head(base_hidden_states)
 
         outputs = TensorDict(
             {

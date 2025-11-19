@@ -234,8 +234,8 @@ class LossConfig(BaseModel):
     enable_class_balancing: bool = Field(default=True)
     ce_weight_min: float = Field(default=0.1, gt=0)
     ce_weight_max: float = Field(default=10.0, gt=0)
-    enable_pos_weighting: bool = Field(default=False)
-    pos_weight_max: float = Field(default=10.0, gt=0)
+    enable_pos_weighting: bool = Field(default=True)
+    pos_weight_max: float = Field(default=3.0, gt=0)
     use_weighted_component_means: bool = Field(default=True)
     main_change: float = Field(default=5.0, gt=0)
     c_change: float = Field(default=10.0, gt=0)
@@ -247,14 +247,14 @@ class LossConfig(BaseModel):
     button_xy: float = Field(default=10.0, gt=0)
     button_lr: float = Field(default=8.0, gt=0)
     hold_base: float = Field(default=1.0, gt=0)
-    value_change: float = Field(default=8.0, gt=0)
+    value_change: float = Field(default=4.0, gt=0)
 
 
 class GPTConfig(BaseModel):
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
-    block_size: int = Field(default=512, ge=1)
-    n_embd: int = Field(default=512, ge=1)
+    block_size: int = Field(default=768, ge=1)
+    n_embd: int = Field(default=768, ge=1)
     n_layer: int = Field(default=8, ge=1)
     n_head: int = Field(default=8, ge=1)
     dropout: float = Field(default=0.03, ge=0, le=1)

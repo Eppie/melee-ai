@@ -418,7 +418,7 @@ def _build_profiler_context(
 def run_training_once(
     run_id: str,
     *,
-    base_initial: Optional[Mapping[str, Any]],
+    config_path: Optional[Path],
     overrides: Mapping[str, str],
     target_loss: Optional[float],
     objectives: Sequence[StoppingObjective],
@@ -1119,10 +1119,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    initial_data: Optional[Dict[str, Any]] = None
+    base_config_path: Optional[Path] = None
     if args.config_json is not None:
-        with args.config_json.open("r", encoding="utf-8") as f:
-            initial_data = json.load(f)
+        base_config_path = args.config_json
 
     base_overrides = dict(parse_key_value(s) for s in args.set)
     search_space = parse_search_items(args.search)
@@ -1150,7 +1149,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print(f"Starting {run_id} with overrides: {combined_overrides}")
         result = run_training_once(
             run_id,
-            base_initial=initial_data,
+            config_path=base_config_path,
             overrides=combined_overrides,
             target_loss=args.target_loss,
             objectives=objectives,

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import torch
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.optim import Optimizer
 
 from train.gradients import _move_optimizer_state_to_device
@@ -87,6 +87,8 @@ def _load_latest_checkpoint(
     optimizer: Optimizer,
     scaler: GradScaler,
     device: torch.device,
+    *,
+    allow_partial_load: bool = False,
 ) -> Tuple[int, int, int]:
     """Load the newest checkpoint and restore model, optimizer, and scaler state.
 
@@ -119,22 +121,31 @@ def _load_latest_checkpoint(
 
     model_state = ckpt.get("model")
     if model_state:
-        incompatible = model.load_state_dict(model_state, strict=False)
-        missing = list(getattr(incompatible, "missing_keys", ()))
-        unexpected = list(getattr(incompatible, "unexpected_keys", ()))
-        if missing:
-            preview = ", ".join(missing[:5])
-            more = "..." if len(missing) > 5 else ""
-            print(
-                f"Checkpoint is missing {len(missing)} parameter(s); "
-                f"initialising from current model weights: {preview}{more}"
-            )
-        if unexpected:
-            preview = ", ".join(unexpected[:5])
-            more = "..." if len(unexpected) > 5 else ""
-            print(
-                f"Checkpoint has {len(unexpected)} unexpected parameter(s); ignoring: {preview}{more}"
-            )
+        try:
+            if allow_partial_load:
+                incompatible = model.load_state_dict(model_state, strict=False)
+                missing = list(getattr(incompatible, "missing_keys", ()))
+                unexpected = list(getattr(incompatible, "unexpected_keys", ()))
+                if missing:
+                    preview = ", ".join(missing[:5])
+                    more = "..." if len(missing) > 5 else ""
+                    print(
+                        f"Checkpoint is missing {len(missing)} parameter(s); "
+                        f"initialising from current model weights: {preview}{more}"
+                    )
+                if unexpected:
+                    preview = ", ".join(unexpected[:5])
+                    more = "..." if len(unexpected) > 5 else ""
+                    print(
+                        f"Checkpoint has {len(unexpected)} unexpected parameter(s); ignoring: {preview}{more}"
+                    )
+            else:
+                model.load_state_dict(model_state, strict=True)
+        except RuntimeError as err:
+            raise RuntimeError(
+                "Checkpoint parameters do not match the current model. "
+                "Set train.allow_partial_checkpoint_load=True if this is intentional."
+            ) from err
 
     opt_state = ckpt.get("optimizer")
     if opt_state:

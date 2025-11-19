@@ -64,7 +64,7 @@ class ZarrConfig(BaseModel):
         ge=1,
         description=(
             "Preferred number of frames per Zarr chunk along the time axis. "
-            "Defaults to 512 so 256-frame windows typically stay within a single chunk."
+            "Defaults to 512 so 256-frame windows typically hit a single chunk."
         ),
     )
     seed: int = Field(default=42)
@@ -192,6 +192,7 @@ class TrainConfig(BaseModel):
 
     # Checkpointing
     out_dir: str = "checkpoints"
+    allow_partial_checkpoint_load: bool = False
 
 
 def _should_pin_memory() -> bool:

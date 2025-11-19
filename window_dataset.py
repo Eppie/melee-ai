@@ -148,17 +148,31 @@ class ZarrCorpusIndex:
         locates the shard directory, opens ``root['ep_000007']``, and returns the
         ``features`` and ``targets`` arrays.
         """
-        shard_path = self._shard_paths.get(ep.shard_id)
-        if shard_path is None:
-            raise FileNotFoundError(f"Shard path not found for shard_id={ep.shard_id}")
+        cache_key = (ep.shard_id, ep.episode_id)
+        cached = getattr(self, "_episode_cache", None)
+        if cached is not None and cache_key in cached:
+            return cached[cache_key]
 
-        # Open shard group (directory store). Consolidated metadata improves open latency.
-        root = zarr.open_group(str(shard_path), mode="r", path=None)
+        shard_cache = getattr(self, "_shard_cache", None)
+        if shard_cache is not None and ep.shard_id in shard_cache:
+            root = shard_cache[ep.shard_id]
+        else:
+            shard_path = self._shard_paths.get(ep.shard_id)
+            if shard_path is None:
+                raise FileNotFoundError(
+                    f"Shard path not found for shard_id={ep.shard_id}"
+                )
+            root = zarr.open_group(str(shard_path), mode="r", path=None)
+            if shard_cache is not None:
+                shard_cache[ep.shard_id] = root
 
         ep_name = f"ep_{ep.episode_id:06d}"
         epg = root[ep_name]
         features = epg["X"]  # shape (T, F), float32
         targets = epg["Y"]
+
+        if cached is not None:
+            cached[cache_key] = (features, targets)
 
         return features, targets
 
@@ -306,6 +320,10 @@ class WindowDataset(Dataset):
         self._transform_plan = _prepare_transform_plan(
             self._feature_names, self.transforms
         )
+        self._shard_cache: Dict[int, zarr.Group] = {}
+        self._episode_cache: Dict[
+            Tuple[int, int], Tuple[zarr.Array, zarr.Array]
+        ] = {}
 
     def __len__(self) -> int:
         """Return the total number of sliding windows across the corpus.

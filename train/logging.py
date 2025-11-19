@@ -30,13 +30,23 @@ def append_tensor_stats(
         flat = flat.float()
     else:
         flat = flat.to(torch.float32)
-    out[f"{prefix}_min"] = float(torch.amin(flat).item())
-    out[f"{prefix}_max"] = float(torch.amax(flat).item())
-    out[f"{prefix}_mean"] = float(flat.mean().item())
+
+    stats = [
+        torch.amin(flat),
+        torch.amax(flat),
+        flat.mean(),
+    ]
     if flat.numel() > 1:
-        out[f"{prefix}_std"] = float(flat.std(unbiased=False).item())
+        std_val = flat.std(unbiased=False)
     else:
-        out[f"{prefix}_std"] = 0.0
+        std_val = torch.zeros((), dtype=flat.dtype, device=flat.device)
+    stats.append(std_val)
+
+    stats_cpu = torch.stack(stats).cpu().tolist()
+    out[f"{prefix}_min"] = stats_cpu[0]
+    out[f"{prefix}_max"] = stats_cpu[1]
+    out[f"{prefix}_mean"] = stats_cpu[2]
+    out[f"{prefix}_std"] = stats_cpu[3]
 
 
 def gather_logit_metrics(pred: TensorDict) -> Dict[str, float]:

@@ -128,17 +128,25 @@ def perform_backward_pass(
     """Backpropagates the loss, steps the optimizer, and optionally collects grad stats."""
     optimizer = components.optimizer
     scaler = components.scaler
+
+    loss_detached = loss.detach()
+    if not torch.isfinite(loss_detached).all():
+        loss_value = float(loss_detached.float().cpu().item())
+        print(f"Warning: Non-finite loss ({loss_value}); skipping backward step")
+        return {}
+
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(loss).backward()
 
     if scaler.is_enabled():
         scaler.unscale_(optimizer)
 
+    grad_clip = components.config.train.grad_clip
+    pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
+
     grad_stats: Dict[str, float] = {}
     if collect_grad_stats:
         grad_stats = collect_gradient_diagnostics(components.model)
-        grad_clip = components.config.train.grad_clip
-        pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
         grad_stats["total_norm_pre_clip"] = pre_clip_norm
         grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
 

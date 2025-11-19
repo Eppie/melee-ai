@@ -13,7 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from config import get_config, init_config  # noqa: E402
 from feature_transforms import feature_spec_from_config  # noqa: E402
-from window_dataset import RandomWindowSampler, WindowDataset  # noqa: E402
+from window_dataset import RandomWindowSampler, WindowDataset, worker_init_fn  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,7 +72,7 @@ def build_loader(args: argparse.Namespace) -> torch.utils.data.DataLoader:
         num_workers=0,
         pin_memory=args.pin_memory,
         drop_last=False,
-        worker_init_fn=None,
+        worker_init_fn=worker_init_fn,
     )
     return loader
 
@@ -85,7 +85,7 @@ def benchmark(loader: torch.utils.data.DataLoader, num_batches: int) -> None:
     total_batches = 0
 
     # Warmup
-    for _ in loader:
+    for batch in loader:
         total_batches += 1
         if total_batches >= warmup_batches:
             break

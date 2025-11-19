@@ -633,16 +633,32 @@ class GPTInferenceEngine:
         self.frame_history.append(record)
         return record
 
-    def _capture_logits(self, outputs: TensorDict) -> Dict[str, Any]:
-        """Convert model logits into CPU lists for logging."""
-        # Use .item() for single values, .tolist() for arrays
+    def _capture_logits(self, outputs: TensorDict) -> Dict[str, torch.Tensor]:
+        """Detach logits for death logging without forcing CPU sync."""
+
+        def _detach_head(name: str) -> torch.Tensor:
+            tensor = outputs[name][0, -1].detach()
+            return tensor.clone()
+
         return {
-            "main_stick": outputs["main_stick"][0, -1].detach().cpu().tolist(),
-            "c_stick": outputs["c_stick"][0, -1].detach().cpu().tolist(),
-            "buttons": outputs["buttons"][0, -1].detach().cpu().tolist(),
-            "shoulder": outputs["shoulder"][0, -1].detach().cpu().tolist(),
-            "value": outputs["value"][0, -1].detach().cpu().tolist(),
+            "main_stick": _detach_head("main_stick"),
+            "c_stick": _detach_head("c_stick"),
+            "buttons": _detach_head("buttons"),
+            "shoulder": _detach_head("shoulder"),
+            "value": _detach_head("value"),
         }
+
+    def _serialize_logits(self, logits: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Convert cached logits into JSON-serializable lists."""
+        if logits is None:
+            return None
+        serialized: Dict[str, Any] = {}
+        for key, value in logits.items():
+            if torch.is_tensor(value):
+                serialized[key] = value.detach().cpu().tolist()
+            else:
+                serialized[key] = value
+        return serialized
 
     def _persist_death_record(self, stock_after: int) -> None:
         """Write the current frame history to disk after a stock loss."""
@@ -663,7 +679,7 @@ class GPTInferenceEngine:
                     "raw_features": record.raw_features,
                     "transformed_features": record.transformed_features,
                     "targets": record.targets,
-                    "logits": record.logits,
+                    "logits": self._serialize_logits(record.logits),
                 }
                 for record in frames
             ],

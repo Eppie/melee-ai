@@ -160,8 +160,14 @@ def initialize_training_components(
         )
     logger = WandbLogger(wandb_run, enabled=not debug and wandb_run is not None)
 
+    allow_partial_load = getattr(config.train, "allow_partial_checkpoint_load", False)
     start_epoch, global_step, start_iter = _load_latest_checkpoint(
-        out_dir, model, optimizer, scaler, device
+        out_dir,
+        model,
+        optimizer,
+        scaler,
+        device,
+        allow_partial_load=allow_partial_load,
     )
     try:
         if last_step_file.exists():

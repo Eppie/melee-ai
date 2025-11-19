@@ -256,7 +256,7 @@ class LossConfig(BaseModel):
     button_xy: float = Field(default=10.0, gt=0)
     button_lr: float = Field(default=8.0, gt=0)
     hold_base: float = Field(default=1.0, gt=0)
-    value_change: float = Field(default=4.0, gt=0)
+    value_change: float = Field(default=1.0, gt=0)
 
 
 class GPTConfig(BaseModel):

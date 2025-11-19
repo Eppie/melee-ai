@@ -91,31 +91,37 @@ def _compute_player_rewards(
 
     rewards = torch.zeros(B, L, device=device, dtype=dtype)
 
-    if L > 1:
-        # --- Damage deltas (current player deals damage to opponent/opponent to player) ---
-        opp_percent_idx = getattr(idx, f"{opponent}_percent")
+    if L <= 1:
+        return rewards
 
-        d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
-        d_opp.clamp_min_(0.0)
-        rewards[:, 1:].add_(d_opp.mul_(cfg.reward_damage_dealt))
+    prev_slice = slice(None, -1)  # indices 0 .. L-2
+    curr_slice = slice(1, None)  # indices 1 .. L-1
 
-        # --- Stock changes
-        opp_stock_idx = getattr(idx, f"{opponent}_stock")
-        d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
-        stock_taken = (-d_opp_stock).clamp_min_(0)
-        rewards[:, 1:].add_(stock_taken.mul_(cfg.reward_stock_taken))
+    # --- Damage deltas (current player deals damage to opponent/opponent to player) ---
+    opp_percent_idx = getattr(idx, f"{opponent}_percent")
+
+    d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
+    d_opp.clamp_min_(0.0)
+    rewards[:, prev_slice].add_(d_opp.mul_(cfg.reward_damage_dealt))
+
+    # --- Stock changes
+    opp_stock_idx = getattr(idx, f"{opponent}_stock")
+    d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
+    stock_taken = (-d_opp_stock).clamp_min_(0)
+    rewards[:, prev_slice].add_(stock_taken.mul_(cfg.reward_stock_taken))
 
     # --- Hitlag rewards/penalties (per-frame) ---
     opp_hitlag_idx = getattr(idx, f"{opponent}_is_in_hitlag")
     opp_def_hitlag_idx = getattr(idx, f"{opponent}_is_defender_in_hitlag")
     opp_metric = X[:, :, opp_hitlag_idx] - X[:, :, opp_def_hitlag_idx]
-    rewards.add_((opp_metric == 1).to(dtype).mul_(cfg.reward_hitlag_opponent))
+    hitlag_reward = (opp_metric == 1).to(dtype).mul_(cfg.reward_hitlag_opponent)
+    rewards[:, prev_slice].add_(hitlag_reward[:, curr_slice])
 
     # --- Shield penalty (per-frame) ---
     shield_idx = getattr(idx, f"{player}_shield_strength")
     shield = X[:, :, shield_idx]
     penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
-    rewards.add_(penalty.mul_(cfg.reward_low_shield))
+    rewards[:, prev_slice].add_(penalty[:, curr_slice].mul_(cfg.reward_low_shield))
 
     return rewards
 

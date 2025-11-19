@@ -104,9 +104,9 @@ def test_compute_frame_rewards_damage_and_stock(reward_setup):
     cfg = get_config().rl
     expected = torch.tensor(
         [
-            0.0,  # no prior frame for damage calculation
             2.0 * float(cfg.reward_damage_dealt),
             3.0 * float(cfg.reward_damage_dealt) + float(cfg.reward_stock_taken),
+            0.0,
             0.0,
         ],
         dtype=torch.float32,
@@ -131,9 +131,9 @@ def test_compute_frame_rewards_shield_penalty(reward_setup):
     # penalty = clamp(1 - 2 * shield, 0, 1) * reward_low_shield
     expected = torch.tensor(
         [
-            0.0,
             (1 - 2 * 0.1) * float(cfg.reward_low_shield),
             (1 - 2 * 0.4) * float(cfg.reward_low_shield),
+            0.0,
         ],
         dtype=torch.float32,
     )
@@ -161,9 +161,9 @@ def test_compute_frame_rewards_hitlag_terms(reward_setup):
     cfg = get_config().rl
     expected = torch.tensor(
         [
-            0.0,
             float(cfg.reward_hitlag_opponent),
             -float(cfg.reward_hitlag_opponent),
+            0.0,
         ],
         dtype=torch.float32,
     )
@@ -213,7 +213,12 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
 
     cfg = get_config().rl
     expected_rewards = torch.tensor(
-        [0.0, float(cfg.reward_damage_dealt), 0.0, float(cfg.reward_damage_dealt)],
+        [
+            float(cfg.reward_damage_dealt),
+            0.0,
+            float(cfg.reward_damage_dealt),
+            0.0,
+        ],
         dtype=torch.float32,
     )
     manual = torch.empty(seq_len)
@@ -235,9 +240,9 @@ def test_replay_rewards_shape_and_sparsity(replay_reward_data):
 @pytest.mark.parametrize(
     ("frame", "value"),
     [
-        (32, -0.0196),
-        (37, -0.0196),
-        (6918, -0.25),
+        (31, -0.0196),
+        (36, -0.0196),
+        (6917, -0.25),
     ],
 )
 def test_replay_rewards_matches_known_frames(replay_reward_data, frame, value):

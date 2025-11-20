@@ -11,7 +11,6 @@ from torch.amp import GradScaler
 
 from column_map import ColumnMap
 from model.nano_gpt import GPT
-from train.batch_utils import SampleWeightRatios
 from train.wandb_utils import WandbLogger
 
 
@@ -31,7 +30,6 @@ class TrainingComponents:
     logger: WandbLogger
     device: torch.device
     amp: AMPContext
-    ratios: SampleWeightRatios
     column_map: ColumnMap
     value_idx: int
     loader: any
@@ -66,7 +64,7 @@ class EpochContext:
 class ForwardPassResult:
     pred: TensorDict
     target_info: Dict[str, torch.Tensor]
-    weights: Dict[str, torch.Tensor]
+    weights: torch.Tensor
     loss: torch.Tensor
     loss_components: Dict[str, torch.Tensor]
     value_pred: torch.Tensor
@@ -74,7 +72,6 @@ class ForwardPassResult:
     batch_inputs: Dict[str, torch.Tensor]
     batch_targets: Dict[str, torch.Tensor]
     label_smoothing: float
-    change_scale: float
 
 
 @dataclass

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from train.batch_utils import (
     build_model_inputs,
-    quantize_controller_targets,
+)
+from controller_quantization import (
+    quantize_targets,
 )
 from train.checkpoint import (
     _sorted_checkpoint_paths as sorted_checkpoint_paths,
@@ -95,7 +97,7 @@ __all__ = [
     "collect_gradient_diagnostics",
     # Batch utils
     "build_model_inputs",
-    "quantize_controller_targets",
+    "quantize_targets",
     # Value head
     "RewardFeatureIdx",
     "build_reward_feature_index",

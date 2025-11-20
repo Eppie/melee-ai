@@ -31,12 +31,14 @@ from tqdm.auto import tqdm
 
 from column_map import ColumnMap
 from config import Config, get_config, init_config, reset_config
-from loss import _compute_ce_weights, _compute_pos_weights
+from controller_quantization import quantize_targets
+from loss import compute_loss_components
 from model.nano_gpt import GPT
 
 # Train module utilities
-from train.batch_utils import build_model_inputs, quantize_controller_targets
+from train.batch_utils import build_model_inputs, compute_value_based_weights
 from train.metrics import MetricsAccumulator
+from train.value_head import compute_value_targets
 from utils import _resolve_device
 from window_dataset import make_dataloader
 
@@ -583,7 +585,7 @@ def run_training_once(
                         Y = batch["Y"].to(device, non_blocking=True)
 
                         inputs_td = build_model_inputs(X, colmap)
-                        target_info = quantize_controller_targets(
+                        target_info = quantize_targets(
                             Y, colmap, input_domain="unit11"
                         )
 
@@ -591,50 +593,46 @@ def run_training_once(
                         B, L, _ = pred["main_stick"].shape
                         total_tokens += int(B * L)
 
-                        logits_main = pred["main_stick"].reshape(B * L, -1)
-                        target_main = target_info["main_idx"].reshape(B * L)
-                        main_weights = _compute_ce_weights(
-                            target_main, target_info["main_K"], cfg.loss_weights
+                        value_target = compute_value_targets(
+                            X,
+                            colmap,
+                            gamma=cfg.rl.gamma,
+                            reward_idx=colmap.value_idx,
                         )
-                        loss_main = torch.nn.functional.cross_entropy(
-                            logits_main,
-                            target_main,
-                            reduction="mean",
+                        sample_weights = compute_value_based_weights(
+                            value_target, cfg.loss_weights
+                        )
+                        if not torch.isfinite(sample_weights).all():
+                            raise ValueError("Non-finite sample weights encountered.")
+
+                        loss_components = compute_loss_components(
+                            pred,
+                            target_info,
                             label_smoothing=cfg.train.label_smoothing,
-                            weight=main_weights,
+                            sample_weights=sample_weights,
+                            loss_config=cfg.loss_weights,
                         )
 
-                        logits_c = pred["c_stick"].reshape(B * L, -1)
-                        target_c = target_info["c_idx"].reshape(B * L)
-                        c_weights = _compute_ce_weights(target_c, target_info["c_K"])
-                        loss_c = torch.nn.functional.cross_entropy(
-                            logits_c,
-                            target_c,
-                            reduction="mean",
-                            label_smoothing=cfg.train.label_smoothing,
-                            weight=c_weights,
+                        value_pred = pred.get("value")
+                        if value_pred is None:
+                            raise ValueError("Model missing value head during sweep.")
+                        if not torch.isfinite(value_pred).all():
+                            raise ValueError("Value predictions contain non-finite values.")
+
+                        value_loss = (
+                            torch.nn.functional.mse_loss(
+                                value_pred, value_target, reduction="none"
+                            )
+                            .squeeze(-1)
+                            .mul(sample_weights)
+                            .mean()
                         )
 
-                        logits_btn = pred["buttons"]
-                        target_btn = target_info["buttons"]
-                        pos_weight = _compute_pos_weights(target_btn)
-                        loss_btn = torch.nn.functional.binary_cross_entropy_with_logits(
-                            logits_btn,
-                            target_btn,
-                            reduction="mean",
-                            pos_weight=pos_weight,
-                        )
-
-                        logits_s = pred["shoulder"].reshape(B * L, -1)
-                        target_s = target_info["shoulder_idx"].reshape(B * L)
-                        loss_s = torch.nn.functional.cross_entropy(
-                            logits_s,
-                            target_s,
-                            reduction="mean",
-                            label_smoothing=cfg.train.label_smoothing,
-                        )
-
-                        loss = loss_main + loss_c + loss_btn + loss_s
+                        loss_main = loss_components["main"]
+                        loss_c = loss_components["c"]
+                        loss_btn = loss_components["buttons"]
+                        loss_s = loss_components["shoulder"]
+                        loss = loss_components["total"] + cfg.rl.value_loss_coef * value_loss
 
                         # lr = cosine_lr_schedule(global_step, total_steps_cap, cfg.train.lr, cfg.train.warmup_steps)
                         lr = cfg.train.lr
@@ -750,12 +748,21 @@ def run_training_once(
                                             current_metrics[key] = float(inst_flop_rate)
 
                             if needs_running_metrics:
+                                main_K = pred["main_stick"].shape[-1]
+                                c_K = pred["c_stick"].shape[-1]
+                                buttons_K = target_info["buttons"].shape[-1]
+                                shoulder_logits = pred.get("shoulder")
+                                shoulder_K = (
+                                    shoulder_logits.shape[-1]
+                                    if shoulder_logits is not None
+                                    else 0
+                                )
                                 if metrics_tracker is None:
                                     metrics_tracker = MetricsAccumulator(
-                                        int(target_info["main_K"]),
-                                        int(target_info["c_K"]),
-                                        int(target_info["buttons_K"]),
-                                        int(target_info["shoulder_K"]),
+                                        int(main_K),
+                                        int(c_K),
+                                        int(buttons_K),
+                                        int(shoulder_K),
                                         device=device,
                                     )
 
@@ -795,7 +802,7 @@ def run_training_once(
                                     if (
                                         shoulder_logits is not None
                                         and shoulder_idx is not None
-                                        and int(target_info["shoulder_K"]) > 0
+                                        and shoulder_K > 0
                                     ):
                                         shoulder_pred_idx = shoulder_logits.argmax(
                                             dim=-1

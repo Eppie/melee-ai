@@ -55,8 +55,8 @@ class ZarrConfig(BaseModel):
     input_root: str = Field(default_factory=lambda: _get_default_paths()[0])
     out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
     validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
-    episode_count: int = Field(default=6600, ge=1)
-    validation_count: int = Field(default=400, ge=1)
+    episode_count: int = Field(default=10, ge=1)
+    validation_count: int = Field(default=10, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
     chunk_frames: int = Field(
@@ -240,23 +240,10 @@ class LossConfig(BaseModel):
 
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
-    enable_class_balancing: bool = Field(default=True)
-    ce_weight_min: float = Field(default=0.1, gt=0)
-    ce_weight_max: float = Field(default=10.0, gt=0)
-    enable_pos_weighting: bool = Field(default=True)
-    pos_weight_max: float = Field(default=3.0, gt=0)
-    use_weighted_component_means: bool = Field(default=True)
-    main_change: float = Field(default=5.0, gt=0)
-    c_change: float = Field(default=10.0, gt=0)
-    shoulder_change: float = Field(default=5.0, gt=0)
-    buttons_change_default: float = Field(default=10.0, gt=0)
-    button_z: float = Field(default=20.0, gt=0)
-    button_b: float = Field(default=12.0, gt=0)
-    button_a: float = Field(default=12.0, gt=0)
-    button_xy: float = Field(default=10.0, gt=0)
-    button_lr: float = Field(default=8.0, gt=0)
-    hold_base: float = Field(default=1.0, gt=0)
-    value_change: float = Field(default=1.0, gt=0)
+    focal_gamma: float = Field(default=2.0, ge=0.0)
+    focal_alpha: float = Field(default=0.25)
+    value_weight_scale: float = Field(default=1.0, ge=0.0)
+    value_weight_clip: float = Field(default=5.0, gt=0.0)
 
 
 class GPTConfig(BaseModel):

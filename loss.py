@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, TYPE_CHECKING, Union
+from typing import Any, Dict, Mapping, TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
@@ -12,52 +12,41 @@ if TYPE_CHECKING:
     from config import LossConfig
 
 
-def _compute_ce_weights(
-    labels: Tensor, num_classes: int, loss_config: "LossConfig"
-) -> Optional[Tensor]:
-    """Compute class-balanced weights for cross-entropy loss."""
-    if not loss_config.enable_class_balancing:
-        return None
-    device = labels.device
-    try:
-        counts = torch.bincount(labels, minlength=num_classes)
-    except RuntimeError:
-        counts = torch.bincount(labels.cpu(), minlength=num_classes).to(device)
-    counts = counts.float().clamp_min(1.0)
-    weights = counts.sum() / (counts * num_classes)
-    return weights.clamp(min=loss_config.ce_weight_min, max=loss_config.ce_weight_max)
+def sigmoid_focal_loss(
+    logits: Tensor, targets: Tensor, gamma: float, alpha: float
+) -> Tensor:
+    """Multi-label focal loss for sigmoid outputs."""
+    if logits.shape != targets.shape:
+        raise ValueError(
+            f"logits shape {tuple(logits.shape)} must match targets {tuple(targets.shape)}"
+        )
+    prob = torch.sigmoid(logits)
+    pt = torch.where(targets.bool(), prob, 1.0 - prob).clamp_min(1e-8)
+    alpha_t = torch.where(targets.bool(), alpha, 1.0 - alpha)
+    focal_factor = (1.0 - pt).pow(gamma)
+    return -alpha_t * focal_factor * pt.log()
 
 
-def _compute_pos_weights(
-    targets: Tensor, loss_config: "LossConfig"
-) -> Optional[Tensor]:
-    """Compute positive class weights for multi-label BCE loss."""
-    if not loss_config.enable_pos_weighting:
-        return None
-
-    flat = targets.reshape(-1, targets.shape[-1])
-    pos = flat.sum(dim=0)
-    total = flat.shape[0]
-    neg = total - pos
-    pos_weight = neg / pos.clamp_min(1.0)
-    return pos_weight.clamp(min=1.0, max=loss_config.pos_weight_max).to(targets.device)
-
-
-def _mean_with_weights(x: Tensor, w: Tensor, loss_config: "LossConfig") -> Tensor:
-    if not loss_config.use_weighted_component_means:
-        return x.mean()
-    # Match dims to broadcast, then true weighted mean:
-    w = w.to(x.dtype)
-    num = (x * w).sum()
-    den = w.sum().clamp_min(1e-12)
-    return num / den
-
-
-def _blend_weights(weights: Optional[Tensor], scale: float) -> Optional[Tensor]:
-    assert scale > 0, f"scale {scale} is invalid"
-    if weights is None or scale >= 1:
-        return weights
-    return torch.ones_like(weights) + (weights - 1.0) * scale
+def softmax_focal_loss(
+    logits: Tensor, targets: Tensor, gamma: float, alpha: float, label_smoothing: float
+) -> Tensor:
+    """Multi-class focal loss with optional label smoothing."""
+    if logits.shape[:-1] != targets.shape:
+        raise ValueError(
+            f"logits shape {tuple(logits.shape)} incompatible with targets {tuple(targets.shape)}"
+        )
+    B, L, K = logits.shape
+    log_probs = F.log_softmax(logits, dim=-1)
+    log_pt = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    pt = log_pt.exp()
+    focal_factor = (1.0 - pt).pow(gamma)
+    ce = F.cross_entropy(
+        logits.reshape(B * L, K),
+        targets.reshape(B * L),
+        reduction="none",
+        label_smoothing=label_smoothing,
+    ).reshape(B, L)
+    return alpha * focal_factor * ce
 
 
 def compute_loss_components(
@@ -65,100 +54,73 @@ def compute_loss_components(
     target_info: Mapping[str, Any],
     *,
     label_smoothing: float,
-    sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
+    sample_weights: Tensor,
     loss_config: "LossConfig",
-    ce_weight_scale: float = 1.0,
-    pos_weight_scale: float = 1.0,
 ) -> Dict[str, Tensor]:
     """
-    Accepts either:
-      - sample_weights: [B, L] (legacy)
-      - sample_weights: {"main":[B,L], "c":[B,L], "shoulder":[B,L], "buttons":[B,L,K]}
+    Compute focal losses for each controller component using shared sample weights.
     """
     logits_main = pred["main_stick"]  # [B, L, K_main]
     logits_c = pred["c_stick"]  # [B, L, K_c]
     logits_btn = pred["buttons"]  # [B, L, K_btn]
     shoulder_logits = pred.get("shoulder")  # [B, L, K_sh]
 
+    if shoulder_logits is None:
+        raise ValueError("Shoulder logits missing from model predictions.")
+
     B, L, _ = logits_main.shape
+    if sample_weights.shape[:2] != (B, L):
+        raise ValueError(
+            f"sample_weights must have leading shape {(B, L)}, got {tuple(sample_weights.shape)}"
+        )
+    if not torch.isfinite(sample_weights).all():
+        raise ValueError("sample_weights contains non-finite values.")
+    weights = sample_weights.to(logits_main.dtype)
 
-    # Pull per-component weights (or None)
-    def _get_w(name: str, expect_ndim: int) -> Optional[Tensor]:
-        if sample_weights is None:
-            return None
-        if isinstance(sample_weights, Tensor):
-            if expect_ndim == 3:
-                if sample_weights.ndim == 2:
-                    return sample_weights.unsqueeze(-1)
-                return sample_weights
-            assert expect_ndim in (1, 2)  # only [B,L] valid for non-buttons
-            return sample_weights  # [B,L]
-        w = sample_weights.get(name)
-        if w is None:
-            return None
-        assert (
-            w.ndim == expect_ndim
-        ), f"{name} weights must have ndim={expect_ndim}, got {w.shape}"
-        return w
-
-    w_main = _get_w("main", 2)  # [B, L]
-    w_c = _get_w("c", 2)  # [B, L]
-    w_buttons = _get_w("buttons", 3)  # [B, L, K_btn]
-    w_shoulder = _get_w("shoulder", 2)  # [B, L]
-
-    # --- MAIN ---
-    main_targets = target_info["main_idx"].reshape(B * L)
-    main_logits = logits_main.reshape(B * L, -1)
-    main_weights = _compute_ce_weights(
-        main_targets, int(target_info["main_K"]), loss_config
-    )
-    main_weights = _blend_weights(main_weights, ce_weight_scale)
-    loss_main_vec = F.cross_entropy(
-        main_logits,
+    main_targets = target_info["main_idx"].reshape(B, L)
+    loss_main_vec = softmax_focal_loss(
+        logits_main,
         main_targets,
-        reduction="none",
+        gamma=loss_config.focal_gamma,
+        alpha=loss_config.focal_alpha,
         label_smoothing=label_smoothing,
-        weight=main_weights,
-    ).reshape(B, L)
-    loss_main = _mean_with_weights(loss_main_vec, w_main, loss_config)
+    )
+    loss_main = (loss_main_vec * weights).mean()
 
-    # --- C-STICK ---
-    c_targets = target_info["c_idx"].reshape(B * L)
-    c_logits = logits_c.reshape(B * L, -1)
-    c_weights = _compute_ce_weights(c_targets, int(target_info["c_K"]), loss_config)
-    c_weights = _blend_weights(c_weights, ce_weight_scale)
-    loss_c_vec = F.cross_entropy(
-        c_logits,
+    c_targets = target_info["c_idx"].reshape(B, L)
+    loss_c_vec = softmax_focal_loss(
+        logits_c,
         c_targets,
-        reduction="none",
+        gamma=loss_config.focal_gamma,
+        alpha=loss_config.focal_alpha,
         label_smoothing=label_smoothing,
-        weight=c_weights,
-    ).reshape(B, L)
-    loss_c = _mean_with_weights(loss_c_vec, w_c, loss_config)
+    )
+    loss_c = (loss_c_vec * weights).mean()
 
-    # --- BUTTONS (per-label weighting)
     target_btn = target_info["buttons"]
-    pos_weight = _compute_pos_weights(target_btn, loss_config)  # [K_btn] or None
-    pos_weight = _blend_weights(pos_weight, pos_weight_scale)
-    loss_btn_all = F.binary_cross_entropy_with_logits(
-        logits_btn, target_btn, reduction="none", pos_weight=pos_weight
+    if target_btn.shape[:2] != (B, L):
+        raise ValueError(
+            f"buttons target leading shape {tuple(target_btn.shape[:2])} does not match {(B, L)}"
+        )
+    loss_btn_all = sigmoid_focal_loss(
+        logits_btn,
+        target_btn,
+        gamma=loss_config.focal_gamma,
+        alpha=loss_config.focal_alpha,
     )  # [B, L, K_btn]
-
-    if w_buttons is not None:
-        # true weighted mean over all dims
-        loss_buttons = _mean_with_weights(loss_btn_all, w_buttons, loss_config)
-    else:
-        # original behavior (mean over label dim, then batch/time)
-        loss_buttons = loss_btn_all.mean()
+    loss_buttons = (loss_btn_all * weights.unsqueeze(-1)).mean()
 
     shoulder_idx = target_info.get("shoulder_idx")
-    sh_vec = F.cross_entropy(
-        shoulder_logits.reshape(B * L, -1),
-        shoulder_idx.reshape(B * L),
-        reduction="none",
+    if shoulder_idx is None:
+        raise ValueError("Shoulder targets missing from target_info.")
+    sh_vec = softmax_focal_loss(
+        shoulder_logits,
+        shoulder_idx.reshape(B, L),
+        gamma=loss_config.focal_gamma,
+        alpha=loss_config.focal_alpha,
         label_smoothing=label_smoothing,
-    ).reshape(B, L)
-    loss_shoulder = _mean_with_weights(sh_vec, w_shoulder, loss_config)
+    )
+    loss_shoulder = (sh_vec * weights).mean()
 
     total_loss = loss_main + loss_c + loss_buttons + loss_shoulder
     return {
@@ -188,7 +150,7 @@ class PolicyLossComputer:
         """
         Args:
             outputs: model outputs with keys (buttons, main_stick, c_stick, shoulder)
-            targets: target_info dict from quantize_controller_targets
+            targets: target_info dict from quantization
             weights: (B, L) sample weights from imitation strategy
 
         Returns:
@@ -196,24 +158,11 @@ class PolicyLossComputer:
             metrics: dict of per-component losses
         """
 
-        # Convert weights to dict format expected by compute_loss_components
-        # The existing function expects component-specific weights
-        # We'll use the same weight for all components
-        B, L = weights.shape
-        K_btn = outputs["buttons"].shape[-1]
-
-        sample_weights = {
-            "main": weights,  # [B, L]
-            "c": weights,  # [B, L]
-            "shoulder": weights,  # [B, L]
-            "buttons": weights.unsqueeze(-1).expand(B, L, K_btn),  # [B, L, K_btn]
-        }
-
         loss_components = compute_loss_components(
             outputs,
             targets,
             label_smoothing=self.label_smoothing,
-            sample_weights=sample_weights,
+            sample_weights=weights,
             loss_config=self.loss_config,
         )
 

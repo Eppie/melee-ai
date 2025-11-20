@@ -284,7 +284,7 @@ def prepare_logging_bundle(
         (
             f"ep {epoch + 1}/{config.train.epochs} it {completed_batches}/{len(components.loader)}\n"
             f"  loss {avg_loss_running:.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | "
-            f"ls {forward_result.label_smoothing:.4f} | cw {forward_result.change_scale:.3f} | {loss_summary}"
+            f"ls {forward_result.label_smoothing:.4f} | {loss_summary}"
         ),
         f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f}) | rep {acc_main_rep_b:.3f}",
         indent(main_conf_str, "    "),
@@ -354,7 +354,6 @@ def prepare_logging_bundle(
         "metrics/buttons_em_rep": _to_float(em_rep),
         "throughput/frames_per_s": frames_per_s,
         "schedule/label_smoothing": float(forward_result.label_smoothing),
-        "schedule/change_weight_scale": float(forward_result.change_scale),
     }
 
     log_payload.update(gather_logit_metrics(pred))

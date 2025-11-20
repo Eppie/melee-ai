@@ -8,16 +8,15 @@ import torch
 from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
-from constants import CONTROLLER_KEY_GROUPS
 from loss import compute_loss_components
 from train.batch_utils import (
     build_model_inputs,
-    compute_component_sample_weights,
-    quantize_controller_targets,
+    compute_value_based_weights,
 )
 from train.components import ForwardPassResult, TrainingComponents
 from train.gradients import collect_gradient_diagnostics
 from train.value_head import compute_value_targets
+from controller_quantization import quantize_targets
 
 
 def perform_forward_pass(
@@ -39,10 +38,24 @@ def perform_forward_pass(
         enabled=amp.enabled,
     ):
         inputs_td = build_model_inputs(X, components.column_map)
-        target_info = quantize_controller_targets(
-            Y, components.column_map, input_domain="unit01"
-        )
+        target_info = quantize_targets(Y, components.column_map, input_domain="unit01")
         pred = components.model(inputs_td)
+
+        value_target = compute_value_targets(
+            X,
+            components.column_map,
+            gamma=config.rl.gamma,
+            reward_idx=components.value_idx,
+        )
+
+        value_pred = pred.get("value")
+        if value_pred is None:
+            raise ValueError("Model predictions missing value head output.")
+        if not torch.isfinite(value_pred).all():
+            raise ValueError("Value predictions contain non-finite values.")
+
+        value_weights = compute_value_based_weights(value_target, config.loss_weights)
+        assert torch.isfinite(value_weights).all(), "Non-finite value-based weights"
 
         base_smoothing = config.train.label_smoothing
         final_smoothing = 0.5 * base_smoothing
@@ -54,45 +67,20 @@ def perform_forward_pass(
             )
         label_smoothing = float(max(label_smoothing, 0.0))
 
-        final_change_scale = 0.5
-        if in_warmup:
-            imbalance_scale = 1.0
-        else:
-            imbalance_scale = 1.0 - (1.0 - final_change_scale) * progress
-        imbalance_scale = float(max(min(imbalance_scale, 1.0), final_change_scale))
-
-        weights = compute_component_sample_weights(
-            target_info,
-            components.device,
-            ratios=components.ratios,
-            button_names=CONTROLLER_KEY_GROUPS["buttons"],
-            change_scale=imbalance_scale,
-        )
-
         policy_loss_components = compute_loss_components(
             pred,
             target_info,
             label_smoothing=label_smoothing,
-            sample_weights=weights,
+            sample_weights=value_weights,
             loss_config=config.loss_weights,
-            ce_weight_scale=imbalance_scale,
-            pos_weight_scale=imbalance_scale,
         )
         loss = policy_loss_components["total"]
         loss_components = dict(policy_loss_components)
 
-        value_pred = pred["value"]
-        value_target = compute_value_targets(
-            X,
-            components.column_map,
-            gamma=config.rl.gamma,
-            reward_idx=components.value_idx,
-        )
         value_loss_raw = torch.nn.functional.mse_loss(
             value_pred, value_target, reduction="none"
         ).squeeze(-1)
-        value_w = weights.get("global", weights["main"])
-        loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
+        loss_value = (value_loss_raw * value_weights).mean()
         loss = loss + config.rl.value_loss_coef * loss_value
         loss_components["value"] = loss_value
 
@@ -107,7 +95,7 @@ def perform_forward_pass(
     return ForwardPassResult(
         pred=pred,
         target_info=target_info,
-        weights=weights,
+        weights=value_weights,
         loss=loss,
         loss_components=loss_components,
         value_pred=value_pred,
@@ -115,7 +103,6 @@ def perform_forward_pass(
         batch_inputs=batch_inputs,
         batch_targets=batch_targets,
         label_smoothing=label_smoothing,
-        change_scale=imbalance_scale,
     )
 
 # TODO: We are probably failing to call clip_grad_norm if collect_grad_stats is False

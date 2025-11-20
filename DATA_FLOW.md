@@ -51,7 +51,7 @@ The main training loop in `train.py` then processes these batches:
     - **Categorical Features**: Features like `stage`, `character`, and `action` are cast to `torch.long` to be used with embedding layers.
     - **Continuous Features**: Features like `gamestate` and `controller` (the previous controller state) remain as `torch.float`.
 
-- **`quantize_controller_targets`**: This function takes the `Y` tensor from the batch and quantizes the continuous target controller inputs into discrete indices.
+- **`quantize_targets`**: This function takes the `Y` tensor from the batch and quantizes the continuous target controller inputs into discrete indices.
     - It calls `controller_quantization.quantize_targets`, which expects the stick values in the `Y` tensor to be continuous (in the `[-1, 1]` or `[0, 1]` domain).
     - This function is responsible for converting the continuous target stick values into the discrete indices that are used for calculating the cross-entropy loss.
 
@@ -62,7 +62,7 @@ The `TensorDict` produced by `build_model_inputs` is what is directly fed to the
 - **Continuous Features**: As floating-point values.
 - **Transformed Stick Inputs**: The controller stick inputs in the `X` tensor have been quantized to a discrete palette by the `stick_palette` transform.
 
-The quantized targets from `quantize_controller_targets` are used to compute the loss against the model's output logits.
+The quantized targets from `quantize_targets` are used to compute the loss against the model's output logits.
 
 ## Recommendations for Improvement
 
@@ -74,7 +74,7 @@ In `controller_quantization.py`, the `quantize_targets` function has an `input_d
 
 ### 2. Consolidate Target Quantization
 
-Currently, feature transformations (including `stick_palette`) are applied in `WindowDataset`, and then target quantization is handled separately in `quantize_controller_targets`. While the issue of applying `stick_palette` to targets has been fixed, it highlights a potential area for simplification. A clearer design would be to have a single, well-defined place where all target processing occurs. This could involve moving all target-related logic into `quantize_controller_targets` and ensuring that `WindowDataset` only deals with loading the raw data.
+Currently, feature transformations (including `stick_palette`) are applied in `WindowDataset`, and then target quantization is handled separately in `quantize_targets`. While the issue of applying `stick_palette` to targets has been fixed, it highlights a potential area for simplification. A clearer design would be to have a single, well-defined place where all target processing occurs. This could involve moving all target-related logic into `quantize_targets` and ensuring that `WindowDataset` only deals with loading the raw data.
 
 ### 3. Profile Caching and Indexing
 

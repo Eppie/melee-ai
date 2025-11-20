@@ -15,7 +15,6 @@ from torch.amp.autocast_mode import is_autocast_available
 from column_map import ColumnMap
 from config import get_config
 from model.nano_gpt import GPT
-from train.batch_utils import SampleWeightRatios
 from train.checkpoint import _load_latest_checkpoint
 from train.components import AMPContext, TrainingComponents
 from train.wandb_utils import WandbConfig, WandbLogger, init_wandb
@@ -113,23 +112,6 @@ def initialize_training_components(
 
     column_map = ColumnMap.from_dataset(ds)
     value_idx = column_map.value_idx
-    lw_cfg = config.loss_weights
-    button_overrides = {
-        "button_z": lw_cfg.button_z,
-        "button_b": lw_cfg.button_b,
-        "button_a": lw_cfg.button_a,
-        "button_xy": lw_cfg.button_xy,
-        "button_lr": lw_cfg.button_lr,
-    }
-    ratios = SampleWeightRatios(
-        main_change=lw_cfg.main_change,
-        c_change=lw_cfg.c_change,
-        shoulder_change=lw_cfg.shoulder_change,
-        buttons_change_default=lw_cfg.buttons_change_default,
-        buttons_change_per_key=button_overrides,
-        hold_base=lw_cfg.hold_base,
-        value_change=lw_cfg.value_change,
-    )
 
     optimizer = build_optimizer(model, config)
     scaler_device = amp.device_type if amp.enabled else "cpu"
@@ -184,7 +166,6 @@ def initialize_training_components(
         logger=logger,
         device=device,
         amp=amp,
-        ratios=ratios,
         column_map=column_map,
         value_idx=value_idx,
         loader=loader,

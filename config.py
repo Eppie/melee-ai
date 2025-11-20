@@ -55,8 +55,8 @@ class ZarrConfig(BaseModel):
     input_root: str = Field(default_factory=lambda: _get_default_paths()[0])
     out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
     validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
-    episode_count: int = Field(default=10, ge=1)
-    validation_count: int = Field(default=10, ge=1)
+    episode_count: int = Field(default=6600, ge=1)
+    validation_count: int = Field(default=400, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
     chunk_frames: int = Field(
@@ -251,7 +251,7 @@ class GPTConfig(BaseModel):
 
     block_size: int = Field(default=512, ge=1)
     n_embd: int = Field(default=512, ge=1)
-    n_layer: int = Field(default=16, ge=1)
+    n_layer: int = Field(default=8, ge=1)
     n_head: int = Field(default=8, ge=1)
     dropout: float = Field(default=0.03, ge=0, le=1)
     input_size: int = Field(default=-1)

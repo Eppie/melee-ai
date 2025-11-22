@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from textwrap import indent
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -20,6 +20,14 @@ from train.components import (
 )
 from train.display import format_confusion_matrix
 from train.metrics import compute_confusion_matrix, multilabel_prf
+
+
+def _stack_to_list(*tensors: torch.Tensor) -> List[float]:
+    """Move scalar tensors to CPU with a single sync."""
+    if not tensors:
+        return []
+    stacked = torch.stack([t if torch.is_tensor(t) else torch.as_tensor(t) for t in tensors])
+    return stacked.detach().cpu().tolist()
 
 
 def append_tensor_stats(
@@ -97,6 +105,16 @@ def prepare_logging_bundle(
     avg_loss_running: float,
     grad_stats: Dict[str, float],
     global_step: int,
+    timing_ms: Optional[Dict[str, float]] = None,
+    forward_timing_ms: Optional[Dict[str, float]] = None,
+    backward_timing_ms: Optional[Dict[str, float]] = None,
+    profiler_summary: Optional[str] = None,
+    profiler_shapes: Optional[str] = None,
+    profiler_device: Optional[str] = None,
+    profiler_device_note: Optional[str] = None,
+    profiler_stacks: Optional[str] = None,
+    profiler_stack_path: Optional[str] = None,
+    profiler_stack_note: Optional[str] = None,
 ) -> LoggingBundle:
     pred = forward_result.pred
     target_info = forward_result.target_info
@@ -166,63 +184,54 @@ def prepare_logging_bundle(
     main_pred = main_pred_idx.view(batch_size, sequence_length)
     c_pred = c_pred_idx.view(batch_size, sequence_length)
 
-    acc_main_b = float((main_pred == target_main.view(batch_size, sequence_length)).float().mean().item())
-    acc_main_chg = (
-        float(
-            (main_pred[main_change_mask] == target_main.view(batch_size, sequence_length)[main_change_mask])
-            .float()
-            .mean()
-            .item()
-        )
+    acc_main_b_t = (main_pred == target_main.view(batch_size, sequence_length)).float().mean()
+    acc_main_chg_t = (
+        (main_pred[main_change_mask] == target_main.view(batch_size, sequence_length)[main_change_mask])
+        .float()
+        .mean()
         if main_change_mask.any()
-        else 0.0
+        else torch.tensor(0.0, device=device)
     )
-    acc_main_hold = (
-        float(
-            (main_pred[main_hold_mask] == target_main.view(batch_size, sequence_length)[main_hold_mask])
-            .float()
-            .mean()
-            .item()
-        )
+    acc_main_hold_t = (
+        (main_pred[main_hold_mask] == target_main.view(batch_size, sequence_length)[main_hold_mask])
+        .float()
+        .mean()
         if main_hold_mask.any()
-        else 0.0
+        else torch.tensor(0.0, device=device)
     )
-    acc_main_rep_b = (
-        float(
-            (main_rep[rep_mask] == target_main.view(batch_size, sequence_length)[rep_mask])
-            .float()
-            .mean()
-            .item()
-        )
+    acc_main_rep_b_t = (
+        (main_rep[rep_mask] == target_main.view(batch_size, sequence_length)[rep_mask])
+        .float()
+        .mean()
         if rep_mask.any()
-        else 0.0
+        else torch.tensor(0.0, device=device)
+    )
+    acc_main_b, acc_main_chg, acc_main_hold, acc_main_rep_b = _stack_to_list(
+        acc_main_b_t, acc_main_chg_t, acc_main_hold_t, acc_main_rep_b_t
     )
 
-    acc_c_b = float((c_pred == target_c.view(batch_size, sequence_length)).float().mean().item())
-    acc_c_chg = (
-        float(
-            (c_pred[c_change_mask] == target_c.view(batch_size, sequence_length)[c_change_mask])
-            .float()
-            .mean()
-            .item()
-        )
+    acc_c_b_t = (c_pred == target_c.view(batch_size, sequence_length)).float().mean()
+    acc_c_chg_t = (
+        (c_pred[c_change_mask] == target_c.view(batch_size, sequence_length)[c_change_mask])
+        .float()
+        .mean()
         if c_change_mask.any()
-        else 0.0
+        else torch.tensor(0.0, device=device)
     )
-    acc_c_hold = (
-        float(
-            (c_pred[c_hold_mask] == target_c.view(batch_size, sequence_length)[c_hold_mask])
-            .float()
-            .mean()
-            .item()
-        )
+    acc_c_hold_t = (
+        (c_pred[c_hold_mask] == target_c.view(batch_size, sequence_length)[c_hold_mask])
+        .float()
+        .mean()
         if c_hold_mask.any()
-        else 0.0
+        else torch.tensor(0.0, device=device)
     )
-    acc_c_rep_b = (
-        float((c_rep[rep_mask] == target_c.view(batch_size, sequence_length)[rep_mask]).float().mean().item())
+    acc_c_rep_b_t = (
+        (c_rep[rep_mask] == target_c.view(batch_size, sequence_length)[rep_mask]).float().mean()
         if rep_mask.any()
-        else 0.0
+        else torch.tensor(0.0, device=device)
+    )
+    acc_c_b, acc_c_chg, acc_c_hold, acc_c_rep_b = _stack_to_list(
+        acc_c_b_t, acc_c_chg_t, acc_c_hold_t, acc_c_rep_b_t
     )
 
     btn_pred = (btn_probs >= 0.5).to(target_btn.dtype)
@@ -230,16 +239,13 @@ def prepare_logging_bundle(
     em_b = _to_float(em_b)
     f1_b = _to_float(f1_b)
     correct_btn_em = (btn_pred == target_btn).all(dim=-1)
-    em_btn_chg = (
-        correct_btn_em[btn_change_mask].float().mean().item()
-        if btn_change_mask.any()
-        else 0.0
+    em_btn_chg_t = (
+        correct_btn_em[btn_change_mask].float().mean() if btn_change_mask.any() else torch.tensor(0.0, device=device)
     )
-    em_btn_hold = (
-        correct_btn_em[btn_hold_mask].float().mean().item()
-        if btn_hold_mask.any()
-        else 0.0
+    em_btn_hold_t = (
+        correct_btn_em[btn_hold_mask].float().mean() if btn_hold_mask.any() else torch.tensor(0.0, device=device)
     )
+    em_btn_chg, em_btn_hold = _stack_to_list(em_btn_chg_t, em_btn_hold_t)
 
     btn_true_flat = target_btn.reshape(-1, target_btn.shape[-1]).float()
     btn_pred_flat = btn_pred.reshape(-1, btn_pred.shape[-1]).float()
@@ -252,6 +258,11 @@ def prepare_logging_bundle(
     btn_rec = btn_tp / (btn_tp + btn_fn + eps)
     btn_f1 = 2 * btn_prec * btn_rec / (btn_prec + btn_rec + eps)
     btn_rate = btn_true_flat.mean(dim=0)
+    btn_match_cpu = btn_match.detach().cpu().tolist()
+    btn_prec_cpu = btn_prec.detach().cpu().tolist()
+    btn_rec_cpu = btn_rec.detach().cpu().tolist()
+    btn_f1_cpu = btn_f1.detach().cpu().tolist()
+    btn_rate_cpu = btn_rate.detach().cpu().tolist()
 
     pos_rate = target_btn.float().mean(dim=(0, 1), keepdim=True)
     btn_maj_pred = (pos_rate >= 0.5).to(target_btn.dtype).expand_as(target_btn)
@@ -260,9 +271,9 @@ def prepare_logging_bundle(
     mask_flat = rep_mask.view(batch_size * sequence_length)
     t_flat = target_btn.reshape(batch_size * sequence_length, -1)[mask_flat]
     p_flat = btn_rep.reshape(batch_size * sequence_length, -1)[mask_flat]
-    em_rep, _, _, f1_rep, _ = multilabel_prf(t_flat, p_flat)
-    em_rep = _to_float(em_rep)
-    f1_rep = _to_float(f1_rep)
+    em_rep_t, _, _, f1_rep_t, _ = multilabel_prf(t_flat, p_flat)
+    em_rep = _to_float(em_rep_t)
+    f1_rep = _to_float(f1_rep_t)
 
     sh_logits = pred["shoulder"]
     sh_true_idx = target_info["shoulder_idx"]
@@ -280,11 +291,22 @@ def prepare_logging_bundle(
     )
 
     loss_summary = extract_loss_breakdown(forward_result.loss_components)
+    timing_ms = timing_ms or {}
+    forward_timing_ms = forward_timing_ms or {}
+    backward_timing_ms = backward_timing_ms or {}
+    timing_str = ""
+    if timing_ms:
+        timing_str = (
+            f" | t load {timing_ms.get('load_ms', 0.0):.1f}ms"
+            f" dev {timing_ms.get('to_device_ms', 0.0):.1f}ms"
+            f" fwd {timing_ms.get('forward_ms', 0.0):.1f}ms"
+            f" bwd {timing_ms.get('backward_ms', 0.0):.1f}ms"
+        )
     log_lines: List[str] = [
         (
             f"ep {epoch + 1}/{config.train.epochs} it {completed_batches}/{len(components.loader)}\n"
             f"  loss {avg_loss_running:.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | "
-            f"ls {forward_result.label_smoothing:.4f} | {loss_summary}"
+            f"ls {forward_result.label_smoothing:.4f} | {loss_summary}{timing_str}"
         ),
         f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f}) | rep {acc_main_rep_b:.3f}",
         indent(main_conf_str, "    "),
@@ -300,7 +322,7 @@ def prepare_logging_bundle(
     for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
         label = _BUTTON_PRETTY.get(name, name)
         per_button.append(
-            f"{label}: acc {btn_match[idx].item():.3f} F1 {btn_f1[idx].item():.3f} rate {btn_rate[idx].item():.3f}"
+            f"{label}: acc {btn_match_cpu[idx]:.3f} F1 {btn_f1_cpu[idx]:.3f} rate {btn_rate_cpu[idx]:.3f}"
         )
     log_lines.append(btn_line1)
     log_lines.append(btn_line2)
@@ -325,6 +347,55 @@ def prepare_logging_bundle(
         f"  VALUE:    pred {value_pred_mean:.3f} | targ {value_target_mean:.3f} | "
         f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation.item():.3f}"
     )
+    if forward_timing_ms:
+        log_lines.append(
+            "  TIMING FWD: "
+            f"inputs {forward_timing_ms.get('inputs_ms', 0.0):.1f}ms | "
+            f"quant {forward_timing_ms.get('quantize_ms', 0.0):.1f}ms | "
+            f"model {forward_timing_ms.get('model_ms', 0.0):.1f}ms | "
+            f"value_tgt {forward_timing_ms.get('value_target_ms', 0.0):.1f}ms | "
+            f"value_wts {forward_timing_ms.get('value_weights_ms', 0.0):.1f}ms | "
+            f"loss_pol {forward_timing_ms.get('loss_policy_ms', 0.0):.1f}ms | "
+            f"loss_val {forward_timing_ms.get('loss_value_ms', 0.0):.1f}ms | "
+            f"total {forward_timing_ms.get('forward_total_ms', 0.0):.1f}ms"
+        )
+    if backward_timing_ms:
+        log_lines.append(
+            "  TIMING BWD: "
+            f"zero {backward_timing_ms.get('zero_grad_ms', 0.0):.1f}ms | "
+            f"backward {backward_timing_ms.get('backward_ms', 0.0):.1f}ms | "
+            f"unscale {backward_timing_ms.get('unscale_ms', 0.0):.1f}ms | "
+            f"clip {backward_timing_ms.get('clip_ms', 0.0):.1f}ms | "
+            f"step {backward_timing_ms.get('optimizer_step_ms', 0.0):.1f}ms | "
+            f"total {backward_timing_ms.get('backward_total_ms', 0.0):.1f}ms"
+        )
+    value_stats = forward_result.value_stats or {}
+    if value_stats:
+        log_lines.append(
+            "  VALUE WTS: "
+            f"mean {value_stats.get('vw_mean', 0.0):.3f} std {value_stats.get('vw_std', 0.0):.3f} "
+            f"min {value_stats.get('vw_min', 0.0):.3f} max {value_stats.get('vw_max', 0.0):.3f} | "
+            f"clip_lo {value_stats.get('vw_clip_lo_pct', 0.0):.1f}% clip_hi {value_stats.get('vw_clip_hi_pct', 0.0):.1f}% | "
+            f"vt mean {value_stats.get('vt_mean', 0.0):.3f} std {value_stats.get('vt_std', 0.0):.3f} "
+            f"min {value_stats.get('vt_min', 0.0):.3f} max {value_stats.get('vt_max', 0.0):.3f}"
+        )
+    if profiler_summary:
+        log_lines.append("  PROFILER (stack agg):\n" + indent(profiler_summary, "    "))
+    if profiler_shapes:
+        log_lines.append("  PROFILER (by input shape):\n" + indent(profiler_shapes, "    "))
+    if profiler_device:
+        log_lines.append("  PROFILER (device time):\n" + indent(str(profiler_device), "    "))
+    elif profiler_device_note:
+        log_lines.append("  PROFILER (device time): " + profiler_device_note)
+    if profiler_stacks:
+        log_lines.append("  PROFILER STACKS:\n" + indent(profiler_stacks, "    "))
+    elif profiler_stack_path or profiler_stack_note:
+        note_parts = []
+        if profiler_stack_path:
+            note_parts.append(f"saved to {profiler_stack_path}")
+        if profiler_stack_note:
+            note_parts.append(profiler_stack_note)
+        log_lines.append("  PROFILER STACKS: " + " | ".join(note_parts))
 
     log_payload: Dict[str, float] = {
         "epoch": epoch + 1,
@@ -356,6 +427,42 @@ def prepare_logging_bundle(
         "schedule/label_smoothing": float(forward_result.label_smoothing),
     }
 
+    if timing_ms:
+        log_payload.update(
+            {
+                "timing/load_ms": timing_ms.get("load_ms", 0.0),
+                "timing/to_device_ms": timing_ms.get("to_device_ms", 0.0),
+                "timing/forward_ms": timing_ms.get("forward_ms", 0.0),
+                "timing/backward_ms": timing_ms.get("backward_ms", 0.0),
+            }
+        )
+    if forward_timing_ms:
+        log_payload.update(
+            {f"timing_forward/{k}": v for k, v in forward_timing_ms.items()}
+        )
+    if backward_timing_ms:
+        log_payload.update(
+            {f"timing_backward/{k}": v for k, v in backward_timing_ms.items()}
+        )
+    if value_stats:
+        log_payload.update(
+            {
+                "value_weights/mean": value_stats.get("vw_mean", 0.0),
+                "value_weights/std": value_stats.get("vw_std", 0.0),
+                "value_weights/min": value_stats.get("vw_min", 0.0),
+                "value_weights/max": value_stats.get("vw_max", 0.0),
+                "value_weights/clip_lo_pct": value_stats.get("vw_clip_lo_pct", 0.0),
+                "value_weights/clip_hi_pct": value_stats.get("vw_clip_hi_pct", 0.0),
+                "value_weights/scale_cfg": value_stats.get("vw_scale_cfg", 0.0),
+                "value_weights/clip_min_cfg": value_stats.get("vw_clip_min_cfg", 0.0),
+                "value_weights/clip_max_cfg": value_stats.get("vw_clip_max_cfg", 0.0),
+                "value_target/mean": value_stats.get("vt_mean", 0.0),
+                "value_target/std": value_stats.get("vt_std", 0.0),
+                "value_target/min": value_stats.get("vt_min", 0.0),
+                "value_target/max": value_stats.get("vt_max", 0.0),
+            }
+        )
+
     log_payload.update(gather_logit_metrics(pred))
     log_payload.update(gather_bias_metrics(components.model))
 
@@ -363,11 +470,11 @@ def prepare_logging_bundle(
 
     for idx, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
         label = _BUTTON_PRETTY.get(name, name)
-        log_payload[f"buttons/{label}_acc"] = float(btn_match[idx].item())
-        log_payload[f"buttons/{label}_f1"] = float(btn_f1[idx].item())
-        log_payload[f"buttons/{label}_precision"] = float(btn_prec[idx].item())
-        log_payload[f"buttons/{label}_recall"] = float(btn_rec[idx].item())
-        log_payload[f"buttons/{label}_rate"] = float(btn_rate[idx].item())
+        log_payload[f"buttons/{label}_acc"] = float(btn_match_cpu[idx])
+        log_payload[f"buttons/{label}_f1"] = float(btn_f1_cpu[idx])
+        log_payload[f"buttons/{label}_precision"] = float(btn_prec_cpu[idx])
+        log_payload[f"buttons/{label}_recall"] = float(btn_rec_cpu[idx])
+        log_payload[f"buttons/{label}_rate"] = float(btn_rate_cpu[idx])
 
     log_payload.update(
         {

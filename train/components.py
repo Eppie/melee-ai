@@ -72,6 +72,8 @@ class ForwardPassResult:
     batch_inputs: Dict[str, torch.Tensor]
     batch_targets: Dict[str, torch.Tensor]
     label_smoothing: float
+    timing_ms: Dict[str, float] | None = None
+    value_stats: Dict[str, float] | None = None
 
 
 @dataclass

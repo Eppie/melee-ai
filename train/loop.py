@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
+import warnings
 from typing import Dict
 
 import torch
+from torch.profiler import ProfilerActivity, profile
 
 from train.checkpoint import maybe_checkpoint_batch, maybe_checkpoint_epoch
 from train.components import EpochContext, TrainingState
@@ -54,7 +57,7 @@ def _compute_training_progress(
 
 
 def _should_log(current_iter: int) -> bool:
-    return current_iter % 100 == 0
+    return current_iter % 5 == 0
 
 
 def _update_epoch_statistics(epoch_ctx: EpochContext, forward_result) -> None:
@@ -98,12 +101,23 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 f"Resuming epoch {epoch + 1}: skipping first {state.resume_iter} batches by consuming them (may take time)."
             )
 
-    for iteration, batch in enumerate(components.loader):
+    loader_iter = iter(components.loader)
+    iteration = 0
+    while True:
+        iter_start = time.perf_counter()
+        try:
+            batch = next(loader_iter)
+        except StopIteration:
+            break
+        timing_load = time.perf_counter()
+
         if epoch_ctx.skip_remaining:
             epoch_ctx.skip_remaining -= 1
+            iteration += 1
             continue
 
         batch_tensors = _prepare_batch(batch, components.device)
+        timing_to_device = time.perf_counter()
         progress = _compute_training_progress(
             epoch,
             iteration,
@@ -112,25 +126,172 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             config.train.schedule_warmup_epochs,
             config.train.schedule_cooldown_epochs,
         )
-        forward_result = perform_forward_pass(
-            components,
-            batch_tensors,
-            progress=progress,
-            in_warmup=epoch < config.train.schedule_warmup_epochs,
-        )
-
         current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
         log_this_iter = _should_log(current_iter)
-        lr = _update_learning_rate(components, state.global_step)
-        grad_stats = perform_backward_pass(
-            components,
-            forward_result.loss,
-            collect_grad_stats=components.logger.enabled and log_this_iter,
+
+        profiler_summary = None
+        profiler_shapes = None
+        profiler_device = None
+        profiler_device_note = None
+        profiler_stacks = None
+        profiler_stack_path = None
+        profiler_stack_note = None
+
+        profile_activities = [ProfilerActivity.CPU]
+        device_metric = None
+        if components.device.type == "cuda":
+            profile_activities.append(ProfilerActivity.CUDA)
+            device_metric = "self_cuda_time_total"
+        elif components.device.type == "mps" and hasattr(
+            ProfilerActivity, "PrivateUse1"
+        ):
+            profile_activities.append(ProfilerActivity.PrivateUse1)
+            device_metric = "self_privateuse1_time_total"
+
+        prof_ctx = (
+            profile(
+                activities=profile_activities,
+                record_shapes=True,
+                with_stack=True,
+            )
+            if log_this_iter
+            else nullcontext()
         )
+
+        with warnings.catch_warnings():
+            # MPS profiling may emit "privateuseone is not a valid device option" on some builds.
+            warnings.filterwarnings(
+                "ignore", message="The privateuseone is not a valid device option."
+            )
+            with prof_ctx as prof:
+                forward_result = perform_forward_pass(
+                    components,
+                    batch_tensors,
+                    progress=progress,
+                    in_warmup=epoch < config.train.schedule_warmup_epochs,
+                )
+                timing_forward = time.perf_counter()
+
+                lr = _update_learning_rate(components, state.global_step)
+                grad_stats, backward_timing = perform_backward_pass(
+                    components,
+                    forward_result.loss,
+                    collect_grad_stats=components.logger.enabled and log_this_iter,
+                )
+                timing_backward = time.perf_counter()
+
+        if log_this_iter and hasattr(prof, "key_averages"):
+            events_by_stack = prof.key_averages(group_by_stack_n=5)
+            profiler_summary = events_by_stack.table(
+                sort_by="self_cpu_time_total", row_limit=15
+            )
+            events_by_shape = prof.key_averages(group_by_input_shape=True)
+            profiler_shapes = events_by_shape.table(
+                sort_by="self_cpu_time_total", row_limit=15
+            )
+            def _format_device_table(
+                events, metric_candidates, row_limit=15
+            ) -> tuple[str | None, str | None]:
+                rows = []
+                for evt in events:
+                    dev_val = 0.0
+                    metric_used = None
+                    for metric in metric_candidates:
+                        metric_used = metric
+                        dev_val = float(getattr(evt, metric, 0.0) or 0.0)
+                        if dev_val > 0.0:
+                            break
+                    if dev_val <= 0.0:
+                        continue
+                    # Try to fetch the corresponding total time.
+                    total_candidates = [
+                        metric_used.replace("self_", ""),
+                        metric_used.replace("self_", "") + "_total",
+                        "device_time_total",
+                        "cuda_time_total",
+                        "privateuse1_time_total",
+                        "xpu_time_total",
+                    ]
+                    dev_total_val = 0.0
+                    for cand in total_candidates:
+                        dev_total_val = float(getattr(evt, cand, 0.0) or 0.0)
+                        if dev_total_val > 0.0:
+                            break
+                    cpu_self = float(getattr(evt, "self_cpu_time_total", 0.0) or 0.0)
+                    cpu_total = float(getattr(evt, "cpu_time_total", 0.0) or 0.0)
+                    rows.append(
+                        (
+                            dev_val / 1e6,
+                            dev_total_val / 1e6,
+                            cpu_self / 1e6,
+                            cpu_total / 1e6,
+                            evt.count,
+                            evt.name,
+                        )
+                    )
+                if not rows:
+                    note = "no device timings captured (backend may not support device profiling)"
+                    return None, note
+                rows.sort(key=lambda r: r[0], reverse=True)
+                header = (
+                    f"{'Name':<45} {'self_dev_ms':>12} {'dev_ms':>12} "
+                    f"{'self_cpu_ms':>12} {'cpu_ms':>12} {'#':>8}"
+                )
+                lines = [header]
+                for entry in rows[:row_limit]:
+                    dev_self_ms, dev_total_ms, cpu_self_ms, cpu_total_ms, calls, name = (
+                        entry
+                    )
+                    lines.append(
+                        f"{name:<45} {dev_self_ms:12.3f} {dev_total_ms:12.3f} "
+                        f"{cpu_self_ms:12.3f} {cpu_total_ms:12.3f} {int(calls):8d}"
+                    )
+                return "\n".join(lines), None
+
+            if device_metric:
+                metric_candidates = [
+                    device_metric,
+                    "self_device_time_total",
+                    "self_cuda_time_total",
+                ]
+                profiler_device, profiler_device_note = _format_device_table(
+                    events_by_stack, metric_candidates
+                )
+            # Persist raw stacks (if available) so they can be inspected even if the log is truncated.
+            try:
+                profile_dir = components.out_dir / "profiler"
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                stack_file = profile_dir / f"epoch{epoch + 1:03d}_iter{epoch_ctx.applied_skip + epoch_ctx.iters_processed:06d}_stacks.txt"
+                prof.export_stacks(str(stack_file), "self_cpu_time_total")
+                if stack_file.exists() and stack_file.stat().st_size > 0:
+                    profiler_stack_path = stack_file
+                elif stack_file.exists():
+                    profiler_stack_note = "stack export was empty (likely unsupported by this build)"
+            except Exception as exc:
+                profiler_stack_note = f"error saving stacks: {exc}"
+
+            raw_events = sorted(
+                prof.events(), key=lambda e: e.self_cpu_time_total, reverse=True
+            )
+            stack_lines = []
+            for evt in raw_events:
+                if not getattr(evt, "stack", None):
+                    continue
+                shape_info = (
+                    f" shapes={evt.input_shapes}" if evt.input_shapes else ""
+                )
+                stack_lines.append(
+                    f"{evt.name}{shape_info} self_cpu={evt.self_cpu_time_total/1e6:.2f}ms:\n"
+                    + "\n".join(f"    {frame}" for frame in evt.stack)
+                )
+                if len(stack_lines) >= 5:
+                    break
+            profiler_stacks = "\n".join(stack_lines) if stack_lines else None
 
         epoch_ctx.iters_processed += 1
         _update_epoch_statistics(epoch_ctx, forward_result)
         state.global_step += 1
+        iteration += 1
 
         completed_batches = epoch_ctx.applied_skip + epoch_ctx.iters_processed
         maybe_checkpoint_batch(
@@ -156,6 +317,23 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 avg_loss_running=avg_loss_running,
                 grad_stats=grad_stats,
                 global_step=state.global_step,
+                timing_ms={
+                    "load_ms": 1000.0 * (timing_load - iter_start),
+                    "to_device_ms": 1000.0 * (timing_to_device - timing_load),
+                    "forward_ms": 1000.0 * (timing_forward - timing_to_device),
+                    "backward_ms": 1000.0 * (timing_backward - timing_forward),
+                },
+                forward_timing_ms=forward_result.timing_ms,
+                backward_timing_ms=backward_timing,
+                profiler_summary=profiler_summary,
+                profiler_shapes=profiler_shapes,
+                profiler_device=profiler_device,
+                profiler_device_note=profiler_device_note,
+                profiler_stacks=profiler_stacks,
+                profiler_stack_path=str(profiler_stack_path)
+                if profiler_stack_path is not None
+                else None,
+                profiler_stack_note=profiler_stack_note,
             )
             emit_logging(
                 components=components,

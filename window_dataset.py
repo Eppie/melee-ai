@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
@@ -9,6 +10,7 @@ import numpy as np
 import torch
 import zarr
 from torch.utils.data import Dataset, Sampler
+import tqdm
 
 from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor
 from feature_transforms import (
@@ -26,6 +28,26 @@ class EpisodeInfo:
     shard_id: int
     num_frames: int  # = X.shape[0] = Y.shape[0]
     num_windows: int  # = max(frames - seq_len + 1, 0)
+
+
+@dataclass(frozen=True)
+class _CachedEpisode:
+    """Materialized episode buffers that live entirely in memory."""
+
+    episode_idx: int
+    info: EpisodeInfo
+    features: np.ndarray  # shape (T, F), float32
+    targets: np.ndarray  # shape (T, Yd) or (T, 0)
+
+
+def _format_bytes(num_bytes: float) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(num_bytes)
+    for unit in units[:-1]:
+        if value < 1024.0:
+            return f"{value:.2f} {unit}"
+        value /= 1024.0
+    return f"{value:.2f} {units[-1]}"
 
 
 class ZarrCorpusIndex:
@@ -400,6 +422,108 @@ class WindowDataset(Dataset):
         }
 
 
+class PreloadedWindowDataset(WindowDataset):
+    """WindowDataset that eagerly loads every episode into RAM."""
+
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        feature_transforms: Optional[FeatureTransformSpec] = None,
+        progress: bool = True,
+    ) -> None:
+        super().__init__(data_dir, feature_transforms=feature_transforms)
+        self._episode_cache: List[_CachedEpisode] = self._materialize_all_episodes(
+            progress=progress
+        )
+
+    def _materialize_all_episodes(self, *, progress: bool) -> List[_CachedEpisode]:
+        total_eps = len(self.index.episodes)
+        total_frames = sum(ep.num_frames for ep in self.index.episodes)
+        if progress:
+            print(
+                f"[preload] Loading {total_eps} episodes "
+                f"({total_frames:,} frames, seq_len={self.seq_len}) into memory..."
+            )
+            progress_bar = tqdm.tqdm(
+                total=total_eps,
+                desc="[preload] episodes",
+                unit="ep",
+                dynamic_ncols=True,
+            )
+        else:
+            progress_bar = None
+
+        cached: List[_CachedEpisode] = []
+        frames_loaded = 0
+        bytes_loaded = 0
+        start_time = time.perf_counter()
+        for ep_idx, ep in enumerate(self.index.episodes):
+            feat_arr, target_arr = self.index.open_episode_arrays(ep)
+            features_np = np.asarray(feat_arr[:], dtype=np.float32, order="C")
+            features_np = np.ascontiguousarray(features_np)
+            features_np = _apply_prepared_transforms(features_np, self._transform_plan)
+            features_np = np.ascontiguousarray(
+                features_np.astype(np.float32, copy=False)
+            )
+
+            if target_arr is None:
+                targets_np = np.zeros((ep.num_frames, 0), dtype=np.float32)
+            else:
+                targets_np = np.asarray(target_arr[:], dtype=np.float32, order="C")
+                targets_np = np.ascontiguousarray(targets_np)
+
+            cached.append(
+                _CachedEpisode(
+                    episode_idx=ep_idx,
+                    info=ep,
+                    features=features_np,
+                    targets=targets_np,
+                )
+            )
+            frames_loaded += ep.num_frames
+            bytes_loaded += features_np.nbytes + targets_np.nbytes
+
+            if progress:
+                elapsed = time.perf_counter() - start_time
+                pct = (
+                    (frames_loaded / total_frames) * 100 if total_frames else 100.0
+                )
+                if progress_bar is not None:
+                    progress_bar.update(1)
+                    progress_bar.set_postfix(
+                        {
+                            "frames": f"{frames_loaded:,}/{total_frames:,}",
+                            "pct": f"{pct:5.1f}%",
+                            "mem": _format_bytes(bytes_loaded),
+                            "elapsed": f"{elapsed:.1f}s",
+                        }
+                    )
+
+        if progress_bar is not None:
+            progress_bar.close()
+
+        return cached
+
+    def __getitem__(self, i: int) -> Dict[str, object]:
+        ep_idx, offset = self.index.window_to_episode(i)
+        cached = self._episode_cache[ep_idx]
+        start = offset
+        end = start + self.seq_len
+        feature_window = cached.features[start:end, :]
+        target_window = cached.targets[start:end, :]
+
+        features_out = torch.from_numpy(feature_window)
+        targets_out = torch.from_numpy(target_window)
+
+        return {
+            "X": features_out,
+            "Y": targets_out,
+            "episode_id": cached.info.episode_id,
+            "start": start,
+        }
+
+
 class RandomWindowSampler(Sampler[int]):
     """
     Random selection of windows honoring a global *stride* across episode-local window
@@ -579,10 +703,37 @@ def make_dataloader(
     sampler to adjust epochs.
     """
     feature_spec = feature_spec_from_config(config.features)
-    ds = WindowDataset(
-        config.zarr.out_root,
-        feature_transforms=feature_spec,
-    )
+
+    should_preload = getattr(config.train, "preload_dataset", True)
+
+    if should_preload:
+        print(
+            "[dataloader] Initializing PreloadedWindowDataset "
+            "(loading data into RAM...)"
+        )
+        ds = PreloadedWindowDataset(
+            config.zarr.out_root,
+            feature_transforms=feature_spec,
+        )
+        if config.train.num_workers > 0:
+            print(
+                "[dataloader] Override: Setting num_workers=0 for in-memory "
+                f"dataset (was {config.train.num_workers})"
+            )
+        final_num_workers = 0
+        final_prefetch_factor = None
+        final_persistent = False
+        final_pin_memory = False
+    else:
+        print("[dataloader] Initializing standard WindowDataset (streaming from disk)")
+        ds = WindowDataset(
+            config.zarr.out_root,
+            feature_transforms=feature_spec,
+        )
+        final_num_workers = config.train.num_workers
+        final_prefetch_factor = config.train.prefetch_factor
+        final_persistent = config.train.persistent_workers
+        final_pin_memory = config.train.pin_memory
 
     stride = config.train.stride
     sampler = RandomWindowSampler(
@@ -592,7 +743,7 @@ def make_dataloader(
 
     mp_ctx = None
     start_method = getattr(config.train, "worker_start_method", None)
-    if config.train.num_workers and config.train.num_workers > 0 and start_method:
+    if final_num_workers and final_num_workers > 0 and start_method:
         try:
             mp_ctx = torch.multiprocessing.get_context(start_method)
         except RuntimeError as exc:
@@ -602,10 +753,9 @@ def make_dataloader(
             )
             mp_ctx = None
 
-    pin_memory = config.train.pin_memory
     prefetch_factor = None
-    if config.train.num_workers and config.train.num_workers > 0:
-        prefetch_factor = config.train.prefetch_factor
+    if final_num_workers and final_num_workers > 0:
+        prefetch_factor = final_prefetch_factor
         max_prefetch_mb = getattr(config.train, "max_loader_prefetch_mb", None)
         if max_prefetch_mb:
             batch_bytes = max(1, ds.estimate_batch_bytes(config.train.batch_size))
@@ -615,12 +765,12 @@ def make_dataloader(
             if total_batches_budget == 0:
                 total_batches_budget = 1
                 budget_saturated = True
-            allowed_per_worker = total_batches_budget // config.train.num_workers
-            if allowed_per_worker == 0:
-                allowed_per_worker = 1
-                budget_saturated = True
-            if allowed_per_worker < prefetch_factor:
-                approx_batch_mb = batch_bytes / (1024**2)
+                allowed_per_worker = total_batches_budget // final_num_workers
+                if allowed_per_worker == 0:
+                    allowed_per_worker = 1
+                    budget_saturated = True
+                if allowed_per_worker < prefetch_factor:
+                    approx_batch_mb = batch_bytes / (1024**2)
                 print(
                     "[dataloader] Reducing prefetch_factor from "
                     f"{prefetch_factor} to {allowed_per_worker} to honor "
@@ -639,11 +789,11 @@ def make_dataloader(
         ds,
         batch_size=config.train.batch_size,
         sampler=sampler,
-        num_workers=config.train.num_workers,
-        pin_memory=pin_memory,
+        num_workers=final_num_workers,
+        pin_memory=final_pin_memory,
         prefetch_factor=prefetch_factor,
         persistent_workers=(
-            config.train.persistent_workers if config.train.num_workers > 0 else False
+            final_persistent if final_num_workers > 0 else False
         ),
         worker_init_fn=worker_init_fn,
         drop_last=False,

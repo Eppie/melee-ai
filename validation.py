@@ -40,6 +40,7 @@ from train.value_head import (
 from utils import _resolve_device
 from window_dataset import (
     WindowDataset,
+    PreloadedWindowDataset,
     RandomWindowSampler,
     worker_init_fn,
     EpisodeInfo,
@@ -197,121 +198,6 @@ def _encode_state_codes(
 ) -> torch.Tensor:
     btn_codes = _pack_button_states(buttons)
     return (main_idx.to(torch.int64) << 16) | (c_idx.to(torch.int64) << 8) | btn_codes
-
-
-@dataclass(frozen=True)
-class _CachedEpisode:
-    """Materialized episode buffers that live entirely in memory."""
-
-    episode_idx: int
-    info: EpisodeInfo
-    features: np.ndarray  # shape (T, F), float32
-    targets: np.ndarray  # shape (T, Yd) or (T, 0)
-
-
-def _format_bytes(num_bytes: float) -> str:
-    units = ["B", "KB", "MB", "GB", "TB"]
-    value = float(num_bytes)
-    for unit in units[:-1]:
-        if value < 1024.0:
-            return f"{value:.2f} {unit}"
-        value /= 1024.0
-    return f"{value:.2f} {units[-1]}"
-
-
-class PreloadedWindowDataset(WindowDataset):
-    """WindowDataset that eagerly loads every episode into RAM."""
-
-    def __init__(
-        self,
-        data_dir: str | Path,
-        *,
-        feature_transforms: Optional["FeatureTransformSpec"] = None,
-        progress: bool = True,
-    ) -> None:
-        super().__init__(data_dir, feature_transforms=feature_transforms)
-        self._episode_cache: List[_CachedEpisode] = self._materialize_all_episodes(
-            progress=progress
-        )
-
-    def _materialize_all_episodes(self, *, progress: bool) -> List[_CachedEpisode]:
-        total_eps = len(self.index.episodes)
-        total_frames = sum(ep.num_frames for ep in self.index.episodes)
-        if progress:
-            print(
-                f"[preload] Loading {total_eps} episodes "
-                f"({total_frames:,} frames, seq_len={self.seq_len}) into memory..."
-            )
-        cached: List[_CachedEpisode] = []
-        frames_loaded = 0
-        bytes_loaded = 0
-        start_time = time.perf_counter()
-        last_log = start_time
-
-        for ep_idx, ep in enumerate(self.index.episodes):
-            feat_arr, target_arr = self.index.open_episode_arrays(ep)
-            features_np = np.asarray(feat_arr[:], dtype=np.float32, order="C")
-            features_np = np.ascontiguousarray(features_np)
-            features_np = _apply_prepared_transforms(features_np, self._transform_plan)
-            features_np = np.ascontiguousarray(
-                features_np.astype(np.float32, copy=False)
-            )
-
-            if target_arr is None:
-                targets_np = np.zeros((ep.num_frames, 0), dtype=np.float32)
-            else:
-                targets_np = np.asarray(target_arr[:], dtype=np.float32, order="C")
-                targets_np = np.ascontiguousarray(targets_np)
-
-            cached.append(
-                _CachedEpisode(
-                    episode_idx=ep_idx,
-                    info=ep,
-                    features=features_np,
-                    targets=targets_np,
-                )
-            )
-            frames_loaded += ep.num_frames
-            bytes_loaded += features_np.nbytes + targets_np.nbytes
-
-            if progress:
-                now = time.perf_counter()
-                if now - last_log >= 0.5 or ep_idx == total_eps - 1:
-                    pct = (
-                        (frames_loaded / total_frames) * 100 if total_frames else 100.0
-                    )
-                    elapsed = now - start_time
-                    print(
-                        f"[preload] {ep_idx + 1}/{total_eps} episodes | "
-                        f"{frames_loaded:,}/{total_frames:,} frames ({pct:5.1f}%) | "
-                        f"{_format_bytes(bytes_loaded)} resident | "
-                        f"{elapsed:.1f}s elapsed",
-                        end="\n" if ep_idx == total_eps - 1 else "\r",
-                        flush=True,
-                    )
-                    last_log = now
-
-        return cached
-
-    def __getitem__(self, i: int) -> Dict[str, object]:
-        ep_idx, offset = self.index.window_to_episode(i)
-        cached = self._episode_cache[ep_idx]
-        start = offset
-        end = start + self.seq_len
-        feature_window = cached.features[start:end, :]
-        target_window = cached.targets[start:end, :]
-
-        features_out = torch.from_numpy(feature_window)
-        targets_out = torch.from_numpy(target_window)
-
-        return {
-            "X": features_out,
-            "Y": targets_out,
-            "episode_id": cached.info.episode_id,
-            "start": start,
-        }
-
-
 @dataclass
 class ChangeHoldStats:
     change_correct: float = 0.0

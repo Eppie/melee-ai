@@ -55,8 +55,8 @@ class ZarrConfig(BaseModel):
     input_root: str = Field(default_factory=lambda: _get_default_paths()[0])
     out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
     validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
-    episode_count: int = Field(default=6600, ge=1)
-    validation_count: int = Field(default=400, ge=1)
+    episode_count: int = Field(default=10, ge=1)
+    validation_count: int = Field(default=10, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
     chunk_frames: int = Field(
@@ -166,7 +166,7 @@ class TrainConfig(BaseModel):
         extra="forbid",
     )
 
-    batch_size: int = Field(default=128, ge=1)
+    batch_size: int = Field(default=256, ge=1)
     epochs: int = Field(default=16, ge=1)
     lr: float = Field(default=1.3e-4, gt=0)
     # TODO: Document the effect of this setting
@@ -181,6 +181,13 @@ class TrainConfig(BaseModel):
     persistent_workers: bool = True
     stride: int = Field(default=8, ge=1)
     worker_start_method: Optional[Literal["fork", "spawn", "forkserver"]] = None
+    preload_dataset: bool = Field(
+        default=True,
+        description=(
+            "If True, load entire dataset into RAM at startup. Recommended when "
+            "dataset fits comfortably in memory."
+        ),
+    )
 
     # Losses
     grad_clip: float = Field(default=5.0, gt=0)

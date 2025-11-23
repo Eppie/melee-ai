@@ -29,19 +29,12 @@ def _move_optimizer_state_to_device(optimizer: Optimizer, device: torch.device) 
                 state[key] = value.to(device)
 
 
-# TODO: This seems a bit inelegant and/or unoptimized?
 def collect_gradient_diagnostics(
     model: torch.nn.Module, eps: float = 1e-12
 ) -> Dict[str, float]:
-    """Aggregate gradient statistics for monitoring numerical stability with an explicit example.
+    """Aggregate gradient statistics for monitoring numerical stability.
 
-    Example:
-        Suppose ``model`` has two parameters with gradients ``tensor([1.0, -2.0])`` and
-        ``tensor([0.0, float('nan')])``. ``collect_gradient_diagnostics`` traverses each gradient,
-        accumulating sums (``total_sq = 1^2 + (-2)^2 = 5``), counting zeros (one element equals
-        ``0.0``), and tracking NaNs (one element). The returned dictionary therefore includes
-        ``{"total_norm": sqrt(5), "zero_count": 1, "nan_count": 1}`` among many other statistics.
-        This walkthrough mirrors the exact sequence of reductions performed by the function.
+    Optimized to batch GPU operations and minimize CPU transfers.
 
     Args:
         model: Module whose gradients will be inspected.
@@ -50,61 +43,84 @@ def collect_gradient_diagnostics(
     Returns:
         Dictionary mapping metric names to floating-point summaries of the gradients.
     """
-    total_sq = 0.0
-    total_abs = 0.0
-    total_sum = 0.0
-    grad_elems = 0
-    zero_elems = 0
-    nan_elems = 0
-    inf_elems = 0
-    max_grad_abs = 0.0
+    # Collect all gradients and parameters with gradients
+    grads = []
+    params = []
+    for param in model.parameters():
+        if param.grad is not None:
+            grads.append(param.grad.detach().float().reshape(-1))
+            params.append(param.detach().float().reshape(-1))
 
-    total_param_sq = 0.0
-    max_param_abs = 0.0
+    if not grads:
+        return {
+            "total_norm": 0.0, "mean_abs": 0.0, "mean": 0.0, "std": 0.0,
+            "max_abs": 0.0, "zero_fraction": 0.0, "zero_count": 0.0,
+            "nan_count": 0.0, "inf_count": 0.0, "param_total_norm": 0.0,
+            "param_max_abs": 0.0, "grad_param_ratio_mean": 0.0,
+            "grad_param_ratio_max": 0.0, "grad_param_ratio_min": 0.0,
+            "grad_to_param_norm_ratio": 0.0,
+        }
+
+    # Concatenate all gradients and params for batched operations
+    all_grads = torch.cat(grads)
+    all_params = torch.cat(params)
+    grad_elems = all_grads.numel()
+
+    # Compute all gradient statistics on GPU
+    grad_sq = all_grads.pow(2)
+    grad_abs = all_grads.abs()
+    param_sq = all_params.pow(2)
+    param_abs = all_params.abs()
+
+    # Batch all reductions into a single tensor for one GPU->CPU transfer
+    stats = torch.stack([
+        grad_sq.sum(),                    # 0: total_sq
+        grad_abs.sum(),                   # 1: total_abs
+        all_grads.sum(),                  # 2: total_sum
+        (all_grads == 0).sum().float(),   # 3: zero_elems
+        torch.isnan(all_grads).sum().float(),  # 4: nan_elems
+        torch.isinf(all_grads).sum().float(),  # 5: inf_elems
+        grad_abs.max(),                   # 6: max_grad_abs
+        param_sq.sum(),                   # 7: total_param_sq
+        param_abs.max(),                  # 8: max_param_abs
+    ])
+
+    # Single GPU->CPU transfer
+    stats_cpu = stats.cpu().tolist()
+
+    total_sq = stats_cpu[0]
+    total_abs = stats_cpu[1]
+    total_sum = stats_cpu[2]
+    zero_elems = int(stats_cpu[3])
+    nan_elems = int(stats_cpu[4])
+    inf_elems = int(stats_cpu[5])
+    max_grad_abs = stats_cpu[6]
+    total_param_sq = stats_cpu[7]
+    max_param_abs = stats_cpu[8]
+
+    # Compute per-parameter ratios (requires per-param stats)
+    # This is less critical since it's O(num_params) not O(num_elements)
     ratio_sum = 0.0
     ratio_max = 0.0
     ratio_min = float("inf")
     ratio_count = 0
 
-    for param in model.parameters():
-        grad = param.grad
-        if grad is None:
+    for g, p in zip(grads, params):
+        numel = g.numel()
+        if numel == 0:
             continue
+        # Batch these two means into one transfer per param
+        means = torch.stack([g.abs().mean(), p.abs().mean()]).cpu().tolist()
+        grad_abs_mean, param_abs_mean = means[0], means[1]
 
-        grad_data = grad.detach()
-        grad_float = grad_data.float()
-
-        sum_sq = grad_float.pow(2).sum().item()
-        total_sq += sum_sq
-        abs_sum = grad_float.abs().sum().item()
-        total_abs += abs_sum
-        total_sum += grad_float.sum().item()
-
-        numel = grad_float.numel()
-        grad_elems += numel
-        zero_elems += int((grad_float == 0).sum().item())
-        nan_elems += int(torch.isnan(grad_float).sum().item())
-        inf_elems += int(torch.isinf(grad_float).sum().item())
-
-        if numel:
-            max_grad_abs = max(max_grad_abs, float(grad_float.abs().max().item()))
-
-        param_data = param.detach().float()
-        total_param_sq += param_data.pow(2).sum().item()
-        if param_data.numel():
-            max_param_abs = max(max_param_abs, float(param_data.abs().max().item()))
-
-        param_abs_mean = (
-            float(param_data.abs().mean().item()) if param_data.numel() else 0.0
-        )
-        grad_abs_mean = float(grad_float.abs().mean().item()) if numel else 0.0
-        if param_abs_mean > eps and numel:
+        if param_abs_mean > eps:
             ratio = grad_abs_mean / max(param_abs_mean, eps)
             ratio_sum += ratio
             ratio_count += 1
             ratio_max = max(ratio_max, ratio)
             ratio_min = min(ratio_min, ratio)
 
+    # Compute derived statistics
     total_norm = math.sqrt(total_sq) if total_sq > 0 else 0.0
     mean_abs = total_abs / max(1, grad_elems)
     mean_val = total_sum / max(1, grad_elems)

@@ -31,16 +31,16 @@ class TestPrintEnhancedMetrics:
 
         assert "===== Enhanced Metrics =====" in output
         assert "1. Mean Stick Error" in output
-        assert "Main Stick: 0.0000" in output
-        assert "C-Stick:    0.0000" in output
+        assert "Main Stick (Euclidean): 0.0000" in output
+        assert "C-Stick (Euclidean):    0.0000" in output
         assert "2. Stick Stability (Jitter - Avg Frame-to-Frame Distance):" in output
         assert "3. Prediction Entropy (Uncertainty):" in output
-        assert "4. Accuracy by Player State:" in output
-        assert "5. 'Stuck' Action Duration (Consecutive Identical States):" in output
-        assert "6. L/R Button Press Latency:" in output
+        assert "4. Accuracy by Player State (Main Stick):" in output
+        assert "6. 'Stuck' Action Duration (Consecutive Identical States):" in output
+        assert "7. L/R Button Press Latency:" in output
         assert "No L/R button press events detected" in output
-        assert "7. Controller Input Correlation Matrix:" in output
-        assert "8. Value Head Metrics (RL Critic)" not in output
+        assert "10. Controller Input Correlation Matrix:" in output
+        assert "Value Head Metrics (RL Critic)" not in output
 
     def test_print_full_metrics(self):
         """Test printing with a fully populated EnhancedMetrics object."""
@@ -81,7 +81,7 @@ class TestPrintEnhancedMetrics:
         output = run_print_and_capture(enhanced)
 
         assert "Mean Stick Error" in output
-        assert "Main Stick: 0.0400" in output
+        assert "Main Stick (Euclidean): 0.0400" in output
         assert "Stick Stability (Jitter - Avg Frame-to-Frame Distance):" in output
         assert "Predicted:     0.2000" in output
         assert "Prediction Entropy" in output
@@ -144,13 +144,13 @@ class TestPrintEnhancedMetrics:
         output_pred = run_print_and_capture(enhanced_pred)
         assert "Predicted:" in output_pred
         # Check that the "Ground Truth" header for stuck action is not there
-        assert "Ground Truth:" not in output_pred.split("5. 'Stuck' Action Duration")[1]
+        assert "Ground Truth:" not in output_pred.split("6. 'Stuck' Action Duration")[1]
 
         enhanced_true = EnhancedMetrics(
             true_run_stats=RunStats(total_length=220, run_count=45, max_length=12),
         )
         output_true = run_print_and_capture(enhanced_true)
-        assert "Predicted:" not in output_true.split("5. 'Stuck' Action Duration")[1]
+        assert "Predicted:" not in output_true.split("6. 'Stuck' Action Duration")[1]
         assert "Ground Truth:" in output_true
 
     def test_value_range_error_analysis(self):

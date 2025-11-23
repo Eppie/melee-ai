@@ -58,7 +58,7 @@ def _should_log(current_iter: int) -> bool:
 
 
 def _update_epoch_statistics(epoch_ctx: EpochContext, forward_result) -> None:
-    epoch_ctx.epoch_loss += forward_result.loss.item()
+    epoch_ctx.add_loss(forward_result.loss)
     batch_size, sequence_length, _ = forward_result.pred["main_stick"].shape
     epoch_ctx.frames_since_last_log += float(batch_size * sequence_length)
 
@@ -145,7 +145,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             now = time.time()
             dt = max(1e-9, now - epoch_ctx.last_log_time)
             frames_per_s = epoch_ctx.frames_since_last_log / dt
-            avg_loss_running = epoch_ctx.epoch_loss / max(1, epoch_ctx.iters_processed)
+            avg_loss_running = epoch_ctx.get_avg_loss()
             bundle = prepare_logging_bundle(
                 components=components,
                 forward_result=forward_result,
@@ -170,7 +170,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
         state.resume_epoch = -1
 
     if epoch_ctx.iters_processed:
-        avg_epoch_loss = epoch_ctx.epoch_loss / max(1, epoch_ctx.iters_processed)
+        avg_epoch_loss = epoch_ctx.get_avg_loss()
         print(
             f"[epoch {epoch + 1}] avg_loss {avg_epoch_loss:.4f} ({epoch_ctx.iters_processed} iters)"
         )

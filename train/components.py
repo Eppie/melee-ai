@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 from tensordict import TensorDict
@@ -53,13 +53,27 @@ class TrainingState:
 
 @dataclass
 class EpochContext:
-    epoch_loss: float = 0.0
+    epoch_loss_sum: Optional[torch.Tensor] = None  # Accumulated on GPU, transferred only when needed
     iters_processed: int = 0
     applied_skip: int = 0
     frames_since_last_log: float = 0.0
     last_log_time: float = field(default_factory=time.time)
     skip_remaining: int = 0
     progress_iter_base: int = 0
+
+    def add_loss(self, loss: torch.Tensor) -> None:
+        """Accumulate loss on GPU without transferring to CPU."""
+        loss_detached = loss.detach()
+        if self.epoch_loss_sum is None:
+            self.epoch_loss_sum = loss_detached.clone()
+        else:
+            self.epoch_loss_sum.add_(loss_detached)
+
+    def get_avg_loss(self) -> float:
+        """Get average loss (transfers to CPU only when called)."""
+        if self.epoch_loss_sum is None or self.iters_processed == 0:
+            return 0.0
+        return float(self.epoch_loss_sum.item()) / self.iters_processed
 
 
 @dataclass

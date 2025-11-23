@@ -55,8 +55,8 @@ class ZarrConfig(BaseModel):
     input_root: str = Field(default_factory=lambda: _get_default_paths()[0])
     out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
     validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
-    episode_count: int = Field(default=6600, ge=1)
-    validation_count: int = Field(default=400, ge=1)
+    episode_count: int = Field(default=100, ge=1)
+    validation_count: int = Field(default=100, ge=1)
     shard_size: int = Field(default=100, ge=1)
     target_chunk_mb: float = Field(default=8.0, gt=0)
     chunk_frames: int = Field(
@@ -264,7 +264,7 @@ class GPTConfig(BaseModel):
 
     block_size: int = Field(default=512, ge=1)
     n_embd: int = Field(default=512, ge=1)
-    n_layer: int = Field(default=16, ge=1)
+    n_layer: int = Field(default=8, ge=1)
     n_head: int = Field(default=8, ge=1)
     dropout: float = Field(default=0.03, ge=0, le=1)
     input_size: int = Field(default=-1)
@@ -383,9 +383,9 @@ class RLConfig(BaseModel):
     gamma: float = Field(default=0.995, ge=0, le=1)
     # TODO: Document what effect this has
     value_loss_coef: float = Field(default=0.5, ge=0)
-    reward_damage_dealt: float = 0.02
-    reward_stock_taken: float = 1
-    reward_hitlag_opponent: float = 0.02
+    reward_damage_dealt: float = 0.08
+    reward_stock_taken: float = 4
+    reward_hitlag_opponent: float = 0.08
     reward_low_shield: float = -0.1
 
 
@@ -471,8 +471,22 @@ class Config(BaseModel):
         return self.model_dump_json(indent=indent)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return a plain-Python representation (for checkpoints, etc.)."""
-        return self.model_dump()
+        """Return a plain-Python representation (for checkpoints, etc.).
+
+        This method produces a JSON-serializable dict that can be safely
+        stored in torch checkpoints and reloaded. Complex objects like
+        BloscCodec are converted to their dict representation.
+        """
+        data = self.model_dump()
+        # Convert BloscCodec to a serializable dict representation
+        if "zarr" in data and "compressor" in data["zarr"]:
+            compressor = self.zarr.compressor
+            data["zarr"]["compressor"] = {
+                "cname": compressor.cname.value if hasattr(compressor.cname, "value") else compressor.cname,
+                "clevel": compressor.clevel,
+                "shuffle": compressor.shuffle.name if hasattr(compressor.shuffle, "name") else str(compressor.shuffle),
+            }
+        return data
 
     @classmethod
     def from_json(cls, s: str) -> "Config":
@@ -493,13 +507,19 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def apply_context_defaults(self, info: ValidationInfo):
-        # TODO: Do we want this, or do we want compute_input_size?
         """Propagate context-aware defaults to nested configs."""
         context = info.context or {}
         gamestate_dim = context.get("gamestate_dim")
         controller_dim = context.get("controller_dim")
 
-        if self.model.input_size in (-1, None):
+        # If context provides explicit dimensions, always use them (overrides nested validator)
+        # Otherwise, only compute if input_size is still unset (-1 or None)
+        should_compute = (
+            (gamestate_dim is not None and controller_dim is not None)
+            or self.model.input_size in (-1, None)
+        )
+
+        if should_compute:
             if gamestate_dim is None or controller_dim is None:
                 default_gamestate, default_controller = _schema_feature_dims()
                 gamestate_dim = gamestate_dim or default_gamestate
@@ -648,3 +668,90 @@ def reset_config() -> None:
     """
     global _GLOBAL_CONFIG
     _GLOBAL_CONFIG = None
+
+
+def set_config(config: Config) -> Config:
+    """
+    Set a Config instance as the global config.
+
+    This is useful when loading a config from a checkpoint or creating
+    a config programmatically.
+
+    Args:
+        config: The Config instance to set as global.
+
+    Returns:
+        The same Config instance.
+
+    Example:
+        config = Config.model_validate(checkpoint_config_dict)
+        set_config(config)
+    """
+    global _GLOBAL_CONFIG
+    _GLOBAL_CONFIG = config
+    return config
+
+
+def init_config_from_checkpoint(
+    checkpoint_path: Union[str, Path],
+    overrides: Optional[Dict[str, str]] = None,
+    freeze: bool = True,
+) -> Config:
+    """
+    Initialize global config from a checkpoint file.
+
+    This function loads the config stored in a checkpoint and sets it as
+    the global config. CLI overrides can be applied on top of the loaded
+    config.
+
+    Args:
+        checkpoint_path: Path to the checkpoint file.
+        overrides: Optional dict of CLI overrides to apply on top of checkpoint config.
+        freeze: If True, make config immutable after initialization.
+
+    Returns:
+        Initialized Config instance.
+
+    Raises:
+        FileNotFoundError: If the checkpoint file doesn't exist.
+        ValueError: If the checkpoint doesn't contain a config.
+
+    Example:
+        # Resume training with checkpoint's config
+        config = init_config_from_checkpoint("checkpoints/model.pt")
+
+        # Resume with overrides
+        config = init_config_from_checkpoint(
+            "checkpoints/model.pt",
+            overrides={"train.lr": "1e-5"}
+        )
+    """
+    import torch
+
+    checkpoint_path = Path(checkpoint_path).expanduser()
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    config_dict = ckpt.get("config")
+
+    if config_dict is None:
+        raise ValueError(f"Checkpoint does not contain a config: {checkpoint_path}")
+
+    # Handle legacy checkpoints that only have TrainConfig
+    if "train" not in config_dict and "batch_size" in config_dict:
+        # This is a legacy checkpoint with only TrainConfig.__dict__
+        print(f"Warning: Checkpoint contains legacy TrainConfig format, using defaults for other configs")
+        config_dict = {"train": config_dict}
+
+    cfg = Config.model_validate(config_dict)
+
+    if overrides:
+        apply_overrides_(cfg, overrides)
+
+    if freeze:
+        cfg.model_config["frozen"] = True
+
+    global _GLOBAL_CONFIG
+    _GLOBAL_CONFIG = cfg
+    return cfg

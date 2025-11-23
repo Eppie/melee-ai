@@ -22,6 +22,8 @@ from train.checkpoint import (
     _latest_checkpoint as find_latest_checkpoint,
     _prune_checkpoints as prune_checkpoints,
     _load_latest_checkpoint as load_latest_checkpoint,
+    load_config_from_checkpoint,
+    load_config_from_latest_checkpoint,
     save_checkpoint,
     maybe_checkpoint_batch,
     maybe_checkpoint_epoch,
@@ -73,6 +75,10 @@ from train.wandb_utils import (
     init_wandb,
     finish_wandb,
 )
+from train.validation import (
+    run_validation,
+    maybe_run_validation,
+)
 
 __all__ = [
     # Checkpoint
@@ -80,6 +86,8 @@ __all__ = [
     "find_latest_checkpoint",
     "prune_checkpoints",
     "load_latest_checkpoint",
+    "load_config_from_checkpoint",
+    "load_config_from_latest_checkpoint",
     "save_checkpoint",
     "maybe_checkpoint_batch",
     "maybe_checkpoint_epoch",
@@ -124,4 +132,7 @@ __all__ = [
     "WandbLogger",
     "init_wandb",
     "finish_wandb",
+    # Validation
+    "run_validation",
+    "maybe_run_validation",
 ]

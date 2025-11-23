@@ -240,9 +240,9 @@ def test_replay_rewards_shape_and_sparsity(replay_reward_data):
 @pytest.mark.parametrize(
     ("frame", "value"),
     [
-        (31, -0.0196),
-        (36, -0.0196),
-        (6917, -0.25),
+        (31, -0.0784),
+        (36, -0.0784),
+        (6917, -1.0),
     ],
 )
 def test_replay_rewards_matches_known_frames(replay_reward_data, frame, value):

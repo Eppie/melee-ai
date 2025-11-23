@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch.amp import GradScaler
@@ -9,6 +9,7 @@ from torch.optim import Optimizer
 
 from train.gradients import _move_optimizer_state_to_device
 from train.components import TrainingComponents
+from train.validation import maybe_run_validation
 
 
 def _sorted_checkpoint_paths(directory: Path) -> List[Path]:
@@ -79,6 +80,63 @@ def _latest_checkpoint(directory: Path) -> Optional[Path]:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def load_config_from_checkpoint(
+    checkpoint_path: Union[Path, str],
+) -> Optional[Dict[str, Any]]:
+    """Load the config dictionary from a checkpoint file.
+
+    Args:
+        checkpoint_path: Path to a checkpoint file.
+
+    Returns:
+        The config dictionary stored in the checkpoint, or None if no config is found.
+
+    Example:
+        >>> config_dict = load_config_from_checkpoint("checkpoints/model.pt")
+        >>> if config_dict:
+        ...     config = Config.model_validate(config_dict)
+    """
+    checkpoint_path = Path(checkpoint_path).expanduser()
+    if not checkpoint_path.exists():
+        return None
+
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    return ckpt.get("config")
+
+
+def load_config_from_latest_checkpoint(
+    directory: Union[Path, str],
+) -> Optional[Dict[str, Any]]:
+    """Load the config dictionary from the latest checkpoint in a directory.
+
+    This function is useful for restoring the full configuration when resuming
+    training. Call this before initializing the global config to ensure the
+    model and training parameters match the checkpoint.
+
+    Args:
+        directory: Directory containing checkpoint files.
+
+    Returns:
+        The config dictionary from the latest checkpoint, or None if no
+        checkpoint exists or the checkpoint has no config.
+
+    Example:
+        >>> from config import Config, init_config
+        >>> config_dict = load_config_from_latest_checkpoint("checkpoints/")
+        >>> if config_dict:
+        ...     # Use checkpoint config as base, with optional overrides
+        ...     config = Config.model_validate(config_dict)
+        ... else:
+        ...     config = init_config()
+    """
+    directory = Path(directory).expanduser()
+    latest = _latest_checkpoint(directory)
+    if latest is None:
+        return None
+
+    return load_config_from_checkpoint(latest)
 
 
 def _load_latest_checkpoint(
@@ -168,7 +226,7 @@ def _load_latest_checkpoint(
 def save_checkpoint(
     path: Path,
     model: torch.nn.Module,
-    config: dict,
+    config: Union[Dict[str, Any], "Config"],
     optimizer: Optional[Optimizer] = None,
     scaler: Optional[GradScaler] = None,
     epoch: int = 0,
@@ -178,7 +236,7 @@ def save_checkpoint(
     """Persist the model state and optional training metadata to ``path``.
 
     Example:
-        Calling ``save_checkpoint(Path("checkpoints/epoch_5.pt"), model, optimizer, epoch=5, global_step=640)``
+        Calling ``save_checkpoint(Path("checkpoints/epoch_5.pt"), model, config, optimizer, epoch=5, global_step=640)``
         produces a dictionary containing at least the keys ``"model"``, ``"epoch"``,
         ``"resume_epoch"``, ``"resume_iter"``, and ``"global_step"``. The helper ensures the parent
         directory exists, then uses :func:`torch.save` to serialize the dictionary. Reloading the file
@@ -188,20 +246,29 @@ def save_checkpoint(
     Args:
         path: Destination path for the checkpoint file.
         model: Model whose parameters should be saved.
+        config: Configuration object or dictionary to embed in the checkpoint.
+            If a Config object is passed, it will be serialized to a dictionary.
         optimizer: Optional optimizer whose state should also be serialized.
         scaler: Optional gradient scaler to persist for mixed precision runs.
         epoch: Epoch number to record.
         global_step: Global training step to record.
-        config: Configuration dictionary to embed in the checkpoint.
         **kwargs: Additional key-value pairs to merge into the saved dictionary.
     """
+    # Serialize Config object to dict if needed
+    if hasattr(config, "to_dict"):
+        config_dict = config.to_dict()
+    elif hasattr(config, "model_dump"):
+        config_dict = config.model_dump()
+    else:
+        config_dict = config
+
     ckpt = {
         "model": model.state_dict(),
         "epoch": epoch,
         "resume_epoch": epoch,
         "resume_iter": 0,
         "global_step": global_step,
-        "config": config,
+        "config": config_dict,
     }
 
     if optimizer is not None:
@@ -233,16 +300,19 @@ def maybe_checkpoint_batch(
     save_checkpoint(
         path=ckpt_path,
         model=components.model,
+        config=components.config,
         optimizer=components.optimizer,
         scaler=components.scaler,
         epoch=epoch + 1,
         global_step=global_step,
-        config=components.config.train.__dict__,
         resume_epoch=epoch,
         resume_iter=completed_batches,
         iteration=completed_batches,
     )
     _prune_checkpoints(components.out_dir, keep=10)
+
+    # Run validation and log metrics to wandb
+    maybe_run_validation(components, global_step)
 
 
 def maybe_checkpoint_epoch(
@@ -255,14 +325,17 @@ def maybe_checkpoint_epoch(
     save_checkpoint(
         path=ckpt_path,
         model=components.model,
+        config=components.config,
         optimizer=components.optimizer,
         scaler=components.scaler,
         epoch=epoch + 1,
         global_step=global_step,
-        config=components.config.train.__dict__,
         resume_epoch=epoch + 1,
         resume_iter=0,
         iteration=0,
     )
     _prune_checkpoints(components.out_dir, keep=10)
     components.last_step_file.write_text(str(global_step))
+
+    # Run validation and log metrics to wandb
+    maybe_run_validation(components, global_step)

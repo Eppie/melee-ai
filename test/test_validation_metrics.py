@@ -4,7 +4,7 @@ import torch
 from typing import Tuple
 
 from column_map import ColumnMap
-from config import get_config, init_config, reset_config
+from config.config import get_config, init_config, reset_config
 from constants import CONTROLLER_KEY_GROUPS, BUTTON_TARGET_NAMES
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,

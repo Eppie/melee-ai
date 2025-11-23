@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from config import get_config, init_config  # noqa: E402
+from config.config import get_config, init_config  # noqa: E402
 from feature_transforms import feature_spec_from_config  # noqa: E402
 from window_dataset import RandomWindowSampler, WindowDataset, worker_init_fn  # noqa: E402
 

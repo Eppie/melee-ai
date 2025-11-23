@@ -13,7 +13,8 @@ from torch.amp import GradScaler
 from torch.amp.autocast_mode import is_autocast_available
 
 from column_map import ColumnMap
-from config import get_config
+from config.config import get_config
+from model.compile_utils import maybe_torch_compile
 from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
 from train.checkpoint import _load_latest_checkpoint
@@ -85,6 +86,14 @@ def configure_amp(config, device: torch.device) -> AMPContext:
     return amp_context
 
 
+def configure_performance_settings(config, device: torch.device) -> None:
+    """Configure global PyTorch performance settings based on config."""
+    # Enable cudnn.benchmark for faster convolutions with consistent input sizes
+    if config.train.cudnn_benchmark and device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        print("cudnn.benchmark enabled for faster CUDA operations")
+
+
 def build_optimizer(model: GPT, config) -> torch.optim.Optimizer:
     """Builds the AdamW optimizer from the training configuration."""
     return torch.optim.AdamW(
@@ -108,6 +117,17 @@ def initialize_training_components(
     config = get_config()
     device = _resolve_device(None)
     model = model.to(device)
+
+    # Configure global performance settings (cudnn.benchmark, etc.)
+    configure_performance_settings(config, device)
+
+    # Optionally compile model with torch.compile for faster execution
+    model = maybe_torch_compile(
+        model,
+        label="GPT",
+        enable=config.train.torch_compile,
+        mode=config.train.torch_compile_mode,
+    )
 
     amp = configure_amp(config, device)
 

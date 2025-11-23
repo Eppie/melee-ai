@@ -11,8 +11,7 @@ from statistics import median
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(REPO_ROOT))
 
-from utils import _resolve_device
-from config import init_config
+from config.config import init_config
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
 from libmelee.melee.enums import Character, Stage, Menu, ControllerType

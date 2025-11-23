@@ -221,6 +221,157 @@ def run_episode(
     return episode_metrics
 
 
+def build_sequence_windows(
+    trajectories: List[Trajectory],
+    seq_len: int,
+    stride: int,
+    device: torch.device,
+) -> Dict[str, torch.Tensor]:
+    """Build overlapping sequence windows from trajectories for proper transformer training.
+
+    Instead of treating each step independently, this creates sliding windows of
+    length seq_len that preserve temporal context. The model can then use attention
+    over the full sequence history.
+
+    Args:
+        trajectories: List of trajectories with computed GAE
+        seq_len: Length of each sequence window (should match model's seq_len)
+        stride: Step size between windows (smaller = more overlap, more data)
+        device: Device to place tensors on
+
+    Returns:
+        Dictionary with windowed tensors:
+            - states: [num_windows, seq_len, F]
+            - advantages: [num_windows, seq_len]
+            - returns: [num_windows, seq_len]
+            - old_log_probs: [num_windows, seq_len]
+            - values: [num_windows, seq_len]
+            - action_logits_*: [num_windows, seq_len, ...]
+            - actions_*: [num_windows, seq_len, ...]
+            - valid_mask: [num_windows, seq_len] - True for valid positions
+    """
+    all_windows = {
+        "states": [],
+        "advantages": [],
+        "returns": [],
+        "old_log_probs": [],
+        "values": [],
+        "valid_mask": [],
+    }
+
+    # Collect action head keys from first valid trajectory
+    action_keys = []
+    for traj in trajectories:
+        if len(traj.steps) > 0:
+            for head in ["main_stick", "c_stick", "buttons", "shoulder"]:
+                if head in traj.steps[0].action_logits:
+                    action_keys.append(head)
+            break
+
+    for head in action_keys:
+        all_windows[f"action_logits_{head}"] = []
+        all_windows[f"actions_{head}"] = []
+
+    for traj in trajectories:
+        if traj.advantages is None or traj.returns is None:
+            continue
+
+        T = len(traj.steps)
+        if T == 0:
+            continue
+
+        # Convert trajectory to tensors (on CPU first for efficiency)
+        states = torch.stack([step.state for step in traj.steps])  # [T, F]
+        advantages = traj.advantages  # [T]
+        returns = traj.returns  # [T]
+        old_log_probs = torch.stack([step.log_prob for step in traj.steps]).squeeze(-1)  # [T]
+        values = torch.stack([step.value for step in traj.steps]).squeeze(-1)  # [T]
+
+        action_logits = {}
+        actions = {}
+        for head in action_keys:
+            action_logits[head] = torch.stack([step.action_logits[head] for step in traj.steps])
+            actions[head] = torch.stack([step.action_taken[head] for step in traj.steps])
+
+        # Create sliding windows
+        # For short trajectories, pad from the beginning
+        if T < seq_len:
+            # Pad trajectory to seq_len
+            pad_len = seq_len - T
+            states = torch.cat([states[0:1].expand(pad_len, -1), states], dim=0)
+            advantages = torch.cat([torch.zeros(pad_len), advantages], dim=0)
+            returns = torch.cat([returns[0:1].expand(pad_len), returns], dim=0)
+            old_log_probs = torch.cat([old_log_probs[0:1].expand(pad_len), old_log_probs], dim=0)
+            values = torch.cat([values[0:1].expand(pad_len), values], dim=0)
+
+            for head in action_keys:
+                action_logits[head] = torch.cat(
+                    [action_logits[head][0:1].expand(pad_len, -1), action_logits[head]], dim=0
+                )
+                # Handle both 1D (indices) and 2D (buttons) action tensors
+                if actions[head].dim() == 1:
+                    actions[head] = torch.cat(
+                        [actions[head][0:1].expand(pad_len), actions[head]], dim=0
+                    )
+                else:
+                    # 2D tensor like buttons [T, num_buttons]
+                    actions[head] = torch.cat(
+                        [actions[head][0:1].expand(pad_len, -1), actions[head]], dim=0
+                    )
+
+            # Valid mask: only the original (non-padded) positions are valid for loss
+            valid_mask = torch.cat([torch.zeros(pad_len, dtype=torch.bool), torch.ones(T, dtype=torch.bool)])
+
+            # Single window for short trajectory
+            all_windows["states"].append(states.unsqueeze(0))
+            all_windows["advantages"].append(advantages.unsqueeze(0))
+            all_windows["returns"].append(returns.unsqueeze(0))
+            all_windows["old_log_probs"].append(old_log_probs.unsqueeze(0))
+            all_windows["values"].append(values.unsqueeze(0))
+            all_windows["valid_mask"].append(valid_mask.unsqueeze(0))
+
+            for head in action_keys:
+                all_windows[f"action_logits_{head}"].append(action_logits[head].unsqueeze(0))
+                all_windows[f"actions_{head}"].append(actions[head].unsqueeze(0))
+        else:
+            # Create sliding windows with specified stride
+            for start in range(0, T - seq_len + 1, stride):
+                end = start + seq_len
+                all_windows["states"].append(states[start:end].unsqueeze(0))
+                all_windows["advantages"].append(advantages[start:end].unsqueeze(0))
+                all_windows["returns"].append(returns[start:end].unsqueeze(0))
+                all_windows["old_log_probs"].append(old_log_probs[start:end].unsqueeze(0))
+                all_windows["values"].append(values[start:end].unsqueeze(0))
+                # All positions valid in full-length windows
+                all_windows["valid_mask"].append(torch.ones(seq_len, dtype=torch.bool).unsqueeze(0))
+
+                for head in action_keys:
+                    all_windows[f"action_logits_{head}"].append(action_logits[head][start:end].unsqueeze(0))
+                    all_windows[f"actions_{head}"].append(actions[head][start:end].unsqueeze(0))
+
+            # Include final window if trajectory doesn't divide evenly
+            if (T - seq_len) % stride != 0:
+                start = T - seq_len
+                all_windows["states"].append(states[start:].unsqueeze(0))
+                all_windows["advantages"].append(advantages[start:].unsqueeze(0))
+                all_windows["returns"].append(returns[start:].unsqueeze(0))
+                all_windows["old_log_probs"].append(old_log_probs[start:].unsqueeze(0))
+                all_windows["values"].append(values[start:].unsqueeze(0))
+                all_windows["valid_mask"].append(torch.ones(seq_len, dtype=torch.bool).unsqueeze(0))
+
+                for head in action_keys:
+                    all_windows[f"action_logits_{head}"].append(action_logits[head][start:].unsqueeze(0))
+                    all_windows[f"actions_{head}"].append(actions[head][start:].unsqueeze(0))
+
+    # Concatenate all windows and move to device
+    result = {}
+    for key, tensors in all_windows.items():
+        if len(tensors) > 0:
+            result[key] = torch.cat(tensors, dim=0).to(device)
+
+    return result
+
+
 def train_on_trajectories(
     model: GPT,
     optimizer: torch.optim.Optimizer,
@@ -231,7 +382,11 @@ def train_on_trajectories(
     episode: int,
     feature_names: List[str],
 ) -> Dict[str, float]:
-    """Train model on collected trajectories using PPO.
+    """Train model on collected trajectories using PPO with proper sequence handling.
+
+    This function processes trajectories as overlapping windows of seq_len, allowing
+    the transformer to use attention over the full sequence history during PPO updates.
+    This prevents the "lobotomization" that occurs when training on individual steps.
 
     Args:
         model: The learner model to train
@@ -241,10 +396,14 @@ def train_on_trajectories(
         device: Device to train on
         logger: Wandb logger
         episode: Current episode number
+        feature_names: List of feature names for column mapping
 
     Returns:
         Training metrics
     """
+    from column_map import ColumnMap
+    from train.batch_utils import build_model_inputs
+
     config = get_config()
     ppo_cfg = config.ppo
 
@@ -274,114 +433,100 @@ def train_on_trajectories(
                 f"  Returns stats: min={traj.returns.min():.4f}, max={traj.returns.max():.4f}, mean={traj.returns.mean():.4f}"
             )
 
-    # Convert trajectories to tensors and concatenate
-    all_data = []
-    for traj in trajectories:
-        try:
-            data = traj.to_tensors(device)
-            all_data.append(data)
-        except ValueError as e:
-            print(f"Warning: Skipping trajectory: {e}")
-            continue
+    # Build sequence windows instead of flattening to individual steps
+    # Use stride of seq_len // 4 for good overlap (4x data augmentation)
+    window_stride = max(1, config.seq_len // 4)
+    windows = build_sequence_windows(
+        trajectories,
+        seq_len=config.seq_len,
+        stride=window_stride,
+        device=device,
+    )
 
-    if len(all_data) == 0:
-        print("Warning: No valid trajectory data to train on")
+    if "states" not in windows or windows["states"].shape[0] == 0:
+        print("Warning: No valid windows created from trajectories")
         return {}
 
-    # Concatenate all trajectories
-    batch = {
-        key: torch.cat([d[key] for d in all_data], dim=0) for key in all_data[0].keys()
-    }
+    num_windows = windows["states"].shape[0]
+    seq_len = windows["states"].shape[1]
+    total_steps = sum(len(traj) for traj in trajectories)
 
-    total_steps = batch["states"].shape[0]
-    print(f"Total training steps: {total_steps}")
+    print(f"Created {num_windows} sequence windows of length {seq_len} (stride={window_stride})")
+    print(f"Total original steps: {total_steps}")
 
-    # Store old action logits and values (used for PPO loss)
-    with torch.no_grad():
-        # We already have these from trajectory collection, but for value clipping
-        # we might need fresh values. For simplicity, use stored values.
-        old_values = batch["values"]
+    # Create column map for building model inputs
+    target_names = get_target_names()
+    colmap = ColumnMap(feature_names, target_names)
 
     # Training metrics
     metrics = {
         "train/total_steps": total_steps,
         "train/num_trajectories": len(trajectories),
+        "train/num_windows": num_windows,
     }
+
+    # Number of positions to mask at the start of each sequence for warmup
+    # The transformer needs some context before its predictions are reliable
+    warmup_positions = config.seq_len // 4  # Mask first 25% of sequence
 
     # PPO epochs
     for ppo_epoch in range(ppo_cfg.ppo_epochs):
-        # Shuffle data
-        perm = torch.randperm(total_steps)
+        # Shuffle windows (not individual steps!)
+        perm = torch.randperm(num_windows, device=device)
 
-        # Mini-batches
-        num_minibatches = max(1, total_steps // ppo_cfg.minibatch_size)
+        # Mini-batches of windows
+        num_minibatches = max(1, num_windows // ppo_cfg.minibatch_size)
         epoch_losses = []
 
         for mb_idx in range(num_minibatches):
             start_idx = mb_idx * ppo_cfg.minibatch_size
-            end_idx = min((mb_idx + 1) * ppo_cfg.minibatch_size, total_steps)
+            end_idx = min((mb_idx + 1) * ppo_cfg.minibatch_size, num_windows)
             mb_indices = perm[start_idx:end_idx]
+            mb_size = len(mb_indices)
 
-            # Get minibatch
-            mb_states = batch["states"][mb_indices]  # [MB, F]
-            mb_advantages = batch["advantages"][mb_indices]
-            mb_returns = batch["returns"][mb_indices]
-            mb_old_log_probs = batch["old_log_probs"][mb_indices]
+            # Get minibatch of windows [MB, seq_len, ...]
+            mb_states = windows["states"][mb_indices]  # [MB, seq_len, F]
+            mb_advantages = windows["advantages"][mb_indices]  # [MB, seq_len]
+            mb_returns = windows["returns"][mb_indices]  # [MB, seq_len]
+            mb_old_log_probs = windows["old_log_probs"][mb_indices]  # [MB, seq_len]
+            mb_valid_mask = windows["valid_mask"][mb_indices]  # [MB, seq_len]
+            mb_old_values = windows["values"][mb_indices]  # [MB, seq_len]
 
-            # Get old action logits
+            # Get old action logits and actions taken
             mb_old_action_logits = {}
             mb_actions_taken = {}
-            for key in batch.keys():
+            for key in windows.keys():
                 if key.startswith("action_logits_"):
                     head = key.replace("action_logits_", "")
-                    mb_old_action_logits[head] = batch[key][mb_indices]
+                    mb_old_action_logits[head] = windows[key][mb_indices]  # [MB, seq_len, ...]
                 if key.startswith("actions_"):
                     head = key.replace("actions_", "")
-                    mb_actions_taken[head] = batch[key][mb_indices]
+                    mb_actions_taken[head] = windows[key][mb_indices]  # [MB, seq_len]
 
-            mb_old_values = old_values[mb_indices]
+            # Create loss mask: valid positions after warmup
+            loss_mask = mb_valid_mask.clone()
+            loss_mask[:, :warmup_positions] = False  # Mask warmup positions
 
-            # Build model inputs from states
-            # States are raw features [MB, F], need to add sequence dimension
-            mb_states_seq = mb_states.unsqueeze(1)  # [MB, 1, F]
-
-            # For simplicity, we'll do a forward pass per sample (not ideal for efficiency)
-            # In production, you'd want to batch this properly with the full sequence context
-            # For now, we'll accumulate loss over the minibatch
-
-            # This is a simplification - ideally you'd maintain sequence context
-            # But for PPO on single steps, we can treat each as independent
+            # Skip if no valid positions for loss
+            if not loss_mask.any():
+                continue
 
             with autocast(device_type=device.type, enabled=False):
-                # Build inputs (this needs proper handling of sequences)
-                # For simplicity, we'll forward each sample independently
+                # Build model inputs with full sequence
+                model_inputs = build_model_inputs(mb_states, colmap)
 
-                # We need to call the model with proper sequence input
-                # Let's create a batch with each state as a single-step sequence
-                from column_map import ColumnMap
-                from train.batch_utils import build_model_inputs
-
-                # Create column map with proper target names
-                target_names = get_target_names()
-                colmap = ColumnMap(feature_names, target_names)
-
-                # Build model inputs
-                model_inputs = build_model_inputs(mb_states_seq, colmap)
-
-                # Forward pass
+                # Forward pass with full sequence context
                 outputs = model(model_inputs)
 
-                # Extract new logits and values
+                # Extract logits and values for all positions [MB, seq_len, ...]
                 new_action_logits = {}
                 for head in ["main_stick", "c_stick", "buttons", "shoulder"]:
                     if head in outputs:
-                        new_action_logits[head] = outputs[head][
-                            :, -1, :
-                        ]  # Take last timestep
+                        new_action_logits[head] = outputs[head]  # [MB, seq_len, num_classes]
 
                 new_values = outputs.get(
-                    "value", torch.zeros(mb_states.shape[0], 1, 1)
-                )[:, -1, 0]
+                    "value", torch.zeros(mb_size, seq_len, 1, device=device)
+                )[:, :, 0]  # [MB, seq_len]
 
                 # Check for NaN in model outputs
                 has_nan_output = False
@@ -402,15 +547,13 @@ def train_on_trajectories(
                     has_nan_output = True
 
                 if has_nan_output:
-                    # Check model parameters
                     nan_params = sum(
                         1 for p in model.parameters() if torch.isnan(p).any()
                     )
                     print(f"  Model has {nan_params} parameters with NaN")
-                    # Skip this batch
                     continue
 
-                # Compute PPO loss
+                # Compute PPO loss with masking for valid positions
                 loss, loss_metrics = compute_total_ppo_loss(
                     new_action_logits=new_action_logits,
                     new_values=new_values,
@@ -424,6 +567,7 @@ def train_on_trajectories(
                     entropy_coef=ppo_cfg.entropy_coef,
                     value_coef=config.rl.value_loss_coef,
                     value_clip=ppo_cfg.value_clip,
+                    loss_mask=loss_mask,  # Pass mask to loss function
                 )
 
             # Check for NaN loss BEFORE backward pass
@@ -443,10 +587,8 @@ def train_on_trajectories(
                 print(
                     f"  New values: min={new_values.min():.4f}, max={new_values.max():.4f}"
                 )
-                # Skip this batch entirely (don't touch optimizer/scaler)
                 continue
 
-            # Forward pass with new policy
             optimizer.zero_grad()
 
             # Backward pass

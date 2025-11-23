@@ -8,7 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(REPO_ROOT))
-from config import init_config
+from config.config import init_config
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
 from libmelee.melee.enums import (

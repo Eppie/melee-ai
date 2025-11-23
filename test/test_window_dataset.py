@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import zarr
 
-from config import FeatureConfig
+from config.config import FeatureConfig
 from feature_transforms import feature_spec_from_config
 import window_dataset
 

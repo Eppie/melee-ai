@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from column_map import ColumnMap
-from config import get_config, init_config, reset_config
+from config.config import get_config, init_config, reset_config
 from feature_transforms import feature_spec_from_config
 from schema import get_feature_names, get_target_names
 from train.value_head import (

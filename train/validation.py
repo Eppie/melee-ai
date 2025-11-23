@@ -11,7 +11,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
-from config import get_config
 from constants import CONTROLLER_KEY_GROUPS
 from feature_transforms import feature_spec_from_config
 from loss import compute_loss_components
@@ -22,6 +21,7 @@ from train.batch_utils import (
     quantize_controller_targets,
 )
 from train.metrics import multilabel_prf
+from train.value_head import compute_value_targets
 from window_dataset import RandomWindowSampler
 
 if TYPE_CHECKING:
@@ -56,11 +56,11 @@ def _get_validation_loader(
     config,
     batch_size: int,
     window_stride: int = 256,
-) -> Tuple[DataLoader, Any, ColumnMap]:
+) -> Tuple[DataLoader, Any, ColumnMap, Optional[int]]:
     """Get or create cached validation dataloader.
 
     Returns:
-        Tuple of (DataLoader, dataset, column_map)
+        Tuple of (DataLoader, dataset, column_map, value_idx)
     """
     # Lazy import to avoid circular import with validation.py
     from validation import PreloadedWindowDataset
@@ -100,9 +100,10 @@ def _get_validation_loader(
     )
 
     colmap = ColumnMap.from_dataset(dataset)
+    value_idx = colmap.value_idx
 
-    _VAL_CACHE[cache_key] = (loader, dataset, colmap)
-    return loader, dataset, colmap
+    _VAL_CACHE[cache_key] = (loader, dataset, colmap, value_idx)
+    return loader, dataset, colmap, value_idx
 
 
 def run_validation(
@@ -127,7 +128,7 @@ def run_validation(
     if batch_size is None:
         batch_size = config.train.batch_size
 
-    loader, dataset, colmap = _get_validation_loader(
+    loader, dataset, colmap, value_idx = _get_validation_loader(
         config,
         batch_size=batch_size,
         window_stride=256,
@@ -137,7 +138,7 @@ def run_validation(
 
     metrics = defaultdict(float)
     loss_sums: Dict[str, float] = {
-        key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder")
+        key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder", "value")
     }
 
     total_frames = 0
@@ -181,6 +182,21 @@ def run_validation(
 
             for key, value in loss_components.items():
                 loss_sums[key] += value.item()
+
+            # Compute value loss (same as training)
+            value_pred = pred["value"]
+            value_target = compute_value_targets(
+                X,
+                colmap,
+                gamma=config.rl.gamma,
+                reward_idx=value_idx,
+            )
+            value_loss_raw = torch.nn.functional.mse_loss(
+                value_pred, value_target, reduction="none"
+            ).squeeze(-1)
+            value_w = weights.get("global", weights["main"])
+            loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
+            loss_sums["value"] += loss_value.item()
 
             pred_main_idx = logits_main.argmax(dim=-1)
             pred_c_idx = logits_c.argmax(dim=-1)
@@ -226,11 +242,16 @@ def run_validation(
 
     # Loss metrics
     if batches_processed > 0:
-        result["val/loss"] = loss_sums["total"] / batches_processed
+        avg_policy_loss = loss_sums["total"] / batches_processed
+        avg_value_loss = loss_sums["value"] / batches_processed
+        # Combined loss matches training: policy_loss + value_loss_coef * value_loss
+        result["val/loss"] = avg_policy_loss + config.rl.value_loss_coef * avg_value_loss
+        result["val/loss_policy"] = avg_policy_loss
         result["val/loss_main"] = loss_sums["main"] / batches_processed
         result["val/loss_c"] = loss_sums["c"] / batches_processed
         result["val/loss_buttons"] = loss_sums["buttons"] / batches_processed
         result["val/loss_shoulder"] = loss_sums["shoulder"] / batches_processed
+        result["val/loss_value"] = avg_value_loss
 
     # Accuracy metrics
     if metrics["main_total"] > 0:

@@ -32,7 +32,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from column_map import ColumnMap  # noqa: E402
-from config import Config  # noqa: E402
+from config.config import Config  # noqa: E402
 from feature_transforms import feature_spec_from_config  # noqa: E402
 from libmelee.melee.enums import Action, Character  # noqa: E402
 from model.nano_gpt import GPT  # noqa: E402

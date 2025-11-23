@@ -13,7 +13,7 @@ import torch
 from tensordict import TensorDict
 
 from column_map import ColumnMap
-from config import get_config
+from config.config import get_config
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,

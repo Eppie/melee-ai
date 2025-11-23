@@ -466,46 +466,123 @@ def compute_total_ppo_loss(
     entropy_coef: float = 0.01,
     value_coef: float = 0.5,
     value_clip: Optional[float] = None,
+    loss_mask: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, Dict[str, float]]:
-    """Compute total PPO loss (policy + value + entropy).
+    """Compute total PPO loss (policy + value + entropy) for sequence inputs.
+
+    Expects sequence inputs [B, seq_len, ...] and flattens them for loss computation.
+    When a loss_mask is provided, only computes loss on valid (unmasked) positions
+    to support proper transformer training with warmup.
 
     Args:
-        new_action_logits: Current policy action logits
-        new_values: Current critic value predictions
-        old_action_logits: Old policy action logits
-        old_values: Old critic value predictions
-        actions_taken: Actions that were taken
-        old_log_probs: Log probs from old policy
-        advantages: GAE advantages
-        returns: Target returns for value function
+        new_action_logits: Current policy action logits [B, seq_len, num_classes]
+        new_values: Current critic value predictions [B, seq_len]
+        old_action_logits: Old policy action logits [B, seq_len, num_classes]
+        old_values: Old critic value predictions [B, seq_len]
+        actions_taken: Actions that were taken [B, seq_len] or [B, seq_len, num_buttons]
+        old_log_probs: Log probs from old policy [B, seq_len]
+        advantages: GAE advantages [B, seq_len]
+        returns: Target returns for value function [B, seq_len]
         clip_ratio: Clipping epsilon for policy ratio
         entropy_coef: Coefficient for entropy bonus
         value_coef: Coefficient for value loss
         value_clip: Optional clipping range for value function
+        loss_mask: Optional [B, seq_len] boolean mask. True = compute loss, False = ignore.
 
     Returns:
         Tuple of (total_loss, metrics_dict)
     """
+    B, seq_len = new_values.shape
+
+    if loss_mask is not None:
+        # Apply mask to select valid positions
+        mask_flat = loss_mask.reshape(-1)  # [B * seq_len]
+        num_valid = mask_flat.sum().item()
+
+        if num_valid == 0:
+            # No valid positions, return zero loss
+            return torch.tensor(0.0, device=new_values.device, requires_grad=True), {
+                "ppo/total_loss": 0.0,
+                "ppo/num_valid_positions": 0,
+            }
+
+        # Flatten all tensors and select valid positions
+        new_values_flat = new_values.reshape(-1)[mask_flat]  # [num_valid]
+        old_values_flat = old_values.reshape(-1)[mask_flat]
+        old_log_probs_flat = old_log_probs.reshape(-1)[mask_flat]
+        advantages_flat = advantages.reshape(-1)[mask_flat]
+        returns_flat = returns.reshape(-1)[mask_flat]
+
+        # Flatten action logits and actions
+        new_action_logits_flat = {}
+        old_action_logits_flat = {}
+        actions_taken_flat = {}
+
+        for head in new_action_logits.keys():
+            logits = new_action_logits[head]  # [B, seq_len, num_classes]
+            logits_flat = logits.reshape(B * seq_len, -1)  # [B*seq_len, num_classes]
+            new_action_logits_flat[head] = logits_flat[mask_flat]  # [num_valid, num_classes]
+
+        for head in old_action_logits.keys():
+            logits = old_action_logits[head]
+            logits_flat = logits.reshape(B * seq_len, -1)
+            old_action_logits_flat[head] = logits_flat[mask_flat]
+
+        for head in actions_taken.keys():
+            actions = actions_taken[head]  # [B, seq_len] or [B, seq_len, num_buttons]
+            if actions.dim() == 3:
+                actions_flat = actions.reshape(B * seq_len, -1)  # [B*seq_len, num_buttons]
+                actions_taken_flat[head] = actions_flat[mask_flat]
+            else:
+                actions_flat = actions.reshape(-1)  # [B*seq_len]
+                actions_taken_flat[head] = actions_flat[mask_flat]
+
+    else:
+        # No mask: flatten everything
+        new_values_flat = new_values.reshape(-1)  # [B * seq_len]
+        old_values_flat = old_values.reshape(-1)
+        old_log_probs_flat = old_log_probs.reshape(-1)
+        advantages_flat = advantages.reshape(-1)
+        returns_flat = returns.reshape(-1)
+        num_valid = B * seq_len
+
+        new_action_logits_flat = {}
+        old_action_logits_flat = {}
+        actions_taken_flat = {}
+
+        for head in new_action_logits.keys():
+            new_action_logits_flat[head] = new_action_logits[head].reshape(B * seq_len, -1)
+
+        for head in old_action_logits.keys():
+            old_action_logits_flat[head] = old_action_logits[head].reshape(B * seq_len, -1)
+
+        for head in actions_taken.keys():
+            actions = actions_taken[head]
+            if actions.dim() == 3:
+                actions_taken_flat[head] = actions.reshape(B * seq_len, -1)
+            else:
+                actions_taken_flat[head] = actions.reshape(-1)
+
     # Check all inputs
-    if torch.isnan(new_values).any() or torch.isinf(new_values).any():
+    if torch.isnan(new_values_flat).any() or torch.isinf(new_values_flat).any():
         print(
-            f"  [total_loss] NaN/Inf in new_values! nan_count={torch.isnan(new_values).sum()}, inf_count={torch.isinf(new_values).sum()}"
+            f"  [total_loss] NaN/Inf in new_values! nan_count={torch.isnan(new_values_flat).sum()}, inf_count={torch.isinf(new_values_flat).sum()}"
         )
-    if torch.isnan(old_values).any() or torch.isinf(old_values).any():
+    if torch.isnan(old_values_flat).any() or torch.isinf(old_values_flat).any():
         print(
-            f"  [total_loss] NaN/Inf in old_values! nan_count={torch.isnan(old_values).sum()}, inf_count={torch.isinf(old_values).sum()}"
+            f"  [total_loss] NaN/Inf in old_values! nan_count={torch.isnan(old_values_flat).sum()}, inf_count={torch.isinf(old_values_flat).sum()}"
         )
-    if torch.isnan(returns).any() or torch.isinf(returns).any():
+    if torch.isnan(returns_flat).any() or torch.isinf(returns_flat).any():
         print(
-            f"  [total_loss] NaN/Inf in returns! nan_count={torch.isnan(returns).sum()}, inf_count={torch.isinf(returns).sum()}"
+            f"  [total_loss] NaN/Inf in returns! nan_count={torch.isnan(returns_flat).sum()}, inf_count={torch.isinf(returns_flat).sum()}"
         )
 
     # Policy loss
     policy_loss, policy_metrics = compute_ppo_loss(
-        new_action_logits=new_action_logits,
-        actions_taken=actions_taken,
-        old_log_probs=old_log_probs,
-        advantages=advantages,
+        new_action_logits=new_action_logits_flat,
+        actions_taken=actions_taken_flat,
+        old_log_probs=old_log_probs_flat,
+        advantages=advantages_flat,
         clip_ratio=clip_ratio,
         entropy_coef=entropy_coef,
     )
@@ -518,9 +595,9 @@ def compute_total_ppo_loss(
 
     # Value loss
     value_loss, value_metrics = compute_value_loss(
-        value_pred=new_values,
-        value_target=returns,
-        old_value_pred=old_values,
+        value_pred=new_values_flat,
+        value_target=returns_flat,
+        old_value_pred=old_values_flat,
         value_clip=value_clip,
     )
 
@@ -542,6 +619,7 @@ def compute_total_ppo_loss(
         **policy_metrics,
         **value_metrics,
         "ppo/total_loss": total_loss.item(),
+        "ppo/num_valid_positions": num_valid,
     }
 
     return total_loss, metrics

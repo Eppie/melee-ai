@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from column_map import ColumnMap
-from config import get_config
+from config.config import get_config
 
 
 @dataclass(frozen=True)

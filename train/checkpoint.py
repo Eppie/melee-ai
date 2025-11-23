@@ -123,7 +123,7 @@ def load_config_from_latest_checkpoint(
         checkpoint exists or the checkpoint has no config.
 
     Example:
-        >>> from config import Config, init_config
+        >>> from config.config import Config, init_config
         >>> config_dict = load_config_from_latest_checkpoint("checkpoints/")
         >>> if config_dict:
         ...     # Use checkpoint config as base, with optional overrides

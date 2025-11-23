@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 from zarr.codecs import BloscCodec, BloscShuffle
 
-from config import ZarrConfig, init_config, reset_config
+from config.config import ZarrConfig, init_config, reset_config
 
 
 @pytest.fixture(autouse=True)

@@ -14,8 +14,12 @@ def test_compute_tensor_stats_batch_avoids_item(monkeypatch: MonkeyPatch) -> Non
     tensor2 = torch.ones(5, dtype=torch.float32) * 3.0
 
     expected = [
-        [float(torch.amin(tensor1)), float(torch.amax(tensor1)),
-         float(tensor1.mean()), float(tensor1.std(unbiased=False))],
+        [
+            float(torch.amin(tensor1)),
+            float(torch.amax(tensor1)),
+            float(tensor1.mean()),
+            float(tensor1.std(unbiased=False)),
+        ],
         [3.0, 3.0, 3.0, 0.0],  # tensor2: all same value, so std=0
     ]
 
@@ -34,8 +38,9 @@ def test_compute_tensor_stats_batch_avoids_item(monkeypatch: MonkeyPatch) -> Non
     # Check values are correct
     for i in range(2):
         for j in range(4):
-            assert abs(result_list[i][j] - expected[i][j]) < 1e-5, \
-                f"Mismatch at [{i}][{j}]: {result_list[i][j]} vs {expected[i][j]}"
+            assert (
+                abs(result_list[i][j] - expected[i][j]) < 1e-5
+            ), f"Mismatch at [{i}][{j}]: {result_list[i][j]} vs {expected[i][j]}"
 
     # Check no .item() calls during computation
     assert call_count["value"] == 0

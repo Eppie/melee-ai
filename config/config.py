@@ -55,13 +55,17 @@ class Config(BaseModel):
         if "zarr" in data and "compressor" in data["zarr"]:
             compressor = self.zarr.compressor
             data["zarr"]["compressor"] = {
-                "cname": compressor.cname.value
-                if hasattr(compressor.cname, "value")
-                else compressor.cname,
+                "cname": (
+                    compressor.cname.value
+                    if hasattr(compressor.cname, "value")
+                    else compressor.cname
+                ),
                 "clevel": compressor.clevel,
-                "shuffle": compressor.shuffle.name
-                if hasattr(compressor.shuffle, "name")
-                else str(compressor.shuffle),
+                "shuffle": (
+                    compressor.shuffle.name
+                    if hasattr(compressor.shuffle, "name")
+                    else str(compressor.shuffle)
+                ),
             }
         return data
 
@@ -92,9 +96,8 @@ class Config(BaseModel):
         # If context provides explicit dimensions, always use them (overrides nested validator)
         # Otherwise, only compute if input_size is still unset (-1 or None)
         should_compute = (
-            (gamestate_dim is not None and controller_dim is not None)
-            or self.model.input_size in (-1, None)
-        )
+            gamestate_dim is not None and controller_dim is not None
+        ) or self.model.input_size in (-1, None)
 
         if should_compute:
             if gamestate_dim is None or controller_dim is None:
@@ -318,7 +321,9 @@ def init_config_from_checkpoint(
     # Handle legacy checkpoints that only have TrainConfig
     if "train" not in config_dict and "batch_size" in config_dict:
         # This is a legacy checkpoint with only TrainConfig.__dict__
-        print(f"Warning: Checkpoint contains legacy TrainConfig format, using defaults for other configs")
+        print(
+            f"Warning: Checkpoint contains legacy TrainConfig format, using defaults for other configs"
+        )
         config_dict = {"train": config_dict}
 
     cfg = Config.model_validate(config_dict)

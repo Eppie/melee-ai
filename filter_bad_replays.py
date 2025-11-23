@@ -278,9 +278,9 @@ def _process_zip_archive(
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         temp_dir = Path(tmpdir)
-        with ThreadPoolExecutor(max_workers=extract_workers) as extractor, ProcessPoolExecutor(
-            max_workers=process_workers
-        ) as processor:
+        with ThreadPoolExecutor(
+            max_workers=extract_workers
+        ) as extractor, ProcessPoolExecutor(max_workers=process_workers) as processor:
             extract_futures = [
                 extractor.submit(_extract_member, zip_path, member, temp_dir)
                 for member in _iter_zip_members(zip_path, filename_filter)

@@ -219,13 +219,15 @@ class InferenceCoordinator:
 
         # If no workers ready, return empty actions
         if len(worker_order) == 0:
-            return {wid: (self._neutral_actions(), self._neutral_actions())
-                    for wid, _, _, _ in worker_states_batch}
+            return {
+                wid: (self._neutral_actions(), self._neutral_actions())
+                for wid, _, _, _ in worker_states_batch
+            }
 
         # Batch inference for learner model
-        learner_batch = torch.stack(
-            [x[1] for x in ready_learner_inputs], dim=0
-        ).to(self.device)  # [B, T, F]
+        learner_batch = torch.stack([x[1] for x in ready_learner_inputs], dim=0).to(
+            self.device
+        )  # [B, T, F]
         learner_inputs = build_model_inputs(learner_batch, self.colmap)
 
         with torch.no_grad():
@@ -260,7 +262,9 @@ class InferenceCoordinator:
         results = {}
         for batch_idx, worker_id in enumerate(worker_order):
             # Extract this worker's results
-            p1_logits, p1_actions, p1_log_prob, p1_value = learner_actions_batch[batch_idx]
+            p1_logits, p1_actions, p1_log_prob, p1_value = learner_actions_batch[
+                batch_idx
+            ]
             p2_logits, p2_actions, _, _ = opponent_actions_batch[batch_idx]
 
             # Record step for trajectory
@@ -334,7 +338,9 @@ class InferenceCoordinator:
 
                 if shoulder_logits is not None:
                     shoulder_probs = torch.softmax(shoulder_logits[b], dim=-1)
-                    actions["shoulder"] = torch.multinomial(shoulder_probs, 1).squeeze(-1)
+                    actions["shoulder"] = torch.multinomial(shoulder_probs, 1).squeeze(
+                        -1
+                    )
                 else:
                     actions["shoulder"] = torch.tensor(0, device=self.device)
 

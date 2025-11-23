@@ -173,9 +173,7 @@ class TrajectorySlicer:
             traj = Trajectory(steps=steps)
 
             # Compute returns with bootstrap value
-            bootstrap_val = rollout.bootstrap_values.get(
-                worker_id, torch.tensor(0.0)
-            )
+            bootstrap_val = rollout.bootstrap_values.get(worker_id, torch.tensor(0.0))
             self._compute_gae_with_bootstrap(traj, bootstrap_val)
 
             trajectories.append(traj)
@@ -185,9 +183,7 @@ class TrajectorySlicer:
 
         # Build sequence windows
         stride = max(1, seq_len // 4)  # 75% overlap
-        windows = self._build_sequence_windows(
-            trajectories, seq_len, stride, device
-        )
+        windows = self._build_sequence_windows(trajectories, seq_len, stride, device)
 
         return windows
 
@@ -210,7 +206,9 @@ class TrajectorySlicer:
 
         # Extract values and rewards
         values = torch.stack([step.value for step in trajectory.steps]).squeeze(-1)
-        rewards = torch.tensor([step.reward for step in trajectory.steps], dtype=values.dtype)
+        rewards = torch.tensor(
+            [step.reward for step in trajectory.steps], dtype=values.dtype
+        )
 
         # Append bootstrap value for computing TD errors
         next_values = torch.cat([values[1:], bootstrap_value.unsqueeze(0)])
@@ -283,14 +281,20 @@ class TrajectorySlicer:
             states = torch.stack([step.state for step in traj.steps])
             advantages = traj.advantages
             returns = traj.returns
-            old_log_probs = torch.stack([step.log_prob for step in traj.steps]).squeeze(-1)
+            old_log_probs = torch.stack([step.log_prob for step in traj.steps]).squeeze(
+                -1
+            )
             values = torch.stack([step.value for step in traj.steps]).squeeze(-1)
 
             action_logits = {}
             actions = {}
             for head in action_keys:
-                action_logits[head] = torch.stack([step.action_logits[head] for step in traj.steps])
-                actions[head] = torch.stack([step.action_taken[head] for step in traj.steps])
+                action_logits[head] = torch.stack(
+                    [step.action_logits[head] for step in traj.steps]
+                )
+                actions[head] = torch.stack(
+                    [step.action_taken[head] for step in traj.steps]
+                )
 
             # Handle short trajectories
             if T < seq_len:
@@ -298,12 +302,18 @@ class TrajectorySlicer:
                 states = torch.cat([states[0:1].expand(pad_len, -1), states], dim=0)
                 advantages = torch.cat([torch.zeros(pad_len), advantages], dim=0)
                 returns = torch.cat([returns[0:1].expand(pad_len), returns], dim=0)
-                old_log_probs = torch.cat([old_log_probs[0:1].expand(pad_len), old_log_probs], dim=0)
+                old_log_probs = torch.cat(
+                    [old_log_probs[0:1].expand(pad_len), old_log_probs], dim=0
+                )
                 values = torch.cat([values[0:1].expand(pad_len), values], dim=0)
 
                 for head in action_keys:
                     action_logits[head] = torch.cat(
-                        [action_logits[head][0:1].expand(pad_len, -1), action_logits[head]], dim=0
+                        [
+                            action_logits[head][0:1].expand(pad_len, -1),
+                            action_logits[head],
+                        ],
+                        dim=0,
                     )
                     if actions[head].dim() == 1:
                         actions[head] = torch.cat(
@@ -311,13 +321,16 @@ class TrajectorySlicer:
                         )
                     else:
                         actions[head] = torch.cat(
-                            [actions[head][0:1].expand(pad_len, -1), actions[head]], dim=0
+                            [actions[head][0:1].expand(pad_len, -1), actions[head]],
+                            dim=0,
                         )
 
-                valid_mask = torch.cat([
-                    torch.zeros(pad_len, dtype=torch.bool),
-                    torch.ones(T, dtype=torch.bool)
-                ])
+                valid_mask = torch.cat(
+                    [
+                        torch.zeros(pad_len, dtype=torch.bool),
+                        torch.ones(T, dtype=torch.bool),
+                    ]
+                )
 
                 all_windows["states"].append(states.unsqueeze(0))
                 all_windows["advantages"].append(advantages.unsqueeze(0))
@@ -327,7 +340,9 @@ class TrajectorySlicer:
                 all_windows["valid_mask"].append(valid_mask.unsqueeze(0))
 
                 for head in action_keys:
-                    all_windows[f"action_logits_{head}"].append(action_logits[head].unsqueeze(0))
+                    all_windows[f"action_logits_{head}"].append(
+                        action_logits[head].unsqueeze(0)
+                    )
                     all_windows[f"actions_{head}"].append(actions[head].unsqueeze(0))
             else:
                 # Create sliding windows
@@ -336,13 +351,21 @@ class TrajectorySlicer:
                     all_windows["states"].append(states[start:end].unsqueeze(0))
                     all_windows["advantages"].append(advantages[start:end].unsqueeze(0))
                     all_windows["returns"].append(returns[start:end].unsqueeze(0))
-                    all_windows["old_log_probs"].append(old_log_probs[start:end].unsqueeze(0))
+                    all_windows["old_log_probs"].append(
+                        old_log_probs[start:end].unsqueeze(0)
+                    )
                     all_windows["values"].append(values[start:end].unsqueeze(0))
-                    all_windows["valid_mask"].append(torch.ones(seq_len, dtype=torch.bool).unsqueeze(0))
+                    all_windows["valid_mask"].append(
+                        torch.ones(seq_len, dtype=torch.bool).unsqueeze(0)
+                    )
 
                     for head in action_keys:
-                        all_windows[f"action_logits_{head}"].append(action_logits[head][start:end].unsqueeze(0))
-                        all_windows[f"actions_{head}"].append(actions[head][start:end].unsqueeze(0))
+                        all_windows[f"action_logits_{head}"].append(
+                            action_logits[head][start:end].unsqueeze(0)
+                        )
+                        all_windows[f"actions_{head}"].append(
+                            actions[head][start:end].unsqueeze(0)
+                        )
 
                 # Final window
                 if (T - seq_len) % stride != 0:
@@ -350,13 +373,21 @@ class TrajectorySlicer:
                     all_windows["states"].append(states[start:].unsqueeze(0))
                     all_windows["advantages"].append(advantages[start:].unsqueeze(0))
                     all_windows["returns"].append(returns[start:].unsqueeze(0))
-                    all_windows["old_log_probs"].append(old_log_probs[start:].unsqueeze(0))
+                    all_windows["old_log_probs"].append(
+                        old_log_probs[start:].unsqueeze(0)
+                    )
                     all_windows["values"].append(values[start:].unsqueeze(0))
-                    all_windows["valid_mask"].append(torch.ones(seq_len, dtype=torch.bool).unsqueeze(0))
+                    all_windows["valid_mask"].append(
+                        torch.ones(seq_len, dtype=torch.bool).unsqueeze(0)
+                    )
 
                     for head in action_keys:
-                        all_windows[f"action_logits_{head}"].append(action_logits[head][start:].unsqueeze(0))
-                        all_windows[f"actions_{head}"].append(actions[head][start:].unsqueeze(0))
+                        all_windows[f"action_logits_{head}"].append(
+                            action_logits[head][start:].unsqueeze(0)
+                        )
+                        all_windows[f"actions_{head}"].append(
+                            actions[head][start:].unsqueeze(0)
+                        )
 
         # Concatenate and move to device
         result = {}

@@ -648,7 +648,9 @@ class GPTInferenceEngine:
             "value": _detach_head("value"),
         }
 
-    def _serialize_logits(self, logits: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _serialize_logits(
+        self, logits: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
         """Convert cached logits into JSON-serializable lists."""
         if logits is None:
             return None

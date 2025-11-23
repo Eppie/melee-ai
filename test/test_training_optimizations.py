@@ -85,10 +85,21 @@ class TestGradientDiagnostics:
 
         # Check all expected keys are present
         expected_keys = [
-            "total_norm", "mean_abs", "mean", "std", "max_abs",
-            "zero_fraction", "zero_count", "nan_count", "inf_count",
-            "param_total_norm", "param_max_abs", "grad_param_ratio_mean",
-            "grad_param_ratio_max", "grad_param_ratio_min", "grad_to_param_norm_ratio",
+            "total_norm",
+            "mean_abs",
+            "mean",
+            "std",
+            "max_abs",
+            "zero_fraction",
+            "zero_count",
+            "nan_count",
+            "inf_count",
+            "param_total_norm",
+            "param_max_abs",
+            "grad_param_ratio_mean",
+            "grad_param_ratio_max",
+            "grad_param_ratio_min",
+            "grad_to_param_norm_ratio",
         ]
         for key in expected_keys:
             assert key in stats, f"Missing key: {key}"
@@ -139,9 +150,9 @@ class TestGradientDiagnostics:
         # - At most a few for per-parameter ratio computation
         # With 2 parameters (weight + bias), expect at most 2 transfers for ratios
         # (each does .cpu().tolist() not .item())
-        assert call_count["value"] == 0, (
-            f"Expected 0 .item() calls, got {call_count['value']}"
-        )
+        assert (
+            call_count["value"] == 0
+        ), f"Expected 0 .item() calls, got {call_count['value']}"
 
     def test_collect_gradient_diagnostics_accuracy(self) -> None:
         """Test that computed statistics are mathematically correct."""
@@ -149,16 +160,18 @@ class TestGradientDiagnostics:
         model = nn.Linear(4, 2, bias=False)
 
         # Set specific gradient values
-        model.weight.grad = torch.tensor([
-            [1.0, 2.0, 3.0, 4.0],
-            [5.0, 6.0, 7.0, 8.0],
-        ])
+        model.weight.grad = torch.tensor(
+            [
+                [1.0, 2.0, 3.0, 4.0],
+                [5.0, 6.0, 7.0, 8.0],
+            ]
+        )
 
         stats = collect_gradient_diagnostics(model)
 
         # Manual calculations
-        grads = torch.tensor([1., 2., 3., 4., 5., 6., 7., 8.])
-        expected_sq_sum = (grads ** 2).sum().item()
+        grads = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+        expected_sq_sum = (grads**2).sum().item()
         expected_norm = (expected_sq_sum) ** 0.5
         expected_mean_abs = grads.abs().mean().item()
         expected_mean = grads.mean().item()

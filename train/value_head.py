@@ -231,6 +231,7 @@ def _get_gamma_powers(
 #   one for pulling the value from the dataset
 #   one for pre-computing it to store in the dataset
 
+
 def compute_value_targets(
     X: torch.Tensor,
     colmap: ColumnMap,

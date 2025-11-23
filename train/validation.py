@@ -195,7 +195,9 @@ def run_validation(
                 value_pred, value_target, reduction="none"
             ).squeeze(-1)
             value_w = weights.get("global", weights["main"])
-            loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
+            loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(
+                1e-12
+            )
             loss_sums["value"] += loss_value.item()
 
             pred_main_idx = logits_main.argmax(dim=-1)
@@ -245,7 +247,9 @@ def run_validation(
         avg_policy_loss = loss_sums["total"] / batches_processed
         avg_value_loss = loss_sums["value"] / batches_processed
         # Combined loss matches training: policy_loss + value_loss_coef * value_loss
-        result["val/loss"] = avg_policy_loss + config.rl.value_loss_coef * avg_value_loss
+        result["val/loss"] = (
+            avg_policy_loss + config.rl.value_loss_coef * avg_value_loss
+        )
         result["val/loss_policy"] = avg_policy_loss
         result["val/loss_main"] = loss_sums["main"] / batches_processed
         result["val/loss_c"] = loss_sums["c"] / batches_processed

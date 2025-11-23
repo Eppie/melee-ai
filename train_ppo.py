@@ -148,7 +148,9 @@ def run_distributed_training(
 
     # Create queues for IPC
     state_queue = mp.Queue()  # Workers -> Coordinator
-    action_queues = {i: mp.Queue() for i in range(num_workers)}  # Coordinator -> Workers
+    action_queues = {
+        i: mp.Queue() for i in range(num_workers)
+    }  # Coordinator -> Workers
     control_queues = {i: mp.Queue() for i in range(num_workers)}  # Control signals
 
     # Spawn worker processes
@@ -199,9 +201,7 @@ def run_distributed_training(
                 control_queue.put("pause")
 
             # Prepare training data
-            windows = slicer.prepare_training_data(
-                rollout, config.seq_len, device
-            )
+            windows = slicer.prepare_training_data(rollout, config.seq_len, device)
 
             if "states" not in windows or windows["states"].shape[0] == 0:
                 print("Warning: No valid training windows")
@@ -401,7 +401,8 @@ def train_on_windows(
 
             # Check gradients
             has_nan_grad = any(
-                p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any())
+                p.grad is not None
+                and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any())
                 for p in model.parameters()
             )
             if has_nan_grad:
@@ -421,7 +422,9 @@ def train_on_windows(
 
         if epoch_losses:
             avg_loss = sum(epoch_losses) / len(epoch_losses)
-            print(f"  Epoch {ppo_epoch + 1}/{ppo_cfg.ppo_epochs}: loss = {avg_loss:.4f}")
+            print(
+                f"  Epoch {ppo_epoch + 1}/{ppo_cfg.ppo_epochs}: loss = {avg_loss:.4f}"
+            )
             all_losses.extend(epoch_losses)
 
     if all_losses:
@@ -489,7 +492,9 @@ def run_episode_worker(
         episode_metrics = run_episode(env)
         trajectories = env.trajectory_buffer.get_trajectories()
         trajectory = trajectories[0] if len(trajectories) > 0 else None
-        print(f"[Worker {worker_id}] Episode complete: {episode_metrics.get('episode/frames', 0)} frames")
+        print(
+            f"[Worker {worker_id}] Episode complete: {episode_metrics.get('episode/frames', 0)} frames"
+        )
         return trajectory, episode_metrics
 
     finally:
@@ -536,7 +541,9 @@ def run_episode(env: SelfPlayEnvironment) -> Dict[str, float]:
             if key.startswith("episode/"):
                 episode_metrics[key] = value
 
-    print(f"Episode finished: {env.frame_count} frames, total reward: {env.episode_reward:.2f}")
+    print(
+        f"Episode finished: {env.frame_count} frames, total reward: {env.episode_reward:.2f}"
+    )
     return episode_metrics
 
 
@@ -585,20 +592,27 @@ def build_sequence_windows(
         action_logits = {}
         actions = {}
         for head in action_keys:
-            action_logits[head] = torch.stack([step.action_logits[head] for step in traj.steps])
-            actions[head] = torch.stack([step.action_taken[head] for step in traj.steps])
+            action_logits[head] = torch.stack(
+                [step.action_logits[head] for step in traj.steps]
+            )
+            actions[head] = torch.stack(
+                [step.action_taken[head] for step in traj.steps]
+            )
 
         if T < seq_len:
             pad_len = seq_len - T
             states = torch.cat([states[0:1].expand(pad_len, -1), states], dim=0)
             advantages = torch.cat([torch.zeros(pad_len), advantages], dim=0)
             returns = torch.cat([returns[0:1].expand(pad_len), returns], dim=0)
-            old_log_probs = torch.cat([old_log_probs[0:1].expand(pad_len), old_log_probs], dim=0)
+            old_log_probs = torch.cat(
+                [old_log_probs[0:1].expand(pad_len), old_log_probs], dim=0
+            )
             values = torch.cat([values[0:1].expand(pad_len), values], dim=0)
 
             for head in action_keys:
                 action_logits[head] = torch.cat(
-                    [action_logits[head][0:1].expand(pad_len, -1), action_logits[head]], dim=0
+                    [action_logits[head][0:1].expand(pad_len, -1), action_logits[head]],
+                    dim=0,
                 )
                 if actions[head].dim() == 1:
                     actions[head] = torch.cat(
@@ -609,7 +623,12 @@ def build_sequence_windows(
                         [actions[head][0:1].expand(pad_len, -1), actions[head]], dim=0
                     )
 
-            valid_mask = torch.cat([torch.zeros(pad_len, dtype=torch.bool), torch.ones(T, dtype=torch.bool)])
+            valid_mask = torch.cat(
+                [
+                    torch.zeros(pad_len, dtype=torch.bool),
+                    torch.ones(T, dtype=torch.bool),
+                ]
+            )
 
             all_windows["states"].append(states.unsqueeze(0))
             all_windows["advantages"].append(advantages.unsqueeze(0))
@@ -619,7 +638,9 @@ def build_sequence_windows(
             all_windows["valid_mask"].append(valid_mask.unsqueeze(0))
 
             for head in action_keys:
-                all_windows[f"action_logits_{head}"].append(action_logits[head].unsqueeze(0))
+                all_windows[f"action_logits_{head}"].append(
+                    action_logits[head].unsqueeze(0)
+                )
                 all_windows[f"actions_{head}"].append(actions[head].unsqueeze(0))
         else:
             for start in range(0, T - seq_len + 1, stride):
@@ -627,13 +648,21 @@ def build_sequence_windows(
                 all_windows["states"].append(states[start:end].unsqueeze(0))
                 all_windows["advantages"].append(advantages[start:end].unsqueeze(0))
                 all_windows["returns"].append(returns[start:end].unsqueeze(0))
-                all_windows["old_log_probs"].append(old_log_probs[start:end].unsqueeze(0))
+                all_windows["old_log_probs"].append(
+                    old_log_probs[start:end].unsqueeze(0)
+                )
                 all_windows["values"].append(values[start:end].unsqueeze(0))
-                all_windows["valid_mask"].append(torch.ones(seq_len, dtype=torch.bool).unsqueeze(0))
+                all_windows["valid_mask"].append(
+                    torch.ones(seq_len, dtype=torch.bool).unsqueeze(0)
+                )
 
                 for head in action_keys:
-                    all_windows[f"action_logits_{head}"].append(action_logits[head][start:end].unsqueeze(0))
-                    all_windows[f"actions_{head}"].append(actions[head][start:end].unsqueeze(0))
+                    all_windows[f"action_logits_{head}"].append(
+                        action_logits[head][start:end].unsqueeze(0)
+                    )
+                    all_windows[f"actions_{head}"].append(
+                        actions[head][start:end].unsqueeze(0)
+                    )
 
             if (T - seq_len) % stride != 0:
                 start = T - seq_len
@@ -642,11 +671,17 @@ def build_sequence_windows(
                 all_windows["returns"].append(returns[start:].unsqueeze(0))
                 all_windows["old_log_probs"].append(old_log_probs[start:].unsqueeze(0))
                 all_windows["values"].append(values[start:].unsqueeze(0))
-                all_windows["valid_mask"].append(torch.ones(seq_len, dtype=torch.bool).unsqueeze(0))
+                all_windows["valid_mask"].append(
+                    torch.ones(seq_len, dtype=torch.bool).unsqueeze(0)
+                )
 
                 for head in action_keys:
-                    all_windows[f"action_logits_{head}"].append(action_logits[head][start:].unsqueeze(0))
-                    all_windows[f"actions_{head}"].append(actions[head][start:].unsqueeze(0))
+                    all_windows[f"action_logits_{head}"].append(
+                        action_logits[head][start:].unsqueeze(0)
+                    )
+                    all_windows[f"actions_{head}"].append(
+                        actions[head][start:].unsqueeze(0)
+                    )
 
     result = {}
     for key, tensors in all_windows.items():
@@ -702,7 +737,9 @@ def train_on_trajectories(
     seq_len = windows["states"].shape[1]
     total_steps = sum(len(traj) for traj in trajectories)
 
-    print(f"Created {num_windows} sequence windows of length {seq_len} (stride={window_stride})")
+    print(
+        f"Created {num_windows} sequence windows of length {seq_len} (stride={window_stride})"
+    )
     print(f"Total original steps: {total_steps}")
 
     target_names = get_target_names()
@@ -797,15 +834,19 @@ def train_on_trajectories(
             scaler.unscale_(optimizer)
 
             nan_grads = sum(
-                1 for p in model.parameters()
-                if p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any())
+                1
+                for p in model.parameters()
+                if p.grad is not None
+                and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any())
             )
 
             if nan_grads > 0:
                 optimizer.zero_grad()
                 continue
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), ppo_cfg.max_grad_norm
+            )
 
             if mb_idx == 0 and ppo_epoch == 0:
                 metrics["train/grad_norm"] = grad_norm.item()
@@ -821,7 +862,9 @@ def train_on_trajectories(
 
         if len(epoch_losses) > 0:
             avg_loss = sum(epoch_losses) / len(epoch_losses)
-            print(f"  Epoch {ppo_epoch + 1}/{ppo_cfg.ppo_epochs}: avg loss = {avg_loss:.4f}")
+            print(
+                f"  Epoch {ppo_epoch + 1}/{ppo_cfg.ppo_epochs}: avg loss = {avg_loss:.4f}"
+            )
             metrics[f"train/ppo_epoch_{ppo_epoch}_loss"] = avg_loss
 
     logger.log_metrics(metrics, step=episode)
@@ -843,7 +886,9 @@ def run_episode_based_training(
     num_workers = config.ppo.num_workers
     use_parallel = num_workers > 1
 
-    print(f"Using {'parallel' if use_parallel else 'sequential'} trajectory collection with {num_workers} worker(s)")
+    print(
+        f"Using {'parallel' if use_parallel else 'sequential'} trajectory collection with {num_workers} worker(s)"
+    )
 
     env = None
     if not use_parallel:
@@ -881,7 +926,9 @@ def run_episode_based_training(
                 if not opponent_pool.is_empty():
                     opponent_checkpoint_path, _ = opponent_pool.sample_opponent()
                     opponent_model = GPT(config).to(device)
-                    opponent_pool.load_opponent_model(opponent_model, opponent_checkpoint_path)
+                    opponent_pool.load_opponent_model(
+                        opponent_model, opponent_checkpoint_path
+                    )
                     opponent_temp = Path(model_temp).parent / "opponent_model.pt"
                     torch.save(opponent_model.state_dict(), opponent_temp)
 
@@ -907,6 +954,7 @@ def run_episode_based_training(
                     all_episode_metrics.append(metrics)
 
                 import shutil
+
                 shutil.rmtree(model_temp.parent, ignore_errors=True)
 
                 episode_metrics = {}
@@ -925,7 +973,9 @@ def run_episode_based_training(
 
             if len(trajectories) > 0:
                 model.train()
-                feature_names = env.feature_names if env is not None else get_feature_names()
+                feature_names = (
+                    env.feature_names if env is not None else get_feature_names()
+                )
 
                 train_on_trajectories(
                     model=model,
@@ -946,7 +996,9 @@ def run_episode_based_training(
                     model,
                     metadata={
                         "episode": episode_num,
-                        "total_reward": episode_metrics.get("episode/total_reward", 0.0),
+                        "total_reward": episode_metrics.get(
+                            "episode/total_reward", 0.0
+                        ),
                     },
                 )
 
@@ -992,13 +1044,22 @@ def main():
     )
     parser.add_argument("--iso", type=str, required=True, help="Path to Melee ISO")
     parser.add_argument(
-        "--num-episodes", type=int, default=1000, help="Number of episodes to train (episode mode)"
+        "--num-episodes",
+        type=int,
+        default=1000,
+        help="Number of episodes to train (episode mode)",
     )
     parser.add_argument(
-        "--max-frames", type=int, default=10_000_000, help="Maximum frames to train (distributed mode)"
+        "--max-frames",
+        type=int,
+        default=10_000_000,
+        help="Maximum frames to train (distributed mode)",
     )
     parser.add_argument(
-        "--save-every", type=int, default=10, help="Save checkpoint every N episodes/rollouts"
+        "--save-every",
+        type=int,
+        default=10,
+        help="Save checkpoint every N episodes/rollouts",
     )
     parser.add_argument(
         "--add-to-pool-every",
@@ -1028,6 +1089,7 @@ def main():
     if args.distributed:
         # Create new config with distributed_mode enabled
         from config.config import set_config, Config
+
         config_dict = config.to_dict()
         config_dict["ppo"]["distributed_mode"] = True
         new_config = Config.model_validate(config_dict)
@@ -1040,7 +1102,9 @@ def main():
 
     # Create model
     model = GPT(config).to(device)
-    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+    print(
+        f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters"
+    )
 
     # Load initial checkpoint if provided
     start_episode = load_initial_checkpoint(model, args.checkpoint, device)

@@ -17,24 +17,26 @@ class TestBuildSequenceWindows:
         # Create a trajectory with 100 steps
         steps = []
         for i in range(100):
-            steps.append(Step(
-                state=torch.randn(50),
-                action_logits={
-                    "main_stick": torch.randn(64),
-                    "c_stick": torch.randn(9),
-                    "buttons": torch.randn(5),
-                    "shoulder": torch.randn(5),
-                },
-                action_taken={
-                    "main_stick": torch.tensor(i % 64),
-                    "c_stick": torch.tensor(i % 9),
-                    "buttons": torch.randint(0, 2, (5,)).float(),
-                    "shoulder": torch.tensor(i % 5),
-                },
-                log_prob=torch.tensor(-1.0),
-                value=torch.tensor(0.5),
-                reward=0.1,
-            ))
+            steps.append(
+                Step(
+                    state=torch.randn(50),
+                    action_logits={
+                        "main_stick": torch.randn(64),
+                        "c_stick": torch.randn(9),
+                        "buttons": torch.randn(5),
+                        "shoulder": torch.randn(5),
+                    },
+                    action_taken={
+                        "main_stick": torch.tensor(i % 64),
+                        "c_stick": torch.tensor(i % 9),
+                        "buttons": torch.randint(0, 2, (5,)).float(),
+                        "shoulder": torch.tensor(i % 5),
+                    },
+                    log_prob=torch.tensor(-1.0),
+                    value=torch.tensor(0.5),
+                    reward=0.1,
+                )
+            )
 
         traj = Trajectory(steps=steps)
         traj.compute_gae(gamma=0.99, gae_lambda=0.95)
@@ -73,24 +75,26 @@ class TestBuildSequenceWindows:
         # Create a trajectory with only 10 steps (shorter than seq_len=32)
         steps = []
         for i in range(10):
-            steps.append(Step(
-                state=torch.randn(50),
-                action_logits={
-                    "main_stick": torch.randn(64),
-                    "c_stick": torch.randn(9),
-                    "buttons": torch.randn(5),
-                    "shoulder": torch.randn(5),
-                },
-                action_taken={
-                    "main_stick": torch.tensor(i % 64),
-                    "c_stick": torch.tensor(i % 9),
-                    "buttons": torch.randint(0, 2, (5,)).float(),
-                    "shoulder": torch.tensor(i % 5),
-                },
-                log_prob=torch.tensor(-1.0),
-                value=torch.tensor(0.5),
-                reward=0.1,
-            ))
+            steps.append(
+                Step(
+                    state=torch.randn(50),
+                    action_logits={
+                        "main_stick": torch.randn(64),
+                        "c_stick": torch.randn(9),
+                        "buttons": torch.randn(5),
+                        "shoulder": torch.randn(5),
+                    },
+                    action_taken={
+                        "main_stick": torch.tensor(i % 64),
+                        "c_stick": torch.tensor(i % 9),
+                        "buttons": torch.randint(0, 2, (5,)).float(),
+                        "shoulder": torch.tensor(i % 5),
+                    },
+                    log_prob=torch.tensor(-1.0),
+                    value=torch.tensor(0.5),
+                    reward=0.1,
+                )
+            )
 
         traj = Trajectory(steps=steps)
         traj.compute_gae(gamma=0.99, gae_lambda=0.95)
@@ -120,24 +124,26 @@ class TestBuildSequenceWindows:
             steps = []
             traj_len = 50 + traj_idx * 20  # Different lengths
             for i in range(traj_len):
-                steps.append(Step(
-                    state=torch.randn(50),
-                    action_logits={
-                        "main_stick": torch.randn(64),
-                        "c_stick": torch.randn(9),
-                        "buttons": torch.randn(5),
-                        "shoulder": torch.randn(5),
-                    },
-                    action_taken={
-                        "main_stick": torch.tensor(i % 64),
-                        "c_stick": torch.tensor(i % 9),
-                        "buttons": torch.randint(0, 2, (5,)).float(),
-                        "shoulder": torch.tensor(i % 5),
-                    },
-                    log_prob=torch.tensor(-1.0),
-                    value=torch.tensor(0.5),
-                    reward=0.1,
-                ))
+                steps.append(
+                    Step(
+                        state=torch.randn(50),
+                        action_logits={
+                            "main_stick": torch.randn(64),
+                            "c_stick": torch.randn(9),
+                            "buttons": torch.randn(5),
+                            "shoulder": torch.randn(5),
+                        },
+                        action_taken={
+                            "main_stick": torch.tensor(i % 64),
+                            "c_stick": torch.tensor(i % 9),
+                            "buttons": torch.randint(0, 2, (5,)).float(),
+                            "shoulder": torch.tensor(i % 5),
+                        },
+                        log_prob=torch.tensor(-1.0),
+                        value=torch.tensor(0.5),
+                        reward=0.1,
+                    )
+                )
             traj = Trajectory(steps=steps)
             traj.compute_gae(gamma=0.99, gae_lambda=0.95)
             trajectories.append(traj)
@@ -164,24 +170,26 @@ class TestBuildSequenceWindows:
 
         steps = []
         for i in range(50):
-            steps.append(Step(
-                state=torch.randn(50),
-                action_logits={
-                    "main_stick": torch.randn(64),
-                    "c_stick": torch.randn(9),
-                    "buttons": torch.randn(5),
-                    "shoulder": torch.randn(5),
-                },
-                action_taken={
-                    "main_stick": torch.tensor(i % 64),
-                    "c_stick": torch.tensor(i % 9),
-                    "buttons": torch.randint(0, 2, (5,)).float(),
-                    "shoulder": torch.tensor(i % 5),
-                },
-                log_prob=torch.tensor(-1.0),
-                value=torch.tensor(0.5),
-                reward=0.1,
-            ))
+            steps.append(
+                Step(
+                    state=torch.randn(50),
+                    action_logits={
+                        "main_stick": torch.randn(64),
+                        "c_stick": torch.randn(9),
+                        "buttons": torch.randn(5),
+                        "shoulder": torch.randn(5),
+                    },
+                    action_taken={
+                        "main_stick": torch.tensor(i % 64),
+                        "c_stick": torch.tensor(i % 9),
+                        "buttons": torch.randint(0, 2, (5,)).float(),
+                        "shoulder": torch.tensor(i % 5),
+                    },
+                    log_prob=torch.tensor(-1.0),
+                    value=torch.tensor(0.5),
+                    reward=0.1,
+                )
+            )
         valid_traj = Trajectory(steps=steps)
         valid_traj.compute_gae(gamma=0.99, gae_lambda=0.95)
 
@@ -345,12 +353,8 @@ class TestComputeTotalPPOLossSequence:
         new_action_logits = {
             "main_stick": torch.randn(B, seq_len, num_main, requires_grad=True)
         }
-        old_action_logits = {
-            "main_stick": torch.randn(B, seq_len, num_main)
-        }
-        actions_taken = {
-            "main_stick": torch.randint(0, num_main, (B, seq_len))
-        }
+        old_action_logits = {"main_stick": torch.randn(B, seq_len, num_main)}
+        actions_taken = {"main_stick": torch.randint(0, num_main, (B, seq_len))}
 
         new_values = torch.randn(B, seq_len, requires_grad=True)
         old_values = torch.randn(B, seq_len)

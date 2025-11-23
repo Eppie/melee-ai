@@ -95,9 +95,7 @@ def _create_console(dolphin_path: Path) -> Console:
 
 def log_fps(frame: int, frames_since_log: int, elapsed: float) -> None:
     fps = frames_since_log / elapsed if elapsed > 0 else float("inf")
-    print(
-        f"[Frame {frame}] Average FPS over last {frames_since_log} frames: {fps:.2f}"
-    )
+    print(f"[Frame {frame}] Average FPS over last {frames_since_log} frames: {fps:.2f}")
 
 
 def main() -> int:

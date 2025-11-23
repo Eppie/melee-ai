@@ -103,9 +103,15 @@ class MetricsAccumulator:
         self.c_rep_total = torch.tensor(0, dtype=torch.long, device=device)
 
         # Button metrics
-        self.btn_true_positives = torch.zeros(K_buttons, dtype=torch.float32, device=device)
-        self.btn_false_positives = torch.zeros(K_buttons, dtype=torch.float32, device=device)
-        self.btn_false_negatives = torch.zeros(K_buttons, dtype=torch.float32, device=device)
+        self.btn_true_positives = torch.zeros(
+            K_buttons, dtype=torch.float32, device=device
+        )
+        self.btn_false_positives = torch.zeros(
+            K_buttons, dtype=torch.float32, device=device
+        )
+        self.btn_false_negatives = torch.zeros(
+            K_buttons, dtype=torch.float32, device=device
+        )
         self.btn_pos_counts = torch.zeros(K_buttons, dtype=torch.float32, device=device)
         self.btn_total = torch.tensor(0, dtype=torch.long, device=device)
         self.btn_em_correct = torch.tensor(0, dtype=torch.long, device=device)
@@ -116,7 +122,9 @@ class MetricsAccumulator:
         # Shoulder metrics
         self.shoulder_correct = torch.tensor(0, dtype=torch.long, device=device)
         self.shoulder_total = torch.tensor(0, dtype=torch.long, device=device)
-        self.shoulder_label_counts = torch.zeros(K_shoulder, dtype=torch.long, device=device)
+        self.shoulder_label_counts = torch.zeros(
+            K_shoulder, dtype=torch.long, device=device
+        )
         self.shoulder_maj_correct = torch.tensor(0, dtype=torch.long, device=device)
 
     def _majority_label(self, label_counts: torch.Tensor) -> int:
@@ -200,9 +208,7 @@ class MetricsAccumulator:
 
         # Repeat baseline
         if repeat_mask.any():
-            rep_correct = (
-                repeat_baseline[repeat_mask] == true_idx[repeat_mask]
-            ).sum()
+            rep_correct = (repeat_baseline[repeat_mask] == true_idx[repeat_mask]).sum()
             setattr(
                 self,
                 rep_correct_attr,
@@ -261,7 +267,11 @@ class MetricsAccumulator:
         # Majority baseline (all zeros or all ones depending on majority)
         pos_rate = true_flat.mean(dim=0)
         maj_pred = (pos_rate >= 0.5).float().unsqueeze(0).expand_as(pred_flat)
-        maj_em = (maj_pred.reshape(batch_size, sequence_length, num_buttons) == true_buttons).all(dim=-1).sum()
+        maj_em = (
+            (maj_pred.reshape(batch_size, sequence_length, num_buttons) == true_buttons)
+            .all(dim=-1)
+            .sum()
+        )
         self.btn_maj_em_correct += maj_em
 
     def update_shoulder_metrics(

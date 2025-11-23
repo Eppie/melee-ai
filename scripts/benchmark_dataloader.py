@@ -13,7 +13,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from config.config import get_config, init_config  # noqa: E402
 from feature_transforms import feature_spec_from_config  # noqa: E402
-from window_dataset import RandomWindowSampler, WindowDataset, worker_init_fn  # noqa: E402
+from window_dataset import (
+    RandomWindowSampler,
+    WindowDataset,
+    worker_init_fn,
+)  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:

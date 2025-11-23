@@ -81,6 +81,7 @@ def run_worker(
     except Exception as e:
         print(f"[Worker {worker_id}] Error: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         worker.shutdown()
@@ -125,6 +126,7 @@ class SimulationWorker:
 
         # Reward computation
         from config.config import get_config
+
         cfg = get_config()
         target_names = []  # We don't need targets for reward computation
         self.colmap = ColumnMap(self.feature_names, target_names)
@@ -185,11 +187,15 @@ class SimulationWorker:
 
         # Connect
         if not self.console.connect():
-            raise RuntimeError(f"[Worker {self.worker_id}] Failed to connect to console")
+            raise RuntimeError(
+                f"[Worker {self.worker_id}] Failed to connect to console"
+            )
 
         for controller in self.controllers.values():
             if not controller.connect():
-                raise RuntimeError(f"[Worker {self.worker_id}] Failed to connect controller")
+                raise RuntimeError(
+                    f"[Worker {self.worker_id}] Failed to connect controller"
+                )
 
         print(f"[Worker {self.worker_id}] Console initialized")
 
@@ -306,8 +312,10 @@ class SimulationWorker:
             if p1.stock == 0 or p2.stock == 0:
                 done = True
                 winner = "P1" if p1.stock > 0 else "P2"
-                print(f"[Worker {self.worker_id}] Match ended: {winner} wins "
-                      f"(P1: {p1.stock} stocks, P2: {p2.stock} stocks)")
+                print(
+                    f"[Worker {self.worker_id}] Match ended: {winner} wins "
+                    f"(P1: {p1.stock} stocks, P2: {p2.stock} stocks)"
+                )
 
         # Send state to coordinator
         self.state_queue.put((self.worker_id, features, reward, done))
@@ -343,7 +351,9 @@ class SimulationWorker:
         Uses the same reward computation as the original implementation.
         """
         # Stack for batch format expected by compute_frame_rewards
-        states = torch.stack([prev_features, curr_features], dim=0).unsqueeze(0)  # [1, 2, F]
+        states = torch.stack([prev_features, curr_features], dim=0).unsqueeze(
+            0
+        )  # [1, 2, F]
         rewards = compute_frame_rewards(states, self.reward_feature_idx)  # [1, 1]
         return float(rewards[0, 0].item())
 

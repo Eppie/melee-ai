@@ -218,12 +218,18 @@ class PolicyLossComputer:
         )
 
         # Batch .item() calls into single GPU->CPU transfer
-        component_values = torch.stack([
-            loss_components["main"],
-            loss_components["c"],
-            loss_components["buttons"],
-            loss_components["shoulder"],
-        ]).cpu().tolist()
+        component_values = (
+            torch.stack(
+                [
+                    loss_components["main"],
+                    loss_components["c"],
+                    loss_components["buttons"],
+                    loss_components["shoulder"],
+                ]
+            )
+            .cpu()
+            .tolist()
+        )
 
         return loss_components["total"], {
             "main": component_values[0],

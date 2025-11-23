@@ -25,7 +25,9 @@ def _write_mismatched_checkpoint(path: Path, model: torch.nn.Module) -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     scaler = GradScaler(enabled=False)
     state = model.state_dict()
-    partial_state = {"weight": state["weight"].clone()}  # drop bias to force missing keys
+    partial_state = {
+        "weight": state["weight"].clone()
+    }  # drop bias to force missing keys
     ckpt = {
         "model": partial_state,
         "optimizer": optimizer.state_dict(),
@@ -149,6 +151,7 @@ def test_load_config_from_latest_checkpoint(tmp_path: Path) -> None:
     save_checkpoint(path=tmp_path / "ckpt1.pt", model=model, config=config1)
 
     import time
+
     time.sleep(0.01)  # Ensure different mtime
 
     # Create second (newer) checkpoint
@@ -285,5 +288,6 @@ def test_set_config(tmp_path: Path) -> None:
 
     assert result is config
     from config.config import get_config
+
     assert get_config() is config
     assert get_config().train.lr == 9e-5

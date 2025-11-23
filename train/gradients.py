@@ -53,11 +53,20 @@ def collect_gradient_diagnostics(
 
     if not grads:
         return {
-            "total_norm": 0.0, "mean_abs": 0.0, "mean": 0.0, "std": 0.0,
-            "max_abs": 0.0, "zero_fraction": 0.0, "zero_count": 0.0,
-            "nan_count": 0.0, "inf_count": 0.0, "param_total_norm": 0.0,
-            "param_max_abs": 0.0, "grad_param_ratio_mean": 0.0,
-            "grad_param_ratio_max": 0.0, "grad_param_ratio_min": 0.0,
+            "total_norm": 0.0,
+            "mean_abs": 0.0,
+            "mean": 0.0,
+            "std": 0.0,
+            "max_abs": 0.0,
+            "zero_fraction": 0.0,
+            "zero_count": 0.0,
+            "nan_count": 0.0,
+            "inf_count": 0.0,
+            "param_total_norm": 0.0,
+            "param_max_abs": 0.0,
+            "grad_param_ratio_mean": 0.0,
+            "grad_param_ratio_max": 0.0,
+            "grad_param_ratio_min": 0.0,
             "grad_to_param_norm_ratio": 0.0,
         }
 
@@ -73,17 +82,19 @@ def collect_gradient_diagnostics(
     param_abs = all_params.abs()
 
     # Batch all reductions into a single tensor for one GPU->CPU transfer
-    stats = torch.stack([
-        grad_sq.sum(),                    # 0: total_sq
-        grad_abs.sum(),                   # 1: total_abs
-        all_grads.sum(),                  # 2: total_sum
-        (all_grads == 0).sum().float(),   # 3: zero_elems
-        torch.isnan(all_grads).sum().float(),  # 4: nan_elems
-        torch.isinf(all_grads).sum().float(),  # 5: inf_elems
-        grad_abs.max(),                   # 6: max_grad_abs
-        param_sq.sum(),                   # 7: total_param_sq
-        param_abs.max(),                  # 8: max_param_abs
-    ])
+    stats = torch.stack(
+        [
+            grad_sq.sum(),  # 0: total_sq
+            grad_abs.sum(),  # 1: total_abs
+            all_grads.sum(),  # 2: total_sum
+            (all_grads == 0).sum().float(),  # 3: zero_elems
+            torch.isnan(all_grads).sum().float(),  # 4: nan_elems
+            torch.isinf(all_grads).sum().float(),  # 5: inf_elems
+            grad_abs.max(),  # 6: max_grad_abs
+            param_sq.sum(),  # 7: total_param_sq
+            param_abs.max(),  # 8: max_param_abs
+        ]
+    )
 
     # Single GPU->CPU transfer
     stats_cpu = stats.cpu().tolist()

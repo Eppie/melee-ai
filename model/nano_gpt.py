@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 
 from model.attention import CausalSelfAttention
+from model.head_cross_attention import HeadCrossAttention
 from model.norm import norm
 from model.output_head import SimpleHead
 from utils import _resolve_device
@@ -103,6 +104,15 @@ class GPT(nn.Module):
             self.embedding_dim, self.shoulder_output_size, hidden=head_hidden_dim
         )
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
+
+        # Cross-attention for heads
+        self.use_head_cross_attention = model_config.use_head_cross_attention
+        if self.use_head_cross_attention:
+            self.head_cross_attention = HeadCrossAttention(
+                hidden_dim=head_hidden_dim,
+                num_head_types=4,  # buttons, main_stick, c_stick, shoulder
+                num_attn_heads=model_config.head_cross_attention_heads,
+            )
 
         # TODO: Do we need this multiplier?
         self.rotary_sequence_length = self.block_size * 2
@@ -197,10 +207,46 @@ class GPT(nn.Module):
         hidden_states = norm(hidden_states)
 
         base_hidden_states = hidden_states
-        button_logits = self.button_head(base_hidden_states)
-        main_stick = self.main_stick_head(base_hidden_states)
-        c_stick = self.c_stick_head(base_hidden_states)
-        shoulder = self.shoulder_head(base_hidden_states)
+
+        if self.use_head_cross_attention:
+            # Get intermediate features from each head
+            button_features = self.button_head.forward_intermediate(base_hidden_states)
+            main_stick_features = self.main_stick_head.forward_intermediate(
+                base_hidden_states
+            )
+            c_stick_features = self.c_stick_head.forward_intermediate(
+                base_hidden_states
+            )
+            shoulder_features = self.shoulder_head.forward_intermediate(
+                base_hidden_states
+            )
+
+            # Apply cross-attention across heads
+            head_features_list = [
+                button_features,
+                main_stick_features,
+                c_stick_features,
+                shoulder_features,
+            ]
+            attended_features = self.head_cross_attention(head_features_list)
+
+            # Project to final outputs from attended features
+            button_logits = self.button_head.forward_from_intermediate(
+                attended_features[0]
+            )
+            main_stick = self.main_stick_head.forward_from_intermediate(
+                attended_features[1]
+            )
+            c_stick = self.c_stick_head.forward_from_intermediate(attended_features[2])
+            shoulder = self.shoulder_head.forward_from_intermediate(
+                attended_features[3]
+            )
+        else:
+            # Original parallel heads (no cross-attention)
+            button_logits = self.button_head(base_hidden_states)
+            main_stick = self.main_stick_head(base_hidden_states)
+            c_stick = self.c_stick_head(base_hidden_states)
+            shoulder = self.shoulder_head(base_hidden_states)
 
         outputs = TensorDict(
             {

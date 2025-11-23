@@ -55,14 +55,28 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
     batch_size, sequence_length, _ = features_batch.shape
 
     # Categoricals back to long indices
-    stage = features_batch[..., column_map.stage_idx].to(torch.long).unsqueeze(-1)  # [batch_size,sequence_length,1]
-    ego_character = features_batch[..., column_map.ego_char_idx].to(torch.long).unsqueeze(-1)
-    opp_character = features_batch[..., column_map.opp_char_idx].to(torch.long).unsqueeze(-1)
-    ego_action = features_batch[..., column_map.ego_action_idx].to(torch.long).unsqueeze(-1)
-    opp_action = features_batch[..., column_map.opp_action_idx].to(torch.long).unsqueeze(-1)
+    stage = (
+        features_batch[..., column_map.stage_idx].to(torch.long).unsqueeze(-1)
+    )  # [batch_size,sequence_length,1]
+    ego_character = (
+        features_batch[..., column_map.ego_char_idx].to(torch.long).unsqueeze(-1)
+    )
+    opp_character = (
+        features_batch[..., column_map.opp_char_idx].to(torch.long).unsqueeze(-1)
+    )
+    ego_action = (
+        features_batch[..., column_map.ego_action_idx].to(torch.long).unsqueeze(-1)
+    )
+    opp_action = (
+        features_batch[..., column_map.opp_action_idx].to(torch.long).unsqueeze(-1)
+    )
 
-    gamestate = features_batch[..., column_map.gamestate_idxs]  # [batch_size,sequence_length,Gg]
-    controller = features_batch[..., column_map.controller_idxs]  # [batch_size,sequence_length,Gc]
+    gamestate = features_batch[
+        ..., column_map.gamestate_idxs
+    ]  # [batch_size,sequence_length,Gg]
+    controller = features_batch[
+        ..., column_map.controller_idxs
+    ]  # [batch_size,sequence_length,Gc]
 
     return TensorDict(
         {
@@ -202,20 +216,26 @@ def compute_component_sample_weights(
 
     # --- MAIN ---
     main_idx = target_info["main_idx"]  # [batch_size, sequence_length]
-    main_change = torch.zeros((batch_size, sequence_length), device=device, dtype=torch.bool)
+    main_change = torch.zeros(
+        (batch_size, sequence_length), device=device, dtype=torch.bool
+    )
     main_change[:, 1:] = main_idx[:, 1:] != main_idx[:, :-1]
     w_main = torch.where(main_change, main_change_weight, hold_weight).to(torch.float32)
     w_main = _normalize(w_main)
 
     # --- C-STICK ---
     c_idx = target_info["c_idx"]
-    c_change = torch.zeros((batch_size, sequence_length), device=device, dtype=torch.bool)
+    c_change = torch.zeros(
+        (batch_size, sequence_length), device=device, dtype=torch.bool
+    )
     c_change[:, 1:] = c_idx[:, 1:] != c_idx[:, :-1]
     w_c = torch.where(c_change, c_change_weight, hold_weight).to(torch.float32)
     w_c = _normalize(w_c)
 
     sh_idx = target_info["shoulder_idx"]
-    sh_change = torch.zeros((batch_size, sequence_length), device=device, dtype=torch.bool)
+    sh_change = torch.zeros(
+        (batch_size, sequence_length), device=device, dtype=torch.bool
+    )
     sh_change[:, 1:] = sh_idx[:, 1:] != sh_idx[:, :-1]
     w_shoulder = torch.where(sh_change, shoulder_change_weight, hold_weight).to(
         torch.float32
@@ -223,11 +243,15 @@ def compute_component_sample_weights(
     w_shoulder = _normalize(w_shoulder)
 
     # --- BUTTONS (per-button) ---
-    btn_t = target_info["buttons"].to(torch.float32)  # [batch_size, sequence_length, K], {0,1}
+    btn_t = target_info["buttons"].to(
+        torch.float32
+    )  # [batch_size, sequence_length, K], {0,1}
     K = btn_t.shape[-1]
 
     # Change mask per button at frame t>0
-    btn_change = torch.zeros((batch_size, sequence_length, K), device=device, dtype=torch.bool)
+    btn_change = torch.zeros(
+        (batch_size, sequence_length, K), device=device, dtype=torch.bool
+    )
     btn_change[:, 1:, :] = btn_t[:, 1:, :] != btn_t[:, :-1, :]
 
     # Build per-button change ratios
@@ -240,7 +264,9 @@ def compute_component_sample_weights(
     )
     for k, name in enumerate(button_names):
         if name in ratios.buttons_change_per_key:
-            per_button_ratio[k] = float(_blend(ratios.buttons_change_per_key[name]).item())
+            per_button_ratio[k] = float(
+                _blend(ratios.buttons_change_per_key[name]).item()
+            )
 
     # weights = hold_base on holds; ratio_k on changes of button k
     w_buttons = torch.where(

@@ -321,9 +321,7 @@ class WindowDataset(Dataset):
             self._feature_names, self.transforms
         )
         self._shard_cache: Dict[int, zarr.Group] = {}
-        self._episode_cache: Dict[
-            Tuple[int, int], Tuple[zarr.Array, zarr.Array]
-        ] = {}
+        self._episode_cache: Dict[Tuple[int, int], Tuple[zarr.Array, zarr.Array]] = {}
 
     def __len__(self) -> int:
         """Return the total number of sliding windows across the corpus.

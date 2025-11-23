@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import wandb
 
+
 @dataclass
 class WandbConfig:
     """Configuration for wandb initialization."""

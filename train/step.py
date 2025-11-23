@@ -118,6 +118,7 @@ def perform_forward_pass(
         change_scale=imbalance_scale,
     )
 
+
 # TODO: We are probably failing to call clip_grad_norm if collect_grad_stats is False
 def perform_backward_pass(
     components: TrainingComponents,

@@ -38,6 +38,8 @@ class GPTConfig(BaseModel):
     gamma: float = Field(default=0.999, ge=0, le=1)
     n_kv_head: Optional[int] = Field(default=4, ge=1)
     head_flow: Literal["sequential", "parallel"] = "parallel"
+    use_head_cross_attention: bool = Field(default=False)
+    head_cross_attention_heads: int = Field(default=4, ge=1)
     target_shapes_by_head: Dict[str, int] = Field(
         default_factory=lambda: {
             "main_stick": len(CONTROL_STICK_QUANTIZED),

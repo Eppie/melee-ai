@@ -521,7 +521,9 @@ def compute_total_ppo_loss(
         for head in new_action_logits.keys():
             logits = new_action_logits[head]  # [B, seq_len, num_classes]
             logits_flat = logits.reshape(B * seq_len, -1)  # [B*seq_len, num_classes]
-            new_action_logits_flat[head] = logits_flat[mask_flat]  # [num_valid, num_classes]
+            new_action_logits_flat[head] = logits_flat[
+                mask_flat
+            ]  # [num_valid, num_classes]
 
         for head in old_action_logits.keys():
             logits = old_action_logits[head]
@@ -531,7 +533,9 @@ def compute_total_ppo_loss(
         for head in actions_taken.keys():
             actions = actions_taken[head]  # [B, seq_len] or [B, seq_len, num_buttons]
             if actions.dim() == 3:
-                actions_flat = actions.reshape(B * seq_len, -1)  # [B*seq_len, num_buttons]
+                actions_flat = actions.reshape(
+                    B * seq_len, -1
+                )  # [B*seq_len, num_buttons]
                 actions_taken_flat[head] = actions_flat[mask_flat]
             else:
                 actions_flat = actions.reshape(-1)  # [B*seq_len]
@@ -551,10 +555,14 @@ def compute_total_ppo_loss(
         actions_taken_flat = {}
 
         for head in new_action_logits.keys():
-            new_action_logits_flat[head] = new_action_logits[head].reshape(B * seq_len, -1)
+            new_action_logits_flat[head] = new_action_logits[head].reshape(
+                B * seq_len, -1
+            )
 
         for head in old_action_logits.keys():
-            old_action_logits_flat[head] = old_action_logits[head].reshape(B * seq_len, -1)
+            old_action_logits_flat[head] = old_action_logits[head].reshape(
+                B * seq_len, -1
+            )
 
         for head in actions_taken.keys():
             actions = actions_taken[head]

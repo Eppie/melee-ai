@@ -38,13 +38,19 @@ def _compute_tensor_stats_batch(tensors: List[torch.Tensor]) -> torch.Tensor:
         min_val = torch.amin(flat)
         max_val = torch.amax(flat)
         mean_val = flat.mean()
-        std_val = flat.std(unbiased=False) if flat.numel() > 1 else torch.zeros((), dtype=flat.dtype, device=flat.device)
+        std_val = (
+            flat.std(unbiased=False)
+            if flat.numel() > 1
+            else torch.zeros((), dtype=flat.dtype, device=flat.device)
+        )
         stats_list.append(torch.stack([min_val, max_val, mean_val, std_val]))
 
     return torch.stack(stats_list)
 
 
-def gather_logit_and_bias_metrics_batched(pred: TensorDict, model: GPT) -> Dict[str, float]:
+def gather_logit_and_bias_metrics_batched(
+    pred: TensorDict, model: GPT
+) -> Dict[str, float]:
     """Gather all logit and bias metrics with a single GPU->CPU transfer."""
 
     def get_head_bias(module: nn.Module) -> torch.Tensor:
@@ -55,15 +61,28 @@ def gather_logit_and_bias_metrics_batched(pred: TensorDict, model: GPT) -> Dict[
 
     # Collect all tensors we need stats for
     tensor_names = [
-        "logits/main", "logits/c", "logits/buttons", "logits/shoulder",
-        "bias/input_projection", "bias/buttons_out", "bias/main_stick_out",
-        "bias/c_stick_out", "bias/shoulder_out", "bias/value_out",
+        "logits/main",
+        "logits/c",
+        "logits/buttons",
+        "logits/shoulder",
+        "bias/input_projection",
+        "bias/buttons_out",
+        "bias/main_stick_out",
+        "bias/c_stick_out",
+        "bias/shoulder_out",
+        "bias/value_out",
     ]
     tensors = [
-        pred["main_stick"], pred["c_stick"], pred["buttons"], pred["shoulder"],
-        model.projection_down.bias, get_head_bias(model.button_head),
-        get_head_bias(model.main_stick_head), get_head_bias(model.c_stick_head),
-        get_head_bias(model.shoulder_head), get_head_bias(model.value_head),
+        pred["main_stick"],
+        pred["c_stick"],
+        pred["buttons"],
+        pred["shoulder"],
+        model.projection_down.bias,
+        get_head_bias(model.button_head),
+        get_head_bias(model.main_stick_head),
+        get_head_bias(model.c_stick_head),
+        get_head_bias(model.shoulder_head),
+        get_head_bias(model.value_head),
     ]
 
     # Compute all stats on GPU, then transfer once
@@ -79,7 +98,7 @@ def gather_logit_and_bias_metrics_batched(pred: TensorDict, model: GPT) -> Dict[
 
 
 def extract_loss_breakdown(
-    loss_components: Dict[str, torch.Tensor]
+    loss_components: Dict[str, torch.Tensor],
 ) -> Dict[str, float]:
     keys = ["main", "c", "buttons", "shoulder", "value"]
     # Batch the loss component transfers
@@ -128,22 +147,30 @@ def prepare_logging_bundle(
     target_main_2d = target_main.view(batch_size, sequence_length)
     target_c_2d = target_c.view(batch_size, sequence_length)
 
-    main_change_mask = torch.zeros((batch_size, sequence_length), dtype=torch.bool, device=device)
+    main_change_mask = torch.zeros(
+        (batch_size, sequence_length), dtype=torch.bool, device=device
+    )
     main_change_mask[:, 1:] = target_main_2d[:, 1:] != target_main_2d[:, :-1]
     main_hold_mask = ~main_change_mask
     main_hold_mask[:, 0] = True
 
-    c_change_mask = torch.zeros((batch_size, sequence_length), dtype=torch.bool, device=device)
+    c_change_mask = torch.zeros(
+        (batch_size, sequence_length), dtype=torch.bool, device=device
+    )
     c_change_mask[:, 1:] = target_c_2d[:, 1:] != target_c_2d[:, :-1]
     c_hold_mask = ~c_change_mask
     c_hold_mask[:, 0] = True
 
-    btn_change_mask = torch.zeros((batch_size, sequence_length), device=device, dtype=torch.bool)
+    btn_change_mask = torch.zeros(
+        (batch_size, sequence_length), device=device, dtype=torch.bool
+    )
     btn_change_mask[:, 1:] = torch.any(target_btn[:, 1:] != target_btn[:, :-1], dim=-1)
     btn_hold_mask = ~btn_change_mask
     btn_hold_mask[:, 0] = True
 
-    rep_mask = torch.ones((batch_size, sequence_length), dtype=torch.bool, device=device)
+    rep_mask = torch.ones(
+        (batch_size, sequence_length), dtype=torch.bool, device=device
+    )
     rep_mask[:, 0] = False
 
     # Compute predictions
@@ -172,24 +199,34 @@ def prepare_logging_bundle(
     sh_rep[:, 1:] = sh_true_idx[:, :-1]
 
     # Compute all accuracy metrics on GPU and batch them
-    acc_metrics = torch.stack([
-        # Main stick accuracies
-        (main_pred == target_main_2d).float().mean(),
-        _compute_masked_accuracy(main_pred, target_main_2d, main_change_mask),
-        _compute_masked_accuracy(main_pred, target_main_2d, main_hold_mask),
-        _compute_masked_accuracy(main_rep, target_main_2d, rep_mask),
-        # C-stick accuracies
-        (c_pred == target_c_2d).float().mean(),
-        _compute_masked_accuracy(c_pred, target_c_2d, c_change_mask),
-        _compute_masked_accuracy(c_pred, target_c_2d, c_hold_mask),
-        _compute_masked_accuracy(c_rep, target_c_2d, rep_mask),
-        # Button EM accuracies
-        _compute_masked_accuracy(correct_btn_em.int(), torch.ones_like(correct_btn_em, dtype=torch.int32), btn_change_mask),
-        _compute_masked_accuracy(correct_btn_em.int(), torch.ones_like(correct_btn_em, dtype=torch.int32), btn_hold_mask),
-        # Shoulder accuracies
-        (sh_pred_idx == sh_true_idx).float().mean(),
-        _compute_masked_accuracy(sh_rep, sh_true_idx, rep_mask),
-    ])
+    acc_metrics = torch.stack(
+        [
+            # Main stick accuracies
+            (main_pred == target_main_2d).float().mean(),
+            _compute_masked_accuracy(main_pred, target_main_2d, main_change_mask),
+            _compute_masked_accuracy(main_pred, target_main_2d, main_hold_mask),
+            _compute_masked_accuracy(main_rep, target_main_2d, rep_mask),
+            # C-stick accuracies
+            (c_pred == target_c_2d).float().mean(),
+            _compute_masked_accuracy(c_pred, target_c_2d, c_change_mask),
+            _compute_masked_accuracy(c_pred, target_c_2d, c_hold_mask),
+            _compute_masked_accuracy(c_rep, target_c_2d, rep_mask),
+            # Button EM accuracies
+            _compute_masked_accuracy(
+                correct_btn_em.int(),
+                torch.ones_like(correct_btn_em, dtype=torch.int32),
+                btn_change_mask,
+            ),
+            _compute_masked_accuracy(
+                correct_btn_em.int(),
+                torch.ones_like(correct_btn_em, dtype=torch.int32),
+                btn_hold_mask,
+            ),
+            # Shoulder accuracies
+            (sh_pred_idx == sh_true_idx).float().mean(),
+            _compute_masked_accuracy(sh_rep, sh_true_idx, rep_mask),
+        ]
+    )
 
     # Button per-class metrics (computed on GPU)
     btn_true_flat = target_btn.reshape(-1, target_btn.shape[-1]).float()
@@ -226,13 +263,16 @@ def prepare_logging_bundle(
     vp_centered = vp_flat - vp_flat.mean()
     vt_centered = vt_flat - vt_flat.mean()
 
-    value_metrics = torch.stack([
-        forward_result.value_pred.mean(),
-        value_target_eval.mean(),
-        (value_diff ** 2).mean(),
-        value_diff.abs().mean(),
-        (vp_centered * vt_centered).sum() / (torch.sqrt((vp_centered**2).sum() * (vt_centered**2).sum()) + 1e-8),
-    ])
+    value_metrics = torch.stack(
+        [
+            forward_result.value_pred.mean(),
+            value_target_eval.mean(),
+            (value_diff**2).mean(),
+            value_diff.abs().mean(),
+            (vp_centered * vt_centered).sum()
+            / (torch.sqrt((vp_centered**2).sum() * (vt_centered**2).sum()) + 1e-8),
+        ]
+    )
 
     # Shoulder majority label
     sh_flat = sh_true_idx.reshape(-1)
@@ -241,34 +281,51 @@ def prepare_logging_bundle(
     acc_sh_maj = (sh_true_idx == sh_major_lbl).float().mean()
 
     # Batch all GPU tensor metrics for single GPU->CPU transfer
-    all_scalars = torch.cat([
-        acc_metrics,
-        value_metrics,
-        acc_sh_maj.unsqueeze(0),
-        btn_match,
-        btn_f1,
-        btn_prec,
-        btn_rec,
-        btn_rate,
-    ])
+    all_scalars = torch.cat(
+        [
+            acc_metrics,
+            value_metrics,
+            acc_sh_maj.unsqueeze(0),
+            btn_match,
+            btn_f1,
+            btn_prec,
+            btn_rec,
+            btn_rate,
+        ]
+    )
 
     # Single GPU->CPU transfer for all tensor metrics
     all_scalars_cpu = all_scalars.cpu().tolist()
 
     # Unpack the values
     idx = 0
-    acc_main_b, acc_main_chg, acc_main_hold, acc_main_rep_b = all_scalars_cpu[idx:idx+4]; idx += 4
-    acc_c_b, acc_c_chg, acc_c_hold, acc_c_rep_b = all_scalars_cpu[idx:idx+4]; idx += 4
-    em_btn_chg, em_btn_hold = all_scalars_cpu[idx:idx+2]; idx += 2
-    acc_sh, acc_sh_rep = all_scalars_cpu[idx:idx+2]; idx += 2
-    value_pred_mean, value_target_mean, value_mse, value_mae, correlation = all_scalars_cpu[idx:idx+5]; idx += 5
-    acc_sh_maj = all_scalars_cpu[idx]; idx += 1
+    acc_main_b, acc_main_chg, acc_main_hold, acc_main_rep_b = all_scalars_cpu[
+        idx : idx + 4
+    ]
+    idx += 4
+    acc_c_b, acc_c_chg, acc_c_hold, acc_c_rep_b = all_scalars_cpu[idx : idx + 4]
+    idx += 4
+    em_btn_chg, em_btn_hold = all_scalars_cpu[idx : idx + 2]
+    idx += 2
+    acc_sh, acc_sh_rep = all_scalars_cpu[idx : idx + 2]
+    idx += 2
+    value_pred_mean, value_target_mean, value_mse, value_mae, correlation = (
+        all_scalars_cpu[idx : idx + 5]
+    )
+    idx += 5
+    acc_sh_maj = all_scalars_cpu[idx]
+    idx += 1
     num_buttons = len(CONTROLLER_KEY_GROUPS["buttons"])
-    btn_match_cpu = all_scalars_cpu[idx:idx+num_buttons]; idx += num_buttons
-    btn_f1_cpu = all_scalars_cpu[idx:idx+num_buttons]; idx += num_buttons
-    btn_prec_cpu = all_scalars_cpu[idx:idx+num_buttons]; idx += num_buttons
-    btn_rec_cpu = all_scalars_cpu[idx:idx+num_buttons]; idx += num_buttons
-    btn_rate_cpu = all_scalars_cpu[idx:idx+num_buttons]; idx += num_buttons
+    btn_match_cpu = all_scalars_cpu[idx : idx + num_buttons]
+    idx += num_buttons
+    btn_f1_cpu = all_scalars_cpu[idx : idx + num_buttons]
+    idx += num_buttons
+    btn_prec_cpu = all_scalars_cpu[idx : idx + num_buttons]
+    idx += num_buttons
+    btn_rec_cpu = all_scalars_cpu[idx : idx + num_buttons]
+    idx += num_buttons
+    btn_rate_cpu = all_scalars_cpu[idx : idx + num_buttons]
+    idx += num_buttons
 
     # Confusion matrix (requires CPU anyway)
     K_main = int(target_info.get("main_K", logits_main.shape[-1]))
@@ -296,17 +353,23 @@ def prepare_logging_bundle(
     ]
 
     btn_line1 = f"  BUTTONS:  EM {em_b:.3f} (chg: {em_btn_chg:.3f}, hold: {em_btn_hold:.3f}) | F1μ {f1_b:.3f}"
-    btn_line2 = f"            maj F1μ {f1_maj:.3f} | rep F1μ {f1_rep:.3f} | EM_rep {em_rep:.3f}"
+    btn_line2 = (
+        f"            maj F1μ {f1_maj:.3f} | rep F1μ {f1_rep:.3f} | EM_rep {em_rep:.3f}"
+    )
 
     per_button: List[str] = []
     for i, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
         label = _BUTTON_PRETTY.get(name, name)
-        per_button.append(f"{label}: acc {btn_match_cpu[i]:.3f} F1 {btn_f1_cpu[i]:.3f} rate {btn_rate_cpu[i]:.3f}")
+        per_button.append(
+            f"{label}: acc {btn_match_cpu[i]:.3f} F1 {btn_f1_cpu[i]:.3f} rate {btn_rate_cpu[i]:.3f}"
+        )
 
     log_lines.append(btn_line1)
     log_lines.append(btn_line2)
     log_lines.append("            " + " | ".join(per_button))
-    log_lines.append(f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}")
+    log_lines.append(
+        f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
+    )
     log_lines.append(
         f"  VALUE:    pred {value_pred_mean:.3f} | targ {value_target_mean:.3f} | "
         f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation:.3f}"
@@ -357,13 +420,15 @@ def prepare_logging_bundle(
         log_payload[f"buttons/{label}_recall"] = btn_rec_cpu[i]
         log_payload[f"buttons/{label}_rate"] = btn_rate_cpu[i]
 
-    log_payload.update({
-        "value/pred_mean": value_pred_mean,
-        "value/target_mean": value_target_mean,
-        "value/mse": value_mse,
-        "value/mae": value_mae,
-        "value/corr": correlation,
-    })
+    log_payload.update(
+        {
+            "value/pred_mean": value_pred_mean,
+            "value/target_mean": value_target_mean,
+            "value/mse": value_mse,
+            "value/mae": value_mae,
+            "value/corr": correlation,
+        }
+    )
 
     return LoggingBundle(log_lines=log_lines, payload=log_payload)
 

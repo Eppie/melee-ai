@@ -21,3 +21,16 @@ class PPOConfig(BaseModel):
     num_workers: int = Field(default=1, ge=1)
     normalize_advantages: bool = True
     value_clip: Optional[float] = Field(default=None, gt=0)
+
+    # Distributed PPO settings
+    rollout_length: int = Field(default=5000, ge=100)
+    """Number of frames to collect per rollout before training."""
+
+    opponent_rotation_interval: int = Field(default=10000, ge=1000)
+    """Frames between opponent model swaps."""
+
+    warmup_frames: int = Field(default=128, ge=1)
+    """Frames to buffer before model predictions start."""
+
+    distributed_mode: bool = Field(default=False)
+    """Use distributed architecture with centralized GPU inference."""

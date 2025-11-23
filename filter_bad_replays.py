@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import argparse
+import gzip
 import shutil
+import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor
+import zipfile
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from enum import Enum
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 import peppi_py
@@ -217,10 +222,132 @@ def process_file(path: Path) -> pa.Table | None:
         return None
 
 
-def main() -> None:
-    files = sorted(REPLAYS_DIR.rglob("*.slp"))
+def _iter_zip_members(
+    zip_path: Path, filename_filter: str | None = None
+) -> Iterable[str]:
+    """Yield file names from the zip that should be extracted."""
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename
+            if filename_filter and filename_filter not in name:
+                continue
+            if not (name.endswith(".slp") or name.endswith(".gz")):
+                continue
+            yield name
 
-    with ProcessPoolExecutor(max_workers=16) as pool:
+
+def _extract_member(zip_path: Path, member_name: str, dest_dir: Path) -> Path:
+    """
+    Extract a single member from the archive to dest_dir.
+    .gz files are decompressed to their base name to feed into process_file.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target_name = Path(member_name).name
+    dest_path = dest_dir / target_name
+    if dest_path.suffix == ".gz":
+        dest_path = dest_path.with_suffix("")
+
+    if dest_path.exists():
+        dest_path = dest_path.with_name(
+            f"{dest_path.stem}_{int(time.time() * 1000)}{dest_path.suffix}"
+        )
+
+    with zipfile.ZipFile(zip_path) as zf:
+        with zf.open(member_name) as src:
+            if target_name.endswith(".gz"):
+                with gzip.open(src, "rb") as gz_in, open(dest_path, "wb") as out:
+                    shutil.copyfileobj(gz_in, out)
+            else:
+                with open(dest_path, "wb") as out:
+                    shutil.copyfileobj(src, out)
+
+    return dest_path
+
+
+def _process_zip_archive(
+    zip_path: Path,
+    filename_filter: str | None,
+    process_workers: int,
+    extract_workers: int,
+) -> None:
+    """
+    Extract matching members from the archive in parallel and process them
+    as soon as each extraction completes.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_dir = Path(tmpdir)
+        with ThreadPoolExecutor(max_workers=extract_workers) as extractor, ProcessPoolExecutor(
+            max_workers=process_workers
+        ) as processor:
+            extract_futures = [
+                extractor.submit(_extract_member, zip_path, member, temp_dir)
+                for member in _iter_zip_members(zip_path, filename_filter)
+            ]
+
+            process_futures = []
+            try:
+                for fut in as_completed(extract_futures):
+                    extracted_path = fut.result()
+                    process_futures.append(
+                        processor.submit(process_file, extracted_path)
+                    )
+            except BaseException as exc:
+                print(f"Extraction failed: {exc!r}")
+                raise
+
+            for fut in as_completed(process_futures):
+                fut.result()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Filter and sort Slippi replays, optionally from a zip archive."
+    )
+    parser.add_argument(
+        "--zip-file",
+        type=Path,
+        help="Path to a .zip archive containing .slp or .gz replay files.",
+    )
+    parser.add_argument(
+        "--filename-filter",
+        type=str,
+        default=None,
+        help="Substring to filter which files from the zip are extracted/processed.",
+    )
+    parser.add_argument(
+        "--replays-dir",
+        type=Path,
+        default=REPLAYS_DIR,
+        help="Directory to scan for .slp files when not using --zip-file.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="Number of worker processes for replay validation.",
+    )
+    parser.add_argument(
+        "--extract-workers",
+        type=int,
+        default=4,
+        help="Number of threads to extract files from zip archives.",
+    )
+    args = parser.parse_args()
+
+    if args.zip_file:
+        _process_zip_archive(
+            zip_path=args.zip_file,
+            filename_filter=args.filename_filter,
+            process_workers=args.workers,
+            extract_workers=args.extract_workers,
+        )
+        return
+
+    files = sorted(args.replays_dir.rglob("*.slp"))
+
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
         try:
             for _ in pool.map(process_file, files, chunksize=20):
                 pass

@@ -165,5 +165,38 @@ class OpponentPool:
         """Check if the pool is empty."""
         return len(self.opponents) == 0
 
+    def get_opponent_path(self, opponent_id: int) -> Optional[Path]:
+        """Get checkpoint path for a specific opponent by ID.
+
+        Args:
+            opponent_id: The opponent ID to look up
+
+        Returns:
+            Path to the checkpoint, or None if not found
+        """
+        for path, meta in self.opponents:
+            if meta.get("opponent_id") == opponent_id:
+                return path
+        return None
+
+    def get_all_opponent_paths(self) -> List[Path]:
+        """Get all opponent checkpoint paths.
+
+        Returns:
+            List of paths to all opponent checkpoints
+        """
+        return [path for path, _ in self.opponents]
+
+    def get_latest_opponent(self) -> Optional[tuple[Path, Dict]]:
+        """Get the most recently added opponent.
+
+        Returns:
+            Tuple of (checkpoint_path, metadata) for the newest opponent,
+            or None if pool is empty
+        """
+        if len(self.opponents) == 0:
+            return None
+        return self.opponents[-1]
+
     def __len__(self) -> int:
         return len(self.opponents)

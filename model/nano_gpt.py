@@ -159,6 +159,7 @@ class GPT(nn.Module):
         return cos, sin
 
     # TODO: Is there a way to pre-compute and cache the one-hot results?
+    # TODO: Why do we need the `.long()` calls?
     def _embed_inputs(self, inputs: TensorDict) -> torch.Tensor:
         """Includes categorical embeddings, one-hot encodings, and numerical features."""
         return torch.cat(

@@ -108,6 +108,7 @@ def _sticks01_to_unit11_np(xy01: np.ndarray) -> np.ndarray:
 _MAIN_PALETTE = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
 _C_PALETTE = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
 
+# TODO: collapse these down to one each, maybe even just remove this dict entirely
 _PALETTES: Dict[str, np.ndarray] = {
     "fox_main": _MAIN_PALETTE,
     "main": _MAIN_PALETTE,

@@ -13,7 +13,19 @@ from tqdm import tqdm
 from stats.collectors.base import StatsCollector
 from stats.index import EpisodeInfo
 
-DEFAULT_PERCENTILES: List[float] = [0.5, 1.0, 5.0, 10.0, 25.0, 50.0, 75.0, 90.0, 95.0, 99.0, 99.5]
+DEFAULT_PERCENTILES: List[float] = [
+    0.5,
+    1.0,
+    5.0,
+    10.0,
+    25.0,
+    50.0,
+    75.0,
+    90.0,
+    95.0,
+    99.0,
+    99.5,
+]
 CATEGORICAL_THRESHOLD = 50  # Max unique values to treat as categorical
 
 
@@ -71,7 +83,9 @@ class RunLengthStats:
             results[str(p)] = self._value_at_index(sorted_counts, idx)
         return results
 
-    def _value_at_index(self, sorted_counts: List[Tuple[int, int]], idx: float) -> float:
+    def _value_at_index(
+        self, sorted_counts: List[Tuple[int, int]], idx: float
+    ) -> float:
         if idx <= 0:
             return float(sorted_counts[0][0])
         if idx >= self.total_runs - 1:
@@ -162,14 +176,16 @@ class ContinuousStats:
 
         mean = self.sum_ / self.total
         variance = max(0.0, (self.sum_sq / self.total) - (mean * mean))
-        result.update({
-            "min": self.min_,
-            "max": self.max_,
-            "mean": mean,
-            "std": math.sqrt(variance),
-            "run_lengths": self.run_stats.summary(),
-            "run_percentiles": self.run_stats.percentiles(percentiles),
-        })
+        result.update(
+            {
+                "min": self.min_,
+                "max": self.max_,
+                "mean": mean,
+                "std": math.sqrt(variance),
+                "run_lengths": self.run_stats.summary(),
+                "run_percentiles": self.run_stats.percentiles(percentiles),
+            }
+        )
 
         # Compute percentiles from samples
         if self.samples:
@@ -216,7 +232,9 @@ class CategoricalStats:
                 self.value_stats[key] = ValueStats()
             self.value_stats[key].merge(stats)
 
-    def finalize(self, percentiles: Sequence[float], col_type: str = "categorical") -> Dict[str, Any]:
+    def finalize(
+        self, percentiles: Sequence[float], col_type: str = "categorical"
+    ) -> Dict[str, Any]:
         result: Dict[str, Any] = {
             "type": col_type,
             "total_count": self.total,
@@ -227,13 +245,15 @@ class CategoricalStats:
         for key in sorted(self.value_stats.keys(), key=lambda x: (str(type(x)), x)):
             stats = self.value_stats[key]
             percent = (stats.count / self.total * 100.0) if self.total else 0.0
-            values.append({
-                "value": key,
-                "count": stats.count,
-                "percent": percent,
-                "run_lengths": stats.run_stats.summary(),
-                "run_percentiles": stats.run_stats.percentiles(percentiles),
-            })
+            values.append(
+                {
+                    "value": key,
+                    "count": stats.count,
+                    "percent": percent,
+                    "run_lengths": stats.run_stats.summary(),
+                    "run_percentiles": stats.run_stats.percentiles(percentiles),
+                }
+            )
         result["values"] = values
         return result
 
@@ -285,13 +305,20 @@ class ColumnStatsCollector(StatsCollector):
         self.categorical_threshold = categorical_threshold
 
         # Column type classification
-        self._column_types: Dict[str, str] = {}  # "boolean", "categorical", "continuous"
+        self._column_types: Dict[
+            str, str
+        ] = {}  # "boolean", "categorical", "continuous"
         self._continuous_stats: Dict[str, ContinuousStats] = {}
         self._categorical_stats: Dict[str, CategoricalStats] = {}
 
         # Track unique values per column during classification
         self._unique_values: Dict[str, set] = {name: set() for name in feature_names}
-        self._is_boolean_candidate: Dict[str, bool] = {name: True for name in feature_names}
+        self._is_boolean_candidate: Dict[str, bool] = {
+            name: True for name in feature_names
+        }
+        self._exceeded_threshold: Dict[str, bool] = {
+            name: False for name in feature_names
+        }
         self._classification_done = False
 
     def process_episode(self, data: np.ndarray, episode: EpisodeInfo) -> None:
@@ -313,8 +340,8 @@ class ColumnStatsCollector(StatsCollector):
             for _, length in iter_runs(col_data):
                 self._continuous_stats[col_name].run_stats.add(length)
 
-            # Also collect categorical stats if cardinality is reasonable
-            if len(self._unique_values[col_name]) <= self.categorical_threshold:
+            # Also collect categorical stats if cardinality hasn't exceeded threshold
+            if not self._exceeded_threshold[col_name]:
                 if col_name not in self._categorical_stats:
                     self._categorical_stats[col_name] = CategoricalStats()
                 self._categorical_stats[col_name].update(col_data)
@@ -341,6 +368,7 @@ class ColumnStatsCollector(StatsCollector):
             # Stop tracking if over threshold
             if len(self._unique_values[col_name]) > self.categorical_threshold:
                 self._unique_values[col_name].clear()
+                self._exceeded_threshold[col_name] = True
 
     def _finalize_classification(self) -> None:
         """Finalize column type classification."""
@@ -353,7 +381,7 @@ class ColumnStatsCollector(StatsCollector):
 
             if self._is_boolean_candidate[col_name] and non_null.issubset({0, 1}):
                 self._column_types[col_name] = "boolean"
-            elif len(unique) > 0 and len(unique) <= self.categorical_threshold:
+            elif not self._exceeded_threshold[col_name] and len(unique) > 0:
                 self._column_types[col_name] = "categorical"
             else:
                 self._column_types[col_name] = "continuous"
@@ -366,9 +394,14 @@ class ColumnStatsCollector(StatsCollector):
             self._unique_values[col_name].update(other._unique_values[col_name])
             if len(self._unique_values[col_name]) > self.categorical_threshold:
                 self._unique_values[col_name].clear()
+                self._exceeded_threshold[col_name] = True
             self._is_boolean_candidate[col_name] = (
                 self._is_boolean_candidate[col_name]
                 and other._is_boolean_candidate[col_name]
+            )
+            self._exceeded_threshold[col_name] = (
+                self._exceeded_threshold[col_name]
+                or other._exceeded_threshold[col_name]
             )
 
         # Merge statistics

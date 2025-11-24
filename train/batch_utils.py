@@ -92,8 +92,6 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
     )
 
 
-
-
 @dataclass(frozen=True)
 class SampleWeightRatios:
     """How much to upweight 'change' frames vs 'hold' frames, per component."""

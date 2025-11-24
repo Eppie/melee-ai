@@ -86,7 +86,7 @@ def run_statistics(config: StatsConfig) -> Dict[str, Any]:
     # Determine which episodes to process
     episodes = index.episodes
     if config.max_episodes is not None:
-        episodes = episodes[:config.max_episodes]
+        episodes = episodes[: config.max_episodes]
         if config.verbose:
             print(f"  Processing first {len(episodes)} episodes")
 
@@ -130,7 +130,9 @@ def run_statistics(config: StatsConfig) -> Dict[str, Any]:
         except Exception as e:
             errors += 1
             if config.verbose:
-                tqdm.write(f"Warning: Failed to process episode {episode.episode_id}: {e}")
+                tqdm.write(
+                    f"Warning: Failed to process episode {episode.episode_id}: {e}"
+                )
 
     # Finalize and collect results
     if config.verbose:

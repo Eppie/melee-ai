@@ -57,10 +57,22 @@ class ControllerInputCollector(StatsCollector):
 
         # Process buttons for each player
         for player, button_counts, button_durations, button_combos in [
-            ("p1", self._p1_button_counts, self._p1_button_durations, self._p1_button_combos),
-            ("p2", self._p2_button_counts, self._p2_button_durations, self._p2_button_combos),
+            (
+                "p1",
+                self._p1_button_counts,
+                self._p1_button_durations,
+                self._p1_button_combos,
+            ),
+            (
+                "p2",
+                self._p2_button_counts,
+                self._p2_button_durations,
+                self._p2_button_combos,
+            ),
         ]:
-            self._process_buttons(data, player, button_counts, button_durations, button_combos)
+            self._process_buttons(
+                data, player, button_counts, button_durations, button_combos
+            )
 
         # Process sticks
         self._process_sticks(data)
@@ -111,19 +123,34 @@ class ControllerInputCollector(StatsCollector):
         # Track button combinations
         button_matrix = np.column_stack(list(button_data.values()))
         for frame in range(len(data)):
-            combo = tuple(sorted(
-                button for i, button in enumerate(button_data.keys())
-                if button_matrix[frame, i]
-            ))
+            combo = tuple(
+                sorted(
+                    button
+                    for i, button in enumerate(button_data.keys())
+                    if button_matrix[frame, i]
+                )
+            )
             if combo:
                 button_combos[combo] += 1
 
     def _process_sticks(self, data: np.ndarray) -> None:
         for player, main_hist, c_hist, main_regions, c_regions, shoulder_hist in [
-            ("p1", self._p1_main_stick_hist, self._p1_c_stick_hist,
-             self._p1_main_stick_regions, self._p1_c_stick_regions, self._p1_shoulder_hist),
-            ("p2", self._p2_main_stick_hist, self._p2_c_stick_hist,
-             self._p2_main_stick_regions, self._p2_c_stick_regions, self._p2_shoulder_hist),
+            (
+                "p1",
+                self._p1_main_stick_hist,
+                self._p1_c_stick_hist,
+                self._p1_main_stick_regions,
+                self._p1_c_stick_regions,
+                self._p1_shoulder_hist,
+            ),
+            (
+                "p2",
+                self._p2_main_stick_hist,
+                self._p2_c_stick_hist,
+                self._p2_main_stick_regions,
+                self._p2_c_stick_regions,
+                self._p2_shoulder_hist,
+            ),
         ]:
             try:
                 main_x_idx = self.get_feature_idx(f"{player}_main_stick_x")
@@ -188,7 +215,9 @@ class ControllerInputCollector(StatsCollector):
         self._frames_processed += other._frames_processed
 
     def finalize(self) -> Dict[str, Any]:
-        def format_button_stats(counts: Dict, durations: Dict, combos: Counter, total: int) -> Dict:
+        def format_button_stats(
+            counts: Dict, durations: Dict, combos: Counter, total: int
+        ) -> Dict:
             buttons = {}
             for button in BUTTON_NAMES:
                 count = counts[button]
@@ -206,11 +235,13 @@ class ControllerInputCollector(StatsCollector):
             # Top button combos
             top_combos = []
             for combo, count in combos.most_common(20):
-                top_combos.append({
-                    "buttons": list(combo),
-                    "count": count,
-                    "percent": count / total * 100 if total else 0,
-                })
+                top_combos.append(
+                    {
+                        "buttons": list(combo),
+                        "count": count,
+                        "percent": count / total * 100 if total else 0,
+                    }
+                )
 
             return {
                 "buttons": buttons,
@@ -233,11 +264,13 @@ class ControllerInputCollector(StatsCollector):
         def format_shoulder_stats(hist: np.ndarray, total: int) -> Dict:
             bins = []
             for i, count in enumerate(hist):
-                bins.append({
-                    "range": f"{i/10:.1f}-{(i+1)/10:.1f}",
-                    "count": int(count),
-                    "percent": count / total * 100 if total else 0,
-                })
+                bins.append(
+                    {
+                        "range": f"{i/10:.1f}-{(i+1)/10:.1f}",
+                        "count": int(count),
+                        "percent": count / total * 100 if total else 0,
+                    }
+                )
             return {"distribution": bins}
 
         return {
@@ -258,7 +291,9 @@ class ControllerInputCollector(StatsCollector):
                     self._p1_c_stick_hist,
                     self._total_frames,
                 ),
-                "shoulder": format_shoulder_stats(self._p1_shoulder_hist, self._total_frames),
+                "shoulder": format_shoulder_stats(
+                    self._p1_shoulder_hist, self._total_frames
+                ),
             },
             "p2": {
                 **format_button_stats(
@@ -277,7 +312,9 @@ class ControllerInputCollector(StatsCollector):
                     self._p2_c_stick_hist,
                     self._total_frames,
                 ),
-                "shoulder": format_shoulder_stats(self._p2_shoulder_hist, self._total_frames),
+                "shoulder": format_shoulder_stats(
+                    self._p2_shoulder_hist, self._total_frames
+                ),
             },
             "total_frames": self._total_frames,
         }

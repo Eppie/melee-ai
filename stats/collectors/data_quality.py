@@ -81,7 +81,9 @@ class DataQualityCollector(StatsCollector):
             if base_name in GAME_LIMITS:
                 limits = GAME_LIMITS[base_name]
                 valid_data = col_data[~nan_mask & ~inf_mask]
-                out_of_range = (valid_data < limits["min"]) | (valid_data > limits["max"])
+                out_of_range = (valid_data < limits["min"]) | (
+                    valid_data > limits["max"]
+                )
                 count = int(out_of_range.sum())
                 self._out_of_range[col_name] += count
 
@@ -96,7 +98,9 @@ class DataQualityCollector(StatsCollector):
                 self._non_default_counts[col_name] += int((col_data != 0).sum())
             elif "stick" in col_name:
                 # Sticks: count non-centered (not 0.5)
-                self._non_default_counts[col_name] += int((np.abs(col_data - 0.5) > 0.1).sum())
+                self._non_default_counts[col_name] += int(
+                    (np.abs(col_data - 0.5) > 0.1).sum()
+                )
             else:
                 # Other: just count non-zero
                 self._non_default_counts[col_name] += int((col_data != 0).sum())
@@ -126,17 +130,17 @@ class DataQualityCollector(StatsCollector):
 
         # Stock should never increase mid-game
         for i in range(1, len(p1_stock)):
-            if p1_stock[i] > p1_stock[i-1]:
+            if p1_stock[i] > p1_stock[i - 1]:
                 self._stock_inconsistencies += 1
-            if p2_stock[i] > p2_stock[i-1]:
+            if p2_stock[i] > p2_stock[i - 1]:
                 self._stock_inconsistencies += 1
 
         # Percent decreasing without stock change is suspicious
         # (can happen legitimately with healing items, but rare in competitive)
         for i in range(1, len(p1_percent)):
-            if p1_percent[i] < p1_percent[i-1] - 1 and p1_stock[i] == p1_stock[i-1]:
+            if p1_percent[i] < p1_percent[i - 1] - 1 and p1_stock[i] == p1_stock[i - 1]:
                 self._percent_anomalies += 1
-            if p2_percent[i] < p2_percent[i-1] - 1 and p2_stock[i] == p2_stock[i-1]:
+            if p2_percent[i] < p2_percent[i - 1] - 1 and p2_stock[i] == p2_stock[i - 1]:
                 self._percent_anomalies += 1
 
     def _check_suspicious_patterns(self, data: np.ndarray) -> None:
@@ -163,15 +167,27 @@ class DataQualityCollector(StatsCollector):
 
     def merge(self, other: "DataQualityCollector") -> None:
         for col_name in self.feature_names:
-            self._out_of_range[col_name] = self._out_of_range.get(col_name, 0) + other._out_of_range.get(col_name, 0)
-            self._nan_counts[col_name] = self._nan_counts.get(col_name, 0) + other._nan_counts.get(col_name, 0)
-            self._inf_counts[col_name] = self._inf_counts.get(col_name, 0) + other._inf_counts.get(col_name, 0)
-            self._non_default_counts[col_name] = self._non_default_counts.get(col_name, 0) + other._non_default_counts.get(col_name, 0)
+            self._out_of_range[col_name] = self._out_of_range.get(
+                col_name, 0
+            ) + other._out_of_range.get(col_name, 0)
+            self._nan_counts[col_name] = self._nan_counts.get(
+                col_name, 0
+            ) + other._nan_counts.get(col_name, 0)
+            self._inf_counts[col_name] = self._inf_counts.get(
+                col_name, 0
+            ) + other._inf_counts.get(col_name, 0)
+            self._non_default_counts[col_name] = self._non_default_counts.get(
+                col_name, 0
+            ) + other._non_default_counts.get(col_name, 0)
 
             if col_name not in self._out_of_range_examples:
                 self._out_of_range_examples[col_name] = []
-            self._out_of_range_examples[col_name].extend(other._out_of_range_examples.get(col_name, [])[:10])
-            self._out_of_range_examples[col_name] = self._out_of_range_examples[col_name][:10]
+            self._out_of_range_examples[col_name].extend(
+                other._out_of_range_examples.get(col_name, [])[:10]
+            )
+            self._out_of_range_examples[col_name] = self._out_of_range_examples[
+                col_name
+            ][:10]
 
         self._empty_episodes += other._empty_episodes
         self._very_short_episodes += other._very_short_episodes
@@ -207,7 +223,9 @@ class DataQualityCollector(StatsCollector):
                 nan_inf_issues[col_name] = {
                     "nan_count": nan_count,
                     "inf_count": inf_count,
-                    "nan_percent": nan_count / total_frames * 100 if total_frames else 0,
+                    "nan_percent": nan_count / total_frames * 100
+                    if total_frames
+                    else 0,
                 }
 
         # Feature utilization
@@ -216,7 +234,9 @@ class DataQualityCollector(StatsCollector):
             non_default = self._non_default_counts.get(col_name, 0)
             feature_utilization[col_name] = {
                 "non_default_count": non_default,
-                "non_default_percent": non_default / total_frames * 100 if total_frames else 0,
+                "non_default_percent": non_default / total_frames * 100
+                if total_frames
+                else 0,
             }
 
         return {
@@ -255,11 +275,15 @@ class DataQualityCollector(StatsCollector):
         score -= min(20, nan_inf_rate * 1000)
 
         # Penalize inconsistencies
-        inconsistency_rate = (self._stock_inconsistencies + self._percent_anomalies) / total_frames
+        inconsistency_rate = (
+            self._stock_inconsistencies + self._percent_anomalies
+        ) / total_frames
         score -= min(20, inconsistency_rate * 100)
 
         # Penalize empty/short episodes
-        episode_issue_rate = (self._empty_episodes + self._very_short_episodes) / max(1, self._episodes_processed)
+        episode_issue_rate = (self._empty_episodes + self._very_short_episodes) / max(
+            1, self._episodes_processed
+        )
         score -= min(20, episode_issue_rate * 100)
 
         # Penalize suspicious patterns

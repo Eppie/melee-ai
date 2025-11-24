@@ -40,10 +40,14 @@ class TemporalCollector(StatsCollector):
         super().__init__(feature_names)
 
         # State transition counts (0->0, 0->1, 1->0, 1->1)
-        self._transitions: Dict[str, Counter] = {f: Counter() for f in self.TRANSITION_FEATURES}
+        self._transitions: Dict[str, Counter] = {
+            f: Counter() for f in self.TRANSITION_FEATURES
+        }
 
         # Frame-to-frame change magnitudes
-        self._change_magnitudes: Dict[str, List[float]] = {f: [] for f in self.CHANGE_RATE_FEATURES}
+        self._change_magnitudes: Dict[str, List[float]] = {
+            f: [] for f in self.CHANGE_RATE_FEATURES
+        }
 
         # Time between state changes
         self._time_between_changes: Dict[str, List[int]] = {}
@@ -67,7 +71,7 @@ class TemporalCollector(StatsCollector):
                 values = (data[:, idx] > 0.5).astype(int)
 
                 for i in range(1, len(values)):
-                    transition = (values[i-1], values[i])
+                    transition = (values[i - 1], values[i])
                     self._transitions[feature][transition] += 1
 
                     # Track time between changes
@@ -103,7 +107,7 @@ class TemporalCollector(StatsCollector):
 
                 last_change = 0
                 for i in range(1, len(values)):
-                    if values[i] != values[i-1]:
+                    if values[i] != values[i - 1]:
                         time_since = i - last_change
                         self._time_between_changes[feature].append(time_since)
                         last_change = i
@@ -120,7 +124,13 @@ class TemporalCollector(StatsCollector):
         try:
             # Get button states
             button_cols = []
-            for button in ["button_a", "button_b", "button_xy", "button_z", "button_lr"]:
+            for button in [
+                "button_a",
+                "button_b",
+                "button_xy",
+                "button_z",
+                "button_lr",
+            ]:
                 try:
                     idx = self.get_feature_idx(f"p1_{button}")
                     button_cols.append(data[:, idx] > 0.5)
@@ -135,7 +145,7 @@ class TemporalCollector(StatsCollector):
             # Look at 3-frame windows
             window_size = 3
             for i in range(len(button_matrix) - window_size):
-                window = button_matrix[i:i + window_size]
+                window = button_matrix[i : i + window_size]
                 # Create a hashable key for the sequence
                 key = tuple(tuple(row.astype(int)) for row in window)
                 self._input_sequences[key] += 1
@@ -173,8 +183,16 @@ class TemporalCollector(StatsCollector):
                 "total": total,
             }
             if total > 0:
-                transitions[feature]["turn_on_rate"] = counts[(0, 1)] / (counts[(0, 0)] + counts[(0, 1)]) if (counts[(0, 0)] + counts[(0, 1)]) > 0 else 0
-                transitions[feature]["turn_off_rate"] = counts[(1, 0)] / (counts[(1, 0)] + counts[(1, 1)]) if (counts[(1, 0)] + counts[(1, 1)]) > 0 else 0
+                transitions[feature]["turn_on_rate"] = (
+                    counts[(0, 1)] / (counts[(0, 0)] + counts[(0, 1)])
+                    if (counts[(0, 0)] + counts[(0, 1)]) > 0
+                    else 0
+                )
+                transitions[feature]["turn_off_rate"] = (
+                    counts[(1, 0)] / (counts[(1, 0)] + counts[(1, 1)])
+                    if (counts[(1, 0)] + counts[(1, 1)]) > 0
+                    else 0
+                )
 
         # Change rates
         change_rates = {}
@@ -208,12 +226,18 @@ class TemporalCollector(StatsCollector):
             button_names = ["A", "B", "XY", "Z", "LR"]
             frames = []
             for frame in seq:
-                pressed = [button_names[i] for i, v in enumerate(frame) if v and i < len(button_names)]
+                pressed = [
+                    button_names[i]
+                    for i, v in enumerate(frame)
+                    if v and i < len(button_names)
+                ]
                 frames.append(pressed if pressed else ["none"])
-            top_sequences.append({
-                "sequence": frames,
-                "count": count,
-            })
+            top_sequences.append(
+                {
+                    "sequence": frames,
+                    "count": count,
+                }
+            )
 
         return {
             "state_transitions": transitions,

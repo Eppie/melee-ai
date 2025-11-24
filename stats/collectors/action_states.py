@@ -166,13 +166,15 @@ class ActionStateCollector(StatsCollector):
             for action, count in counts.most_common():
                 name = ACTION_STATE_NAMES.get(action, f"Action_{action}")
                 category = get_action_category(action)
-                result.append({
-                    "action_id": action,
-                    "name": name,
-                    "category": category,
-                    "count": count,
-                    "percent": count / total * 100 if total else 0,
-                })
+                result.append(
+                    {
+                        "action_id": action,
+                        "name": name,
+                        "category": category,
+                        "count": count,
+                        "percent": count / total * 100 if total else 0,
+                    }
+                )
             return result
 
         def format_category_distribution(counts: Counter, total: int) -> Dict:
@@ -192,12 +194,14 @@ class ActionStateCollector(StatsCollector):
                 total = sum(to_counts.values())
                 for to_action, count in to_counts.most_common(limit):
                     to_name = ACTION_STATE_NAMES.get(to_action, f"Action_{to_action}")
-                    top_transitions.append({
-                        "to_action": to_action,
-                        "to_name": to_name,
-                        "count": count,
-                        "percent": count / total * 100 if total else 0,
-                    })
+                    top_transitions.append(
+                        {
+                            "to_action": to_action,
+                            "to_name": to_name,
+                            "count": count,
+                            "percent": count / total * 100 if total else 0,
+                        }
+                    )
                 result[from_name] = {
                     "from_action": from_action,
                     "total_transitions": total,
@@ -228,16 +232,28 @@ class ActionStateCollector(StatsCollector):
         return {
             "p1": {
                 "total_frames": p1_total,
-                "action_distribution": format_action_distribution(self._p1_action_counts, p1_total),
-                "category_distribution": format_category_distribution(self._p1_category_counts, p1_total),
-                "group_distribution": format_category_distribution(self._p1_group_counts, p1_total),
+                "action_distribution": format_action_distribution(
+                    self._p1_action_counts, p1_total
+                ),
+                "category_distribution": format_category_distribution(
+                    self._p1_category_counts, p1_total
+                ),
+                "group_distribution": format_category_distribution(
+                    self._p1_group_counts, p1_total
+                ),
                 "run_lengths": format_run_stats(self._p1_action_runs),
             },
             "p2": {
                 "total_frames": p2_total,
-                "action_distribution": format_action_distribution(self._p2_action_counts, p2_total),
-                "category_distribution": format_category_distribution(self._p2_category_counts, p2_total),
-                "group_distribution": format_category_distribution(self._p2_group_counts, p2_total),
+                "action_distribution": format_action_distribution(
+                    self._p2_action_counts, p2_total
+                ),
+                "category_distribution": format_category_distribution(
+                    self._p2_category_counts, p2_total
+                ),
+                "group_distribution": format_category_distribution(
+                    self._p2_group_counts, p2_total
+                ),
                 "run_lengths": format_run_stats(self._p2_action_runs),
             },
             "category_transitions": {

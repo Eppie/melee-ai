@@ -36,9 +36,7 @@ class ValidationDatasetIndex:
         index_path = self.data_dir / "index.jsonl"
 
         if not meta_path.exists() or not index_path.exists():
-            raise FileNotFoundError(
-                f"Expected meta.json and index.jsonl in {data_dir}"
-            )
+            raise FileNotFoundError(f"Expected meta.json and index.jsonl in {data_dir}")
 
         with meta_path.open("r") as f:
             meta = json.load(f)

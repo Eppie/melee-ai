@@ -17,8 +17,14 @@ class CrossFeatureCollector(StatsCollector):
 
     # Features to compute correlations for
     CORRELATION_FEATURES = [
-        "p1_position_x", "p1_position_y", "p1_percent", "p1_stock",
-        "p2_position_x", "p2_position_y", "p2_percent", "p2_stock",
+        "p1_position_x",
+        "p1_position_y",
+        "p1_percent",
+        "p1_stock",
+        "p2_position_x",
+        "p2_position_y",
+        "p2_percent",
+        "p2_stock",
     ]
 
     def __init__(self, feature_names: Sequence[str]) -> None:
@@ -31,7 +37,9 @@ class CrossFeatureCollector(StatsCollector):
         self._cross_m2: Dict[Tuple[str, str], float] = {}  # For covariance
 
         # Position joint distribution (2D histogram)
-        self._position_hist = np.zeros((40, 40), dtype=np.int64)  # x: -200 to 200, y: -100 to 300
+        self._position_hist = np.zeros(
+            (40, 40), dtype=np.int64
+        )  # x: -200 to 200, y: -100 to 300
 
         # Percent vs stock joint distribution
         self._p1_percent_by_stock: Dict[int, List[float]] = {1: [], 2: [], 3: [], 4: []}
@@ -72,7 +80,7 @@ class CrossFeatureCollector(StatsCollector):
         if num_frames > 0 and len(indices) >= 2:
             feature_data = {name: data[:, idx] for name, idx in indices.items()}
             for i, name1 in enumerate(indices.keys()):
-                for name2 in list(indices.keys())[i+1:]:
+                for name2 in list(indices.keys())[i + 1 :]:
                     key = (name1, name2)
                     if key not in self._cross_m2:
                         self._cross_m2[key] = 0.0
@@ -80,8 +88,10 @@ class CrossFeatureCollector(StatsCollector):
                     # Batch update for covariance
                     vals1 = feature_data[name1]
                     vals2 = feature_data[name2]
-                    cov_contribution = np.sum((vals1 - self._means.get(name1, 0)) *
-                                               (vals2 - self._means.get(name2, 0)))
+                    cov_contribution = np.sum(
+                        (vals1 - self._means.get(name1, 0))
+                        * (vals2 - self._means.get(name2, 0))
+                    )
                     self._cross_m2[key] += cov_contribution
 
         # Position histogram
@@ -109,14 +119,20 @@ class CrossFeatureCollector(StatsCollector):
             p2_stock_idx = self.get_feature_idx("p2_stock")
 
             # Sample to avoid memory issues
-            sample_indices = np.linspace(0, num_frames - 1, min(100, num_frames)).astype(int)
+            sample_indices = np.linspace(
+                0, num_frames - 1, min(100, num_frames)
+            ).astype(int)
             for idx in sample_indices:
                 p1_stock = int(data[idx, p1_stock_idx])
                 p2_stock = int(data[idx, p2_stock_idx])
                 if 1 <= p1_stock <= 4:
-                    self._p1_percent_by_stock[p1_stock].append(float(data[idx, p1_percent_idx]))
+                    self._p1_percent_by_stock[p1_stock].append(
+                        float(data[idx, p1_percent_idx])
+                    )
                 if 1 <= p2_stock <= 4:
-                    self._p2_percent_by_stock[p2_stock].append(float(data[idx, p2_percent_idx]))
+                    self._p2_percent_by_stock[p2_stock].append(
+                        float(data[idx, p2_percent_idx])
+                    )
         except KeyError:
             pass
 
@@ -143,7 +159,9 @@ class CrossFeatureCollector(StatsCollector):
                 self._m2[name] = new_m2
 
             for key in set(self._cross_m2.keys()) | set(other._cross_m2.keys()):
-                self._cross_m2[key] = self._cross_m2.get(key, 0) + other._cross_m2.get(key, 0)
+                self._cross_m2[key] = self._cross_m2.get(key, 0) + other._cross_m2.get(
+                    key, 0
+                )
 
             self._n = total_n
 

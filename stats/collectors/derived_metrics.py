@@ -81,7 +81,7 @@ class DerivedMetricsCollector(StatsCollector):
         p2_offstage = data[:, p2_offstage_idx] > 0.5
 
         # Distance calculation
-        distances = np.sqrt((p1_x - p2_x)**2 + (p1_y - p2_y)**2)
+        distances = np.sqrt((p1_x - p2_x) ** 2 + (p1_y - p2_y) ** 2)
         self._distance_sum += float(distances.sum())
         self._distance_count += len(distances)
 
@@ -95,7 +95,9 @@ class DerivedMetricsCollector(StatsCollector):
 
         # Advantage tracking
         for i in range(num_frames):
-            p1_adv_score = (p1_stock[i] - p2_stock[i]) * 100 + (p2_percent[i] - p1_percent[i])
+            p1_adv_score = (p1_stock[i] - p2_stock[i]) * 100 + (
+                p2_percent[i] - p1_percent[i]
+            )
             if p1_adv_score > 50:
                 self._p1_advantage_frames += 1
             elif p1_adv_score < -50:
@@ -115,10 +117,10 @@ class DerivedMetricsCollector(StatsCollector):
 
         # Kill percent tracking (percent when stock decreases)
         for i in range(1, num_frames):
-            if p1_stock[i] < p1_stock[i-1]:
-                self._p1_kill_percents.append(float(p1_percent[i-1]))
-            if p2_stock[i] < p2_stock[i-1]:
-                self._p2_kill_percents.append(float(p2_percent[i-1]))
+            if p1_stock[i] < p1_stock[i - 1]:
+                self._p1_kill_percents.append(float(p1_percent[i - 1]))
+            if p2_stock[i] < p2_stock[i - 1]:
+                self._p2_kill_percents.append(float(p2_percent[i - 1]))
 
         self._record_episode(num_frames)
 
@@ -166,20 +168,23 @@ class DerivedMetricsCollector(StatsCollector):
         self._frames_processed += other._frames_processed
 
     def finalize(self) -> Dict[str, Any]:
-        total_frames = self._p1_advantage_frames + self._p2_advantage_frames + self._neutral_frames
+        total_frames = (
+            self._p1_advantage_frames + self._p2_advantage_frames + self._neutral_frames
+        )
 
         # Distance stats
         dist_stats = {}
         if self._distances:
             arr = np.array(self._distances)
             dist_stats = {
-                "mean": self._distance_sum / self._distance_count if self._distance_count else 0,
+                "mean": self._distance_sum / self._distance_count
+                if self._distance_count
+                else 0,
                 "std": float(arr.std()),
                 "min": float(arr.min()),
                 "max": float(arr.max()),
                 "percentiles": {
-                    str(p): float(np.percentile(arr, p))
-                    for p in [10, 25, 50, 75, 90]
+                    str(p): float(np.percentile(arr, p)) for p in [10, 25, 50, 75, 90]
                 },
             }
 
@@ -221,14 +226,22 @@ class DerivedMetricsCollector(StatsCollector):
                 "p1_advantage_frames": self._p1_advantage_frames,
                 "p2_advantage_frames": self._p2_advantage_frames,
                 "neutral_frames": self._neutral_frames,
-                "p1_advantage_percent": self._p1_advantage_frames / total_frames * 100 if total_frames else 0,
-                "p2_advantage_percent": self._p2_advantage_frames / total_frames * 100 if total_frames else 0,
+                "p1_advantage_percent": self._p1_advantage_frames / total_frames * 100
+                if total_frames
+                else 0,
+                "p2_advantage_percent": self._p2_advantage_frames / total_frames * 100
+                if total_frames
+                else 0,
             },
             "offstage": {
                 "p1_frames": self._p1_offstage_frames,
                 "p2_frames": self._p2_offstage_frames,
-                "p1_percent": self._p1_offstage_frames / self._frames_processed * 100 if self._frames_processed else 0,
-                "p2_percent": self._p2_offstage_frames / self._frames_processed * 100 if self._frames_processed else 0,
+                "p1_percent": self._p1_offstage_frames / self._frames_processed * 100
+                if self._frames_processed
+                else 0,
+                "p2_percent": self._p2_offstage_frames / self._frames_processed * 100
+                if self._frames_processed
+                else 0,
             },
             "edgeguards": {
                 "p1_frames": self._p1_edgeguard_frames,

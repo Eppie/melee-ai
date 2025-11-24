@@ -42,7 +42,9 @@ class TestHeadCrossAttention:
 
     def test_forward_different_batch_sizes(self):
         """Test with various batch sizes."""
-        cross_attn = HeadCrossAttention(hidden_dim=64, num_head_types=4, num_attn_heads=2)
+        cross_attn = HeadCrossAttention(
+            hidden_dim=64, num_head_types=4, num_attn_heads=2
+        )
 
         for batch_size in [1, 4, 16]:
             head_features = [torch.randn(batch_size, 8, 64) for _ in range(4)]
@@ -51,7 +53,9 @@ class TestHeadCrossAttention:
 
     def test_forward_different_sequence_lengths(self):
         """Test with various sequence lengths."""
-        cross_attn = HeadCrossAttention(hidden_dim=64, num_head_types=4, num_attn_heads=2)
+        cross_attn = HeadCrossAttention(
+            hidden_dim=64, num_head_types=4, num_attn_heads=2
+        )
 
         for seq_len in [1, 32, 128]:
             head_features = [torch.randn(2, seq_len, 64) for _ in range(4)]
@@ -60,7 +64,9 @@ class TestHeadCrossAttention:
 
     def test_wrong_number_of_heads_raises(self):
         """Test that passing wrong number of head features raises assertion."""
-        cross_attn = HeadCrossAttention(hidden_dim=64, num_head_types=4, num_attn_heads=2)
+        cross_attn = HeadCrossAttention(
+            hidden_dim=64, num_head_types=4, num_attn_heads=2
+        )
 
         # Pass 3 heads instead of 4
         head_features = [torch.randn(2, 8, 64) for _ in range(3)]
@@ -70,7 +76,9 @@ class TestHeadCrossAttention:
 
     def test_gradients_flow_through(self):
         """Test that gradients flow through the cross-attention."""
-        cross_attn = HeadCrossAttention(hidden_dim=64, num_head_types=4, num_attn_heads=2)
+        cross_attn = HeadCrossAttention(
+            hidden_dim=64, num_head_types=4, num_attn_heads=2
+        )
 
         head_features = [torch.randn(2, 8, 64, requires_grad=True) for _ in range(4)]
         outputs = cross_attn(head_features)
@@ -86,7 +94,9 @@ class TestHeadCrossAttention:
 
     def test_residual_connection(self):
         """Test that residual connection allows identity-like behavior initially."""
-        cross_attn = HeadCrossAttention(hidden_dim=64, num_head_types=4, num_attn_heads=2)
+        cross_attn = HeadCrossAttention(
+            hidden_dim=64, num_head_types=4, num_attn_heads=2
+        )
 
         # With residual connection, output should be correlated with input
         head_features = [torch.randn(2, 8, 64) for _ in range(4)]
@@ -202,7 +212,10 @@ class TestGPTModelCrossAttention:
         model = GPT(cfg)
 
         assert model.use_head_cross_attention is False
-        assert not hasattr(model, "head_cross_attention") or model.head_cross_attention is None
+        assert (
+            not hasattr(model, "head_cross_attention")
+            or model.head_cross_attention is None
+        )
 
     def test_model_with_cross_attention(self):
         """Test model creation with cross-attention enabled."""
@@ -257,13 +270,21 @@ class TestGPTModelCrossAttention:
 
         inputs = TensorDict(
             {
-                "gamestate": torch.zeros(B, T, len(colmap.gamestate_idxs), device=device),
-                "controller": torch.zeros(B, T, len(colmap.controller_idxs), device=device),
+                "gamestate": torch.zeros(
+                    B, T, len(colmap.gamestate_idxs), device=device
+                ),
+                "controller": torch.zeros(
+                    B, T, len(colmap.controller_idxs), device=device
+                ),
                 "stage": torch.zeros(B, T, 1, dtype=torch.long, device=device),
                 "ego_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
+                "opponent_character": torch.zeros(
+                    B, T, 1, dtype=torch.long, device=device
+                ),
                 "ego_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
+                "opponent_action": torch.zeros(
+                    B, T, 1, dtype=torch.long, device=device
+                ),
             },
             batch_size=(B, T),
         )
@@ -309,13 +330,21 @@ class TestGPTModelCrossAttention:
 
         inputs = TensorDict(
             {
-                "gamestate": torch.randn(B, T, len(colmap.gamestate_idxs), device=device),
-                "controller": torch.randn(B, T, len(colmap.controller_idxs), device=device),
+                "gamestate": torch.randn(
+                    B, T, len(colmap.gamestate_idxs), device=device
+                ),
+                "controller": torch.randn(
+                    B, T, len(colmap.controller_idxs), device=device
+                ),
                 "stage": torch.zeros(B, T, 1, dtype=torch.long, device=device),
                 "ego_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
+                "opponent_character": torch.zeros(
+                    B, T, 1, dtype=torch.long, device=device
+                ),
                 "ego_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
+                "opponent_action": torch.zeros(
+                    B, T, 1, dtype=torch.long, device=device
+                ),
             },
             batch_size=(B, T),
         )
@@ -329,7 +358,9 @@ class TestGPTModelCrossAttention:
 
         # Shapes should be identical
         for key in ["buttons", "main_stick", "c_stick", "shoulder", "value"]:
-            assert out_without[key].shape == out_with[key].shape, f"Shape mismatch for {key}"
+            assert (
+                out_without[key].shape == out_with[key].shape
+            ), f"Shape mismatch for {key}"
 
     def test_backward_pass_with_cross_attention(self):
         """Test that gradients flow correctly with cross-attention."""
@@ -349,13 +380,21 @@ class TestGPTModelCrossAttention:
 
         inputs = TensorDict(
             {
-                "gamestate": torch.randn(B, T, len(colmap.gamestate_idxs), device=device),
-                "controller": torch.randn(B, T, len(colmap.controller_idxs), device=device),
+                "gamestate": torch.randn(
+                    B, T, len(colmap.gamestate_idxs), device=device
+                ),
+                "controller": torch.randn(
+                    B, T, len(colmap.controller_idxs), device=device
+                ),
                 "stage": torch.zeros(B, T, 1, dtype=torch.long, device=device),
                 "ego_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
+                "opponent_character": torch.zeros(
+                    B, T, 1, dtype=torch.long, device=device
+                ),
                 "ego_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
+                "opponent_action": torch.zeros(
+                    B, T, 1, dtype=torch.long, device=device
+                ),
             },
             batch_size=(B, T),
         )

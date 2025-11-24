@@ -121,8 +121,12 @@ class EpisodeStatsCollector(StatsCollector):
         # Approximate total damage received (sum of all damage increases)
         p1_damage_diff = np.diff(p1_percent)
         p2_damage_diff = np.diff(p2_percent)
-        self._p1_total_damage_received.append(float(p1_damage_diff[p1_damage_diff > 0].sum()))
-        self._p2_total_damage_received.append(float(p2_damage_diff[p2_damage_diff > 0].sum()))
+        self._p1_total_damage_received.append(
+            float(p1_damage_diff[p1_damage_diff > 0].sum())
+        )
+        self._p2_total_damage_received.append(
+            float(p2_damage_diff[p2_damage_diff > 0].sum())
+        )
 
         self._record_episode(num_frames)
 
@@ -184,8 +188,12 @@ class EpisodeStatsCollector(StatsCollector):
             "p1_wins": self._p1_wins,
             "p2_wins": self._p2_wins,
             "draws": self._draws,
-            "p1_win_rate": self._p1_wins / total_decisive * 100 if total_decisive else 0,
-            "p2_win_rate": self._p2_wins / total_decisive * 100 if total_decisive else 0,
+            "p1_win_rate": self._p1_wins / total_decisive * 100
+            if total_decisive
+            else 0,
+            "p2_win_rate": self._p2_wins / total_decisive * 100
+            if total_decisive
+            else 0,
         }
 
         # Damage statistics

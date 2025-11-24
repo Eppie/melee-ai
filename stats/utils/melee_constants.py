@@ -308,7 +308,19 @@ ACTION_STATE_CATEGORIES: Dict[str, FrozenSet[int]] = {
 # Broader action groupings for high-level analysis
 ACTION_STATE_GROUPS: Dict[str, List[str]] = {
     "neutral": ["wait", "walk", "dash_run", "turn", "crouch", "fall"],
-    "offensive": ["jab", "dash_attack", "tilt", "smash", "aerial", "grab", "throw", "special_neutral", "special_side", "special_up", "special_down"],
+    "offensive": [
+        "jab",
+        "dash_attack",
+        "tilt",
+        "smash",
+        "aerial",
+        "grab",
+        "throw",
+        "special_neutral",
+        "special_side",
+        "special_up",
+        "special_down",
+    ],
     "defensive": ["shield", "dodge", "tech", "ledge"],
     "disadvantage": ["damage", "grabbed", "thrown", "shield_break"],
     "movement": ["walk", "dash_run", "jump_squat", "jump", "fall", "landing"],

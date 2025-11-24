@@ -309,9 +309,13 @@ def prepare_logging_bundle(
     idx += 2
     acc_sh, acc_sh_rep = all_scalars_cpu[idx : idx + 2]
     idx += 2
-    value_pred_mean, value_target_mean, value_mse, value_mae, correlation = (
-        all_scalars_cpu[idx : idx + 5]
-    )
+    (
+        value_pred_mean,
+        value_target_mean,
+        value_mse,
+        value_mae,
+        correlation,
+    ) = all_scalars_cpu[idx : idx + 5]
     idx += 5
     acc_sh_maj = all_scalars_cpu[idx]
     idx += 1

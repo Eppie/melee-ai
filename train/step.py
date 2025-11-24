@@ -39,9 +39,7 @@ def perform_forward_pass(
         enabled=amp.enabled,
     ):
         inputs_td = build_model_inputs(X, components.column_map)
-        target_info = quantize_targets(
-            Y, components.column_map, input_domain="unit01"
-        )
+        target_info = quantize_targets(Y, components.column_map, input_domain="unit01")
         pred = components.model(inputs_td)
 
         base_smoothing = config.train.label_smoothing

@@ -49,14 +49,20 @@ def print_episode_summary(ep_stats: Dict[str, Any]) -> None:
 
     length = ep_stats.get("length", {})
     if length:
-        print(f"Avg episode length: {length.get('mean', 0):.1f} frames ({length.get('mean', 0)/60:.1f}s)")
-        print(f"Length range:       {length.get('min', 0)} - {length.get('max', 0)} frames")
+        print(
+            f"Avg episode length: {length.get('mean', 0):.1f} frames ({length.get('mean', 0)/60:.1f}s)"
+        )
+        print(
+            f"Length range:       {length.get('min', 0)} - {length.get('max', 0)} frames"
+        )
 
     # Stage distribution
     stages = ep_stats.get("stages", {})
     if stages:
         print("\nTop stages:")
-        sorted_stages = sorted(stages.items(), key=lambda x: x[1].get("count", 0), reverse=True)[:5]
+        sorted_stages = sorted(
+            stages.items(), key=lambda x: x[1].get("count", 0), reverse=True
+        )[:5]
         for stage, info in sorted_stages:
             count = info.get("count", 0)
             pct = info.get("percent", 0)
@@ -124,7 +130,9 @@ def print_action_summary(action_stats: Dict[str, Any], verbose: bool) -> None:
     categories = p1_stats.get("category_distribution", {})
     if categories and verbose:
         print("\nAction categories (p1):")
-        sorted_cats = sorted(categories.items(), key=lambda x: x[1].get("percent", 0), reverse=True)
+        sorted_cats = sorted(
+            categories.items(), key=lambda x: x[1].get("percent", 0), reverse=True
+        )
         for cat_name, info in sorted_cats[:8]:
             print(f"  {cat_name}: {info.get('percent', 0):.1f}%")
 
@@ -147,7 +155,7 @@ def print_controller_summary(ctrl_stats: Dict[str, Any], verbose: bool) -> None:
             sorted_buttons = sorted(
                 [(b, info.get("percent_frames", 0)) for b, info in buttons.items()],
                 key=lambda x: x[1],
-                reverse=True
+                reverse=True,
             )
             for button, pct in sorted_buttons[:5]:
                 if pct > 0.1:
@@ -161,7 +169,7 @@ def print_controller_summary(ctrl_stats: Dict[str, Any], verbose: bool) -> None:
             sorted_regions = sorted(
                 [(r, info.get("percent", 0)) for r, info in regions.items()],
                 key=lambda x: x[1],
-                reverse=True
+                reverse=True,
             )[:5]
             for region, pct in sorted_regions:
                 print(f"    {region}: {pct:.1f}%")
@@ -188,9 +196,13 @@ def print_derived_summary(derived: Dict[str, Any]) -> None:
         p1_combos = combos.get("p1_received", {})
         p2_combos = combos.get("p2_received", {})
         if p1_combos.get("count", 0) > 0:
-            print(f"P1 combos received: {p1_combos['count']} (avg {p1_combos.get('mean_length_seconds', 0):.2f}s)")
+            print(
+                f"P1 combos received: {p1_combos['count']} (avg {p1_combos.get('mean_length_seconds', 0):.2f}s)"
+            )
         if p2_combos.get("count", 0) > 0:
-            print(f"P2 combos received: {p2_combos['count']} (avg {p2_combos.get('mean_length_seconds', 0):.2f}s)")
+            print(
+                f"P2 combos received: {p2_combos['count']} (avg {p2_combos.get('mean_length_seconds', 0):.2f}s)"
+            )
 
     # Kill percents
     kills = derived.get("kill_percents", {})
@@ -228,19 +240,21 @@ def print_column_overview(col_stats: Dict[str, Any], verbose: bool) -> None:
         elif col_type == "binary":
             binary.append((name, info))
 
-    print(f"Features: {len(continuous)} continuous, {len(categorical)} categorical, {len(binary)} binary")
+    print(
+        f"Features: {len(continuous)} continuous, {len(categorical)} categorical, {len(binary)} binary"
+    )
 
     # Show a few examples
     if continuous:
         print("\nSample continuous features:")
         for name, info in continuous[:3]:
             stats = info.get("stats", {})
-            print(f"  {name}: mean={stats.get('mean', 0):.2f}, std={stats.get('std', 0):.2f}")
+            print(
+                f"  {name}: mean={stats.get('mean', 0):.2f}, std={stats.get('std', 0):.2f}"
+            )
 
     if categorical:
         print("\nSample categorical features:")
         for name, info in categorical[:3]:
             stats = info.get("stats", {})
             print(f"  {name}: {stats.get('n_unique', 0)} unique values")
-
-

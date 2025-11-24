@@ -71,21 +71,27 @@ def test_apply_feature_transforms_basic():
     """Test that apply_feature_transforms works on basic input."""
     # Create a minimal feature array with known columns
     feature_names = [
-        "p1_main_stick_x", "p1_main_stick_y",
-        "p1_c_stick_x", "p1_c_stick_y",
+        "p1_main_stick_x",
+        "p1_main_stick_y",
+        "p1_c_stick_x",
+        "p1_c_stick_y",
         "p1_facing",
         "p1_percent",
         "p1_shield_strength",
         "p1_stock",
-        "p1_position_x", "p1_position_y",
+        "p1_position_x",
+        "p1_position_y",
         "p1_jumps_left",
     ]
 
     # Create test data: 2 frames, 11 features
-    features = np.array([
-        [0.5, 0.5, 0.5, 0.5, 1.0, 50.0, 60.0, 4.0, 20.0, 10.0, 6.0],
-        [1.0, 0.5, 0.5, 0.5, 0.0, 100.0, 30.0, 2.0, 0.0, 0.0, 3.0],
-    ], dtype=np.float32)
+    features = np.array(
+        [
+            [0.5, 0.5, 0.5, 0.5, 1.0, 50.0, 60.0, 4.0, 20.0, 10.0, 6.0],
+            [1.0, 0.5, 0.5, 0.5, 0.0, 100.0, 30.0, 2.0, 0.0, 0.0, 3.0],
+        ],
+        dtype=np.float32,
+    )
 
     result = apply_feature_transforms(features.copy(), feature_names)
 
@@ -148,13 +154,16 @@ def test_apply_feature_transforms_dict_basic():
 def test_train_inference_parity():
     """Verify that array and dict transforms produce identical results."""
     feature_names = [
-        "p1_main_stick_x", "p1_main_stick_y",
-        "p1_c_stick_x", "p1_c_stick_y",
+        "p1_main_stick_x",
+        "p1_main_stick_y",
+        "p1_c_stick_x",
+        "p1_c_stick_y",
         "p1_facing",
         "p1_percent",
         "p1_shield_strength",
         "p1_stock",
-        "p1_position_x", "p1_position_y",
+        "p1_position_x",
+        "p1_position_y",
         "p1_jumps_left",
     ]
 
@@ -170,7 +179,9 @@ def test_train_inference_parity():
     features_array[0, 10] = 2.0  # jumps_left
 
     # Create dict version
-    features_dict = {name: float(features_array[0, i]) for i, name in enumerate(feature_names)}
+    features_dict = {
+        name: float(features_array[0, i]) for i, name in enumerate(feature_names)
+    }
 
     # Apply both transforms
     result_array = apply_feature_transforms(features_array.copy(), feature_names)
@@ -178,5 +189,6 @@ def test_train_inference_parity():
 
     # Compare results
     for i, name in enumerate(feature_names):
-        assert np.allclose(result_array[0, i], result_dict[name], atol=1e-5), \
-            f"Mismatch for {name}: array={result_array[0, i]}, dict={result_dict[name]}"
+        assert np.allclose(
+            result_array[0, i], result_dict[name], atol=1e-5
+        ), f"Mismatch for {name}: array={result_array[0, i]}, dict={result_dict[name]}"

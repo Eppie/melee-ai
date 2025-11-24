@@ -247,8 +247,6 @@ def _coerce_scalar(value: object) -> float | int | bool:
         ) from exc
 
 
-
-
 # Cache controller feature template
 _CONTROLLER_FEATURE_TEMPLATE = [
     "button_a",

@@ -584,9 +584,7 @@ def run_training_once(
                         Y = batch["Y"].to(device, non_blocking=True)
 
                         inputs_td = build_model_inputs(X, colmap)
-                        target_info = quantize_targets(
-                            Y, colmap, input_domain="unit11"
-                        )
+                        target_info = quantize_targets(Y, colmap, input_domain="unit11")
 
                         pred = model(inputs_td)
                         B, L, _ = pred["main_stick"].shape

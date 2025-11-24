@@ -53,9 +53,9 @@ class TrainingState:
 
 @dataclass
 class EpochContext:
-    epoch_loss_sum: Optional[torch.Tensor] = (
-        None  # Accumulated on GPU, transferred only when needed
-    )
+    epoch_loss_sum: Optional[
+        torch.Tensor
+    ] = None  # Accumulated on GPU, transferred only when needed
     iters_processed: int = 0
     applied_skip: int = 0
     frames_since_last_log: float = 0.0

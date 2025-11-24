@@ -6,8 +6,9 @@ import shutil
 import tempfile
 import time
 import zipfile
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from enum import Enum
+from itertools import repeat
 from pathlib import Path
 from typing import Iterable
 
@@ -266,6 +267,17 @@ def _extract_member(zip_path: Path, member_name: str, dest_dir: Path) -> Path:
     return dest_path
 
 
+def _extract_and_process_member(zip_path: Path, member_name: str) -> None:
+    """
+    Extract a single member into a per-process temp dir and run validation on it.
+    Doing this inside the process pool keeps both extraction and parsing parallel,
+    avoiding the GIL bottleneck of the previous thread-based extractor.
+    """
+    with tempfile.TemporaryDirectory(prefix="slp_extract_") as tmpdir:
+        extracted_path = _extract_member(zip_path, member_name, Path(tmpdir))
+        process_file(extracted_path)
+
+
 def _process_zip_archive(
     zip_path: Path,
     filename_filter: str | None,
@@ -273,32 +285,22 @@ def _process_zip_archive(
     extract_workers: int,
 ) -> None:
     """
-    Extract matching members from the archive in parallel and process them
-    as soon as each extraction completes.
+    Extract matching members from the archive in parallel and process them.
+    Extraction now happens inside the process pool to achieve true parallelism.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        temp_dir = Path(tmpdir)
-        with ThreadPoolExecutor(
-            max_workers=extract_workers
-        ) as extractor, ProcessPoolExecutor(max_workers=process_workers) as processor:
-            extract_futures = [
-                extractor.submit(_extract_member, zip_path, member, temp_dir)
-                for member in _iter_zip_members(zip_path, filename_filter)
-            ]
-
-            process_futures = []
-            try:
-                for fut in as_completed(extract_futures):
-                    extracted_path = fut.result()
-                    process_futures.append(
-                        processor.submit(process_file, extracted_path)
-                    )
-            except BaseException as exc:
-                print(f"Extraction failed: {exc!r}")
-                raise
-
-            for fut in as_completed(process_futures):
-                fut.result()
+    chunksize = max(1, extract_workers)
+    with ProcessPoolExecutor(max_workers=process_workers) as processor:
+        try:
+            for _ in processor.map(
+                _extract_and_process_member,
+                repeat(zip_path),
+                _iter_zip_members(zip_path, filename_filter),
+                chunksize=chunksize,
+            ):
+                pass
+        except BaseException as exc:
+            print(f"Extraction or processing failed: {exc!r}")
+            raise
 
 
 def main() -> None:
@@ -332,7 +334,10 @@ def main() -> None:
         "--extract-workers",
         type=int,
         default=4,
-        help="Number of threads to extract files from zip archives.",
+        help=(
+            "Chunk size for dispatching zip members to worker processes "
+            "(larger batches reduce scheduling overhead)."
+        ),
     )
     args = parser.parse_args()
 
@@ -352,7 +357,7 @@ def main() -> None:
             for _ in pool.map(process_file, files, chunksize=20):
                 pass
         except BaseException as exc:
-            print(f"Uncaught exception from worker threads: {exc!r}")
+            print(f"Uncaught exception from worker processes: {exc!r}")
 
 
 if __name__ == "__main__":

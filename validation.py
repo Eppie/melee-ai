@@ -17,12 +17,12 @@ from torch.utils.data import DataLoader
 from column_map import ColumnMap
 from config import get_config, init_config
 from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
+from controller_quantization import quantize_targets
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
-from feature_transforms import feature_spec_from_config
 from libmelee.melee.enums import Action
 from loss import compute_loss_components
 from model.nano_gpt import GPT
@@ -31,7 +31,6 @@ from train.batch_utils import (
     SampleWeightRatios,
     build_model_inputs as build_inputs_for_gpt,
     compute_component_sample_weights,
-    quantize_controller_targets,
 )
 from train.display import _print_table_block
 from train.metrics import multilabel_prf
@@ -47,7 +46,6 @@ from window_dataset import (
     RandomWindowSampler,
     worker_init_fn,
     EpisodeInfo,
-    _apply_prepared_transforms,
 )
 
 _C_STICK_LABELS = [f"({float(x):.2f},{float(y):.2f})" for x, y in C_STICK_QUANTIZED]
@@ -1379,7 +1377,7 @@ def _evaluate(
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
             inputs_td = build_inputs_for_gpt(X, colmap)
-            target_info = quantize_controller_targets(Y, colmap, input_domain="unit01")
+            target_info = quantize_targets(Y, colmap, input_domain="unit01")
             weights = compute_component_sample_weights(
                 target_info,
                 device,

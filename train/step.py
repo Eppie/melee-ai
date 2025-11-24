@@ -9,11 +9,11 @@ from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
 from constants import CONTROLLER_KEY_GROUPS
+from controller_quantization import quantize_targets
 from loss import compute_loss_components
 from train.batch_utils import (
     build_model_inputs,
     compute_component_sample_weights,
-    quantize_controller_targets,
 )
 from train.components import ForwardPassResult, TrainingComponents
 from train.gradients import collect_gradient_diagnostics
@@ -39,7 +39,7 @@ def perform_forward_pass(
         enabled=amp.enabled,
     ):
         inputs_td = build_model_inputs(X, components.column_map)
-        target_info = quantize_controller_targets(
+        target_info = quantize_targets(
             Y, components.column_map, input_domain="unit01"
         )
         pred = components.model(inputs_td)

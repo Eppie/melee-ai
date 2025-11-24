@@ -35,7 +35,8 @@ from loss import _compute_ce_weights, _compute_pos_weights
 from model.nano_gpt import GPT
 
 # Train module utilities
-from train.batch_utils import build_model_inputs, quantize_controller_targets
+from controller_quantization import quantize_targets
+from train.batch_utils import build_model_inputs
 from train.metrics import MetricsAccumulator
 from utils import _resolve_device
 from window_dataset import make_dataloader
@@ -583,7 +584,7 @@ def run_training_once(
                         Y = batch["Y"].to(device, non_blocking=True)
 
                         inputs_td = build_model_inputs(X, colmap)
-                        target_info = quantize_controller_targets(
+                        target_info = quantize_targets(
                             Y, colmap, input_domain="unit11"
                         )
 

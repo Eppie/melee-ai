@@ -20,16 +20,15 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
-import constants
 from column_map import ColumnMap
-from config import FeatureConfig, get_config
-from constants import CONTROLLER_KEY_GROUPS, _FEATURE_TRANSFORMS_SPEC
+from config import get_config
+from constants import CONTROLLER_KEY_GROUPS
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
-from feature_transforms import build_transform_spec
+from feature_transforms import apply_feature_transforms_dict
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
 from libmelee.melee.gamestate import GameState
@@ -248,78 +247,6 @@ def _coerce_scalar(value: object) -> float | int | bool:
         ) from exc
 
 
-def set_feature_transforms(transforms: Any) -> None:
-    """Configure per-feature transforms used at inference time."""
-    constants._FEATURE_TRANSFORMS_SPEC = build_transform_spec(transforms)
-
-
-set_feature_transforms(FeatureConfig().transforms)
-
-
-def _apply_transforms_to_features(features: Dict[str, float]) -> Dict[str, float]:
-    """Apply the configured transform spec to the features mapping."""
-    spec = _FEATURE_TRANSFORMS_SPEC
-    if not spec or not spec.steps:
-        spec = build_transform_spec(FeatureConfig().transforms)
-
-    out = dict(features)
-    keys = list(out.keys())
-    key_set = set(keys)
-
-    # Extract prefixes once
-    prefixes: set[str] = set()
-    for key in keys:
-        head, _, tail = key.partition("_")
-        if tail and head.startswith("p") and head[1:].isdigit():
-            prefixes.add(head)
-
-    # Cache resolved groups to avoid recomputation
-    def _resolve_groups(requested: Sequence[str]) -> List[Tuple[str, ...]]:
-        """Expand requested feature names to actual keys with prefix handling."""
-        if all(name in key_set for name in requested):
-            return [tuple(requested)]
-        groups: List[Tuple[str, ...]] = []
-        for prefix in sorted(prefixes):
-            group: List[str] = []
-            for feature in requested:
-                key = f"{prefix}_{feature}"
-                if key not in key_set:
-                    break
-                group.append(key)
-            else:
-                if group:
-                    groups.append(tuple(group))
-        return groups
-
-    for step in spec.steps:
-        groups = _resolve_groups(step.features)
-        if not groups:
-            continue
-        for group in groups:
-            if len(group) == 1:
-                key = group[0]
-                value = np.array(out[key], dtype=np.float32)
-                result = step.fn(value.copy())
-                if result is None:
-                    result = value
-                if result.shape != value.shape:
-                    raise ValueError(
-                        f"Transform '{step.transform}' expected output shape {value.shape}, got {result.shape}."
-                    )
-                out[key] = float(result)
-            else:
-                block = np.array([[float(out[k]) for k in group]], dtype=np.float32)
-                result = step.fn(block.copy())
-                if result is None:
-                    result = block
-                if result.shape != block.shape:
-                    raise ValueError(
-                        f"Transform '{step.transform}' expected output shape {block.shape}, got {result.shape}."
-                    )
-                for idx, key in enumerate(group):
-                    out[key] = float(result[0, idx])
-
-    return out
 
 
 # Cache controller feature template
@@ -432,7 +359,7 @@ def collect_raw_inputs_from_gamestate(
 
     # Single pass coercion
     combined_raw = {name: _coerce_scalar(val) for name, val in combined.items()}
-    transformed = _apply_transforms_to_features(combined_raw)
+    transformed = apply_feature_transforms_dict(combined_raw)
 
     feature_names = get_feature_names()
 
@@ -465,7 +392,6 @@ class GPTInferenceEngine:
 
         data_root = Path(train_cfg.get("data_root", "dataset_FOX_vs_FOX"))
         meta_path = data_root / "meta.json"
-        transforms_spec: Optional[Any] = None
         if meta_path.exists():
             with meta_path.open("r") as f:
                 meta = json.load(f)
@@ -473,13 +399,6 @@ class GPTInferenceEngine:
             feature_names = meta["schema"]["features"]
             target_names = meta["schema"]["targets"]
             self.seq_len = int(meta.get("seq_len", 256))
-            build_cfg = meta.get("build_config")
-            if isinstance(build_cfg, Mapping):
-                features_cfg = build_cfg.get("features")
-                if isinstance(features_cfg, Mapping):
-                    transforms_cfg = features_cfg.get("transforms")
-                    if transforms_cfg:
-                        transforms_spec = transforms_cfg
         else:
             feature_names = list(_DEFAULT_FEATURE_NAMES)
             target_names = list(_DEFAULT_TARGET_NAMES)
@@ -490,16 +409,6 @@ class GPTInferenceEngine:
         self.warmup_frames = 256
         self._main_stick_palette = np.asarray(CONTROL_STICK_QUANTIZED, dtype=np.float32)
         self._c_stick_palette = np.asarray(C_STICK_QUANTIZED, dtype=np.float32)
-
-        if transforms_spec is None and isinstance(train_cfg, Mapping):
-            features_cfg = train_cfg.get("features")
-            if isinstance(features_cfg, Mapping):
-                transforms_cfg = features_cfg.get("transforms")
-                if transforms_cfg:
-                    transforms_spec = transforms_cfg
-
-        if transforms_spec is not None:
-            set_feature_transforms(transforms_spec)
 
         self.feature_names = list(feature_names)
         self.target_names = list(target_names)
@@ -603,11 +512,8 @@ class GPTInferenceEngine:
     def _update_prev_controller_features(self, state: ControllerState) -> None:
         """Cache the transformed controller state."""
         values = _controller_state_to_features("p1", state)
-        if _FEATURE_TRANSFORMS_SPEC and _FEATURE_TRANSFORMS_SPEC.steps:
-            transformed = _apply_transforms_to_features(dict(values))
-            self._prev_controller_features = {k: float(transformed[k]) for k in values}
-        else:
-            self._prev_controller_features = {k: float(v) for k, v in values.items()}
+        transformed = apply_feature_transforms_dict(dict(values))
+        self._prev_controller_features = {k: float(transformed[k]) for k in values}
 
     def _snapshot_features(self, features: Mapping[str, float]) -> Dict[str, float]:
         """Capture transformed feature values in model order."""

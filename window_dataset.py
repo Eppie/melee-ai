@@ -11,11 +11,7 @@ import zarr
 from torch.utils.data import Dataset, Sampler
 
 from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor
-from feature_transforms import (
-    FeatureTransformSpec,
-    FeatureTransformStep,
-    feature_spec_from_config,
-)
+from feature_transforms import apply_feature_transforms
 
 FLOAT32_BYTES = np.dtype(np.float32).itemsize
 
@@ -177,111 +173,6 @@ class ZarrCorpusIndex:
         return features, targets
 
 
-@dataclass(frozen=True)
-class _PreparedTransform:
-    step: FeatureTransformStep
-    index_groups: Tuple[np.ndarray, ...]
-
-
-def _resolve_feature_groups(
-    feature_names: Sequence[str],
-    requested: Sequence[str],
-) -> List[Tuple[int, ...]]:
-    """Expand requested feature names into column index groups with examples.
-
-    Example
-    -------
-    Suppose ``feature_names`` contains ``('p1_main_stick_x', 'p1_main_stick_y',
-    'p2_main_stick_x', 'p2_main_stick_y')`` and ``requested=('main_stick_x',
-    'main_stick_y')``. The helper first tries the names verbatim (fails) and then
-    matches both ``p1_`` and ``p2_`` prefixes, returning ``[(0, 1), (2, 3)]`` so
-    transforms run on each player slice independently.
-    """
-    name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
-
-    if all(name in name_to_idx for name in requested):
-        return [tuple(name_to_idx[name] for name in requested)]
-
-    prefixes: set[str] = set()
-    for name in feature_names:
-        head, _, tail = name.partition("_")
-        if tail and head.startswith("p") and head[1:].isdigit():
-            prefixes.add(head)
-
-    groups: List[Tuple[int, ...]] = []
-    for prefix in sorted(prefixes):
-        indices: List[int] = []
-        found_all = True
-        for feature in requested:
-            col = f"{prefix}_{feature}"
-            idx = name_to_idx.get(col)
-            if idx is None:
-                found_all = False
-                break
-            indices.append(idx)
-        if found_all and indices:
-            groups.append(tuple(indices))
-    return groups
-
-
-def _prepare_transform_plan(
-    feature_names: Sequence[str], spec: Optional[FeatureTransformSpec]
-) -> Optional[Tuple[_PreparedTransform, ...]]:
-    if spec is None:
-        return None
-    plan: List[_PreparedTransform] = []
-    for step in spec.steps:
-        index_groups = _resolve_feature_groups(feature_names, step.features)
-        if not index_groups:
-            continue
-        idx_arrays = tuple(np.asarray(group, dtype=np.int32) for group in index_groups)
-        plan.append(_PreparedTransform(step, idx_arrays))
-    return tuple(plan) if plan else None
-
-
-def _apply_prepared_transforms(
-    features: RawNumpyArray, plan: Optional[Tuple[_PreparedTransform, ...]]
-) -> ProcessedNumpyArray:
-    """Apply pre-resolved transform indices to ``features``."""
-    if not plan:
-        return features
-    out = features
-    for prepared in plan:
-        for idxs in prepared.index_groups:
-            if idxs.size == 1:
-                col_idx = int(idxs[0])
-                block = out[:, col_idx].copy()
-                result = prepared.step.fn(block)
-                if result is None:
-                    result = block
-                if result.shape != block.shape:
-                    raise ValueError(
-                        f"Transform '{prepared.step.transform}' expected output shape {block.shape}, got {result.shape}."
-                    )
-                out[:, col_idx] = result
-            else:
-                block = out[:, idxs].copy()
-                result = prepared.step.fn(block)
-                if result is None:
-                    result = block
-                if result.shape != block.shape:
-                    raise ValueError(
-                        f"Transform '{prepared.step.transform}' expected output shape {block.shape}, got {result.shape}."
-                    )
-                out[:, idxs] = result
-    return out
-
-
-def _apply_feature_transforms(
-    features: RawNumpyArray,
-    feature_names: Sequence[str],
-    spec: Optional[FeatureTransformSpec],
-) -> ProcessedNumpyArray:
-    """Backward-compatible wrapper that prepares a plan on demand."""
-    plan = _prepare_transform_plan(feature_names, spec) if spec else None
-    return _apply_prepared_transforms(features, plan)
-
-
 class WindowDataset(Dataset):
     """
     Map-style dataset over ALL valid windows in the corpus.
@@ -298,39 +189,20 @@ class WindowDataset(Dataset):
     def __init__(
         self,
         data_dir: str | Path,
-        *,
-        feature_transforms: Optional[FeatureTransformSpec] = None,
     ) -> None:
-        """Prepare the dataset by indexing shards and wiring transforms.
-
-        Example
-        -------
-        ``WindowDataset('dataset_root')`` loads corpus metadata and stores the
-        requested transform spec so future ``__getitem__`` calls transparently
-        apply preprocessing before returning tensors.
-        """
+        """Prepare the dataset by indexing shards."""
         super().__init__()
         self.index = ZarrCorpusIndex(data_dir)
         self.seq_len = self.index.seq_len
-        self.transforms = feature_transforms
         self._feature_names = tuple(self.index.feature_names)
         self._target_names = tuple(self.index.target_names)
         self._feature_names_sel = list(self._feature_names)
         self._target_names_sel = list(self._target_names)
-        self._transform_plan = _prepare_transform_plan(
-            self._feature_names, self.transforms
-        )
         self._shard_cache: Dict[int, zarr.Group] = {}
         self._episode_cache: Dict[Tuple[int, int], Tuple[zarr.Array, zarr.Array]] = {}
 
     def __len__(self) -> int:
-        """Return the total number of sliding windows across the corpus.
-
-        Example
-        -------
-        If the index reports ``total_windows=120_000`` this method simply returns
-        that value, matching how PyTorch uses ``len(dataset)`` to size an epoch.
-        """
+        """Return the total number of sliding windows across the corpus."""
         return self.index.total_windows
 
     def estimate_batch_bytes(self, batch_size: int) -> int:
@@ -347,23 +219,7 @@ class WindowDataset(Dataset):
         return batch_size * floats_per_window * FLOAT32_BYTES
 
     def __getitem__(self, i: int) -> Dict[str, object]:
-        """Load window ``i`` and show each intermediate tensor transformation.
-
-        Example
-        -------
-        For ``seq_len=3`` and ``i=4``:
-
-        1. ``window_to_episode`` might yield ``(ep_idx=1, offset=1)`` so we slice
-           frames ``[1:4]`` from the episode arrays.
-        2. After copying into contiguous buffers we run feature transforms such as
-           scaling or palette snapping.
-        3. The arrays are converted to ``torch.float32`` tensors and the target array
-           defaults to shape ``(3, 0)`` when an episode lacks ``Y`` data.
-
-        The method returns a dictionary containing the tensors alongside the
-        ``episode_id`` and the local ``start`` offset, mirroring the exact payload
-        consumed by the training loop.
-        """
+        """Load window ``i`` and apply feature transforms."""
         ep_idx, offset = self.index.window_to_episode(i)
         ep = self.index.episodes[ep_idx]
         start = offset  # within episode, window starts at this index
@@ -377,12 +233,10 @@ class WindowDataset(Dataset):
             start : start + self.seq_len, :
         ]  # (seq_len, num_targets)
 
-        # Apply per-feature transforms (in-place on view)
-        feature_window: RawNumpyArray = np.ascontiguousarray(
-            feature_window
-        )  # ensure contiguous for in-place ops
-        feature_window: ProcessedNumpyArray = _apply_prepared_transforms(
-            feature_window, self._transform_plan
+        # Apply feature transforms
+        feature_window: RawNumpyArray = np.ascontiguousarray(feature_window)
+        feature_window: ProcessedNumpyArray = apply_feature_transforms(
+            feature_window, self._feature_names
         )
         features_out: ProcessedTorchTensor = torch.from_numpy(
             feature_window.astype(np.float32, copy=False)
@@ -419,15 +273,7 @@ class RandomWindowSampler(Sampler[int]):
         stride: int = 1,
         generator: Optional[torch.Generator] = None,
     ) -> None:
-        """Create a sampler that enforces a stride across episode windows.
-
-        Example
-        -------
-        With ``stride=2`` and two episodes having window counts ``[3, 4]`` the
-        sampler's ``__iter__`` in epoch ``0`` yields offsets ``[0, 2, 0, 2]`` across
-        episodes, while epoch ``1`` produces ``[1, 3, 1, 3]`` (where valid). The
-        constructor stores the generator so shuffling remains reproducible.
-        """
+        """Create a sampler that enforces a stride across episode windows."""
         super().__init__()
         if stride < 1:
             raise ValueError("stride must be >= 1")
@@ -438,39 +284,15 @@ class RandomWindowSampler(Sampler[int]):
         self._start_offset = 0
 
     def set_epoch(self, epoch: int) -> None:
-        """Record the epoch so future iterations honor ``epoch % stride``.
-
-        Example
-        -------
-        Calling ``set_epoch(3)`` with ``stride=2`` means ``__iter__`` will only
-        visit windows whose local offsets satisfy ``t % 2 == 1`` because the epoch's
-        modulo is ``1``.
-        """
+        """Record the epoch so future iterations honor ``epoch % stride``."""
         self.epoch = int(epoch)
 
     def set_start_offset(self, offset: int) -> None:
-        """Skip the first ``offset`` samples the next time the sampler runs.
-
-        Example
-        -------
-        After drawing the indices ``[10, 20, 30]`` the sampler applies
-        ``set_start_offset(1)`` so the very next ``__iter__`` call discards ``10``
-        and starts yielding from ``20``. The internal counter resets to ``0`` after
-        iteration so future epochs consume the full sequence again.
-        """
+        """Skip the first ``offset`` samples the next time the sampler runs."""
         self._start_offset = max(0, int(offset))
 
     def _count_for_epoch(self, epoch: int) -> int:
-        """Count how many windows satisfy the stride for ``epoch``.
-
-        Example
-        -------
-        With ``stride=3`` and an episode containing ``5`` windows, epoch ``0``
-        contributes ``2`` windows (offsets ``0`` and ``3``). Epoch ``1`` contributes
-        offsets ``1`` and ``4`` (also ``2`` windows), while epoch ``2`` contributes
-        just offset ``2``. Summing across episodes produces the number returned by
-        ``__len__``.
-        """
+        """Count how many windows satisfy the stride for ``epoch``."""
         s = self.stride
         m = epoch % s
         total = 0
@@ -482,27 +304,11 @@ class RandomWindowSampler(Sampler[int]):
         return total
 
     def __len__(self) -> int:
-        """Return the number of indices that ``__iter__`` will generate.
-
-        Example
-        -------
-        For ``stride=2`` with window counts ``[3, 4]`` and ``epoch=0`` the helper
-        reports ``5`` because episode ``0`` contributes offsets ``0`` and ``2``
-        while episode ``1`` contributes ``0``, ``2`` and ``4``.
-        """
+        """Return the number of indices that ``__iter__`` will generate."""
         return self._count_for_epoch(self.epoch)
 
     def __iter__(self) -> Iterator[int]:
-        """Yield global window indices for the configured stride with shuffling.
-
-        Example
-        -------
-        Continuing the ``stride=2`` scenario, ``__iter__`` first enumerates all
-        valid offsets that satisfy ``t % 2 == epoch % 2``. It then applies
-        ``torch.randperm`` when a generator is supplied, so two consecutive epochs
-        with the same seed produce identical shuffled orders, ensuring reproducible
-        training batches.
-        """
+        """Yield global window indices for the configured stride with shuffling."""
         s = self.stride
         m = self.epoch % s
 
@@ -542,15 +348,7 @@ class RandomWindowSampler(Sampler[int]):
 
 
 def worker_init_fn(worker_id: int) -> None:
-    """Seed NumPy and PyTorch for ``worker_id`` with a short computation trace.
-
-    Example
-    -------
-    When PyTorch assigns base seed ``123`` to the worker, this helper computes
-    ``base_seed = 123 % 2**31`` and seeds NumPy with ``base_seed + worker_id``. For
-    worker ``2`` the resulting NumPy seed is ``125`` so each DataLoader worker
-    shuffles batches differently.
-    """
+    """Seed NumPy and PyTorch for ``worker_id``."""
     # Same recipe as PyTorch DistributedSampler docs
     base_seed = torch.initial_seed() % 2**31
     np.random.seed(base_seed + worker_id)
@@ -559,28 +357,8 @@ def worker_init_fn(worker_id: int) -> None:
 def make_dataloader(
     config: "Config",
 ) -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampler[int]]:
-    """Construct the dataset, sampler, and DataLoader with an explicit example.
-
-    Example
-    -------
-    When configuration specifies ``batch_size=8``, ``stride=4`` and ``num_workers=2``
-    this function:
-
-    1. Builds ``WindowDataset`` with feature transforms from the config.
-    2. Instantiates :class:`RandomWindowSampler` using the dataset's index and the
-       configured stride.
-    3. Creates ``DataLoader`` with two workers, pinned memory (on CUDA), and
-       ``worker_init_fn`` so each worker gets a unique seed.
-
-    The three-tuple ``(loader, dataset, sampler)`` is returned so training scripts
-    can iterate over ``loader`` while still accessing ``dataset`` metadata and the
-    sampler to adjust epochs.
-    """
-    feature_spec = feature_spec_from_config(config.features)
-    ds = WindowDataset(
-        config.zarr.out_root,
-        feature_transforms=feature_spec,
-    )
+    """Construct the dataset, sampler, and DataLoader."""
+    ds = WindowDataset(config.zarr.out_root)
 
     stride = config.train.stride
     sampler = RandomWindowSampler(

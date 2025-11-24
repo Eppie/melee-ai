@@ -7,8 +7,6 @@ import numpy as np
 import pytest
 import zarr
 
-from config.config import FeatureConfig
-from feature_transforms import feature_spec_from_config
 import window_dataset
 
 
@@ -69,20 +67,8 @@ def test_window_dataset_double_quantization(zarr_corpus: Path):
     Tests that the WindowDataset does not apply feature transforms to the target tensor (Y).
     This prevents the double quantization issue.
     """
-    # Create a FeatureConfig with a stick_palette transform
-    feature_config = FeatureConfig(
-        transforms=[
-            {
-                "transform": "stick_palette",
-                "features": ["main_stick_x", "main_stick_y"],
-                "palette": "fox_main",
-            }
-        ]
-    )
-    feature_spec = feature_spec_from_config(feature_config)
-
-    # Create a WindowDataset instance
-    dataset = window_dataset.WindowDataset(zarr_corpus, feature_transforms=feature_spec)
+    # Create a WindowDataset instance (transforms are now hardcoded and always applied)
+    dataset = window_dataset.WindowDataset(zarr_corpus)
 
     # Get a window from the dataset
     window = dataset[0]

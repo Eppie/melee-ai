@@ -12,13 +12,12 @@ from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
 from constants import CONTROLLER_KEY_GROUPS
-from feature_transforms import feature_spec_from_config
+from controller_quantization import quantize_targets
 from loss import compute_loss_components
 from train.batch_utils import (
     SampleWeightRatios,
     build_model_inputs,
     compute_component_sample_weights,
-    quantize_controller_targets,
 )
 from train.metrics import multilabel_prf
 from train.value_head import compute_value_targets
@@ -157,7 +156,7 @@ def run_validation(
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
             inputs_td = build_model_inputs(X, colmap)
-            target_info = quantize_controller_targets(Y, colmap, input_domain="unit01")
+            target_info = quantize_targets(Y, colmap, input_domain="unit01")
             weights = compute_component_sample_weights(
                 target_info,
                 device,

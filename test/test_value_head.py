@@ -8,14 +8,13 @@ import torch
 
 from column_map import ColumnMap
 from config.config import get_config, init_config, reset_config
-from feature_transforms import feature_spec_from_config
+from feature_transforms import apply_feature_transforms
 from schema import get_feature_names, get_target_names
 from train.value_head import (
     build_reward_feature_index,
     compute_frame_rewards,
     compute_value_targets,
 )
-from window_dataset import _apply_feature_transforms
 from zarr_storage import (
     Schema,
     _rows_to_dense,
@@ -62,13 +61,10 @@ def replay_reward_data():
     X_np, _, _, _, feat_names, targ_names = _rows_to_dense(rows, schema)
     colmap = ColumnMap(feat_names, targ_names)
     idx = build_reward_feature_index(colmap)
-    feature_spec = feature_spec_from_config(cfg.features)
 
     def transform(arr: np.ndarray) -> np.ndarray:
         buf = np.ascontiguousarray(arr, dtype=np.float32)
-        if feature_spec is None:
-            return buf
-        return _apply_feature_transforms(buf, feat_names, feature_spec)
+        return apply_feature_transforms(buf, feat_names)
 
     X = torch.from_numpy(transform(X_np)).unsqueeze(0)
     rewards = compute_frame_rewards(X, idx=idx).squeeze(0)

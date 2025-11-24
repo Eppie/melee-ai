@@ -13,10 +13,7 @@ This package provides modular, loosely-coupled utilities for training:
 
 from __future__ import annotations
 
-from train.batch_utils import (
-    build_model_inputs,
-    quantize_controller_targets,
-)
+from train.batch_utils import build_model_inputs
 from train.checkpoint import (
     _sorted_checkpoint_paths as sorted_checkpoint_paths,
     _latest_checkpoint as find_latest_checkpoint,
@@ -103,7 +100,6 @@ __all__ = [
     "collect_gradient_diagnostics",
     # Batch utils
     "build_model_inputs",
-    "quantize_controller_targets",
     # Value head
     "RewardFeatureIdx",
     "build_reward_feature_index",

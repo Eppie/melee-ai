@@ -92,33 +92,6 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
     )
 
 
-# TODO: What is the point of this?
-def quantize_controller_targets(
-    targets_batch: torch.Tensor, column_map: ColumnMap, input_domain: str = "unit11"
-) -> Dict[str, torch.Tensor]:
-    """Quantize controller outputs to the discrete bins used by the loss functions.
-
-    This is a thin wrapper around :func:`controller_quantization.quantize_targets` that provides a
-    consistent entry point for the rest of the training code.
-
-    Example:
-        If ``batch_Y`` contains a single sequence ``[[[0.0, 0.5], [0.2, -0.1]]]`` and the column map
-        reports that the first column is the main stick and the second is the C-stick, the wrapped
-        quantizer will convert those continuous values into categorical indices. With a quantization
-        scheme that maps ``0.0`` to bin ``4`` and ``0.5`` to bin ``7``, the resulting dictionary
-        includes tensors like ``{"main_idx": tensor([[4, 5]]), "c_idx": tensor([[7, 3]])}`` along
-        with masks describing which frames changed. The example shows how continuous values are
-        transformed step by step before being returned.
-
-    Args:
-        targets_batch: ``[B, L, Y]`` target controller values to quantize.
-        column_map: Column mapping for the target indices.
-        input_domain: Domain of input values (``"unit11"`` or ``"unit01"``).
-
-    Returns:
-        Dictionary with quantized targets and metadata as produced by the underlying quantizer.
-    """
-    return quantize_targets(targets_batch, column_map, input_domain=input_domain)
 
 
 @dataclass(frozen=True)

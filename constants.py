@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import List
 
 import numpy as np
 import torch
@@ -10,7 +10,6 @@ from controller_utils import (
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
-from feature_transforms import FeatureTransformSpec
 
 CONTROLLER_KEY_GROUPS = {
     "main": ("main_stick_x", "main_stick_y"),
@@ -31,13 +30,11 @@ _MAIN_STICK_NORM_SQ_CPU = (_MAIN_STICK_PALETTE_CPU * _MAIN_STICK_PALETTE_CPU).su
 _C_STICK_NORM_SQ_CPU = (_C_STICK_PALETTE_CPU * _C_STICK_PALETTE_CPU).sum(dim=1)
 
 
-_MAIN_STICK_CACHE: dict[tuple[str, Optional[int]], torch.Tensor] = {}
-_C_STICK_CACHE: dict[tuple[str, Optional[int]], torch.Tensor] = {}
-_SHOULDER_CACHE: dict[tuple[str, Optional[int]], torch.Tensor] = {}
-_MAIN_STICK_NORM_CACHE: dict[tuple[str, Optional[int]], torch.Tensor] = {}
-_C_STICK_NORM_CACHE: dict[tuple[str, Optional[int]], torch.Tensor] = {}
-
-_FEATURE_TRANSFORMS_SPEC: Optional[FeatureTransformSpec] = None
+_MAIN_STICK_CACHE: dict[tuple[str, int | None], torch.Tensor] = {}
+_C_STICK_CACHE: dict[tuple[str, int | None], torch.Tensor] = {}
+_SHOULDER_CACHE: dict[tuple[str, int | None], torch.Tensor] = {}
+_MAIN_STICK_NORM_CACHE: dict[tuple[str, int | None], torch.Tensor] = {}
+_C_STICK_NORM_CACHE: dict[tuple[str, int | None], torch.Tensor] = {}
 MAX_FRAMES: int = (60 * 60 * 8) + 123  # Full 8 minute replay
 _MAIN_STICK_LABELS: List[str] = [
     f"({x:.2f},{y:.2f})" for x, y in CONTROL_STICK_QUANTIZED

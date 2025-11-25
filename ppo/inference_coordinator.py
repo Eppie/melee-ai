@@ -7,6 +7,7 @@ to maximize GPU throughput.
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -27,6 +28,22 @@ from ppo.ppo_loss import compute_log_probs
 from schema import get_feature_names, get_target_names
 from train.batch_utils import build_model_inputs
 from utils import strip_compiled_prefix
+
+
+@dataclass
+class InferenceTimings:
+    """Detailed timing breakdown for inference operations."""
+
+    buffer_update: float = 0.0  # CPU: Updating buffers and preparing workers
+    batch_prep: float = 0.0  # CPU: Stacking tensors and moving to device
+    input_building: float = 0.0  # CPU: build_model_inputs transformation
+    learner_forward: float = 0.0  # GPU: Learner model forward pass
+    learner_sampling: float = 0.0  # CPU/GPU: Sampling actions from learner outputs
+    opponent_batch_prep: float = 0.0  # CPU: Opponent batch preparation
+    opponent_forward: float = 0.0  # GPU: Opponent model forward pass
+    opponent_sampling: float = 0.0  # CPU/GPU: Sampling actions from opponent outputs
+    recording: float = 0.0  # CPU: Recording steps and building results
+    total: float = 0.0  # Total time for process_states call
 
 
 @dataclass
@@ -166,7 +183,10 @@ class InferenceCoordinator:
     def process_states(
         self,
         worker_states_batch: List[Tuple[int, torch.Tensor, float, bool]],
-    ) -> Dict[int, Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]]:
+    ) -> Tuple[
+        Dict[int, Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]],
+        InferenceTimings,
+    ]:
         """Process a batch of states from workers and return actions for both players.
 
         This is the main inference method called each frame. It:
@@ -183,10 +203,16 @@ class InferenceCoordinator:
                 - done: Whether the match ended for this worker
 
         Returns:
-            Dict mapping worker_id to (p1_actions, p2_actions) tuples
-            Actions are dicts with keys: main_stick, c_stick, buttons, shoulder
+            Tuple of (actions_dict, timings):
+                - actions_dict: Dict mapping worker_id to (p1_actions, p2_actions) tuples
+                  Actions are dicts with keys: main_stick, c_stick, buttons, shoulder
+                - timings: InferenceTimings object with detailed timing breakdown
         """
+        start_total = time.perf_counter()
+        timings = InferenceTimings()
+
         # Update buffers and collect workers ready for inference
+        buffer_start = time.perf_counter()
         ready_learner_inputs = []  # (worker_id, inputs_tensor)
         ready_opponent_inputs = []  # (worker_id, inputs_tensor)
         worker_order = []  # Track which workers in which order
@@ -225,48 +251,82 @@ class InferenceCoordinator:
                 ready_opponent_inputs.append((worker_id, opponent_frames))
                 worker_order.append(worker_id)
 
+        timings.buffer_update = time.perf_counter() - buffer_start
+
         # If no workers ready, return empty actions
         if len(worker_order) == 0:
-            return {
-                wid: (self._neutral_actions(), self._neutral_actions())
-                for wid, _, _, _ in worker_states_batch
-            }
+            timings.total = time.perf_counter() - start_total
+            return (
+                {
+                    wid: (self._neutral_actions(), self._neutral_actions())
+                    for wid, _, _, _ in worker_states_batch
+                },
+                timings,
+            )
 
-        # Batch inference for learner model
+        # Batch inference for learner model - prepare batch
+        batch_prep_start = time.perf_counter()
         learner_batch = torch.stack([x[1] for x in ready_learner_inputs], dim=0).to(
             self.device
         )  # [B, T, F]
-        learner_inputs = build_model_inputs(learner_batch, self.colmap)
+        timings.batch_prep = time.perf_counter() - batch_prep_start
 
+        # Build model inputs
+        input_build_start = time.perf_counter()
+        learner_inputs = build_model_inputs(learner_batch, self.colmap)
+        timings.input_building = time.perf_counter() - input_build_start
+
+        # Learner forward pass (GPU)
+        learner_forward_start = time.perf_counter()
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=True):
             learner_outputs = self.learner_model(learner_inputs)
+        # Synchronize to get accurate GPU timing
+        if self.device.type == 'cuda':
+            torch.cuda.synchronize()
+        timings.learner_forward = time.perf_counter() - learner_forward_start
 
         # Extract per-worker learner actions (stochastic)
+        learner_sampling_start = time.perf_counter()
         learner_actions_batch = self._sample_actions_batch(
             learner_outputs, exploration=True
         )
+        timings.learner_sampling = time.perf_counter() - learner_sampling_start
 
         # Batch inference for opponent model
         opponent_actions_batch = {}
         if self.opponent_model is not None:
+            # Opponent batch preparation
+            opp_batch_prep_start = time.perf_counter()
             opponent_batch = torch.stack(
                 [x[1] for x in ready_opponent_inputs], dim=0
             ).to(self.device)
             opponent_inputs = build_model_inputs(opponent_batch, self.colmap)
+            timings.opponent_batch_prep = time.perf_counter() - opp_batch_prep_start
 
+            # Opponent forward pass (GPU)
+            opp_forward_start = time.perf_counter()
             with torch.no_grad(), torch.amp.autocast('cuda', enabled=True):
                 opponent_outputs = self.opponent_model(opponent_inputs)
+            if self.device.type == 'cuda':
+                torch.cuda.synchronize()
+            timings.opponent_forward = time.perf_counter() - opp_forward_start
 
+            # Opponent action sampling
+            opp_sampling_start = time.perf_counter()
             opponent_actions_batch = self._sample_actions_batch(
                 opponent_outputs, exploration=False  # Deterministic for opponent
             )
+            timings.opponent_sampling = time.perf_counter() - opp_sampling_start
         else:
             # Self-play: opponent uses same model but deterministic
+            opp_sampling_start = time.perf_counter()
             opponent_actions_batch = self._sample_actions_batch(
                 learner_outputs, exploration=False
             )
+            timings.opponent_sampling = time.perf_counter() - opp_sampling_start
 
         # Record steps and build result
+        recording_start = time.perf_counter()
         results = {}
         for batch_idx, worker_id in enumerate(worker_order):
             # Extract this worker's results
@@ -297,7 +357,10 @@ class InferenceCoordinator:
             if worker_id not in results and not done:
                 results[worker_id] = (self._neutral_actions(), self._neutral_actions())
 
-        return results
+        timings.recording = time.perf_counter() - recording_start
+        timings.total = time.perf_counter() - start_total
+
+        return results, timings
 
     def _sample_actions_batch(
         self,

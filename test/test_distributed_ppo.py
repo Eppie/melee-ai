@@ -32,7 +32,7 @@ class TestPPOConfig:
 
     def test_default_warmup_frames(self):
         cfg = get_config()
-        assert cfg.ppo.warmup_frames == 128
+        assert cfg.ppo.warmup_frames == 256
 
     def test_default_distributed_mode(self):
         cfg = get_config()
@@ -69,12 +69,13 @@ class TestInferenceCoordinator:
         model = GPT(config).to(device)
         model.eval()
 
+        seq_len = 64
         return InferenceCoordinator(
             learner_model=model,
             device=device,
             num_workers=2,
-            seq_len=64,
-            warmup_frames=16,
+            seq_len=seq_len,
+            warmup_frames=seq_len,  # Must equal seq_len
         )
 
     @pytest.fixture
@@ -123,7 +124,7 @@ class TestInferenceCoordinator:
     def test_warmup_returns_neutral_actions(self, coordinator, valid_features):
         """During warmup, should return neutral actions."""
         worker_states = [(0, valid_features.clone(), 0.0, False)]
-        results = coordinator.process_states(worker_states)
+        results, timings = coordinator.process_states(worker_states)
 
         # Should have result for worker 0
         assert 0 in results
@@ -133,6 +134,10 @@ class TestInferenceCoordinator:
         assert p1_actions["main_stick"].item() == 0
         assert p1_actions["c_stick"].item() == 0
 
+        # Check that timings are returned
+        assert timings is not None
+        assert timings.total >= 0
+
     def test_inference_after_warmup(self, coordinator, valid_features):
         """After warmup frames, should get real model actions."""
         # Fill up warmup frames
@@ -141,7 +146,7 @@ class TestInferenceCoordinator:
                 (0, valid_features.clone(), 0.0, False),
                 (1, valid_features.clone(), 0.0, False),
             ]
-            results = coordinator.process_states(worker_states)
+            results, timings = coordinator.process_states(worker_states)
 
         # After warmup, should have recorded steps
         assert coordinator.get_total_steps() > 0
@@ -155,7 +160,7 @@ class TestInferenceCoordinator:
                 (0, valid_features.clone(), 0.1, False),
                 (1, valid_features.clone(), 0.2, False),
             ]
-            coordinator.process_states(worker_states)
+            results, timings = coordinator.process_states(worker_states)
 
         # Check step records
         records_0 = coordinator.get_step_records(0)
@@ -180,7 +185,7 @@ class TestInferenceCoordinator:
         # Generate some steps
         for frame in range(coordinator.warmup_frames + 3):
             worker_states = [(0, valid_features.clone(), 0.0, False)]
-            coordinator.process_states(worker_states)
+            results, timings = coordinator.process_states(worker_states)
 
         assert coordinator.get_total_steps() > 0
 
@@ -193,14 +198,14 @@ class TestInferenceCoordinator:
         # Fill some frames
         for frame in range(coordinator.warmup_frames):
             worker_states = [(0, valid_features.clone(), 0.0, False)]
-            coordinator.process_states(worker_states)
+            results, timings = coordinator.process_states(worker_states)
 
         state = coordinator.worker_states[0]
         assert state.frames_collected == coordinator.warmup_frames
 
         # Send done signal
         worker_states = [(0, valid_features.clone(), 1.0, True)]
-        coordinator.process_states(worker_states)
+        results, timings = coordinator.process_states(worker_states)
 
         assert state.frames_collected == 0
         assert len(state.learner_buffer) == 0
@@ -213,7 +218,7 @@ class TestInferenceCoordinator:
                 (0, valid_features.clone(), 0.0, False),
                 (1, valid_features.clone(), 0.0, False),
             ]
-            coordinator.process_states(worker_states)
+            results, timings = coordinator.process_states(worker_states)
 
         bootstrap = coordinator.bootstrap_values()
 

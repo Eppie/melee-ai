@@ -106,6 +106,21 @@ class TrajectorySlicer:
         last_print_time = start_time
         last_print_frames = 0
 
+        # Accumulate timing stats
+        timing_sums = {
+            'buffer_update': 0.0,
+            'batch_prep': 0.0,
+            'input_building': 0.0,
+            'learner_forward': 0.0,
+            'learner_sampling': 0.0,
+            'opponent_batch_prep': 0.0,
+            'opponent_forward': 0.0,
+            'opponent_sampling': 0.0,
+            'recording': 0.0,
+            'total': 0.0,
+        }
+        timing_counts = 0
+
         print(f"Collecting rollout of {self.rollout_length} frames...")
 
         while frames_collected < self.rollout_length:
@@ -129,9 +144,20 @@ class TrajectorySlicer:
                 continue
 
             # Process batch and get actions
-            inference_start = time.time()
-            actions = self.coordinator.process_states(worker_states)
-            inference_time = time.time() - inference_start
+            actions, timings = self.coordinator.process_states(worker_states)
+
+            # Accumulate timing stats
+            timing_sums['buffer_update'] += timings.buffer_update
+            timing_sums['batch_prep'] += timings.batch_prep
+            timing_sums['input_building'] += timings.input_building
+            timing_sums['learner_forward'] += timings.learner_forward
+            timing_sums['learner_sampling'] += timings.learner_sampling
+            timing_sums['opponent_batch_prep'] += timings.opponent_batch_prep
+            timing_sums['opponent_forward'] += timings.opponent_forward
+            timing_sums['opponent_sampling'] += timings.opponent_sampling
+            timing_sums['recording'] += timings.recording
+            timing_sums['total'] += timings.total
+            timing_counts += 1
 
             # Send actions to workers (convert to primitives to avoid file descriptor leaks)
             send_start = time.time()
@@ -146,14 +172,38 @@ class TrajectorySlicer:
             batch_time = time.time() - batch_start
             frames_collected += len(worker_states)
 
-            # Print timing breakdown every 50 batches
+            # Print detailed timing breakdown every 50 batches
             batch_count = frames_collected // len(worker_states)
             if batch_count % 50 == 0:
+                # Compute averages
+                avg_timings = {k: v / timing_counts * 1000 for k, v in timing_sums.items()}
+
+                # Calculate GPU vs CPU time
+                gpu_time = avg_timings['learner_forward'] + avg_timings['opponent_forward']
+                cpu_time = (avg_timings['buffer_update'] + avg_timings['batch_prep'] +
+                           avg_timings['input_building'] + avg_timings['learner_sampling'] +
+                           avg_timings['opponent_batch_prep'] + avg_timings['opponent_sampling'] +
+                           avg_timings['recording'])
+
                 print(
-                    f"  [TIMING] Batch time: {batch_time*1000:.1f}ms | "
+                    f"  [TIMING] Batch: {batch_time*1000:.1f}ms | "
                     f"Collect: {collect_time*1000:.1f}ms | "
-                    f"Inference: {inference_time*1000:.1f}ms | "
                     f"Send: {send_time*1000:.1f}ms"
+                )
+                print(
+                    f"    Inference breakdown (avg): Total={avg_timings['total']:.2f}ms | "
+                    f"GPU={gpu_time:.2f}ms | CPU={cpu_time:.2f}ms"
+                )
+                print(
+                    f"      CPU: Buffer={avg_timings['buffer_update']:.2f}ms | "
+                    f"BatchPrep={avg_timings['batch_prep']:.2f}ms | "
+                    f"InputBuild={avg_timings['input_building']:.2f}ms | "
+                    f"Sampling={avg_timings['learner_sampling'] + avg_timings['opponent_sampling']:.2f}ms | "
+                    f"Recording={avg_timings['recording']:.2f}ms"
+                )
+                print(
+                    f"      GPU: Learner={avg_timings['learner_forward']:.2f}ms | "
+                    f"Opponent={avg_timings['opponent_forward']:.2f}ms"
                 )
 
             # Print progress with FPS every 500 frames or at completion
@@ -199,9 +249,34 @@ class TrajectorySlicer:
         avg_fps = frames_collected / total_time if total_time > 0 else 0
         total_steps = sum(len(steps) for steps in worker_steps.values())
         print(
-            f"Rollout complete: {total_steps} steps from {num_workers} workers | "
+            f"\nRollout complete: {total_steps} steps from {num_workers} workers | "
             f"Time: {total_time:.1f}s | Avg FPS: {avg_fps:.1f}"
         )
+
+        # Print final timing summary
+        if timing_counts > 0:
+            avg_timings = {k: v / timing_counts * 1000 for k, v in timing_sums.items()}
+            gpu_time = avg_timings['learner_forward'] + avg_timings['opponent_forward']
+            cpu_time = (avg_timings['buffer_update'] + avg_timings['batch_prep'] +
+                       avg_timings['input_building'] + avg_timings['learner_sampling'] +
+                       avg_timings['opponent_batch_prep'] + avg_timings['opponent_sampling'] +
+                       avg_timings['recording'])
+
+            print("\n=== Inference Performance Summary ===")
+            print(f"Average inference time: {avg_timings['total']:.2f}ms")
+            print(f"  GPU time: {gpu_time:.2f}ms ({gpu_time/avg_timings['total']*100:.1f}%)")
+            print(f"  CPU time: {cpu_time:.2f}ms ({cpu_time/avg_timings['total']*100:.1f}%)")
+            print(f"\nGPU breakdown:")
+            print(f"  Learner forward:  {avg_timings['learner_forward']:.2f}ms")
+            print(f"  Opponent forward: {avg_timings['opponent_forward']:.2f}ms")
+            print(f"\nCPU breakdown:")
+            print(f"  Buffer update:    {avg_timings['buffer_update']:.2f}ms")
+            print(f"  Batch prep:       {avg_timings['batch_prep']:.2f}ms")
+            print(f"  Input building:   {avg_timings['input_building']:.2f}ms")
+            print(f"  Learner sampling: {avg_timings['learner_sampling']:.2f}ms")
+            print(f"  Opponent sampling:{avg_timings['opponent_sampling']:.2f}ms")
+            print(f"  Recording:        {avg_timings['recording']:.2f}ms")
+            print("=" * 37)
 
         return RolloutSlice(
             worker_steps=worker_steps,

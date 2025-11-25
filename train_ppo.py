@@ -124,6 +124,10 @@ def run_distributed_training(
     print(f"Opponent rotation: every {ppo_cfg.opponent_rotation_interval} frames")
     print(f"{'='*60}\n")
 
+    # Compile model for faster inference (2-3x speedup)
+    print("Compiling model for inference...")
+    model = torch.compile(model, mode='reduce-overhead')
+
     # Create inference coordinator
     coordinator = InferenceCoordinator(
         learner_model=model,

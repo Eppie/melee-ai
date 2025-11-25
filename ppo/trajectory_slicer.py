@@ -66,6 +66,22 @@ class TrajectorySlicer:
         self.gae_lambda = gae_lambda
         self.normalize_advantages = normalize_advantages
 
+    def _actions_to_primitives(self, actions: Dict[str, torch.Tensor]) -> Dict[str, any]:
+        """Convert action tensors to Python primitives to avoid file descriptor leaks.
+
+        PyTorch tensors use file descriptors when sent through multiprocessing queues,
+        which can cause "too many open files" errors. Converting to primitives fixes this.
+        """
+        primitives = {}
+        for key, value in actions.items():
+            if key == "buttons":
+                # Convert boolean tensor to list of bools
+                primitives[key] = value.cpu().tolist()
+            else:
+                # Convert scalar tensors to Python int
+                primitives[key] = int(value.cpu().item())
+        return primitives
+
     def collect_rollout(
         self,
         state_queue,
@@ -105,17 +121,17 @@ class TrajectorySlicer:
             # Process batch and get actions
             actions = self.coordinator.process_states(worker_states)
 
-            # Send actions to workers (move to CPU for multiprocessing compatibility)
+            # Send actions to workers (convert to primitives to avoid file descriptor leaks)
             for worker_id, (p1_actions, p2_actions) in actions.items():
                 if worker_id in action_queues:
-                    # Move tensors to CPU to avoid CUDA multiprocessing issues
-                    p1_cpu = {k: v.cpu() for k, v in p1_actions.items()}
-                    p2_cpu = {k: v.cpu() for k, v in p2_actions.items()}
-                    action_queues[worker_id].put((p1_cpu, p2_cpu))
+                    # Convert tensors to Python primitives to avoid file descriptor leaks
+                    p1_primitives = self._actions_to_primitives(p1_actions)
+                    p2_primitives = self._actions_to_primitives(p2_actions)
+                    action_queues[worker_id].put((p1_primitives, p2_primitives))
 
             frames_collected += len(worker_states)
 
-            if frames_collected % 1000 == 0:
+            if frames_collected % 500 == 0 or frames_collected == self.rollout_length:
                 print(f"  Collected {frames_collected}/{self.rollout_length} frames")
 
         # Get bootstrap values for all workers

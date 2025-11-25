@@ -396,25 +396,37 @@ class SimulationWorker:
 
     def _actions_to_controller_state(
         self,
-        actions: Dict[str, torch.Tensor],
+        actions: Dict,
     ) -> ControllerState:
-        """Convert action tensors to ControllerState."""
+        """Convert action dict (tensors or primitives) to ControllerState."""
+        # Helper to extract int from tensor or primitive
+        def to_int(val):
+            if isinstance(val, int):
+                return val
+            return int(val.item())
+
+        # Helper to extract bool list from tensor or primitive
+        def to_bool_list(val):
+            if isinstance(val, list):
+                return val
+            return val.tolist()
+
         # Main stick
-        main_idx = int(actions["main_stick"].item())
+        main_idx = to_int(actions["main_stick"])
         main_xy = self._main_stick_palette[main_idx]
         main_xy = (main_xy * 0.5 + 0.5).astype(np.float32)  # [-1,1] -> [0,1]
 
         # C-stick
-        c_idx = int(actions["c_stick"].item())
+        c_idx = to_int(actions["c_stick"])
         c_xy = self._c_stick_palette[c_idx]
         c_xy = (c_xy * 0.5 + 0.5).astype(np.float32)
 
         # Shoulder
-        shoulder_idx = int(actions["shoulder"].item())
+        shoulder_idx = to_int(actions["shoulder"])
         shoulder_val = float(self._shoulder_centers[shoulder_idx])
 
         # Buttons
-        buttons = actions["buttons"].cpu().tolist()
+        buttons = to_bool_list(actions["buttons"])
 
         return ControllerState(
             main_stick_x=float(main_xy[0]),

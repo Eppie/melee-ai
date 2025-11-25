@@ -7,6 +7,7 @@ fixed-length rollouts and bootstrap the final state.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -101,6 +102,9 @@ class TrajectorySlicer:
         """
         frames_collected = 0
         num_workers = self.coordinator.num_workers
+        start_time = time.time()
+        last_print_time = start_time
+        last_print_frames = 0
 
         print(f"Collecting rollout of {self.rollout_length} frames...")
 
@@ -133,8 +137,24 @@ class TrajectorySlicer:
 
             frames_collected += len(worker_states)
 
+            # Print progress with FPS every 500 frames or at completion
             if frames_collected % 500 == 0 or frames_collected == self.rollout_length:
-                print(f"  Collected {frames_collected}/{self.rollout_length} frames")
+                current_time = time.time()
+                elapsed = current_time - last_print_time
+                frames_since_last = frames_collected - last_print_frames
+
+                if elapsed > 0:
+                    current_fps = frames_since_last / elapsed
+                    overall_fps = frames_collected / (current_time - start_time)
+                    print(
+                        f"  Collected {frames_collected}/{self.rollout_length} frames | "
+                        f"FPS: {current_fps:.1f} (avg: {overall_fps:.1f})"
+                    )
+                else:
+                    print(f"  Collected {frames_collected}/{self.rollout_length} frames")
+
+                last_print_time = current_time
+                last_print_frames = frames_collected
 
         # Get bootstrap values for all workers
         bootstrap_values = self.coordinator.bootstrap_values()
@@ -155,8 +175,14 @@ class TrajectorySlicer:
                 for r in records
             ]
 
+        # Print rollout summary with timing stats
+        total_time = time.time() - start_time
+        avg_fps = frames_collected / total_time if total_time > 0 else 0
         total_steps = sum(len(steps) for steps in worker_steps.values())
-        print(f"Rollout complete: {total_steps} steps from {num_workers} workers")
+        print(
+            f"Rollout complete: {total_steps} steps from {num_workers} workers | "
+            f"Time: {total_time:.1f}s | Avg FPS: {avg_fps:.1f}"
+        )
 
         return RolloutSlice(
             worker_steps=worker_steps,

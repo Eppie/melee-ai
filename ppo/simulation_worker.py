@@ -150,6 +150,10 @@ class SimulationWorker:
         self.prev_features: Optional[torch.Tensor] = None
         self.frame_count = 0
 
+        # Stock tracking for logging
+        self.prev_p1_stock: Optional[int] = None
+        self.prev_p2_stock: Optional[int] = None
+
         # Running flag
         self.running = False
 
@@ -313,12 +317,41 @@ class SimulationWorker:
         p1 = gamestate.players.get(self.learner_port)
         p2 = gamestate.players.get(self.opponent_port)
         if p1 and p2:
+            # Track stock losses
+            if self.prev_p1_stock is not None and p1.stock < self.prev_p1_stock:
+                stocks_lost = self.prev_p1_stock - p1.stock
+                print(
+                    f"[Worker {self.worker_id}] P1 lost {stocks_lost} stock(s)! "
+                    f"({self.prev_p1_stock} → {p1.stock}) | "
+                    f"P1: {p1.percent:.1f}% | P2: {p2.percent:.1f}%"
+                )
+            if self.prev_p2_stock is not None and p2.stock < self.prev_p2_stock:
+                stocks_lost = self.prev_p2_stock - p2.stock
+                print(
+                    f"[Worker {self.worker_id}] P2 lost {stocks_lost} stock(s)! "
+                    f"({self.prev_p2_stock} → {p2.stock}) | "
+                    f"P1: {p1.percent:.1f}% | P2: {p2.percent:.1f}%"
+                )
+
+            # Print percent every 120 frames (2 seconds of game time)
+            if self.frame_count % 120 == 0:
+                print(
+                    f"[Worker {self.worker_id}] Frame {self.frame_count} | "
+                    f"P1: {p1.percent:.1f}% ({p1.stock} stocks) | "
+                    f"P2: {p2.percent:.1f}% ({p2.stock} stocks)"
+                )
+
+            # Update stock tracking
+            self.prev_p1_stock = p1.stock
+            self.prev_p2_stock = p2.stock
+
+            # Check for match end
             if p1.stock == 0 or p2.stock == 0:
                 done = True
                 winner = "P1" if p1.stock > 0 else "P2"
                 print(
                     f"[Worker {self.worker_id}] Match ended: {winner} wins "
-                    f"(P1: {p1.stock} stocks, P2: {p2.stock} stocks)"
+                    f"(P1: {p1.stock} stocks @ {p1.percent:.1f}%, P2: {p2.stock} stocks @ {p2.percent:.1f}%)"
                 )
 
         # Send state to coordinator (convert tensor to list to avoid file descriptor issues)
@@ -450,6 +483,8 @@ class SimulationWorker:
         """
         print(f"[Worker {self.worker_id}] Restarting match...")
         self.prev_features = None
+        self.prev_p1_stock = None
+        self.prev_p2_stock = None
         self.frame_count = 0
         # The menu navigation will happen automatically in the main loop
         # when we detect we're no longer in-game

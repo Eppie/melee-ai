@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch.amp import autocast
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 
 from config import get_config, init_config
 from libmelee.melee.enums import Menu
@@ -1123,7 +1123,7 @@ def main():
     print(f"Using PPO learning rate: {config.ppo.lr:.2e}")
 
     # Gradient scaler
-    scaler = GradScaler(enabled=config.train.use_amp)
+    scaler = GradScaler('cuda', enabled=config.train.use_amp)
 
     # Opponent pool
     pool_dir = args.out_dir / "opponent_pool"

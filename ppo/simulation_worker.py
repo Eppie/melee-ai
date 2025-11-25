@@ -66,6 +66,10 @@ def run_worker(
         action_queue: Queue to receive actions from coordinator
         control_queue: Queue for control signals (shutdown, pause, etc.)
     """
+    # Initialize config for this worker process (needed for spawn method)
+    from config.config import init_config
+    init_config()
+
     worker = SimulationWorker(
         worker_id=worker_id,
         config=config,

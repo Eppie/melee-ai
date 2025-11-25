@@ -109,7 +109,10 @@ class TrajectorySlicer:
         print(f"Collecting rollout of {self.rollout_length} frames...")
 
         while frames_collected < self.rollout_length:
+            batch_start = time.time()
+
             # Collect states from all workers
+            collect_start = time.time()
             worker_states = []
             for _ in range(num_workers):
                 try:
@@ -120,22 +123,38 @@ class TrajectorySlicer:
                 except Exception as e:
                     print(f"Warning: Timeout waiting for worker state: {e}")
                     continue
+            collect_time = time.time() - collect_start
 
             if not worker_states:
                 continue
 
             # Process batch and get actions
+            inference_start = time.time()
             actions = self.coordinator.process_states(worker_states)
+            inference_time = time.time() - inference_start
 
             # Send actions to workers (convert to primitives to avoid file descriptor leaks)
+            send_start = time.time()
             for worker_id, (p1_actions, p2_actions) in actions.items():
                 if worker_id in action_queues:
                     # Convert tensors to Python primitives to avoid file descriptor leaks
                     p1_primitives = self._actions_to_primitives(p1_actions)
                     p2_primitives = self._actions_to_primitives(p2_actions)
                     action_queues[worker_id].put((p1_primitives, p2_primitives))
+            send_time = time.time() - send_start
 
+            batch_time = time.time() - batch_start
             frames_collected += len(worker_states)
+
+            # Print timing breakdown every 50 batches
+            batch_count = frames_collected // len(worker_states)
+            if batch_count % 50 == 0:
+                print(
+                    f"  [TIMING] Batch time: {batch_time*1000:.1f}ms | "
+                    f"Collect: {collect_time*1000:.1f}ms | "
+                    f"Inference: {inference_time*1000:.1f}ms | "
+                    f"Send: {send_time*1000:.1f}ms"
+                )
 
             # Print progress with FPS every 500 frames or at completion
             if frames_collected % 500 == 0 or frames_collected == self.rollout_length:

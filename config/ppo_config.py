@@ -18,7 +18,7 @@ class PPOConfig(BaseModel):
     minibatch_size: int = Field(default=64, ge=1)
     max_grad_norm: float = Field(default=0.5, gt=0)
     max_episode_frames: int = Field(default=18000, ge=1)
-    num_workers: int = Field(default=1, ge=1)
+    num_workers: int = Field(default=8, ge=1)
     normalize_advantages: bool = True
     value_clip: Optional[float] = Field(default=None, gt=0)
 

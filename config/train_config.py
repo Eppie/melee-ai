@@ -15,14 +15,14 @@ class TrainConfig(BaseModel):
         extra="forbid",
     )
 
-    batch_size: int = Field(default=128, ge=1)
-    epochs: int = Field(default=16, ge=1)
-    lr: float = Field(default=1.3e-4, gt=0)
+    batch_size: int = Field(default=256, ge=1)
+    epochs: int = Field(default=32, ge=1)
+    lr: float = Field(default=3e-4, gt=0)
     # TODO: Document the effect of this setting
     weight_decay: float = Field(default=0.002, ge=0)
     # TODO: Document the effect of this setting
     betas: Tuple[float, float] = Field(default=(0.9, 0.95))
-    warmup_steps: int = Field(default=15000, ge=0)
+    warmup_steps: int = Field(default=7500, ge=0)
     num_workers: int = Field(default=16, ge=0)
     prefetch_factor: int = Field(default=4, ge=1)
     max_loader_prefetch_mb: int = Field(default=2048, ge=1)

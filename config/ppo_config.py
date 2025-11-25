@@ -29,8 +29,8 @@ class PPOConfig(BaseModel):
     opponent_rotation_interval: int = Field(default=10000, ge=1000)
     """Frames between opponent model swaps."""
 
-    warmup_frames: int = Field(default=128, ge=1)
-    """Frames to buffer before model predictions start."""
+    warmup_frames: int = Field(default=256, ge=1)
+    """Frames to buffer before model predictions start. Should match seq_len for consistent shapes."""
 
     distributed_mode: bool = Field(default=False)
     """Use distributed architecture with centralized GPU inference."""

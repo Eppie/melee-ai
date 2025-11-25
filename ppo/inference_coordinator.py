@@ -211,8 +211,14 @@ class InferenceCoordinator:
 
             # Check if past warmup
             if state.frames_collected >= self.warmup_frames:
-                # Build input tensors
-                learner_frames = torch.stack(list(state.learner_buffer), dim=0)
+                # Build input tensors - always use exactly seq_len frames
+                buffer_list = list(state.learner_buffer)
+                if len(buffer_list) != self.seq_len:
+                    raise RuntimeError(
+                        f"Buffer length {len(buffer_list)} != seq_len {self.seq_len}. "
+                        f"Ensure warmup_frames == seq_len for fixed input shapes."
+                    )
+                learner_frames = torch.stack(buffer_list, dim=0)
                 opponent_frames = torch.stack(list(state.opponent_buffer), dim=0)
 
                 ready_learner_inputs.append((worker_id, learner_frames))
@@ -418,7 +424,10 @@ class InferenceCoordinator:
 
         for worker_id, state in self.worker_states.items():
             if state.frames_collected >= self.warmup_frames:
-                frames = torch.stack(list(state.learner_buffer), dim=0)
+                buffer_list = list(state.learner_buffer)
+                assert len(buffer_list) == self.seq_len, \
+                    f"Buffer length {len(buffer_list)} != seq_len {self.seq_len}"
+                frames = torch.stack(buffer_list, dim=0)
                 ready_inputs.append(frames)
                 ready_workers.append(worker_id)
 

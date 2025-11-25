@@ -1088,6 +1088,9 @@ def main():
 
     args = parser.parse_args()
 
+    # Enable TF32 for faster matmul on Ampere+ GPUs
+    torch.set_float32_matmul_precision('high')
+
     # Initialize config
     init_config()
     config = get_config()

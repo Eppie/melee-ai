@@ -109,8 +109,10 @@ class TrajectorySlicer:
             worker_states = []
             for _ in range(num_workers):
                 try:
-                    state = state_queue.get(timeout=30.0)
-                    worker_states.append(state)
+                    worker_id, features_list, reward, done = state_queue.get(timeout=30.0)
+                    # Convert list back to tensor
+                    features = torch.tensor(features_list, dtype=torch.float32)
+                    worker_states.append((worker_id, features, reward, done))
                 except Exception as e:
                     print(f"Warning: Timeout waiting for worker state: {e}")
                     continue

@@ -321,8 +321,9 @@ class SimulationWorker:
                     f"(P1: {p1.stock} stocks, P2: {p2.stock} stocks)"
                 )
 
-        # Send state to coordinator
-        self.state_queue.put((self.worker_id, features, reward, done))
+        # Send state to coordinator (convert tensor to list to avoid file descriptor issues)
+        features_list = features.tolist()
+        self.state_queue.put((self.worker_id, features_list, reward, done))
 
         # Wait for actions
         p1_actions, p2_actions = self.action_queue.get()

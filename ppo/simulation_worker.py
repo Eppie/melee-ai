@@ -354,9 +354,9 @@ class SimulationWorker:
                     f"(P1: {p1.stock} stocks @ {p1.percent:.1f}%, P2: {p2.stock} stocks @ {p2.percent:.1f}%)"
                 )
 
-        # Send state to coordinator (convert tensor to list to avoid file descriptor issues)
-        features_list = features.tolist()
-        self.state_queue.put((self.worker_id, features_list, reward, done))
+        # Send state to coordinator (convert tensor to numpy to avoid file descriptor issues)
+        features_np = features.numpy()
+        self.state_queue.put((self.worker_id, features_np, reward, done))
 
         # Wait for actions
         p1_actions, p2_actions = self.action_queue.get()

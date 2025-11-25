@@ -305,11 +305,9 @@ class InferenceCoordinator:
             torch.cuda.synchronize()
         timings.learner_forward = time.perf_counter() - learner_forward_start
 
-        # Extract per-worker learner actions (stochastic)
+        # Extract per-worker learner actions
         learner_sampling_start = time.perf_counter()
-        learner_actions_batch = self._sample_actions_batch(
-            learner_outputs, exploration=True
-        )
+        learner_actions_batch = self._sample_actions_batch(learner_outputs)
         timings.learner_sampling = time.perf_counter() - learner_sampling_start
 
         # Batch inference for opponent model
@@ -333,16 +331,12 @@ class InferenceCoordinator:
 
             # Opponent action sampling
             opp_sampling_start = time.perf_counter()
-            opponent_actions_batch = self._sample_actions_batch(
-                opponent_outputs, exploration=False  # Deterministic for opponent
-            )
+            opponent_actions_batch = self._sample_actions_batch(opponent_outputs)
             timings.opponent_sampling = time.perf_counter() - opp_sampling_start
         else:
-            # Self-play: opponent uses same model but deterministic
+            # Self-play: opponent uses same model
             opp_sampling_start = time.perf_counter()
-            opponent_actions_batch = self._sample_actions_batch(
-                learner_outputs, exploration=False
-            )
+            opponent_actions_batch = self._sample_actions_batch(learner_outputs)
             timings.opponent_sampling = time.perf_counter() - opp_sampling_start
 
         # Record steps and build result
@@ -384,72 +378,63 @@ class InferenceCoordinator:
     def _sample_actions_batch(
         self,
         outputs: TensorDict,
-        exploration: bool = True,
     ) -> List[Tuple[Dict, Dict, torch.Tensor, torch.Tensor]]:
-        """Sample actions from batched model outputs.
+        """Sample actions from batched model outputs (vectorized).
+
+        Uses the same sampling strategy as model_interface.py:
+        - Sticks (main, c) and shoulder: argmax (deterministic)
+        - Buttons: bernoulli sampling (stochastic)
 
         Args:
             outputs: Model output TensorDict with shape [B, T, ...]
-            exploration: If True, sample stochastically. If False, use argmax.
 
         Returns:
             List of (action_logits, actions_taken, log_prob, value) per batch element
         """
         batch_size = outputs["main_stick"].shape[0]
-        results = []
 
-        # Extract logits at last timestep
-        main_logits = outputs["main_stick"][:, -1]  # [B, num_bins]
+        # Extract logits at last timestep - [B, num_classes]
+        main_logits = outputs["main_stick"][:, -1]
         c_logits = outputs["c_stick"][:, -1]
-        button_logits = outputs["buttons"][:, -1]  # [B, num_buttons]
-        shoulder_logits = outputs.get("shoulder")
-        if shoulder_logits is not None:
-            shoulder_logits = shoulder_logits[:, -1]
+        button_logits = outputs["buttons"][:, -1]
+        shoulder_logits = outputs["shoulder"][:, -1]
         values = outputs.get("value", torch.zeros(batch_size, 1, 1, device=self.device))
         values = values[:, -1, 0]  # [B]
 
+        # Action logits for all heads
+        action_logits_batch = {
+            "main_stick": main_logits,
+            "c_stick": c_logits,
+            "buttons": button_logits,
+            "shoulder": shoulder_logits,
+        }
+
+        # Sample actions - argmax for sticks/shoulder, bernoulli for buttons
+        main_actions = torch.argmax(main_logits, dim=-1)  # [B]
+        c_actions = torch.argmax(c_logits, dim=-1)  # [B]
+        shoulder_actions = torch.argmax(shoulder_logits, dim=-1)  # [B]
+
+        # Buttons use stochastic bernoulli sampling
+        button_probs = torch.sigmoid(button_logits)  # [B, num_buttons]
+        button_actions = torch.bernoulli(button_probs).bool()  # [B, num_buttons]
+
+        actions_batch = {
+            "main_stick": main_actions,
+            "c_stick": c_actions,
+            "shoulder": shoulder_actions,
+            "buttons": button_actions,
+        }
+
+        # Compute log probabilities for entire batch at once
+        log_probs = compute_log_probs(action_logits_batch, actions_batch)  # [B]
+
+        # Build results list (still need to unpack per element for compatibility)
+        # TODO: compatibility with what!?
+        results = []
         for b in range(batch_size):
-            action_logits = {
-                "main_stick": main_logits[b],
-                "c_stick": c_logits[b],
-                "buttons": button_logits[b],
-            }
-            if shoulder_logits is not None:
-                action_logits["shoulder"] = shoulder_logits[b]
-
-            actions = {}
-            if exploration:
-                # Sample from distributions
-                main_probs = torch.softmax(main_logits[b], dim=-1)
-                actions["main_stick"] = torch.multinomial(main_probs, 1).squeeze(-1)
-
-                c_probs = torch.softmax(c_logits[b], dim=-1)
-                actions["c_stick"] = torch.multinomial(c_probs, 1).squeeze(-1)
-
-                if shoulder_logits is not None:
-                    shoulder_probs = torch.softmax(shoulder_logits[b], dim=-1)
-                    actions["shoulder"] = torch.multinomial(shoulder_probs, 1).squeeze(
-                        -1
-                    )
-                else:
-                    actions["shoulder"] = torch.tensor(0, device=self.device)
-
-                button_probs = torch.sigmoid(button_logits[b])
-                actions["buttons"] = torch.bernoulli(button_probs).bool()
-            else:
-                # Argmax (deterministic)
-                actions["main_stick"] = torch.argmax(main_logits[b], dim=-1)
-                actions["c_stick"] = torch.argmax(c_logits[b], dim=-1)
-                if shoulder_logits is not None:
-                    actions["shoulder"] = torch.argmax(shoulder_logits[b], dim=-1)
-                else:
-                    actions["shoulder"] = torch.tensor(0, device=self.device)
-                actions["buttons"] = (torch.sigmoid(button_logits[b]) > 0.5).bool()
-
-            # Compute log probability
-            log_prob = self._compute_log_prob(action_logits, actions)
-
-            results.append((action_logits, actions, log_prob, values[b]))
+            action_logits = {k: v[b] for k, v in action_logits_batch.items()}
+            actions = {k: v[b] for k, v in actions_batch.items()}
+            results.append((action_logits, actions, log_probs[b], values[b]))
 
         return results
 

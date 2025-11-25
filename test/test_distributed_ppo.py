@@ -336,12 +336,6 @@ class TestTrajectorySlicer:
             0: [
                 Step(
                     state=torch.randn(64),
-                    action_logits={
-                        "main_stick": torch.randn(64),
-                        "c_stick": torch.randn(9),
-                        "buttons": torch.randn(5),
-                        "shoulder": torch.randn(5),
-                    },
                     action_taken={
                         "main_stick": torch.tensor(0),
                         "c_stick": torch.tensor(0),
@@ -482,7 +476,6 @@ class TestStepRecord:
         record = StepRecord(
             worker_id=0,
             state=torch.randn(64),
-            action_logits={"main_stick": torch.randn(64)},
             action_taken={"main_stick": torch.tensor(5)},
             log_prob=torch.tensor(-2.5),
             value=torch.tensor(0.8),
@@ -500,7 +493,6 @@ class TestStepRecord:
         record = StepRecord(
             worker_id=0,
             state=torch.randn(64),
-            action_logits={},
             action_taken={},
             log_prob=torch.tensor(0.0),
             value=torch.tensor(0.0),
@@ -521,7 +513,6 @@ class TestRolloutSlice:
             0: [
                 Step(
                     state=torch.randn(64),
-                    action_logits={},
                     action_taken={},
                     log_prob=torch.tensor(0.0),
                     value=torch.tensor(0.0),

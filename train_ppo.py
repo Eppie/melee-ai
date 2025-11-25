@@ -340,13 +340,9 @@ def train_on_windows(
             mb_valid_mask = windows["valid_mask"][mb_indices]
             mb_old_values = windows["values"][mb_indices]
 
-            # Action logits and actions
-            mb_old_action_logits = {}
+            # Actions
             mb_actions_taken = {}
             for key in windows.keys():
-                if key.startswith("action_logits_"):
-                    head = key.replace("action_logits_", "")
-                    mb_old_action_logits[head] = windows[key][mb_indices]
                 if key.startswith("actions_"):
                     head = key.replace("actions_", "")
                     mb_actions_taken[head] = windows[key][mb_indices]
@@ -383,7 +379,6 @@ def train_on_windows(
                 loss, loss_metrics = compute_total_ppo_loss(
                     new_action_logits=new_action_logits,
                     new_values=new_values,
-                    old_action_logits=mb_old_action_logits,
                     old_values=mb_old_values,
                     actions_taken=mb_actions_taken,
                     old_log_probs=mb_old_log_probs,
@@ -574,12 +569,11 @@ def build_sequence_windows(
     for traj in trajectories:
         if len(traj.steps) > 0:
             for head in ["main_stick", "c_stick", "buttons", "shoulder"]:
-                if head in traj.steps[0].action_logits:
+                if head in traj.steps[0].action_taken:
                     action_keys.append(head)
             break
 
     for head in action_keys:
-        all_windows[f"action_logits_{head}"] = []
         all_windows[f"actions_{head}"] = []
 
     for traj in trajectories:
@@ -596,12 +590,8 @@ def build_sequence_windows(
         old_log_probs = torch.stack([step.log_prob for step in traj.steps]).squeeze(-1)
         values = torch.stack([step.value for step in traj.steps]).squeeze(-1)
 
-        action_logits = {}
         actions = {}
         for head in action_keys:
-            action_logits[head] = torch.stack(
-                [step.action_logits[head] for step in traj.steps]
-            )
             actions[head] = torch.stack(
                 [step.action_taken[head] for step in traj.steps]
             )
@@ -617,10 +607,6 @@ def build_sequence_windows(
             values = torch.cat([values[0:1].expand(pad_len), values], dim=0)
 
             for head in action_keys:
-                action_logits[head] = torch.cat(
-                    [action_logits[head][0:1].expand(pad_len, -1), action_logits[head]],
-                    dim=0,
-                )
                 if actions[head].dim() == 1:
                     actions[head] = torch.cat(
                         [actions[head][0:1].expand(pad_len), actions[head]], dim=0
@@ -645,9 +631,6 @@ def build_sequence_windows(
             all_windows["valid_mask"].append(valid_mask.unsqueeze(0))
 
             for head in action_keys:
-                all_windows[f"action_logits_{head}"].append(
-                    action_logits[head].unsqueeze(0)
-                )
                 all_windows[f"actions_{head}"].append(actions[head].unsqueeze(0))
         else:
             for start in range(0, T - seq_len + 1, stride):
@@ -664,9 +647,6 @@ def build_sequence_windows(
                 )
 
                 for head in action_keys:
-                    all_windows[f"action_logits_{head}"].append(
-                        action_logits[head][start:end].unsqueeze(0)
-                    )
                     all_windows[f"actions_{head}"].append(
                         actions[head][start:end].unsqueeze(0)
                     )
@@ -683,9 +663,6 @@ def build_sequence_windows(
                 )
 
                 for head in action_keys:
-                    all_windows[f"action_logits_{head}"].append(
-                        action_logits[head][start:].unsqueeze(0)
-                    )
                     all_windows[f"actions_{head}"].append(
                         actions[head][start:].unsqueeze(0)
                     )
@@ -778,12 +755,8 @@ def train_on_trajectories(
             mb_valid_mask = windows["valid_mask"][mb_indices]
             mb_old_values = windows["values"][mb_indices]
 
-            mb_old_action_logits = {}
             mb_actions_taken = {}
             for key in windows.keys():
-                if key.startswith("action_logits_"):
-                    head = key.replace("action_logits_", "")
-                    mb_old_action_logits[head] = windows[key][mb_indices]
                 if key.startswith("actions_"):
                     head = key.replace("actions_", "")
                     mb_actions_taken[head] = windows[key][mb_indices]
@@ -820,7 +793,6 @@ def train_on_trajectories(
                 loss, loss_metrics = compute_total_ppo_loss(
                     new_action_logits=new_action_logits,
                     new_values=new_values,
-                    old_action_logits=mb_old_action_logits,
                     old_values=mb_old_values,
                     actions_taken=mb_actions_taken,
                     old_log_probs=mb_old_log_probs,

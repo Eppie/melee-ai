@@ -105,10 +105,13 @@ class TrajectorySlicer:
             # Process batch and get actions
             actions = self.coordinator.process_states(worker_states)
 
-            # Send actions to workers
+            # Send actions to workers (move to CPU for multiprocessing compatibility)
             for worker_id, (p1_actions, p2_actions) in actions.items():
                 if worker_id in action_queues:
-                    action_queues[worker_id].put((p1_actions, p2_actions))
+                    # Move tensors to CPU to avoid CUDA multiprocessing issues
+                    p1_cpu = {k: v.cpu() for k, v in p1_actions.items()}
+                    p2_cpu = {k: v.cpu() for k, v in p2_actions.items()}
+                    action_queues[worker_id].put((p1_cpu, p2_cpu))
 
             frames_collected += len(worker_states)
 

@@ -1183,4 +1183,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Set spawn method for CUDA multiprocessing compatibility
+    try:
+        mp.set_start_method('spawn', force=False)
+    except RuntimeError:
+        # Start method already set
+        pass
     main()

@@ -130,23 +130,6 @@ _DERIVED_FEATURE_DEFAULTS: Dict[str, float] = {
     "value_target": 0.0,
 }
 
-# Global debug flag - set to False in production
-DEBUG_LOGGING = False
-
-_PRINT_CACHE: dict[str, int] = {}
-
-
-def print_cached(s: str) -> None:
-    """Only log if DEBUG_LOGGING is enabled."""
-    if not DEBUG_LOGGING:
-        return
-    if s not in _PRINT_CACHE:
-        _PRINT_CACHE[s] = 1
-    else:
-        _PRINT_CACHE[s] += 1
-    if _PRINT_CACHE[s] % 100 == 0:
-        print(s, _PRINT_CACHE[s])
-
 
 @dataclasses.dataclass
 class ControllerState:
@@ -227,8 +210,6 @@ def _safe_float(value: object) -> float:
     try:
         return float(value)
     except Exception as e:
-        if DEBUG_LOGGING:
-            print_cached(f"[TRACE:_safe_float] Failed to convert {value}: {e}")
         raise
 
 
@@ -382,7 +363,7 @@ class GPTInferenceEngine:
         checkpoint_path: str | Path,
     ) -> None:
         """Load the GPT checkpoint and initialize inference buffers."""
-        print_cached(
+        print(
             f"[TRACE:GPTInferenceEngine.__init__] Loading checkpoint from {checkpoint_path}"
         )
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)

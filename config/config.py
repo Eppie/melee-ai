@@ -141,14 +141,16 @@ def apply_overrides_(cfg: Config, overrides: Dict[str, str]) -> None:
         try:
             if raw_value.lower() in ("true", "false"):
                 value = raw_value.lower() == "true"
-            elif "." in raw_value or "e" in raw_value.lower():
-                value = float(raw_value)
             elif raw_value.isdigit() or (
                 raw_value[0] == "-" and raw_value[1:].isdigit()
             ):
                 value = int(raw_value)
             else:
-                value = raw_value
+                # Try to parse as float, but fall back to string if it fails
+                try:
+                    value = float(raw_value)
+                except ValueError:
+                    value = raw_value
 
             setattr(parent, field_name, value)
         except Exception as e:

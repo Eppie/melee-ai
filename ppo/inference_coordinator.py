@@ -238,7 +238,7 @@ class InferenceCoordinator:
         )  # [B, T, F]
         learner_inputs = build_model_inputs(learner_batch, self.colmap)
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=True):
             learner_outputs = self.learner_model(learner_inputs)
 
         # Extract per-worker learner actions (stochastic)
@@ -254,7 +254,7 @@ class InferenceCoordinator:
             ).to(self.device)
             opponent_inputs = build_model_inputs(opponent_batch, self.colmap)
 
-            with torch.no_grad():
+            with torch.no_grad(), torch.amp.autocast('cuda', enabled=True):
                 opponent_outputs = self.opponent_model(opponent_inputs)
 
             opponent_actions_batch = self._sample_actions_batch(
@@ -438,7 +438,7 @@ class InferenceCoordinator:
         batch = torch.stack(ready_inputs, dim=0).to(self.device)
         inputs = build_model_inputs(batch, self.colmap)
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=True):
             outputs = self.learner_model(inputs)
 
         values = outputs.get("value", torch.zeros(len(ready_workers), 1, 1))

@@ -170,88 +170,105 @@ class TestSimpleHeadIntermediate:
 
 
 class TestGPTConfigCrossAttention:
-    """Tests for GPTConfig cross-attention fields."""
+    """Tests for GPTConfig head_flow field."""
 
-    def test_default_cross_attention_disabled(self):
-        """Test that cross-attention is disabled by default."""
+    def test_default_head_flow_sequential(self):
+        """Test that head_flow defaults to sequential."""
         cfg = init_config()
-        assert cfg.model.use_head_cross_attention is False
+        assert cfg.model.head_flow == "sequential"
 
-    def test_default_cross_attention_heads(self):
-        """Test default number of cross-attention heads."""
-        cfg = init_config()
-        assert cfg.model.head_cross_attention_heads == 4
+    def test_set_head_flow_parallel_via_override(self):
+        """Test setting head_flow to parallel via CLI override."""
+        cfg = init_config(overrides={"model.head_flow": "parallel"})
+        assert cfg.model.head_flow == "parallel"
 
-    def test_enable_cross_attention_via_override(self):
-        """Test enabling cross-attention via CLI override."""
-        cfg = init_config(overrides={"model.use_head_cross_attention": "true"})
-        assert cfg.model.use_head_cross_attention is True
+    def test_set_head_flow_mix_via_override(self):
+        """Test setting head_flow to mix via CLI override."""
+        cfg = init_config(overrides={"model.head_flow": "mix"})
+        assert cfg.model.head_flow == "mix"
 
-    def test_set_cross_attention_heads_via_override(self):
-        """Test setting cross-attention heads via CLI override."""
-        cfg = init_config(overrides={"model.head_cross_attention_heads": "8"})
-        assert cfg.model.head_cross_attention_heads == 8
+    def test_set_head_flow_sequential_via_override(self):
+        """Test setting head_flow to sequential via CLI override."""
+        cfg = init_config(overrides={"model.head_flow": "sequential"})
+        assert cfg.model.head_flow == "sequential"
 
-    def test_cross_attention_heads_validation(self):
-        """Test that cross-attention heads must be >= 1."""
+    def test_invalid_head_flow_raises_validation_error(self):
+        """Test that invalid head_flow value raises ValidationError."""
         from pydantic import ValidationError
         from config.gpt_config import GPTConfig
 
         with pytest.raises(ValidationError):
-            GPTConfig(head_cross_attention_heads=0)
+            GPTConfig(head_flow="invalid")
 
 
 class TestGPTModelCrossAttention:
-    """Tests for GPT model with cross-attention."""
+    """Tests for GPT model with different head_flow modes."""
 
-    def test_model_without_cross_attention(self):
-        """Test model creation without cross-attention (default)."""
+    def test_model_sequential_mode_default(self):
+        """Test model creation with sequential mode (default)."""
         from model.nano_gpt import GPT
 
         cfg = init_config()
         model = GPT(cfg)
 
-        assert model.use_head_cross_attention is False
-        assert (
-            not hasattr(model, "head_cross_attention")
-            or model.head_cross_attention is None
-        )
+        assert model.head_flow == "sequential"
+        assert not hasattr(model, "head_cross_attention")
+        # Sequential mode should have different input sizes for each head
+        # Order: main_stick → buttons → shoulder → c_stick
+        assert model.main_stick_head.fc1.in_features < model.button_head.fc1.in_features
+        assert model.button_head.fc1.in_features < model.shoulder_head.fc1.in_features
+        assert model.shoulder_head.fc1.in_features < model.c_stick_head.fc1.in_features
 
-    def test_model_with_cross_attention(self):
-        """Test model creation with cross-attention enabled."""
+    def test_model_parallel_mode(self):
+        """Test model creation with parallel mode."""
         from model.nano_gpt import GPT
 
-        cfg = init_config(overrides={"model.use_head_cross_attention": "true"})
+        cfg = init_config(overrides={"model.head_flow": "parallel"})
         model = GPT(cfg)
 
-        assert model.use_head_cross_attention is True
+        assert model.head_flow == "parallel"
+        assert not hasattr(model, "head_cross_attention")
+        # Parallel mode should have same input size for all heads
+        button_in = model.button_head.fc1.in_features
+        assert model.main_stick_head.fc1.in_features == button_in
+        assert model.c_stick_head.fc1.in_features == button_in
+        assert model.shoulder_head.fc1.in_features == button_in
+
+    def test_model_mix_mode(self):
+        """Test model creation with mix mode (cross-attention)."""
+        from model.nano_gpt import GPT
+
+        cfg = init_config(overrides={"model.head_flow": "mix"})
+        model = GPT(cfg)
+
+        assert model.head_flow == "mix"
         assert hasattr(model, "head_cross_attention")
         assert isinstance(model.head_cross_attention, HeadCrossAttention)
 
     def test_cross_attention_adds_parameters(self):
-        """Test that cross-attention adds parameters to the model."""
+        """Test that mix mode (cross-attention) adds parameters vs parallel mode."""
         from model.nano_gpt import GPT
 
-        cfg_without = init_config()
-        model_without = GPT(cfg_without)
-        params_without = sum(p.numel() for p in model_without.parameters())
+        cfg_parallel = init_config(overrides={"model.head_flow": "parallel"})
+        model_parallel = GPT(cfg_parallel)
+        params_parallel = sum(p.numel() for p in model_parallel.parameters())
 
         reset_config()
-        cfg_with = init_config(overrides={"model.use_head_cross_attention": "true"})
-        model_with = GPT(cfg_with)
-        params_with = sum(p.numel() for p in model_with.parameters())
+        cfg_mix = init_config(overrides={"model.head_flow": "mix"})
+        model_mix = GPT(cfg_mix)
+        params_mix = sum(p.numel() for p in model_mix.parameters())
 
-        assert params_with > params_without
+        assert params_mix > params_parallel
         # Cross-attention should add roughly 66K params (128 hidden * 4 heads * ~130)
-        param_diff = params_with - params_without
+        param_diff = params_mix - params_parallel
         assert 50000 < param_diff < 100000, f"Unexpected param diff: {param_diff}"
 
     def test_forward_with_cross_attention(self):
-        """Test forward pass with cross-attention enabled."""
+        """Test forward pass with mix mode (cross-attention)."""
         from model.nano_gpt import GPT
         from schema import get_feature_names
 
-        cfg = init_config(overrides={"model.use_head_cross_attention": "true"})
+        cfg = init_config(overrides={"model.head_flow": "mix"})
         device = torch.device("cpu")
         model = GPT(cfg).to(device)
         model.eval()
@@ -305,8 +322,8 @@ class TestGPTModelCrossAttention:
         assert outputs["shoulder"].shape[:2] == (B, T)
         assert outputs["value"].shape[:2] == (B, T)
 
-    def test_forward_outputs_match_without_cross_attention(self):
-        """Test that output shapes are identical with and without cross-attention."""
+    def test_forward_outputs_match_across_modes(self):
+        """Test that output shapes are identical across different head_flow modes."""
         from model.nano_gpt import GPT
         from tensordict import TensorDict
         from column_map import ColumnMap
@@ -314,15 +331,15 @@ class TestGPTModelCrossAttention:
 
         device = torch.device("cpu")
 
-        # Model without cross-attention
-        cfg_without = init_config()
-        model_without = GPT(cfg_without).to(device)
+        # Model with parallel mode
+        cfg_parallel = init_config(overrides={"model.head_flow": "parallel"})
+        model_parallel = GPT(cfg_parallel).to(device)
 
         reset_config()
 
-        # Model with cross-attention
-        cfg_with = init_config(overrides={"model.use_head_cross_attention": "true"})
-        model_with = GPT(cfg_with).to(device)
+        # Model with mix mode
+        cfg_mix = init_config(overrides={"model.head_flow": "mix"})
+        model_mix = GPT(cfg_mix).to(device)
 
         # Create inputs
         B, T = 2, 16
@@ -349,21 +366,21 @@ class TestGPTModelCrossAttention:
             batch_size=(B, T),
         )
 
-        model_without.eval()
-        model_with.eval()
+        model_parallel.eval()
+        model_mix.eval()
 
         with torch.no_grad():
-            out_without = model_without(inputs)
-            out_with = model_with(inputs)
+            out_parallel = model_parallel(inputs)
+            out_mix = model_mix(inputs)
 
         # Shapes should be identical
         for key in ["buttons", "main_stick", "c_stick", "shoulder", "value"]:
             assert (
-                out_without[key].shape == out_with[key].shape
+                out_parallel[key].shape == out_mix[key].shape
             ), f"Shape mismatch for {key}"
 
     def test_backward_pass_with_cross_attention(self):
-        """Test that gradients flow correctly with cross-attention."""
+        """Test that gradients flow correctly with mix mode (cross-attention)."""
         from model.nano_gpt import GPT
         from tensordict import TensorDict
         from column_map import ColumnMap
@@ -371,7 +388,7 @@ class TestGPTModelCrossAttention:
 
         device = torch.device("cpu")
 
-        cfg = init_config(overrides={"model.use_head_cross_attention": "true"})
+        cfg = init_config(overrides={"model.head_flow": "mix"})
         model = GPT(cfg).to(device)
         model.train()
 

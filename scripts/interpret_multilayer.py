@@ -21,7 +21,6 @@ from train import find_latest_checkpoint
 from utils import _resolve_device
 from column_map import ColumnMap
 from window_dataset import RandomWindowSampler, worker_init_fn
-from feature_transforms import feature_spec_from_config
 from validation import PreloadedWindowDataset
 
 
@@ -287,7 +286,6 @@ def main():
     print("Loading Data...")
     ds = PreloadedWindowDataset(
         config.zarr.out_root,
-        feature_transforms=feature_spec_from_config(config.features),
         progress=False,
     )
     loader = DataLoader(

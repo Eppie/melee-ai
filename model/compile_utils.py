@@ -12,7 +12,7 @@ def maybe_torch_compile(
     *,
     label: str = "model",
     enable: bool = True,
-    mode: Optional[str] = "reduce-overhead",
+    mode: Optional[str] = "max-autotune",
     fullgraph: bool = False,
     **compile_kwargs,
 ) -> torch.nn.Module:
@@ -22,7 +22,7 @@ def maybe_torch_compile(
         module: The nn.Module to (optionally) compile.
         label: Friendly name used in log messages.
         enable: Master switch; when False the module is returned unchanged.
-        mode: torch.compile ``mode`` argument (defaults to "reduce-overhead").
+        mode: torch.compile ``mode`` argument (defaults to "max-autotune").
         fullgraph: Whether to require a single full graph during compilation.
         **compile_kwargs: Additional keyword args forwarded to torch.compile.
 

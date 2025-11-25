@@ -32,7 +32,6 @@ from column_map import ColumnMap
 
 # Imports for Data Loading
 from window_dataset import RandomWindowSampler, worker_init_fn
-from feature_transforms import feature_spec_from_config
 from validation import PreloadedWindowDataset
 
 # -----------------------------------------------------------------------------
@@ -314,7 +313,6 @@ def main():
     print("Loading Dataset...")
     ds = PreloadedWindowDataset(
         config.zarr.out_root,
-        feature_transforms=feature_spec_from_config(config.features),
         progress=True,
     )
     loader = DataLoader(

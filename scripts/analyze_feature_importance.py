@@ -33,11 +33,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from column_map import ColumnMap  # noqa: E402
 from config.config import Config  # noqa: E402
-from feature_transforms import feature_spec_from_config  # noqa: E402
+from feature_transforms import apply_feature_transforms  # noqa: E402
 from libmelee.melee.enums import Action, Character  # noqa: E402
 from model.nano_gpt import GPT  # noqa: E402
 from train.batch_utils import build_model_inputs  # noqa: E402
-from window_dataset import _apply_feature_transforms  # noqa: E402
 
 
 CHECKPOINT_PATH = Path("checkpoints/model_ep014_050001.pt")
@@ -51,7 +50,7 @@ if getattr(torch.backends, "mps", None):
 
 
 def _load_windows(
-    *, seq_len: int, feature_names: List[str], feature_spec, limit: int
+    *, seq_len: int, feature_names: List[str], limit: int
 ) -> torch.Tensor:
     """Load `limit` windows (each length `seq_len`) and apply transforms."""
 
@@ -63,7 +62,7 @@ def _load_windows(
             if X.shape[0] < seq_len:
                 continue
             window = np.ascontiguousarray(X[:seq_len, :])
-            window = _apply_feature_transforms(window, feature_names, feature_spec)
+            window = apply_feature_transforms(window, feature_names)
             windows.append(torch.from_numpy(window.astype(np.float32)))
             if len(windows) >= limit:
                 return torch.stack(windows, dim=0)
@@ -192,13 +191,11 @@ def main() -> None:
     seq_len = int(meta["build_config"]["seq_len"])
     feature_names = list(meta["schema"]["features"])
     target_names = list(meta["schema"]["targets"])
-    feature_spec = feature_spec_from_config(config.features)
     colmap = ColumnMap(feature_names, target_names)
 
     batch = _load_windows(
         seq_len=seq_len,
         feature_names=feature_names,
-        feature_spec=feature_spec,
         limit=NUM_WINDOWS,
     )
     inputs = build_model_inputs(batch, colmap)

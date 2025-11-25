@@ -28,7 +28,7 @@ class GPTConfig(BaseModel):
 
     block_size: int = Field(default=512, ge=1)
     n_embd: int = Field(default=512, ge=1)
-    n_layer: int = Field(default=10, ge=1)
+    n_layer: int = Field(default=8, ge=1)
     n_head: int = Field(default=8, ge=1)
     dropout: float = Field(default=0.03, ge=0, le=1)
     input_size: int = Field(default=-1)
@@ -38,7 +38,7 @@ class GPTConfig(BaseModel):
     gamma: float = Field(default=0.999, ge=0, le=1)
     n_kv_head: Optional[int] = Field(default=8, ge=1)
     head_flow: Literal["sequential", "parallel"] = "parallel"
-    use_head_cross_attention: bool = Field(default=False)
+    use_head_cross_attention: bool = Field(default=True)
     head_cross_attention_heads: int = Field(default=4, ge=1)
     target_shapes_by_head: Dict[str, int] = Field(
         default_factory=lambda: {

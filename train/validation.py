@@ -77,10 +77,8 @@ def _get_validation_loader(
     if not data_root.exists():
         raise FileNotFoundError(f"Validation data root not found: {data_root}")
 
-    feature_spec = feature_spec_from_config(config.features)
     dataset = PreloadedWindowDataset(
         str(data_root),
-        feature_transforms=feature_spec,
         progress=True,
     )
 

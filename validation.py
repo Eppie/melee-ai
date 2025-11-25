@@ -41,6 +41,7 @@ from train.value_head import (
     compute_value_targets,
 )
 from utils import _resolve_device
+from feature_transforms import apply_feature_transforms
 from window_dataset import (
     WindowDataset,
     RandomWindowSampler,
@@ -227,11 +228,9 @@ class PreloadedWindowDataset(WindowDataset):
     def __init__(
         self,
         data_dir: str | Path,
-        *,
-        feature_transforms: Optional["FeatureTransformSpec"] = None,
         progress: bool = True,
     ) -> None:
-        super().__init__(data_dir, feature_transforms=feature_transforms)
+        super().__init__(data_dir)
         self._episode_cache: List[_CachedEpisode] = self._materialize_all_episodes(
             progress=progress
         )
@@ -254,7 +253,7 @@ class PreloadedWindowDataset(WindowDataset):
             feat_arr, target_arr = self.index.open_episode_arrays(ep)
             features_np = np.asarray(feat_arr[:], dtype=np.float32, order="C")
             features_np = np.ascontiguousarray(features_np)
-            features_np = _apply_prepared_transforms(features_np, self._transform_plan)
+            features_np = apply_feature_transforms(features_np, self._feature_names)
             features_np = np.ascontiguousarray(
                 features_np.astype(np.float32, copy=False)
             )
@@ -753,11 +752,7 @@ def _prepare_dataloader(
     window_stride: int,
 ) -> Tuple[DataLoader, WindowDataset]:
     config = get_config()
-    feature_spec = feature_spec_from_config(config.features)
-    dataset = PreloadedWindowDataset(
-        str(data_root),
-        feature_transforms=feature_spec,
-    )
+    dataset = PreloadedWindowDataset(str(data_root))
 
     if num_workers and num_workers > 0:
         raise ValueError(

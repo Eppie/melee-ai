@@ -12,7 +12,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from config.config import get_config, init_config  # noqa: E402
-from feature_transforms import feature_spec_from_config  # noqa: E402
 from window_dataset import (
     RandomWindowSampler,
     WindowDataset,
@@ -64,8 +63,7 @@ def build_loader(args: argparse.Namespace) -> torch.utils.data.DataLoader:
     batch_size = args.batch_size or config.train.batch_size
     stride = args.stride or config.train.stride
 
-    feature_spec = feature_spec_from_config(config.features)
-    dataset = WindowDataset(args.dataset_root, feature_transforms=feature_spec)
+    dataset = WindowDataset(args.dataset_root)
     sampler = RandomWindowSampler(index=dataset.index, stride=stride)
     sampler.set_epoch(0)
 

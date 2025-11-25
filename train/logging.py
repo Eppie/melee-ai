@@ -54,10 +54,24 @@ def gather_logit_and_bias_metrics_batched(
     """Gather all logit and bias metrics with a single GPU->CPU transfer."""
 
     def get_head_bias(module: nn.Module) -> torch.Tensor:
-        net = module.net
+        # SimpleHead exposes its final projection as `fc2`
+        if hasattr(module, "fc2") and isinstance(module.fc2, nn.Linear):
+            return module.fc2.bias
+
+        net = getattr(module, "net", None)
         if isinstance(net, (nn.Sequential, list, tuple)) and len(net) > 0:
-            return net[-1].bias
-        return module.bias
+            last = net[-1]
+            bias = getattr(last, "bias", None)
+            if bias is not None:
+                return bias
+
+        bias = getattr(module, "bias", None)
+        if bias is not None:
+            return bias
+
+        raise AttributeError(
+            f"{module.__class__.__name__} does not expose a bias parameter."
+        )
 
     # Collect all tensors we need stats for
     tensor_names = [

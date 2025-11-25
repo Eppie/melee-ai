@@ -22,13 +22,13 @@ class TrainConfig(BaseModel):
     weight_decay: float = Field(default=0.002, ge=0)
     # TODO: Document the effect of this setting
     betas: Tuple[float, float] = Field(default=(0.9, 0.95))
-    warmup_steps: int = Field(default=30000, ge=0)
+    warmup_steps: int = Field(default=15000, ge=0)
     num_workers: int = Field(default=16, ge=0)
     prefetch_factor: int = Field(default=4, ge=1)
     max_loader_prefetch_mb: int = Field(default=2048, ge=1)
     pin_memory: bool = Field(default_factory=lambda: _should_pin_memory())
     persistent_workers: bool = True
-    stride: int = Field(default=8, ge=1)
+    stride: int = Field(default=16, ge=1)
     worker_start_method: Optional[Literal["fork", "spawn", "forkserver"]] = None
 
     # Losses
@@ -45,11 +45,11 @@ class TrainConfig(BaseModel):
 
     # Performance optimizations
     torch_compile: bool = Field(
-        default=False,
+        default=True,
         description="Enable torch.compile for model optimization. May have initial overhead.",
     )
     torch_compile_mode: Optional[str] = Field(
-        default="reduce-overhead",
+        default="default",
         description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune'",
     )
     cudnn_benchmark: bool = Field(

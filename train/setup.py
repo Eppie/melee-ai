@@ -96,11 +96,13 @@ def configure_performance_settings(config, device: torch.device) -> None:
 
 def build_optimizer(model: GPT, config) -> torch.optim.Optimizer:
     """Builds the AdamW optimizer from the training configuration."""
+    fused = torch.cuda.is_available()
     return torch.optim.AdamW(
         model.parameters(),
         lr=config.train.lr,
         betas=config.train.betas,
         weight_decay=config.train.weight_decay,
+        fused=fused,
     )
 
 

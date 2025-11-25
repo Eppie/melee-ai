@@ -41,7 +41,7 @@ from schema import (
     get_target_names,
 )
 from train import build_model_inputs
-from utils import _resolve_device, strip_compiled_prefix
+from utils import _resolve_device, match_state_dict_keys
 
 """
 Add this code to the TOP of model_interface.py (after imports)
@@ -403,8 +403,8 @@ class GPTInferenceEngine:
 
         self.model = GPT(config).to(self.device)
 
-        # Handle torch.compile() prefix mismatch
-        model_state = strip_compiled_prefix(ckpt["model"])
+        # Handle torch.compile() prefix mismatch (both directions)
+        model_state = match_state_dict_keys(ckpt["model"], self.model)
 
         load_result = self.model.load_state_dict(model_state, strict=False)
         if load_result.unexpected_keys:

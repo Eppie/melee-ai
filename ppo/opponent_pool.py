@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 import torch
 
 from model.nano_gpt import GPT
-from utils import strip_compiled_prefix
+from utils import match_state_dict_keys
 
 
 class OpponentPool:
@@ -138,7 +138,7 @@ class OpponentPool:
             checkpoint_path, _ = self.sample_opponent()
 
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        model_state = strip_compiled_prefix(ckpt["model"])
+        model_state = match_state_dict_keys(ckpt["model"], model)
         model.load_state_dict(model_state)
         model.eval()
 

@@ -30,6 +30,50 @@ def strip_compiled_prefix(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     return state_dict
 
 
+def match_state_dict_keys(
+    state_dict: Dict[str, Any],
+    model: nn.Module
+) -> Dict[str, Any]:
+    """Adjust state dict keys to match model's compilation state.
+
+    Handles mismatches between compiled/non-compiled models and checkpoints:
+    - If model is compiled but checkpoint isn't -> add _orig_mod. prefix
+    - If checkpoint is compiled but model isn't -> strip _orig_mod. prefix
+    - If both match -> return unchanged
+
+    Args:
+        state_dict: State dictionary from checkpoint
+        model: Model to load the state dict into
+
+    Returns:
+        State dictionary with keys adjusted to match the model
+    """
+    PREFIX = "_orig_mod."
+
+    if not state_dict:
+        return state_dict
+
+    # Check if checkpoint has compiled keys
+    ckpt_has_prefix = all(k.startswith(PREFIX) for k in state_dict.keys())
+
+    # Check if model has compiled keys by examining its state dict
+    model_keys = list(model.state_dict().keys())
+    if not model_keys:
+        return state_dict
+    model_has_prefix = all(k.startswith(PREFIX) for k in model_keys)
+
+    # Case 1: Model is compiled but checkpoint isn't -> add prefix
+    if model_has_prefix and not ckpt_has_prefix:
+        return {f"{PREFIX}{k}": v for k, v in state_dict.items()}
+
+    # Case 2: Checkpoint is compiled but model isn't -> strip prefix
+    if ckpt_has_prefix and not model_has_prefix:
+        return {k[len(PREFIX):]: v for k, v in state_dict.items()}
+
+    # Case 3: Both match -> return unchanged
+    return state_dict
+
+
 def _resolve_device(preferred: Optional[str] = None) -> torch.device:
     if preferred is None or preferred == "auto":
         if torch.cuda.is_available():

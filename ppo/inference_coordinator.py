@@ -27,7 +27,7 @@ from model.nano_gpt import GPT
 from ppo.ppo_loss import compute_log_probs
 from schema import get_feature_names, get_target_names
 from train.batch_utils import build_model_inputs
-from utils import strip_compiled_prefix
+from utils import match_state_dict_keys
 
 
 @dataclass
@@ -145,7 +145,7 @@ class InferenceCoordinator:
             self.opponent_model = GPT(config).to(self.device)
 
         ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-        model_state = strip_compiled_prefix(ckpt["model"])
+        model_state = match_state_dict_keys(ckpt["model"], self.opponent_model)
         self.opponent_model.load_state_dict(model_state)
         self.opponent_model.eval()
         print(f"Loaded opponent model from {checkpoint_path}")

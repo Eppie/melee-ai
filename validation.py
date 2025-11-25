@@ -40,7 +40,7 @@ from train.value_head import (
     compute_frame_rewards,
     compute_value_targets,
 )
-from utils import _resolve_device, strip_compiled_prefix
+from utils import _resolve_device, match_state_dict_keys
 from feature_transforms import apply_feature_transforms
 from window_dataset import (
     WindowDataset,
@@ -2177,7 +2177,7 @@ def main() -> None:
 
     model = GPT(config)
     # TODO: use loading from checkpoint.py
-    model_state = strip_compiled_prefix(ckpt["model"])
+    model_state = match_state_dict_keys(ckpt["model"], model)
     model.load_state_dict(model_state)
     model.to(device)
 

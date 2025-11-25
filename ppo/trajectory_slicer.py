@@ -161,16 +161,29 @@ class TrajectorySlicer:
 
             # Send actions to workers (convert to primitives to avoid file descriptor leaks)
             send_start = time.time()
+            conversion_time = 0.0
+            queue_put_time = 0.0
+
             for worker_id, (p1_actions, p2_actions) in actions.items():
                 if worker_id in action_queues:
                     # Convert tensors to Python primitives to avoid file descriptor leaks
+                    conv_start = time.time()
                     p1_primitives = self._actions_to_primitives(p1_actions)
                     p2_primitives = self._actions_to_primitives(p2_actions)
+                    conversion_time += time.time() - conv_start
+
+                    # Queue put
+                    put_start = time.time()
                     action_queues[worker_id].put((p1_primitives, p2_primitives))
+                    queue_put_time += time.time() - put_start
             send_time = time.time() - send_start
 
             batch_time = time.time() - batch_start
             frames_collected += len(worker_states)
+
+            # Calculate unaccounted time
+            accounted_time = collect_time + timings.total + send_time
+            overhead_time = batch_time - accounted_time
 
             # Print detailed timing breakdown every 50 batches
             batch_count = frames_collected // len(worker_states)
@@ -188,22 +201,29 @@ class TrajectorySlicer:
                 print(
                     f"  [TIMING] Batch: {batch_time*1000:.1f}ms | "
                     f"Collect: {collect_time*1000:.1f}ms | "
-                    f"Send: {send_time*1000:.1f}ms"
+                    f"Inference: {timings.total*1000:.1f}ms | "
+                    f"Send: {send_time*1000:.1f}ms | "
+                    f"Overhead: {overhead_time*1000:.1f}ms"
                 )
                 print(
-                    f"    Inference breakdown (avg): Total={avg_timings['total']:.2f}ms | "
-                    f"GPU={gpu_time:.2f}ms | CPU={cpu_time:.2f}ms"
+                    f"    Send breakdown: Conversion={conversion_time*1000:.1f}ms | "
+                    f"QueuePut={queue_put_time*1000:.1f}ms"
                 )
                 print(
-                    f"      CPU: Buffer={avg_timings['buffer_update']:.2f}ms | "
-                    f"BatchPrep={avg_timings['batch_prep']:.2f}ms | "
-                    f"InputBuild={avg_timings['input_building']:.2f}ms | "
-                    f"Sampling={avg_timings['learner_sampling'] + avg_timings['opponent_sampling']:.2f}ms | "
-                    f"Recording={avg_timings['recording']:.2f}ms"
+                    f"    Current Inference: GPU={timings.learner_forward*1000 + timings.opponent_forward*1000:.1f}ms | "
+                    f"CPU={timings.buffer_update*1000 + timings.batch_prep*1000 + timings.input_building*1000 + timings.learner_sampling*1000 + timings.opponent_sampling*1000 + timings.recording*1000:.1f}ms"
                 )
                 print(
-                    f"      GPU: Learner={avg_timings['learner_forward']:.2f}ms | "
-                    f"Opponent={avg_timings['opponent_forward']:.2f}ms"
+                    f"      CPU: Buffer={timings.buffer_update*1000:.2f}ms | "
+                    f"BatchPrep={timings.batch_prep*1000:.2f}ms | "
+                    f"InputBuild={timings.input_building*1000:.2f}ms | "
+                    f"LearnerSample={timings.learner_sampling*1000:.2f}ms | "
+                    f"OpponentSample={timings.opponent_sampling*1000:.2f}ms | "
+                    f"Record={timings.recording*1000:.2f}ms"
+                )
+                print(
+                    f"      GPU: Learner={timings.learner_forward*1000:.2f}ms | "
+                    f"Opponent={timings.opponent_forward*1000:.2f}ms"
                 )
 
             # Print progress with FPS every 500 frames or at completion

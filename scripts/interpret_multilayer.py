@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from config import init_config, get_config
 from model.nano_gpt import GPT
 from train import find_latest_checkpoint
-from utils import _resolve_device
+from utils import _resolve_device, strip_compiled_prefix
 from column_map import ColumnMap
 from window_dataset import RandomWindowSampler, worker_init_fn
 from validation import PreloadedWindowDataset
@@ -307,11 +307,12 @@ def main():
         # it applies norm() in forward(). We might need to rely on blocks[-1] for now.
         pass
 
-    model.load_state_dict(
+    model_state = strip_compiled_prefix(
         torch.load(
             find_latest_checkpoint(Path(config.train.out_dir)), map_location="cpu"
         )["model"]
     )
+    model.load_state_dict(model_state)
     model.eval()
 
     # Scan Input, Middle, and Output

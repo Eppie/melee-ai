@@ -27,7 +27,7 @@ from config import init_config, get_config
 from model.nano_gpt import GPT
 from train.setup import parse_cli_overrides
 from train import find_latest_checkpoint
-from utils import _resolve_device
+from utils import _resolve_device, strip_compiled_prefix
 from column_map import ColumnMap
 
 # Imports for Data Loading
@@ -327,7 +327,8 @@ def main():
     print("Loading Model...")
     ckpt_path = find_latest_checkpoint(Path(config.train.out_dir))
     model = GPT(config).to(device)
-    model.load_state_dict(torch.load(ckpt_path, map_location="cpu")["model"])
+    model_state = strip_compiled_prefix(torch.load(ckpt_path, map_location="cpu")["model"])
+    model.load_state_dict(model_state)
     model.eval()
 
     target_layer = config.model.n_layer // 2

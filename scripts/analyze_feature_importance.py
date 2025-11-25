@@ -37,6 +37,7 @@ from feature_transforms import apply_feature_transforms  # noqa: E402
 from libmelee.melee.enums import Action, Character  # noqa: E402
 from model.nano_gpt import GPT  # noqa: E402
 from train.batch_utils import build_model_inputs  # noqa: E402
+from utils import strip_compiled_prefix  # noqa: E402
 
 
 CHECKPOINT_PATH = Path("checkpoints/model_ep014_050001.pt")
@@ -179,7 +180,7 @@ def main() -> None:
         raise FileNotFoundError(f"Dataset root not found: {DATA_ROOT}")
 
     state = torch.load(CHECKPOINT_PATH, map_location="cpu")
-    model_state = state["model"]
+    model_state = strip_compiled_prefix(state["model"])
 
     config = Config()
     config.model.input_size = model_state["projection_down.weight"].shape[1]

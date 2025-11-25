@@ -41,7 +41,7 @@ from schema import (
     get_target_names,
 )
 from train import build_model_inputs
-from utils import _resolve_device
+from utils import _resolve_device, strip_compiled_prefix
 
 """
 Add this code to the TOP of model_interface.py (after imports)
@@ -421,7 +421,11 @@ class GPTInferenceEngine:
                     setattr(config.model, field, value)
 
         self.model = GPT(config).to(self.device)
-        load_result = self.model.load_state_dict(ckpt["model"], strict=False)
+
+        # Handle torch.compile() prefix mismatch
+        model_state = strip_compiled_prefix(ckpt["model"])
+
+        load_result = self.model.load_state_dict(model_state, strict=False)
         if load_result.unexpected_keys:
             dropped = ", ".join(sorted(load_result.unexpected_keys))
             print(f"[WARN] Dropping unexpected model keys: {dropped}")

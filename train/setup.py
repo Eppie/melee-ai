@@ -88,6 +88,9 @@ def configure_amp(config, device: torch.device) -> AMPContext:
 
 def configure_performance_settings(config, device: torch.device) -> None:
     """Configure global PyTorch performance settings based on config."""
+
+    torch.set_float32_matmul_precision('high')
+
     # Enable cudnn.benchmark for faster convolutions with consistent input sizes
     if config.train.cudnn_benchmark and device.type == "cuda":
         torch.backends.cudnn.benchmark = True

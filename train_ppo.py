@@ -29,7 +29,7 @@ from ppo.selfplay_env import SelfPlayEnvironment
 from ppo.trajectory import Trajectory
 from schema import get_feature_names, get_target_names
 from train.wandb_utils import WandbConfig, WandbLogger, init_wandb
-from utils import _resolve_device
+from utils import _resolve_device, strip_compiled_prefix
 
 
 # =============================================================================
@@ -53,7 +53,8 @@ def load_initial_checkpoint(
 
     print(f"Loading checkpoint from {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model"])
+    model_state = strip_compiled_prefix(ckpt["model"])
+    model.load_state_dict(model_state)
 
     episode = ckpt.get("episode", ckpt.get("rollout", 0))
     print(f"Resumed from step {episode}")
@@ -454,17 +455,19 @@ def run_episode_worker(
     config = get_config()
     device = torch.device("cpu")
     model = GPT(config).to(device)
-    model.load_state_dict(
+    model_state = strip_compiled_prefix(
         torch.load(model_state_dict_path, map_location=device, weights_only=True)
     )
+    model.load_state_dict(model_state)
     model.eval()
 
     opponent_model = None
     if opponent_state_dict_path is not None and opponent_state_dict_path.exists():
         opponent_model = GPT(config).to(device)
-        opponent_model.load_state_dict(
+        opponent_state = strip_compiled_prefix(
             torch.load(opponent_state_dict_path, map_location=device, weights_only=True)
         )
+        opponent_model.load_state_dict(opponent_state)
         opponent_model.eval()
 
     import shutil

@@ -31,12 +31,21 @@ python train.py --set train.lr=1e-4 --set model.n_layer=8  # CLI overrides
 python validation.py                          # uses latest checkpoint
 python validation.py --checkpoint path/to/model.pt
 
+# Statistics generation
+python -m stats                               # compute all statistics
+python -m stats --zarr-dir processed_data_100/ --max-episodes 100
+
 # PPO self-play (edit paths in script first)
 ./run_ppo.sh
 python train_ppo.py --dolphin-path /path/to/dolphin-emu --iso /path/to/melee.iso
 
 # Hyperparameter sweeps
 python sweep.py
+
+# Analysis scripts
+python scripts/analyze_feature_importance.py
+python scripts/interpret.py
+python scripts/benchmark_dataloader.py
 ```
 
 ## Architecture
@@ -47,38 +56,104 @@ python sweep.py
 3. **`window_dataset.py`** → `WindowDataset` + `ZarrCorpusIndex` for sliding window access
 4. **`feature_transforms.py`** → Input transforms (stick palette snapping, scaling)
 
-### Model (`model/nano_gpt.py`)
-GPT architecture with:
+### Model (`model/`)
+GPT architecture split across modular files:
+- `nano_gpt.py` - Main `GPT` class, `Block`, `MLP`
+- `attention.py` - Causal self-attention with MQA support
+- `output_head.py` - Simple output head implementation
+- `head_cross_attention.py` - Cross-attention between output heads
+- `positional_encoding.py` - Rotary positional embeddings
+- `norm.py` - RMSNorm implementation
+- `compile_utils.py` - torch.compile utilities
+
+Architecture features:
 - Rotary embeddings (no learned positional embeddings)
 - QK norm, ReLU² MLP, no bias in linear layers
 - Multi-Query Attention (configurable `n_kv_head`)
 - One-hot encoding for categoricals (stage, character, action)
 - 5 output heads: `main_stick`, `c_stick`, `buttons`, `shoulder`, `value`
+- Optional cross-attention between heads for information sharing
 
-### Controller Quantization (`controller_utils.py`)
+### Controller Quantization (`controller_quantization.py`)
 - **Main stick**: 64 discrete positions (wavedash angles, DI, Firefox angles, etc.)
 - **C-stick**: 9 positions (cardinals + diagonals + neutral)
 - **Shoulder**: 5 levels `[0.0, 0.31, 0.42, 0.55, 1.0]`
 - **Buttons**: 5 binary outputs (A, B, X/Y, Z, L/R)
 
-### Config System (`config.py`)
-Pydantic models: `ZarrConfig`, `TrainConfig`, `GPTConfig`, `LossConfig`, `RLConfig`, `PPOConfig`, `FeatureConfig`
+### Config System (`config/`)
+Modular Pydantic configs split by domain:
+- `config.py` - Main `Config` class aggregating all sub-configs
+- `zarr_config.py` - `ZarrConfig` for data paths and processing
+- `train_config.py` - `TrainConfig` for training hyperparameters
+- `gpt_config.py` - `GPTConfig` for model architecture
+- `loss_config.py` - `LossConfig` for loss function weights
+- `feature_config.py` - `FeatureConfig` for feature engineering
+- `rl_config.py` - `RLConfig` for reinforcement learning
+- `ppo_config.py` - `PPOConfig` for PPO-specific settings
+- `imitation_config.py` - `ImitationConfig` for imitation learning
+
+Features:
 - CLI overrides: `--set section.key=value` (e.g., `--set train.lr=1e-4`)
 - Auto-detects platform paths (Darwin/Linux) for data directories
+- JSON serializable for checkpoint storage
 
 ### Training (`train/`)
+Modular training utilities with clean separation of concerns:
 - `loop.py` - Main training loop with epoch/batch iteration
-- `step.py` - Forward/backward pass helpers
-- `batch_utils.py` - `build_model_inputs()`, `quantize_controller_targets()`
-- `checkpoint.py` - Save/load/prune checkpoints
-- `metrics.py` - Accuracy, confusion matrices, PRF metrics
+- `step.py` - Forward/backward pass helpers (`perform_forward_pass`, `perform_backward_pass`)
+- `batch_utils.py` - Batch processing (`build_model_inputs`, quantization)
+- `checkpoint.py` - Save/load/prune checkpoints with versioning
+- `metrics.py` - Accuracy, confusion matrices, PRF metrics, `MetricsAccumulator`
 - `value_head.py` - Reward computation and value targets for RL
+- `setup.py` - Initialize training components, parse CLI args, build optimizer
+- `logging.py` - Logging bundle preparation and emission
+- `validation.py` - Validation runs on checkpoints
+- `display.py` - Terminal output formatting for metrics/losses
+- `gradients.py` - Gradient diagnostics and clipping
+- `lr_schedule.py` - Learning rate schedules (cosine)
+- `wandb_utils.py` - Weights & Biases integration
+- `components.py` - Shared training components
 
 ### PPO Self-Play (`ppo/`)
+Distributed PPO implementation with parallel simulation:
 - `opponent_pool.py` - FIFO pool of frozen past models
 - `trajectory.py` - Experience buffer + GAE advantage estimation
+- `trajectory_slicer.py` - Slice trajectories for training sequences
 - `ppo_loss.py` - Clipped surrogate + value + entropy loss
 - `selfplay_env.py` - libmelee environment wrapper
+- `inference_coordinator.py` - Coordinate distributed inference
+- `simulation_worker.py` - Parallel simulation workers
+
+### Statistics (`stats/`)
+Comprehensive data analysis module with modular collectors:
+- `run.py` - Main orchestration, parallel processing, `COLLECTOR_REGISTRY`
+- `__main__.py` - CLI entry point (`python -m stats`)
+- `config.py` - Statistics configuration
+- `index.py` - Zarr index loading
+- `collectors/` - Pluggable stat collectors:
+  - `column_stats.py` - Per-column statistics (mean, std, percentiles, run lengths)
+  - `episode_stats.py` - Episode-level statistics (length, stage, outcome)
+  - `action_states.py` - Action state analysis (categories, transitions)
+  - `controller_inputs.py` - Controller input analysis (buttons, sticks)
+  - `cross_feature.py` - Cross-feature correlations and joint distributions
+  - `derived_metrics.py` - Derived metrics (distance, combos, advantage)
+  - `temporal.py` - Temporal patterns (transitions, change rates)
+  - `data_quality.py` - Data quality validation and scoring
+- `output/` - Output formatting:
+  - `json_writer.py` - JSON output formatting
+  - `terminal.py` - Terminal progress display
+- `utils/` - Helper utilities:
+  - `formatting.py` - Number/data formatting
+  - `melee_constants.py` - Melee-specific constants
+  - `parallel.py` - Parallel processing helpers
+
+### Scripts (`scripts/`)
+Analysis and utilities:
+- `analyze_feature_importance.py` - Feature importance analysis
+- `interpret.py` - Model interpretation tools
+- `interpret_multilayer.py` - Multi-layer model interpretation
+- `benchmark_dataloader.py` - Dataloader performance testing
+- `wrapper.py` - Utility wrappers
 
 ## Key Files
 
@@ -90,6 +165,12 @@ Pydantic models: `ZarrConfig`, `TrainConfig`, `GPTConfig`, `LossConfig`, `RLConf
 | `model_interface.py` | High-level inference API for live play |
 | `validation.py` | Model evaluation with detailed metrics |
 | `sweep.py` | Hyperparameter grid search with FLOP estimation |
+| `constants.py` | Shared constants used across the codebase |
+| `controller_quantization.py` | Controller input quantization tables |
+| `controller_utils.py` | Controller utilities and helper functions |
+| `feature_transforms.py` | Input feature transforms (stick snapping, scaling) |
+| `utils.py` | General utility functions |
+| `data_types.py` | Type definitions and custom types |
 
 ## Coding Conventions
 

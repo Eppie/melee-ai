@@ -10,6 +10,7 @@ from torch.optim import Optimizer
 from train.gradients import _move_optimizer_state_to_device
 from train.components import TrainingComponents
 from train.validation import maybe_run_validation
+from utils import strip_compiled_prefix
 
 
 def _sorted_checkpoint_paths(directory: Path) -> List[Path]:
@@ -179,6 +180,9 @@ def _load_latest_checkpoint(
 
     model_state = ckpt.get("model")
     if model_state:
+        # Handle torch.compile() prefix mismatch
+        model_state = strip_compiled_prefix(model_state)
+
         try:
             if allow_partial_load:
                 incompatible = model.load_state_dict(model_state, strict=False)

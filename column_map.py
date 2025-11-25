@@ -56,10 +56,18 @@ class ColumnMap:
                 )
             return targ2idx[name]
 
-        self.y_main = (_tid("p1_main_stick_x"), _tid("p1_main_stick_y"))
-        self.y_c = (_tid("p1_c_stick_x"), _tid("p1_c_stick_y"))
-        self.y_buttons = [_tid(name) for name in BUTTON_TARGET_NAMES]
-        self.y_shoulder = targ2idx.get("p1_shoulder_analog")
+        # Only set up target indices if targets are provided
+        if self.targ_names:
+            self.y_main = (_tid("p1_main_stick_x"), _tid("p1_main_stick_y"))
+            self.y_c = (_tid("p1_c_stick_x"), _tid("p1_c_stick_y"))
+            self.y_buttons = [_tid(name) for name in BUTTON_TARGET_NAMES]
+            self.y_shoulder = targ2idx.get("p1_shoulder_analog")
+        else:
+            # Set to None when no targets available (e.g., for reward computation)
+            self.y_main = None
+            self.y_c = None
+            self.y_buttons = None
+            self.y_shoulder = None
 
     @classmethod
     def from_dataset(

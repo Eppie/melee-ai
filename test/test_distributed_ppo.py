@@ -175,7 +175,6 @@ class TestInferenceCoordinator:
         record = records_0[0]
         assert record.worker_id == 0
         assert record.state.shape[0] == coordinator.feature_dim
-        assert "main_stick" in record.action_logits
         assert "main_stick" in record.action_taken
         assert record.log_prob is not None
         assert record.value is not None
@@ -246,12 +245,6 @@ class TestTrajectorySlicer:
                 StepRecord(
                     worker_id=0,
                     state=torch.randn(feature_dim),
-                    action_logits={
-                        "main_stick": torch.randn(64),
-                        "c_stick": torch.randn(9),
-                        "buttons": torch.randn(5),
-                        "shoulder": torch.randn(5),
-                    },
                     action_taken={
                         "main_stick": torch.tensor(0),
                         "c_stick": torch.tensor(0),
@@ -268,12 +261,6 @@ class TestTrajectorySlicer:
                 StepRecord(
                     worker_id=1,
                     state=torch.randn(feature_dim),
-                    action_logits={
-                        "main_stick": torch.randn(64),
-                        "c_stick": torch.randn(9),
-                        "buttons": torch.randn(5),
-                        "shoulder": torch.randn(5),
-                    },
                     action_taken={
                         "main_stick": torch.tensor(0),
                         "c_stick": torch.tensor(0),
@@ -312,7 +299,6 @@ class TestTrajectorySlicer:
         steps = [
             Step(
                 state=torch.randn(64),
-                action_logits={"main_stick": torch.randn(64)},
                 action_taken={"main_stick": torch.tensor(0)},
                 log_prob=torch.tensor(-1.0),
                 value=torch.tensor(float(i) * 0.1),

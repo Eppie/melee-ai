@@ -456,7 +456,6 @@ def compute_value_loss(
 def compute_total_ppo_loss(
     new_action_logits: Dict[str, torch.Tensor],
     new_values: torch.Tensor,
-    old_action_logits: Dict[str, torch.Tensor],
     old_values: torch.Tensor,
     actions_taken: Dict[str, torch.Tensor],
     old_log_probs: torch.Tensor,
@@ -477,7 +476,6 @@ def compute_total_ppo_loss(
     Args:
         new_action_logits: Current policy action logits [B, seq_len, num_classes]
         new_values: Current critic value predictions [B, seq_len]
-        old_action_logits: Old policy action logits [B, seq_len, num_classes]
         old_values: Old critic value predictions [B, seq_len]
         actions_taken: Actions that were taken [B, seq_len] or [B, seq_len, num_buttons]
         old_log_probs: Log probs from old policy [B, seq_len]
@@ -515,7 +513,6 @@ def compute_total_ppo_loss(
 
         # Flatten action logits and actions
         new_action_logits_flat = {}
-        old_action_logits_flat = {}
         actions_taken_flat = {}
 
         for head in new_action_logits.keys():
@@ -524,11 +521,6 @@ def compute_total_ppo_loss(
             new_action_logits_flat[head] = logits_flat[
                 mask_flat
             ]  # [num_valid, num_classes]
-
-        for head in old_action_logits.keys():
-            logits = old_action_logits[head]
-            logits_flat = logits.reshape(B * seq_len, -1)
-            old_action_logits_flat[head] = logits_flat[mask_flat]
 
         for head in actions_taken.keys():
             actions = actions_taken[head]  # [B, seq_len] or [B, seq_len, num_buttons]
@@ -551,16 +543,10 @@ def compute_total_ppo_loss(
         num_valid = B * seq_len
 
         new_action_logits_flat = {}
-        old_action_logits_flat = {}
         actions_taken_flat = {}
 
         for head in new_action_logits.keys():
             new_action_logits_flat[head] = new_action_logits[head].reshape(
-                B * seq_len, -1
-            )
-
-        for head in old_action_logits.keys():
-            old_action_logits_flat[head] = old_action_logits[head].reshape(
                 B * seq_len, -1
             )
 

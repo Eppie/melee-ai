@@ -14,7 +14,6 @@ class Step:
     """Single step in a trajectory."""
 
     state: torch.Tensor  # [F] feature tensor
-    action_logits: Dict[str, torch.Tensor]  # raw logits from model for each action head
     action_taken: Dict[
         str, torch.Tensor
     ]  # actual actions taken (indices for sticks/shoulders, bool for buttons)

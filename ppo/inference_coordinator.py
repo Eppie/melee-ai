@@ -64,7 +64,6 @@ class StepRecord:
 
     worker_id: int
     state: torch.Tensor  # [F] raw features
-    action_logits: Dict[str, torch.Tensor]  # logits for each head
     action_taken: Dict[str, torch.Tensor]  # sampled actions
     log_prob: torch.Tensor  # log probability of action
     value: torch.Tensor  # value estimate
@@ -109,6 +108,9 @@ class InferenceCoordinator:
         self.target_names = get_target_names()
         self.feature_dim = len(self.feature_names)
         self.colmap = ColumnMap(self.feature_names, self.target_names)
+
+        # Precompute feature swap indices for P1/P2 perspective switching
+        self.swap_indices = self._compute_swap_indices()
 
         # Per-worker state (feature buffers, frame counts)
         self.worker_states: Dict[int, WorkerState] = {}
@@ -161,8 +163,34 @@ class InferenceCoordinator:
         state.opponent_buffer.clear()
         state.frames_collected = 0
 
+    def _compute_swap_indices(self) -> torch.Tensor:
+        """Precompute indices for swapping P1/P2 features.
+
+        This is called once during initialization to avoid string operations
+        in the hot loop. Returns a permutation tensor where applying it to
+        features swaps P1 and P2 perspectives.
+
+        Returns:
+            [F] tensor of indices for feature swapping
+        """
+        indices = torch.arange(len(self.feature_names), dtype=torch.long)
+
+        for idx, name in enumerate(self.feature_names):
+            if name.startswith("p1_"):
+                p2_name = "p2_" + name[3:]
+                if p2_name in self.feature_names:
+                    p2_idx = self.feature_names.index(p2_name)
+                    # Swap indices for both p1 and p2 features
+                    indices[idx] = p2_idx
+                    indices[p2_idx] = idx
+
+        return indices
+
     def _swap_player_features(self, features: torch.Tensor) -> torch.Tensor:
         """Swap P1 and P2 features to get opponent's perspective.
+
+        Uses precomputed swap indices for O(1) operation instead of
+        iterating through feature names.
 
         Args:
             features: [F] tensor of features from P1's perspective
@@ -170,15 +198,7 @@ class InferenceCoordinator:
         Returns:
             [F] tensor with P1/P2 swapped for P2's perspective
         """
-        swapped = features.clone()
-        for idx, name in enumerate(self.feature_names):
-            if name.startswith("p1_"):
-                p2_name = "p2_" + name[3:]
-                if p2_name in self.feature_names:
-                    p2_idx = self.feature_names.index(p2_name)
-                    swapped[idx] = features[p2_idx]
-                    swapped[p2_idx] = features[idx]
-        return swapped
+        return features[self.swap_indices]
 
     def process_states(
         self,
@@ -343,7 +363,6 @@ class InferenceCoordinator:
             step = StepRecord(
                 worker_id=worker_id,
                 state=step_state.cpu(),
-                action_logits={k: v.cpu() for k, v in p1_logits.items()},
                 action_taken={k: v.cpu() for k, v in p1_actions.items()},
                 log_prob=p1_log_prob.cpu(),
                 value=p1_value.cpu(),

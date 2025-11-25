@@ -178,7 +178,7 @@ outputs metrics: ratio stats, entropy, value error, clipped_fraction, etc.
 
 - Checkpoints saved in `train_ppo.py:save_checkpoint` with model/optimizer/config/episode.
 - OpponentPool (`ppo/opponent_pool.py`) keeps on-disk `opponent_XXXX.pt` snapshots; `add_opponent` called after episodes/rollouts; `load_opponent_model` loads into GPU for coordinator or CPU for SelfPlayEnvironment.
-- GPU hot path: `torch.compile` model for inference in distributed mode; `torch.set_float32_matmul_precision('high')`; AMP via `torch.amp.autocast` + `GradScaler`.
+- GPU hot path: `torch.compile` model for inference in distributed mode; TF32 via `torch.backends.cuda.matmul.fp32_precision = 'tf32'`; AMP via `torch.amp.autocast` + `GradScaler`.
 - CPU paths: Dolphin emulation, reward diffs, queue marshaling, padding/slicing before device transfer.
 
 ## Quick File Pointers

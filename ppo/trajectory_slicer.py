@@ -234,7 +234,6 @@ class TrajectorySlicer:
             worker_steps[worker_id] = [
                 Step(
                     state=r.state,
-                    action_logits=r.action_logits,
                     action_taken=r.action_taken,
                     log_prob=r.log_prob,
                     value=r.value,
@@ -402,12 +401,11 @@ class TrajectorySlicer:
         for traj in trajectories:
             if len(traj.steps) > 0:
                 for head in ["main_stick", "c_stick", "buttons", "shoulder"]:
-                    if head in traj.steps[0].action_logits:
+                    if head in traj.steps[0].action_taken:
                         action_keys.append(head)
                 break
 
         for head in action_keys:
-            all_windows[f"action_logits_{head}"] = []
             all_windows[f"actions_{head}"] = []
 
         for traj in trajectories:
@@ -427,12 +425,8 @@ class TrajectorySlicer:
             )
             values = torch.stack([step.value for step in traj.steps]).squeeze(-1)
 
-            action_logits = {}
             actions = {}
             for head in action_keys:
-                action_logits[head] = torch.stack(
-                    [step.action_logits[head] for step in traj.steps]
-                )
                 actions[head] = torch.stack(
                     [step.action_taken[head] for step in traj.steps]
                 )
@@ -449,13 +443,6 @@ class TrajectorySlicer:
                 values = torch.cat([values[0:1].expand(pad_len), values], dim=0)
 
                 for head in action_keys:
-                    action_logits[head] = torch.cat(
-                        [
-                            action_logits[head][0:1].expand(pad_len, -1),
-                            action_logits[head],
-                        ],
-                        dim=0,
-                    )
                     if actions[head].dim() == 1:
                         actions[head] = torch.cat(
                             [actions[head][0:1].expand(pad_len), actions[head]], dim=0
@@ -481,9 +468,6 @@ class TrajectorySlicer:
                 all_windows["valid_mask"].append(valid_mask.unsqueeze(0))
 
                 for head in action_keys:
-                    all_windows[f"action_logits_{head}"].append(
-                        action_logits[head].unsqueeze(0)
-                    )
                     all_windows[f"actions_{head}"].append(actions[head].unsqueeze(0))
             else:
                 # Create sliding windows
@@ -501,9 +485,6 @@ class TrajectorySlicer:
                     )
 
                     for head in action_keys:
-                        all_windows[f"action_logits_{head}"].append(
-                            action_logits[head][start:end].unsqueeze(0)
-                        )
                         all_windows[f"actions_{head}"].append(
                             actions[head][start:end].unsqueeze(0)
                         )
@@ -523,9 +504,6 @@ class TrajectorySlicer:
                     )
 
                     for head in action_keys:
-                        all_windows[f"action_logits_{head}"].append(
-                            action_logits[head][start:].unsqueeze(0)
-                        )
                         all_windows[f"actions_{head}"].append(
                             actions[head][start:].unsqueeze(0)
                         )

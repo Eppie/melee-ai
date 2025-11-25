@@ -1088,9 +1088,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Enable TF32 for faster matmul on Ampere+ GPUs
-    torch.set_float32_matmul_precision('high')
-
     # Initialize config
     init_config()
     config = get_config()
@@ -1109,6 +1106,11 @@ def main():
     # Setup device
     device = _resolve_device(None)
     print(f"Using device: {device}")
+
+    # Enable TF32 for faster matmul on Ampere+ GPUs (new PyTorch 2.9+ API)
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.fp32_precision = 'tf32'
+        torch.backends.cudnn.conv.fp32_precision = 'tf32'
 
     # Create model
     model = GPT(config).to(device)

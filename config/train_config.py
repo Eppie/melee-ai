@@ -36,6 +36,26 @@ class TrainConfig(BaseModel):
     label_smoothing: float = Field(default=0.02, ge=0, le=1)
     schedule_warmup_epochs: int = Field(default=1, ge=0)
     schedule_cooldown_epochs: int = Field(default=1, ge=0)
+
+    # Imbalance scale scheduling
+    imbalance_scale_initial: float = Field(
+        default=0.3,
+        ge=0,
+        le=1,
+        description="Initial imbalance scale value (used during warmup epoch)",
+    )
+    imbalance_scale_final: float = Field(
+        default=1.0,
+        ge=0,
+        le=1,
+        description="Final imbalance scale value (used during final portion of training)",
+    )
+    imbalance_scale_final_fraction: float = Field(
+        default=0.2,
+        ge=0,
+        le=1,
+        description="Fraction of training (after warmup) to keep at final imbalance scale",
+    )
     use_amp: bool = Field(default_factory=lambda: _should_use_amp())
     amp_dtype: str = Field(default_factory=lambda: _get_optimal_amp_dtype())
 

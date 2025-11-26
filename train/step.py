@@ -52,12 +52,24 @@ def perform_forward_pass(
             )
         label_smoothing = float(max(label_smoothing, 0.0))
 
-        final_change_scale = 0.5
+        # Imbalance scale scheduling: ramps from initial to final value
+        # - Fixed at initial value during warmup (first epoch)
+        # - Fixed at final value during final fraction of training
+        # - Linear ramp in between
+        initial_scale = config.train.imbalance_scale_initial
+        final_scale = config.train.imbalance_scale_final
+        final_fraction = config.train.imbalance_scale_final_fraction
+
         if in_warmup:
-            imbalance_scale = 1.0
+            imbalance_scale = initial_scale
+        elif progress >= (1.0 - final_fraction):
+            imbalance_scale = final_scale
         else:
-            imbalance_scale = 1.0 - (1.0 - final_change_scale) * progress
-        imbalance_scale = float(max(min(imbalance_scale, 1.0), final_change_scale))
+            # Linear ramp from initial to final over the non-final portion
+            ramp_progress = progress / (1.0 - final_fraction)
+            imbalance_scale = initial_scale + (final_scale - initial_scale) * ramp_progress
+
+        imbalance_scale = float(max(min(imbalance_scale, final_scale), initial_scale))
 
         weights = compute_component_sample_weights(
             target_info,

@@ -98,12 +98,12 @@ def configure_amp(config, device: torch.device) -> AMPContext:
 def configure_performance_settings(config, device: torch.device) -> None:
     """Configure global PyTorch performance settings based on config."""
 
-    # Use new PyTorch 2.9+ API for TF32 precision settings
+    # Use legacy API for TF32 settings to avoid mixing APIs
     if device.type == "cuda":
-        # Set matmul precision to use TF32 (faster on Ampere+ GPUs)
-        torch.backends.cuda.matmul.fp32_precision = 'tf32'
+        # Enable TF32 for matmul (faster on Ampere+ GPUs)
+        torch.backends.cuda.matmul.allow_tf32 = True
         # Enable TF32 for convolutions as well
-        torch.backends.cudnn.conv.fp32_precision = 'tf32'
+        torch.backends.cudnn.allow_tf32 = True
 
     # Enable cudnn.benchmark for faster convolutions with consistent input sizes
     if config.train.cudnn_benchmark and device.type == "cuda":

@@ -342,7 +342,7 @@ class TrajectorySlicer:
             return {}
 
         # Build sequence windows
-        stride = max(1, seq_len // 4)  # 75% overlap
+        stride = max(1, seq_len // 64)  # More overlap
         windows = self._build_sequence_windows(trajectories, seq_len, stride, device)
 
         return windows

@@ -107,12 +107,14 @@ def _should_use_amp() -> bool:
 def _get_optimal_amp_dtype() -> str:
     """
     Auto-detect optimal AMP dtype based on hardware.
-    - float16: GPUs and Apple Silicon with AMP support
+    - bfloat16: CUDA GPUs (no gradient scaling needed)
+    - float16: Apple Silicon MPS (requires gradient scaling)
     - float32: CPU or unsupported hardware
     """
     if hasattr(torch.backends, "cuda") and torch.cuda.is_available():
-        return "float16"
-    # Apple Silicon supports float16 well
+        # Use bfloat16 for CUDA - no gradient scaling needed
+        return "bfloat16"
+    # Apple Silicon uses float16 with gradient scaling
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "float16"
     return "float32"

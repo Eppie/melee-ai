@@ -67,16 +67,25 @@ def configure_amp(config, device: torch.device) -> AMPContext:
     else:
         device_type = "cpu"
 
+    # Parse dtype string from config
+    dtype_str = config.train.amp_dtype
+    dtype_map = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+    dtype = dtype_map.get(dtype_str, torch.float16)
+
     amp_context = AMPContext(
         enabled=config.train.use_amp,
         device_type=device_type,
-        dtype=torch.float16,
+        dtype=dtype,
     )
 
     print(f"Using PyTorch {torch.__version__}")
     if amp_context.enabled:
         backend = amp_context.device_type.upper()
-        print(f"AMP enabled with float16 on {backend} backend")
+        print(f"AMP enabled with {dtype_str} on {backend} backend")
     else:
         print(
             f"AMP requested but disabled for device '{device.type}';"
@@ -162,8 +171,10 @@ def initialize_training_components(
     )
 
     optimizer = build_optimizer(model, config)
-    scaler_device = amp.device_type if amp.enabled else "cpu"
-    scaler = GradScaler(device=scaler_device, enabled=amp.enabled)
+    # GradScaler is only needed for float16, not bfloat16
+    use_grad_scaler = amp.enabled and amp.dtype == torch.float16
+    scaler_device = amp.device_type if use_grad_scaler else "cpu"
+    scaler = GradScaler(device=scaler_device, enabled=use_grad_scaler)
 
     steps_per_epoch = math.ceil(len(loader))
     total_steps = config.train.epochs * steps_per_epoch

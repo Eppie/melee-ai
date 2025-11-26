@@ -307,11 +307,12 @@ class InferenceCoordinator:
 
         # Extract per-worker learner actions
         learner_sampling_start = time.perf_counter()
-        learner_actions_batch = self._sample_actions_batch(learner_outputs)
+        learner_gpu_actions, learner_actions_cpu, learner_log_probs_cpu, learner_values_cpu = (
+            self._sample_actions_batch(learner_outputs)
+        )
         timings.learner_sampling = time.perf_counter() - learner_sampling_start
 
         # Batch inference for opponent model
-        opponent_actions_batch = {}
         if self.opponent_model is not None:
             # Opponent batch preparation
             opp_batch_prep_start = time.perf_counter()
@@ -331,39 +332,40 @@ class InferenceCoordinator:
 
             # Opponent action sampling
             opp_sampling_start = time.perf_counter()
-            opponent_actions_batch = self._sample_actions_batch(opponent_outputs)
+            opponent_gpu_actions, _, _, _ = self._sample_actions_batch(opponent_outputs)
             timings.opponent_sampling = time.perf_counter() - opp_sampling_start
         else:
             # Self-play: opponent uses same model
             opp_sampling_start = time.perf_counter()
-            opponent_actions_batch = self._sample_actions_batch(learner_outputs)
+            opponent_gpu_actions, _, _, _ = self._sample_actions_batch(learner_outputs)
             timings.opponent_sampling = time.perf_counter() - opp_sampling_start
 
-        # Record steps and build result
+        # **BATCH CPU TRANSFER** - Move all states to CPU at once
         recording_start = time.perf_counter()
+        states_gpu = torch.stack([
+            list(self.worker_states[wid].learner_buffer)[-1]
+            for wid in worker_order
+        ], dim=0)  # [B, F]
+        states_cpu = states_gpu.cpu()  # Single batch transfer
+
+        # Record steps and build result
         results = {}
         for batch_idx, worker_id in enumerate(worker_order):
-            # Extract this worker's results
-            p1_logits, p1_actions, p1_log_prob, p1_value = learner_actions_batch[
-                batch_idx
-            ]
-            p2_logits, p2_actions, _, _ = opponent_actions_batch[batch_idx]
+            # Extract GPU actions for game control
+            p1_actions_gpu, _ = learner_gpu_actions[batch_idx]
+            p2_actions_gpu, _ = opponent_gpu_actions[batch_idx]
 
-            # Record step for trajectory
-            state = self.worker_states[worker_id]
-            # Use the last frame added to buffer as state
-            step_state = list(state.learner_buffer)[-1]
-
+            # Record step using CPU data (already transferred)
             step = StepRecord(
                 worker_id=worker_id,
-                state=step_state.cpu(),
-                action_taken={k: v.cpu() for k, v in p1_actions.items()},
-                log_prob=p1_log_prob.cpu(),
-                value=p1_value.cpu(),
+                state=states_cpu[batch_idx],
+                action_taken={k: v[batch_idx] for k, v in learner_actions_cpu.items()},
+                log_prob=learner_log_probs_cpu[batch_idx],
+                value=learner_values_cpu[batch_idx],
             )
             self.step_records[worker_id].append(step)
 
-            results[worker_id] = (p1_actions, p2_actions)
+            results[worker_id] = (p1_actions_gpu, p2_actions_gpu)
 
         # Fill in neutral actions for workers not ready
         for worker_id, _, _, done in worker_states_batch:
@@ -378,7 +380,12 @@ class InferenceCoordinator:
     def _sample_actions_batch(
         self,
         outputs: TensorDict,
-    ) -> List[Tuple[Dict, Dict, torch.Tensor, torch.Tensor]]:
+    ) -> Tuple[
+        List[Tuple[Dict, Dict]],  # GPU actions for game control
+        Dict[str, torch.Tensor],  # CPU actions for recording
+        torch.Tensor,  # CPU log_probs [B]
+        torch.Tensor,  # CPU values [B]
+    ]:
         """Sample actions from batched model outputs (vectorized).
 
         Uses the same sampling strategy as model_interface.py:
@@ -389,7 +396,11 @@ class InferenceCoordinator:
             outputs: Model output TensorDict with shape [B, T, ...]
 
         Returns:
-            List of (action_logits, actions_taken, log_prob, value) per batch element
+            Tuple of:
+            - gpu_actions: List of (p1_actions_gpu, action_logits_gpu) per batch element (for game control)
+            - actions_cpu: Dict of action tensors on CPU with shape [B, ...]
+            - log_probs_cpu: Log probabilities on CPU [B]
+            - values_cpu: Value estimates on CPU [B]
         """
         batch_size = outputs["main_stick"].shape[0]
 
@@ -428,15 +439,19 @@ class InferenceCoordinator:
         # Compute log probabilities for entire batch at once
         log_probs = compute_log_probs(action_logits_batch, actions_batch)  # [B]
 
-        # Build results list (still need to unpack per element for compatibility)
-        # TODO: compatibility with what!?
-        results = []
+        # **BATCH CPU TRANSFER** - Move all data to CPU at once (1 sync per tensor)
+        actions_cpu = {k: v.cpu() for k, v in actions_batch.items()}
+        log_probs_cpu = log_probs.cpu()
+        values_cpu = values.cpu()
+
+        # Build GPU results list for game control (still on GPU for immediate use)
+        gpu_actions = []
         for b in range(batch_size):
             action_logits = {k: v[b] for k, v in action_logits_batch.items()}
             actions = {k: v[b] for k, v in actions_batch.items()}
-            results.append((action_logits, actions, log_probs[b], values[b]))
+            gpu_actions.append((actions, action_logits))
 
-        return results
+        return gpu_actions, actions_cpu, log_probs_cpu, values_cpu
 
     def _compute_log_prob(
         self,

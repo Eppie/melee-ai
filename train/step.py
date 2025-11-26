@@ -129,7 +129,6 @@ def perform_forward_pass(
     )
 
 
-# TODO: We are probably failing to call clip_grad_norm if collect_grad_stats is False
 def perform_backward_pass(
     components: TrainingComponents,
     loss: torch.Tensor,
@@ -147,10 +146,14 @@ def perform_backward_pass(
         return {}
 
     optimizer.zero_grad(set_to_none=True)
-    scaler.scale(loss).backward()
 
+    # Use gradient scaling only if scaler is enabled (float16)
     if scaler.is_enabled():
+        scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
+    else:
+        # bfloat16 or full precision - no scaling needed
+        loss.backward()
 
     grad_clip = components.config.train.grad_clip
     pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
@@ -161,6 +164,10 @@ def perform_backward_pass(
         grad_stats["total_norm_pre_clip"] = pre_clip_norm
         grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
 
-    scaler.step(optimizer)
-    scaler.update()
+    if scaler.is_enabled():
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        optimizer.step()
+
     return grad_stats

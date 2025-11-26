@@ -18,7 +18,6 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch.amp import autocast
-from torch.amp import GradScaler
 
 from config import get_config, init_config
 from libmelee.melee.enums import Menu
@@ -95,7 +94,6 @@ def save_checkpoint(
 def run_distributed_training(
     model: GPT,
     optimizer: torch.optim.Optimizer,
-    scaler: GradScaler,
     opponent_pool: OpponentPool,
     device: torch.device,
     logger: WandbLogger,
@@ -220,7 +218,6 @@ def run_distributed_training(
             train_metrics = train_on_windows(
                 model=model,
                 optimizer=optimizer,
-                scaler=scaler,
                 windows=windows,
                 device=device,
                 ppo_cfg=ppo_cfg,
@@ -286,7 +283,6 @@ def run_distributed_training(
 def train_on_windows(
     model: GPT,
     optimizer: torch.optim.Optimizer,
-    scaler: GradScaler,
     windows: Dict[str, torch.Tensor],
     device: torch.device,
     ppo_cfg,
@@ -296,7 +292,6 @@ def train_on_windows(
     Args:
         model: Model to train
         optimizer: Optimizer
-        scaler: Gradient scaler
         windows: Pre-built training windows
         device: Training device
         ppo_cfg: PPO configuration
@@ -314,7 +309,7 @@ def train_on_windows(
 
     num_windows = windows["states"].shape[0]
     seq_len = windows["states"].shape[1]
-    warmup_positions = seq_len // 4
+    warmup_positions = seq_len
 
     print(f"Training on {num_windows} windows")
 
@@ -354,7 +349,7 @@ def train_on_windows(
             if not loss_mask.any():
                 continue
 
-            with autocast(device_type=device.type, enabled=True):
+            with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
                 model_inputs = build_model_inputs(mb_states, colmap)
                 outputs = model(model_inputs)
 
@@ -396,8 +391,7 @@ def train_on_windows(
                 continue
 
             optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
+            loss.backward()
 
             # Check gradients
             has_nan_grad = any(
@@ -411,8 +405,7 @@ def train_on_windows(
                 continue
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
 
             epoch_losses.append(loss.item())
 
@@ -676,7 +669,6 @@ def build_sequence_windows(
 def train_on_trajectories(
     model: GPT,
     optimizer: torch.optim.Optimizer,
-    scaler: GradScaler,
     trajectories: List[Trajectory],
     device: torch.device,
     logger: WandbLogger,
@@ -733,7 +725,7 @@ def train_on_trajectories(
         "train/num_windows": num_windows,
     }
 
-    warmup_positions = config.seq_len // 4
+    warmup_positions = config.seq_len
 
     for ppo_epoch in range(ppo_cfg.ppo_epochs):
         perm = torch.randperm(num_windows, device=device)
@@ -765,7 +757,7 @@ def train_on_trajectories(
             if not loss_mask.any():
                 continue
 
-            with autocast(device_type=device.type, enabled=True):
+            with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
                 model_inputs = build_model_inputs(mb_states, colmap)
                 outputs = model(model_inputs)
 
@@ -807,8 +799,7 @@ def train_on_trajectories(
                 continue
 
             optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
+            loss.backward()
 
             nan_grads = sum(
                 1
@@ -828,8 +819,7 @@ def train_on_trajectories(
             if mb_idx == 0 and ppo_epoch == 0:
                 metrics["train/grad_norm"] = grad_norm.item()
 
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
 
             epoch_losses.append(loss.item())
 
@@ -851,7 +841,6 @@ def train_on_trajectories(
 def run_episode_based_training(
     model: GPT,
     optimizer: torch.optim.Optimizer,
-    scaler: GradScaler,
     opponent_pool: OpponentPool,
     device: torch.device,
     logger: WandbLogger,
@@ -957,7 +946,6 @@ def run_episode_based_training(
                 train_on_trajectories(
                     model=model,
                     optimizer=optimizer,
-                    scaler=scaler,
                     trajectories=trajectories,
                     device=device,
                     logger=logger,
@@ -1101,9 +1089,6 @@ def main():
     )
     print(f"Using PPO learning rate: {config.ppo.lr:.2e}")
 
-    # Gradient scaler
-    scaler = GradScaler('cuda', enabled=config.train.use_amp)
-
     # Opponent pool
     pool_dir = args.out_dir / "opponent_pool"
     opponent_pool = OpponentPool(
@@ -1142,7 +1127,6 @@ def main():
         run_distributed_training(
             model=model,
             optimizer=optimizer,
-            scaler=scaler,
             opponent_pool=opponent_pool,
             device=device,
             logger=logger,
@@ -1152,7 +1136,6 @@ def main():
         run_episode_based_training(
             model=model,
             optimizer=optimizer,
-            scaler=scaler,
             opponent_pool=opponent_pool,
             device=device,
             logger=logger,

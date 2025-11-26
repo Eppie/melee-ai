@@ -92,17 +92,17 @@ class GPT(nn.Module):
 
         if self.head_flow == "sequential":
             # Sequential mode: each head receives concatenated outputs from previous heads
-            # Order: main_stick → buttons → shoulder → c_stick
-            main_stick_input_size = self.embedding_dim
-            button_input_size = self.embedding_dim + self.main_stick_output_size
-            shoulder_input_size = (
-                self.embedding_dim + self.main_stick_output_size + self.button_output_size
-            )
+            # Order: buttons → main_stick → c_stick → shoulder
+            button_input_size = self.embedding_dim
+            main_stick_input_size = self.embedding_dim + self.button_output_size
             c_stick_input_size = (
+                self.embedding_dim + self.button_output_size + self.main_stick_output_size
+            )
+            shoulder_input_size = (
                 self.embedding_dim
-                + self.main_stick_output_size
                 + self.button_output_size
-                + self.shoulder_output_size
+                + self.main_stick_output_size
+                + self.c_stick_output_size
             )
         else:
             # Parallel and mix modes: all heads receive same base features
@@ -272,27 +272,27 @@ class GPT(nn.Module):
 
         elif self.head_flow == "sequential":
             # Sequential heads: each head receives concatenated outputs from previous heads
-            # Order: main_stick → buttons → shoulder → c_stick
-            main_stick = self.main_stick_head(base_hidden_states)
+            # Order: buttons → main_stick → c_stick → shoulder
+            button_logits = self.button_head(base_hidden_states)
 
-            button_logits = self.button_head(
-                torch.cat((base_hidden_states, main_stick.detach()), dim=-1)
-            )
-
-            shoulder = self.shoulder_head(
-                torch.cat(
-                    (base_hidden_states, main_stick.detach(), button_logits.detach()),
-                    dim=-1,
-                )
+            main_stick = self.main_stick_head(
+                torch.cat((base_hidden_states, button_logits.detach()), dim=-1)
             )
 
             c_stick = self.c_stick_head(
                 torch.cat(
+                    (base_hidden_states, button_logits.detach(), main_stick.detach()),
+                    dim=-1,
+                )
+            )
+
+            shoulder = self.shoulder_head(
+                torch.cat(
                     (
                         base_hidden_states,
-                        main_stick.detach(),
                         button_logits.detach(),
-                        shoulder.detach(),
+                        main_stick.detach(),
+                        c_stick.detach(),
                     ),
                     dim=-1,
                 )

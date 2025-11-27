@@ -45,12 +45,13 @@ class Block(nn.Module):
             embedding_dim, num_heads, num_key_value_heads, dropout
         )
         self.mlp = MLP(embedding_dim)
+        self.mlp_dropout = nn.Dropout(dropout)
 
     def forward(
         self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
         hidden_states = hidden_states + self.attention(norm(hidden_states), cos, sin)
-        hidden_states = hidden_states + self.mlp(norm(hidden_states))
+        hidden_states = hidden_states + self.mlp_dropout(self.mlp(norm(hidden_states)))
         return hidden_states
 
 

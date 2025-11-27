@@ -120,13 +120,37 @@ def configure_performance_settings(config, device: torch.device) -> None:
 
 
 def build_optimizer(model: GPT, config) -> torch.optim.Optimizer:
-    """Builds the AdamW optimizer from the training configuration."""
+    """
+    Builds the AdamW optimizer with proper weight decay handling.
+    
+    Separates parameters into two groups:
+    1. Decayed: Weights of Linear and Embedding layers
+    2. No Decay: Biases, LayerNorm/RMSNorm weights, and other 1D tensors
+    """
+    # Separate parameters into decay and no-decay groups
+    decay_params = []
+    nodecay_params = []
+    
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+            
+        # Common heuristic: decay 2D+ tensors (weights), skip 1D (biases, layernorms)
+        if param.dim() >= 2:
+            decay_params.append(param)
+        else:
+            nodecay_params.append(param)
+
+    optim_groups = [
+        {'params': decay_params, 'weight_decay': config.train.weight_decay},
+        {'params': nodecay_params, 'weight_decay': 0.0}
+    ]
+
     fused = torch.cuda.is_available()
     return torch.optim.AdamW(
-        model.parameters(),
+        optim_groups,
         lr=config.train.lr,
         betas=config.train.betas,
-        weight_decay=config.train.weight_decay,
         fused=fused,
     )
 

@@ -39,26 +39,96 @@ class ZarrConfig(BaseModel):
         arbitrary_types_allowed=True,  # Allow BloscCodec
     )
 
-    input_root: str = Field(default_factory=lambda: _get_default_paths()[0])
-    out_root: str = Field(default_factory=lambda: _get_default_paths()[1])
-    validation_root: str = Field(default_factory=lambda: _get_default_paths()[2])
-    episode_count: int = Field(default=6800, ge=1)
-    validation_count: int = Field(default=200, ge=1)
-    shard_size: int = Field(default=100, ge=1)
-    target_chunk_mb: float = Field(default=8.0, gt=0)
+    input_root: str = Field(
+        default_factory=lambda: _get_default_paths()[0],
+        description=(
+            "Directory containing input Slippi .slp replay files. Auto-detected based on OS. "
+            "Override with custom path if replays are in a different location."
+        ),
+    )
+    out_root: str = Field(
+        default_factory=lambda: _get_default_paths()[1],
+        description=(
+            "Directory for output Zarr dataset (processed training data). "
+            "Auto-includes episode_count suffix (e.g., processed_data_1000). "
+            "Auto-detected based on OS. Override with custom path."
+        ),
+    )
+    validation_root: str = Field(
+        default_factory=lambda: _get_default_paths()[2],
+        description=(
+            "Directory for validation Zarr dataset (held-out test data). "
+            "Separate from training data for unbiased evaluation. Auto-detected based on OS."
+        ),
+    )
+    episode_count: int = Field(
+        default=6800,
+        ge=1,
+        description=(
+            "Number of episodes (replay files) to process for training dataset. "
+            "Effect: More episodes = more diverse training data but longer preprocessing. "
+            "Reasonable range: [1000, 10000+]. Note: out_root path is auto-updated to include this count. "
+            "Interacts with: shard_size (determines number of shards = episode_count / shard_size)."
+        ),
+    )
+    validation_count: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Number of episodes to process for validation dataset. Held out from training. "
+            "Effect: More episodes = better validation statistics but longer preprocessing. "
+            "Reasonable range: [100, 500]. Typical: 5-10% of episode_count."
+        ),
+    )
+    shard_size: int = Field(
+        default=100,
+        ge=1,
+        description=(
+            "Number of episodes per Zarr shard. Data is split into multiple shards for parallel loading. "
+            "Effect: Smaller shards (50-100) = more parallelism, better for many workers; "
+            "larger shards (200-500) = fewer files, simpler management. Reasonable range: [50, 200]. "
+            "Interacts with: episode_count (num_shards = episode_count / shard_size), num_workers."
+        ),
+    )
+    target_chunk_mb: float = Field(
+        default=8.0,
+        gt=0,
+        description=(
+            "Target chunk size in megabytes for Zarr chunks along the feature axis. "
+            "Balances I/O efficiency vs memory usage. Effect: Larger chunks (16-32 MB) = fewer I/O operations; "
+            "smaller chunks (4-8 MB) = finer-grained access. Reasonable range: [4.0, 32.0]. "
+            "Interacts with: chunk_frames (both determine chunk shape)."
+        ),
+    )
     chunk_frames: int = Field(
         default=512,
         ge=1,
         description=(
-            "Preferred number of frames per Zarr chunk along the time axis. "
-            "Defaults to 512 so 256-frame windows typically hit a single chunk."
+            "Number of frames per Zarr chunk along the time axis. Optimized for typical window sizes. "
+            "Effect: Should be >= block_size to minimize chunk reads per window. "
+            "Default 512 ensures 256-512 frame windows usually hit 1-2 chunks. "
+            "Reasonable range: [256, 1024]. Interacts with: model.block_size (should be >= block_size)."
         ),
     )
-    seed: int = Field(default=42)
+    seed: int = Field(
+        default=42,
+        description=(
+            "Random seed for dataset splitting and shuffling. "
+            "Use consistent seed for reproducible train/validation splits."
+        ),
+    )
     compressor: BloscCodec = Field(
         default_factory=lambda: BloscCodec(
             cname="zstd", clevel=3, shuffle=BloscShuffle.bitshuffle
-        )
+        ),
+        description=(
+            "Blosc compression codec for Zarr arrays. Controls compression algorithm and level. "
+            "Default: zstd (fast, good ratio), level 3 (balanced), bitshuffle (good for game data). "
+            "Effect: Higher clevel (5-9) = better compression, slower read/write; "
+            "lower clevel (1-3) = faster, larger files. Reasonable clevel range: [1, 7]. "
+            "Options: cname=['zstd', 'lz4', 'blosclz'], shuffle=['noshuffle', 'shuffle', 'bitshuffle']. "
+            "Recommended: Keep defaults unless storage or I/O speed is critical."
+        ),
     )
 
     @field_validator("compressor", mode="before")

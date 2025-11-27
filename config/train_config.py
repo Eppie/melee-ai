@@ -15,53 +15,209 @@ class TrainConfig(BaseModel):
         extra="forbid",
     )
 
-    batch_size: int = Field(default=256, ge=1)
-    epochs: int = Field(default=32, ge=1)
-    lr: float = Field(default=3e-4, gt=0)
-    # TODO: Document the effect of this setting
-    weight_decay: float = Field(default=0.002, ge=0)
-    # TODO: Document the effect of this setting
-    betas: Tuple[float, float] = Field(default=(0.9, 0.95))
-    warmup_steps: int = Field(default=7500, ge=0)
-    num_workers: int = Field(default=16, ge=0)
-    prefetch_factor: int = Field(default=4, ge=1)
-    max_loader_prefetch_mb: int = Field(default=2048, ge=1)
-    pin_memory: bool = Field(default_factory=lambda: _should_pin_memory())
-    persistent_workers: bool = True
-    stride: int = Field(default=16, ge=1)
-    worker_start_method: Optional[Literal["fork", "spawn", "forkserver"]] = None
+    batch_size: int = Field(
+        default=256,
+        ge=1,
+        description=(
+            "Training batch size. Number of sequences per gradient update. "
+            "Effect: Larger batches (512-1024) = more stable gradients, better GPU utilization but more memory; "
+            "smaller batches (64-128) = less memory, noisier gradients. Reasonable range: [64, 512]. "
+            "Interacts with: lr (larger batches often benefit from higher lr), num_workers, GPU memory."
+        ),
+    )
+    epochs: int = Field(
+        default=32,
+        ge=1,
+        description=(
+            "Number of training epochs. One epoch = one pass through the entire dataset. "
+            "Effect: More epochs = more training, better fit but risk of overfitting; "
+            "fewer epochs = less training, may underfit. Reasonable range: [10, 100]. "
+            "Interacts with: lr schedule (cosine decay spans epochs), stride (affects samples per epoch)."
+        ),
+    )
+    lr: float = Field(
+        default=3e-4,
+        gt=0,
+        description="Learning rate for AdamW optimizer. Interacts with warmup_steps and schedule.",
+    )
+    weight_decay: float = Field(
+        default=0.002,
+        ge=0,
+        description=(
+            "L2 regularization strength for AdamW optimizer. Prevents overfitting by "
+            "penalizing large weights. Effect: Higher values (0.01-0.1) increase regularization "
+            "and may reduce overfitting but can hurt capacity; lower values (0.0001-0.005) reduce "
+            "regularization. Reasonable range: [0.0001, 0.1]. Interacts with: lr (higher lr often "
+            "needs higher weight_decay), model size (larger models may need more regularization)."
+        ),
+    )
+    betas: Tuple[float, float] = Field(
+        default=(0.9, 0.95),
+        description=(
+            "AdamW momentum coefficients (beta1, beta2) for gradient and squared gradient moving averages. "
+            "beta1 controls first moment (mean), beta2 controls second moment (variance). "
+            "Effect: Higher beta1 (0.9-0.95) = smoother gradient updates, more momentum; "
+            "higher beta2 (0.95-0.999) = more stable adaptive learning rates. "
+            "Reasonable values: beta1=[0.85, 0.95], beta2=[0.95, 0.999]. "
+            "Default (0.9, 0.95) is lower than typical (0.9, 0.999) for faster adaptation. "
+            "Interacts with: lr (higher betas may allow higher lr), batch_size (larger batches often use higher betas)."
+        ),
+    )
+    warmup_steps: int = Field(
+        default=7500,
+        ge=0,
+        description="Number of optimizer steps to linearly warm up learning rate from 0 to lr. Helps stabilize early training.",
+    )
+    num_workers: int = Field(
+        default=16,
+        ge=0,
+        description="Number of dataloader worker processes. More workers = faster data loading but more memory.",
+    )
+    prefetch_factor: int = Field(
+        default=4,
+        ge=1,
+        description="Number of batches each dataloader worker prefetches. Higher = more memory but smoother training.",
+    )
+    max_loader_prefetch_mb: int = Field(
+        default=2048,
+        ge=1,
+        description="Maximum memory (MB) for dataloader prefetching. Prevents OOM from excessive prefetching.",
+    )
+    pin_memory: bool = Field(
+        default_factory=lambda: _should_pin_memory(),
+        description="Pin tensors in CPU memory for faster GPU transfer. Auto-enabled for CUDA, disabled for MPS/CPU.",
+    )
+    persistent_workers: bool = Field(
+        default=True,
+        description="Keep dataloader workers alive between epochs. Faster but uses more memory.",
+    )
+    stride: int = Field(
+        default=16,
+        ge=1,
+        description=(
+            "Stride between consecutive training windows. Lower stride = more overlapping windows = "
+            "more data augmentation but slower epochs. stride=1 uses every possible window, stride=block_size "
+            "uses non-overlapping windows. Reasonable range: [1, block_size]. Interacts with: block_size, epochs."
+        ),
+    )
+    worker_start_method: Optional[Literal["fork", "spawn", "forkserver"]] = Field(
+        default=None,
+        description=(
+            "Method for starting dataloader worker processes. "
+            "Options: 'fork' (copy parent process, fast but can cause issues), "
+            "'spawn' (fresh Python interpreter, slower startup but safer), "
+            "'forkserver' (compromise between fork and spawn). "
+            "None = use platform default (fork on Unix, spawn on Windows). "
+            "Recommended: None (auto-detect) or 'spawn' if encountering multiprocessing issues."
+        ),
+    )
 
     # Losses
-    grad_clip: float = Field(default=5.0, gt=0)
-    label_smoothing: float = Field(default=0.02, ge=0, le=1)
-    schedule_warmup_epochs: int = Field(default=1, ge=0)
-    schedule_cooldown_epochs: int = Field(default=1, ge=0)
+    grad_clip: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Maximum gradient norm for gradient clipping. Prevents exploding gradients. "
+            "Effect: Lower values (0.5-2.0) clip more aggressively, more stable but slower learning; "
+            "higher values (5.0-10.0) allow larger updates. Reasonable range: [0.5, 10.0]. "
+            "Interacts with: lr (higher lr may need lower grad_clip), model depth (deeper models may need lower values)."
+        ),
+    )
+    label_smoothing: float = Field(
+        default=0.02,
+        ge=0,
+        le=1,
+        description=(
+            "Label smoothing for cross-entropy loss. Replaces hard targets (1.0) with soft targets (1-ε). "
+            "Effect: Reduces overconfidence and improves generalization. Higher values (0.05-0.2) = more smoothing. "
+            "Reasonable range: [0.0, 0.1]. Too high can hurt performance."
+        ),
+    )
+    schedule_warmup_epochs: int = Field(
+        default=1,
+        ge=0,
+        description="Number of epochs for learning rate warmup phase. Helps stabilize early training.",
+    )
+    schedule_cooldown_epochs: int = Field(
+        default=1,
+        ge=0,
+        description="Number of epochs at end of training to keep lr at minimum. Allows model to settle.",
+    )
 
     # Imbalance scale scheduling
     imbalance_scale_initial: float = Field(
         default=0.3,
         ge=0,
         le=1,
-        description="Initial imbalance scale value (used during warmup epoch)",
+        description=(
+            "Initial imbalance scale value (used during warmup epoch). Controls how aggressively "
+            "class balancing and change-based loss weighting are applied at the start of training. "
+            "Effect: Lower values (0.1-0.3) start with gentler weighting, allowing model to learn basic patterns; "
+            "higher values (0.5-1.0) apply full weighting from the start. Reasonable range: [0.1, 0.5]. "
+            "Interacts with: imbalance_scale_final (determines ramp range), loss config weights (scales all of them). "
+            "See loss_weighting_explained.md for details."
+        ),
     )
     imbalance_scale_final: float = Field(
         default=1.0,
         ge=0,
         le=1,
-        description="Final imbalance scale value (used during final portion of training)",
+        description=(
+            "Final imbalance scale value (used during final portion of training). Controls maximum strength "
+            "of class balancing and change-based loss weighting. Effect: Higher values (0.8-1.0) apply "
+            "full weighting to rare/changed actions; lower values (0.3-0.7) reduce weighting strength. "
+            "Reasonable range: [0.5, 1.0]. Interacts with: loss config weights (multiplies them), "
+            "imbalance_scale_final_fraction (how long to maintain final value)."
+        ),
     )
     imbalance_scale_final_fraction: float = Field(
         default=0.2,
         ge=0,
         le=1,
-        description="Fraction of training (after warmup) to keep at final imbalance scale",
+        description=(
+            "Fraction of training (after warmup) to keep at final imbalance scale. Determines how long "
+            "training stays at maximum weighting strength. Effect: Higher values (0.3-0.5) maintain "
+            "full weighting longer; lower values (0.1-0.2) reach full weighting later. "
+            "Reasonable range: [0.1, 0.5]. Interacts with: epochs (determines absolute duration), "
+            "imbalance_scale_final (the target scale value)."
+        ),
     )
-    use_amp: bool = Field(default_factory=lambda: _should_use_amp())
-    amp_dtype: str = Field(default_factory=lambda: _get_optimal_amp_dtype())
+    use_amp: bool = Field(
+        default_factory=lambda: _should_use_amp(),
+        description=(
+            "Enable Automatic Mixed Precision (AMP) training. Uses lower precision (float16/bfloat16) for speed. "
+            "Effect: True = ~2x faster training, lower memory, minimal accuracy loss on modern GPUs; "
+            "False = full float32 precision, slower but more stable. "
+            "Auto-enabled for CUDA and MPS. Recommended: Keep default (auto-detect). "
+            "Interacts with: amp_dtype (determines precision format)."
+        ),
+    )
+    amp_dtype: str = Field(
+        default_factory=lambda: _get_optimal_amp_dtype(),
+        description=(
+            "AMP data type. Controls precision format for mixed precision training. "
+            "Options: 'bfloat16' (better range, no gradient scaling needed, CUDA default), "
+            "'float16' (more hardware support, needs gradient scaling, MPS default), "
+            "'float32' (full precision, no AMP). "
+            "Auto-selected based on hardware. Recommended: Keep default (auto-detect). "
+            "Interacts with: use_amp (only used if AMP enabled)."
+        ),
+    )
 
     # Checkpointing
-    out_dir: str = "../checkpoints"
-    allow_partial_checkpoint_load: bool = False
+    out_dir: str = Field(
+        default="../checkpoints",
+        description="Directory for saving model checkpoints during training.",
+    )
+    allow_partial_checkpoint_load: bool = Field(
+        default=False,
+        description=(
+            "Allow loading checkpoints with mismatched model architecture. "
+            "Effect: True = load matching parameters, skip mismatched ones (useful for architecture changes); "
+            "False = strict loading, fail if any mismatch (safer). "
+            "Recommended: False for normal training, True for transfer learning or architecture experiments."
+        ),
+    )
 
     # Performance optimizations
     torch_compile: bool = Field(

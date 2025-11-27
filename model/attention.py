@@ -29,7 +29,6 @@ class CausalSelfAttention(nn.Module):
         )
         self.output_projection = nn.Linear(embedding_dim, embedding_dim, bias=False)
 
-        self.attention_dropout = nn.Dropout(dropout)
         self.residual_dropout = nn.Dropout(dropout)
 
     def forward(

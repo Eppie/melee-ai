@@ -4,19 +4,23 @@ from torch import nn
 
 
 class SimpleHead(nn.Module):
-    def __init__(self, input_size: int, output_size: int, hidden: int = 128):
+    def __init__(self, input_size: int, output_size: int, hidden: int = 128, dropout: float = 0.05):
         super().__init__()
         self.fc1 = nn.Linear(input_size, hidden, bias=True)
+        self.dropout = nn.Dropout(dropout)
         self.fc2 = nn.Linear(hidden, output_size, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Standard forward pass through both layers."""
         h = F.relu(self.fc1(x))
+        h = self.dropout(h)
         return self.fc2(h)
 
     def forward_intermediate(self, x: torch.Tensor) -> torch.Tensor:
         """Returns intermediate features after first layer (before final projection)."""
-        return F.relu(self.fc1(x))
+        h = F.relu(self.fc1(x))
+        h = self.dropout(h)
+        return h
 
     def forward_from_intermediate(self, h: torch.Tensor) -> torch.Tensor:
         """Projects from intermediate features to output."""

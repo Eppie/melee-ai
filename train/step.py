@@ -54,26 +54,36 @@ def perform_forward_pass(
             )
         label_smoothing = float(max(label_smoothing, 0.0))
 
-        # Imbalance scale scheduling: ramps from initial to final value
-        # - Fixed at initial value during warmup (first epoch)
-        # - Fixed at final value during final fraction of training
-        # - Linear ramp in between
+        # Imbalance scale scheduling: three-phase approach
+        # Phase 1: Keep at initial value for first initial_fraction (learn action space)
+        # Phase 2: Linear decay from initial to final over middle portion (transition)
+        # Phase 3: Keep at final value for last final_fraction (learn timing)
         initial_scale = config.train.imbalance_scale_initial
         final_scale = config.train.imbalance_scale_final
+        initial_fraction = config.train.imbalance_scale_initial_fraction
         final_fraction = config.train.imbalance_scale_final_fraction
 
-        if in_warmup:
+        if progress < initial_fraction:
+            # Phase 1: Keep at initial value
             imbalance_scale = initial_scale
         elif progress >= (1.0 - final_fraction):
+            # Phase 3: Keep at final value
             imbalance_scale = final_scale
         else:
-            # Linear ramp from initial to final over the non-final portion
-            ramp_progress = progress / (1.0 - final_fraction)
+            # Phase 2: Linear ramp from initial to final over middle portion
+            ramp_start = initial_fraction
+            ramp_end = 1.0 - final_fraction
+            ramp_progress = (progress - ramp_start) / (ramp_end - ramp_start)
             imbalance_scale = (
                 initial_scale + (final_scale - initial_scale) * ramp_progress
             )
 
-        imbalance_scale = float(max(min(imbalance_scale, final_scale), initial_scale))
+        imbalance_scale = float(
+            max(
+                min(imbalance_scale, max(initial_scale, final_scale)),
+                min(initial_scale, final_scale),
+            )
+        )
 
         weights = compute_component_sample_weights(
             target_info,

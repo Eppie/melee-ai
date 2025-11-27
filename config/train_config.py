@@ -146,28 +146,44 @@ class TrainConfig(BaseModel):
 
     # Imbalance scale scheduling
     imbalance_scale_initial: float = Field(
-        default=0.3,
+        default=1.0,
         ge=0,
         le=1,
         description=(
             "Initial imbalance scale value (used during warmup epoch). Controls how aggressively "
             "class balancing and change-based loss weighting are applied at the start of training. "
-            "Effect: Lower values (0.1-0.3) start with gentler weighting, allowing model to learn basic patterns; "
-            "higher values (0.5-1.0) apply full weighting from the start. Reasonable range: [0.1, 0.5]. "
+            "Two-stage training approach: Start with full weighting (1.0) to learn rare actions, "
+            "then decay to learn proper timing and frequencies. "
+            "Effect: Higher values (0.8-1.0) apply full weighting from start to learn action space; "
+            "lower values (0.3-0.5) start gentler. Reasonable range: [0.5, 1.0]. "
             "Interacts with: imbalance_scale_final (determines ramp range), loss config weights (scales all of them). "
-            "See loss_weighting_explained.md for details."
+            "See loss_weighting_explained.md and loss_weighting_analysis.md for details."
         ),
     )
     imbalance_scale_final: float = Field(
-        default=1.0,
+        default=0.5,
         ge=0,
         le=1,
         description=(
-            "Final imbalance scale value (used during final portion of training). Controls maximum strength "
-            "of class balancing and change-based loss weighting. Effect: Higher values (0.8-1.0) apply "
-            "full weighting to rare/changed actions; lower values (0.3-0.7) reduce weighting strength. "
-            "Reasonable range: [0.5, 1.0]. Interacts with: loss config weights (multiplies them), "
+            "Final imbalance scale value (used during final portion of training). Controls strength "
+            "of class balancing and change-based loss weighting in late training. "
+            "Two-stage training approach: After learning rare actions with full weighting, decay to "
+            "lighter weighting so model learns true action frequencies and timing. "
+            "Effect: Lower values (0.3-0.5) reduce weighting to learn timing; "
+            "higher values (0.7-1.0) maintain stronger weighting. Reasonable range: [0.3, 0.7]. "
+            "Interacts with: loss config weights (multiplies them), "
             "imbalance_scale_final_fraction (how long to maintain final value)."
+        ),
+    )
+    imbalance_scale_initial_fraction: float = Field(
+        default=0.2,
+        ge=0,
+        le=1,
+        description=(
+            "Fraction of training to keep at initial imbalance scale before starting decay. "
+            "Effect: Higher values (0.3-0.4) maintain full weighting longer to learn action space; "
+            "lower values (0.1-0.2) start decay earlier. Reasonable range: [0.1, 0.3]. "
+            "Interacts with: epochs (determines absolute duration), imbalance_scale_initial."
         ),
     )
     imbalance_scale_final_fraction: float = Field(
@@ -175,9 +191,9 @@ class TrainConfig(BaseModel):
         ge=0,
         le=1,
         description=(
-            "Fraction of training (after warmup) to keep at final imbalance scale. Determines how long "
-            "training stays at maximum weighting strength. Effect: Higher values (0.3-0.5) maintain "
-            "full weighting longer; lower values (0.1-0.2) reach full weighting later. "
+            "Fraction of training to keep at final imbalance scale at the end. Determines how long "
+            "training stays at reduced weighting to learn timing. Effect: Higher values (0.3-0.5) maintain "
+            "reduced weighting longer; lower values (0.1-0.2) reach reduced weighting later. "
             "Reasonable range: [0.1, 0.5]. Interacts with: epochs (determines absolute duration), "
             "imbalance_scale_final (the target scale value)."
         ),

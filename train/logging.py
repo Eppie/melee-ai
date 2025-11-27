@@ -194,12 +194,7 @@ def prepare_logging_bundle(
     c_pred = c_pred_idx.view(batch_size, sequence_length)
 
     # Repeat baselines
-    main_rep = torch.zeros_like(target_main_2d)
-    c_rep = torch.zeros_like(target_c_2d)
-    btn_rep = torch.zeros_like(target_btn)
-    main_rep[:, 1:] = target_main_2d[:, :-1]
-    c_rep[:, 1:] = target_c_2d[:, :-1]
-    btn_rep[:, 1:, :] = target_btn[:, :-1, :]
+
 
     # Button predictions
     btn_pred = (btn_probs >= 0.5).to(target_btn.dtype)
@@ -209,8 +204,7 @@ def prepare_logging_bundle(
     sh_logits = pred["shoulder"]
     sh_true_idx = target_info["shoulder_idx"]
     sh_pred_idx = sh_logits.argmax(dim=-1)
-    sh_rep = torch.zeros_like(sh_true_idx)
-    sh_rep[:, 1:] = sh_true_idx[:, :-1]
+
 
     # Compute all accuracy metrics on GPU and batch them
     acc_metrics = torch.stack(
@@ -219,12 +213,12 @@ def prepare_logging_bundle(
             (main_pred == target_main_2d).float().mean(),
             _compute_masked_accuracy(main_pred, target_main_2d, main_change_mask),
             _compute_masked_accuracy(main_pred, target_main_2d, main_hold_mask),
-            _compute_masked_accuracy(main_rep, target_main_2d, rep_mask),
+
             # C-stick accuracies
             (c_pred == target_c_2d).float().mean(),
             _compute_masked_accuracy(c_pred, target_c_2d, c_change_mask),
             _compute_masked_accuracy(c_pred, target_c_2d, c_hold_mask),
-            _compute_masked_accuracy(c_rep, target_c_2d, rep_mask),
+
             # Button EM accuracies
             _compute_masked_accuracy(
                 correct_btn_em.int(),
@@ -238,7 +232,7 @@ def prepare_logging_bundle(
             ),
             # Shoulder accuracies
             (sh_pred_idx == sh_true_idx).float().mean(),
-            _compute_masked_accuracy(sh_rep, sh_true_idx, rep_mask),
+
         ]
     )
 
@@ -264,10 +258,7 @@ def prepare_logging_bundle(
     btn_maj_pred = (pos_rate >= 0.5).to(target_btn.dtype).expand_as(target_btn)
     _, _, _, f1_maj, _ = multilabel_prf(target_btn, btn_maj_pred)
 
-    mask_flat = rep_mask.view(batch_size * sequence_length)
-    t_flat = target_btn.reshape(batch_size * sequence_length, -1)[mask_flat]
-    p_flat = btn_rep.reshape(batch_size * sequence_length, -1)[mask_flat]
-    em_rep, _, _, f1_rep, _ = multilabel_prf(t_flat, p_flat)
+
 
     # Value head metrics (on GPU)
     value_target_eval = forward_result.value_target
@@ -313,16 +304,14 @@ def prepare_logging_bundle(
 
     # Unpack the values
     idx = 0
-    acc_main_b, acc_main_chg, acc_main_hold, acc_main_rep_b = all_scalars_cpu[
-        idx : idx + 4
-    ]
-    idx += 4
-    acc_c_b, acc_c_chg, acc_c_hold, acc_c_rep_b = all_scalars_cpu[idx : idx + 4]
-    idx += 4
+    acc_main_b, acc_main_chg, acc_main_hold = all_scalars_cpu[idx : idx + 3]
+    idx += 3
+    acc_c_b, acc_c_chg, acc_c_hold = all_scalars_cpu[idx : idx + 3]
+    idx += 3
     em_btn_chg, em_btn_hold = all_scalars_cpu[idx : idx + 2]
     idx += 2
-    acc_sh, acc_sh_rep = all_scalars_cpu[idx : idx + 2]
-    idx += 2
+    acc_sh = all_scalars_cpu[idx]
+    idx += 1
     (
         value_pred_mean,
         value_target_mean,
@@ -365,14 +354,14 @@ def prepare_logging_bundle(
             f"  loss {avg_loss_running:.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | "
             f"ls {forward_result.label_smoothing:.4f} | cw {forward_result.change_scale:.3f} | {loss_summary}"
         ),
-        f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f}) | rep {acc_main_rep_b:.3f}",
+        f"  MAIN:     acc {acc_main_b:.3f} (chg: {acc_main_chg:.3f}, hold: {acc_main_hold:.3f})",
         indent(main_conf_str, "    "),
-        f"  C-STICK:  acc {acc_c_b:.3f} (chg: {acc_c_chg:.3f}, hold: {acc_c_hold:.3f}) | rep {acc_c_rep_b:.3f}",
+        f"  C-STICK:  acc {acc_c_b:.3f} (chg: {acc_c_chg:.3f}, hold: {acc_c_hold:.3f})",
     ]
 
     btn_line1 = f"  BUTTONS:  EM {em_b:.3f} (chg: {em_btn_chg:.3f}, hold: {em_btn_hold:.3f}) | F1μ {f1_b:.3f}"
     btn_line2 = (
-        f"            maj F1μ {f1_maj:.3f} | rep F1μ {f1_rep:.3f} | EM_rep {em_rep:.3f}"
+        f"            maj F1μ {f1_maj:.3f}"
     )
 
     per_button: List[str] = []
@@ -386,7 +375,7 @@ def prepare_logging_bundle(
     log_lines.append(btn_line2)
     log_lines.append("            " + " | ".join(per_button))
     log_lines.append(
-        f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f} | rep {acc_sh_rep:.3f}"
+        f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f}"
     )
     log_lines.append(
         f"  VALUE:    pred {value_pred_mean:.3f} | targ {value_target_mean:.3f} | "
@@ -408,18 +397,17 @@ def prepare_logging_bundle(
         "metrics/acc_main_batch": acc_main_b,
         "metrics/acc_main_change": acc_main_chg,
         "metrics/acc_main_hold": acc_main_hold,
-        "metrics/acc_main_rep": acc_main_rep_b,
+
         "metrics/acc_c_batch": acc_c_b,
         "metrics/acc_c_change": acc_c_chg,
         "metrics/acc_c_hold": acc_c_hold,
-        "metrics/acc_c_rep": acc_c_rep_b,
+
         "metrics/buttons_em_batch": em_b,
         "metrics/buttons_em_change": em_btn_chg,
         "metrics/buttons_em_hold": em_btn_hold,
         "metrics/buttons_f1_micro_batch": f1_b,
         "metrics/buttons_f1_micro_maj": f1_maj,
-        "metrics/buttons_f1_micro_rep": f1_rep,
-        "metrics/buttons_em_rep": em_rep,
+
         "throughput/frames_per_s": frames_per_s,
         "schedule/label_smoothing": float(forward_result.label_smoothing),
         "schedule/change_weight_scale": float(forward_result.change_scale),

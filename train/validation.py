@@ -109,6 +109,7 @@ def run_validation(
     config,
     max_batches: Optional[int] = None,
     batch_size: Optional[int] = None,
+    imbalance_scale: float = 1.0,
 ) -> Dict[str, float]:
     """Run validation and return metrics dictionary suitable for wandb logging.
 
@@ -118,6 +119,7 @@ def run_validation(
         config: Training configuration.
         max_batches: Maximum number of batches to evaluate (None for all).
         batch_size: Override batch size (defaults to config.train.batch_size).
+        imbalance_scale: Current imbalance scale from training (default 1.0).
 
     Returns:
         Dictionary of validation metrics with "val/" prefix.
@@ -160,7 +162,7 @@ def run_validation(
                 device,
                 ratios=ratios,
                 button_names=CONTROLLER_KEY_GROUPS["buttons"],
-                change_scale=1.0,
+                change_scale=imbalance_scale,
             )
 
             pred = model(inputs_td)
@@ -169,12 +171,15 @@ def run_validation(
             logits_c = pred["c_stick"]
             logits_btn = pred["buttons"]
 
+            # Match training's imbalance scale for comparable loss values
             loss_components = compute_loss_components(
                 pred,
                 target_info,
                 label_smoothing=config.train.label_smoothing,
                 sample_weights=weights,
                 loss_config=config.loss_weights,
+                ce_weight_scale=imbalance_scale,
+                pos_weight_scale=imbalance_scale,
             )
 
             for key, value in loss_components.items():
@@ -294,12 +299,35 @@ def maybe_run_validation(
     print("[validation] Running validation...")
     start_time = time.time()
 
+    # Compute current imbalance_scale based on training progress
+    config = components.config
+    progress = min(global_step / float(components.total_steps), 1.0)
+
+    initial_scale = config.train.imbalance_scale_initial
+    final_scale = config.train.imbalance_scale_final
+    final_fraction = config.train.imbalance_scale_final_fraction
+
+    # Match training's imbalance scale computation
+    warmup_steps = config.train.schedule_warmup_epochs * (components.total_steps // config.train.epochs)
+    in_warmup = global_step < warmup_steps
+
+    if in_warmup:
+        imbalance_scale = initial_scale
+    elif progress >= (1.0 - final_fraction):
+        imbalance_scale = final_scale
+    else:
+        ramp_progress = progress / (1.0 - final_fraction)
+        imbalance_scale = initial_scale + (final_scale - initial_scale) * ramp_progress
+
+    imbalance_scale = float(max(min(imbalance_scale, final_scale), initial_scale))
+
     try:
         val_metrics = run_validation(
             model=components.model,
             device=components.device,
             config=components.config,
             max_batches=None,  # Run on full validation set
+            imbalance_scale=imbalance_scale,
         )
 
         # Log to wandb

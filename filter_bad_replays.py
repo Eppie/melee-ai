@@ -169,7 +169,7 @@ def quality_reason(game: Game) -> FilterFailure | None:
     return None
 
 
-def process_file(path: Path) -> pa.Table | None:
+def process_file(path: Path, allowed_chars: set[Character] | None = None) -> pa.Table | None:
     """
     Parse one .slp, move it to an appropriate 'failed' folder if it flunks,
     and return a flattened pyarrow.Table (or None).  *All* exceptions are
@@ -193,18 +193,24 @@ def process_file(path: Path) -> pa.Table | None:
             return None
 
         # print(game)
-        p1_char = game.start.players[0].character
-        p2_char = game.start.players[1].character
+        p1_char = Character(game.start.players[0].character)
+        p2_char = Character(game.start.players[1].character)
 
-        if p1_char > p2_char:
+        if allowed_chars:
+            if p1_char not in allowed_chars or p2_char not in allowed_chars:
+                print(
+                    f"Skipping {path.name}: Characters {p1_char.name}, {p2_char.name}"
+                    f" not in allowed list {allowed_chars}"
+                )
+                _move_to_failed(path, "filtered_chars")
+                return None
+
+        if p1_char.value > p2_char.value:
             p1_char, p2_char = p2_char, p1_char
 
-        def _char_name(cid: int) -> str:
-            """Map a character id to the name from the Character enum; fallback if unknown."""
-            try:
-                return Character(cid).name
-            except ValueError:
-                return f"UNKNOWN_{cid}"
+        def _char_name(char: Character) -> str:
+            """Map a character enum to its name."""
+            return char.name
 
         # Build subfolder name using character names (canonicalized order so P1/P2 swap goes to same folder)
         subfolder = f"{_char_name(p1_char)}_vs_{_char_name(p2_char)}"
@@ -267,7 +273,7 @@ def _extract_member(zip_path: Path, member_name: str, dest_dir: Path) -> Path:
     return dest_path
 
 
-def _extract_and_process_member(zip_path: Path, member_name: str) -> None:
+def _extract_and_process_member(zip_path: Path, member_name: str, allowed_chars: set[Character] | None) -> None:
     """
     Extract a single member into a per-process temp dir and run validation on it.
     Doing this inside the process pool keeps both extraction and parsing parallel,
@@ -275,7 +281,7 @@ def _extract_and_process_member(zip_path: Path, member_name: str) -> None:
     """
     with tempfile.TemporaryDirectory(prefix="slp_extract_") as tmpdir:
         extracted_path = _extract_member(zip_path, member_name, Path(tmpdir))
-        process_file(extracted_path)
+        process_file(extracted_path, allowed_chars)
 
 
 def _process_zip_archive(
@@ -283,6 +289,7 @@ def _process_zip_archive(
     filename_filter: str | None,
     process_workers: int,
     extract_workers: int,
+    allowed_chars: set[Character] | None,
 ) -> None:
     """
     Extract matching members from the archive in parallel and process them.
@@ -295,6 +302,7 @@ def _process_zip_archive(
                 _extract_and_process_member,
                 repeat(zip_path),
                 _iter_zip_members(zip_path, filename_filter),
+                repeat(allowed_chars),
                 chunksize=chunksize,
             ):
                 pass
@@ -339,14 +347,31 @@ def main() -> None:
             "(larger batches reduce scheduling overhead)."
         ),
     )
+    parser.add_argument(
+        "--chars",
+        type=str,
+        default=None,
+        help="Comma-separated list of character names (e.g., fox,marth,puff). "
+        "Only replays where both players use one of these characters will be processed.",
+    )
     args = parser.parse_args()
 
+    allowed_chars: set[Character] | None = None
+    if args.chars:
+        allowed_chars = set()
+        for char_name in args.chars.upper().split(','):
+            try:
+                allowed_chars.add(Character[char_name])
+            except KeyError:
+                print(f"Warning: Unknown character '{char_name}' ignored.")
+                
     if args.zip_file:
         _process_zip_archive(
             zip_path=args.zip_file,
             filename_filter=args.filename_filter,
             process_workers=args.workers,
             extract_workers=args.extract_workers,
+            allowed_chars=allowed_chars,
         )
         return
 
@@ -354,7 +379,7 @@ def main() -> None:
 
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         try:
-            for _ in pool.map(process_file, files, chunksize=20):
+            for _ in pool.map(process_file, files, repeat(allowed_chars), chunksize=20):
                 pass
         except BaseException as exc:
             print(f"Uncaught exception from worker processes: {exc!r}")

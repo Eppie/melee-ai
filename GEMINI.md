@@ -2,6 +2,11 @@
 
 ## Project Overview
 
+**IMPORTANT:** Always activate the virtual environment before running any python commands:
+```bash
+source ~/.venvs/slippi312/bin/activate
+```
+
 This project, "Nano-Melee," is designed to train a machine learning model to play the video game Super Smash Bros. Melee. It utilizes a GPT-style transformer model to learn and execute complex controller inputs.
 
 **Key Technologies:**

@@ -41,6 +41,8 @@ def perform_forward_pass(
         inputs_td = build_model_inputs(X, components.column_map)
         target_info = quantize_targets(Y, components.column_map, input_domain="unit01")
         pred = components.model(inputs_td)
+        # Clone to prevent CUDA graph overwriting when using torch.compile()
+        pred = pred.clone()
 
         base_smoothing = config.train.label_smoothing
         final_smoothing = 0.5 * base_smoothing

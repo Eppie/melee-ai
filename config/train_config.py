@@ -69,7 +69,7 @@ class TrainConfig(BaseModel):
         description="Enable torch.compile for model optimization. May have initial overhead.",
     )
     torch_compile_mode: Optional[str] = Field(
-        default="default",
+        default="max-autotune",
         description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune'",
     )
     cudnn_benchmark: bool = Field(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 from pathlib import Path
 from pprint import pformat
 from typing import Dict, Sequence, Tuple
@@ -97,6 +98,13 @@ def configure_amp(config, device: torch.device) -> AMPContext:
 
 def configure_performance_settings(config, device: torch.device) -> None:
     """Configure global PyTorch performance settings based on config."""
+
+    # Configure torch.compile cache directory to avoid recompilation
+    if config.train.torch_compile and "TORCHINDUCTOR_CACHE_DIR" not in os.environ:
+        cache_dir = Path.home() / ".cache" / "torch" / "inductor"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
+        print(f"torch.compile cache enabled: {cache_dir}")
 
     # Use legacy API for TF32 settings to avoid mixing APIs
     if device.type == "cuda":

@@ -28,13 +28,11 @@ class MetricsAccumulator:
     main_label_counts: torch.Tensor
     main_maj_correct: torch.Tensor
 
-
     # C-stick metrics
     c_correct: torch.Tensor
     c_total: torch.Tensor
     c_label_counts: torch.Tensor
     c_maj_correct: torch.Tensor
-
 
     # Button metrics
     btn_true_positives: torch.Tensor
@@ -44,7 +42,6 @@ class MetricsAccumulator:
     btn_total: torch.Tensor
     btn_em_correct: torch.Tensor
     btn_maj_em_correct: torch.Tensor
-
 
     # Shoulder metrics
     shoulder_correct: torch.Tensor
@@ -89,13 +86,11 @@ class MetricsAccumulator:
         self.main_label_counts = torch.zeros(K_main, dtype=torch.long, device=device)
         self.main_maj_correct = torch.tensor(0, dtype=torch.long, device=device)
 
-
         # C-stick metrics
         self.c_correct = torch.tensor(0, dtype=torch.long, device=device)
         self.c_total = torch.tensor(0, dtype=torch.long, device=device)
         self.c_label_counts = torch.zeros(K_c, dtype=torch.long, device=device)
         self.c_maj_correct = torch.tensor(0, dtype=torch.long, device=device)
-
 
         # Button metrics
         self.btn_true_positives = torch.zeros(
@@ -111,7 +106,6 @@ class MetricsAccumulator:
         self.btn_total = torch.tensor(0, dtype=torch.long, device=device)
         self.btn_em_correct = torch.tensor(0, dtype=torch.long, device=device)
         self.btn_maj_em_correct = torch.tensor(0, dtype=torch.long, device=device)
-
 
         # Shoulder metrics
         self.shoulder_correct = torch.tensor(0, dtype=torch.long, device=device)
@@ -191,8 +185,6 @@ class MetricsAccumulator:
         # Majority baseline
         maj_correct = (true_idx == majority_baseline).sum()
         setattr(self, maj_attr, getattr(self, maj_attr) + maj_correct)
-
-
 
     def update_button_metrics(
         self,
@@ -308,7 +300,6 @@ class MetricsAccumulator:
 
         # Main stick
 
-
         # C-stick
         summary["acc_c"] = float(self.c_correct.item()) / max(
             1.0, float(self.c_total.item())
@@ -316,7 +307,6 @@ class MetricsAccumulator:
         summary["acc_c_maj"] = float(self.c_maj_correct.item()) / max(
             1.0, float(self.c_total.item())
         )
-
 
         # Buttons
         tp: np.ndarray = self.btn_true_positives.cpu().numpy()
@@ -362,7 +352,6 @@ class MetricsAccumulator:
             1.0, float(self.btn_total.item())
         )
 
-
         # Shoulder
         if self.K_shoulder > 0:
             summary["acc_shoulder"] = float(self.shoulder_correct.item()) / max(
@@ -389,13 +378,11 @@ class MetricsAccumulator:
         self.main_label_counts.zero_()
         self.main_maj_correct.zero_()
 
-
         # C-stick
         self.c_correct.zero_()
         self.c_total.zero_()
         self.c_label_counts.zero_()
         self.c_maj_correct.zero_()
-
 
         # Buttons
         self.btn_true_positives.zero_()
@@ -405,7 +392,6 @@ class MetricsAccumulator:
         self.btn_total.zero_()
         self.btn_em_correct.zero_()
         self.btn_maj_em_correct.zero_()
-
 
         # Shoulder
         self.shoulder_correct.zero_()

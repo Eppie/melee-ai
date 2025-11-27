@@ -298,18 +298,21 @@ class InferenceCoordinator:
 
         # Learner forward pass (GPU)
         learner_forward_start = time.perf_counter()
-        with torch.no_grad(), torch.amp.autocast('cuda', enabled=True):
+        with torch.no_grad(), torch.amp.autocast("cuda", enabled=True):
             learner_outputs = self.learner_model(learner_inputs)
         # Synchronize to get accurate GPU timing
-        if self.device.type == 'cuda':
+        if self.device.type == "cuda":
             torch.cuda.synchronize()
         timings.learner_forward = time.perf_counter() - learner_forward_start
 
         # Extract per-worker learner actions
         learner_sampling_start = time.perf_counter()
-        learner_gpu_actions, learner_actions_cpu, learner_log_probs_cpu, learner_values_cpu = (
-            self._sample_actions_batch(learner_outputs)
-        )
+        (
+            learner_gpu_actions,
+            learner_actions_cpu,
+            learner_log_probs_cpu,
+            learner_values_cpu,
+        ) = self._sample_actions_batch(learner_outputs)
         timings.learner_sampling = time.perf_counter() - learner_sampling_start
 
         # Batch inference for opponent model
@@ -324,9 +327,9 @@ class InferenceCoordinator:
 
             # Opponent forward pass (GPU)
             opp_forward_start = time.perf_counter()
-            with torch.no_grad(), torch.amp.autocast('cuda', enabled=True):
+            with torch.no_grad(), torch.amp.autocast("cuda", enabled=True):
                 opponent_outputs = self.opponent_model(opponent_inputs)
-            if self.device.type == 'cuda':
+            if self.device.type == "cuda":
                 torch.cuda.synchronize()
             timings.opponent_forward = time.perf_counter() - opp_forward_start
 
@@ -342,10 +345,10 @@ class InferenceCoordinator:
 
         # **BATCH CPU TRANSFER** - Move all states to CPU at once
         recording_start = time.perf_counter()
-        states_gpu = torch.stack([
-            list(self.worker_states[wid].learner_buffer)[-1]
-            for wid in worker_order
-        ], dim=0)  # [B, F]
+        states_gpu = torch.stack(
+            [list(self.worker_states[wid].learner_buffer)[-1] for wid in worker_order],
+            dim=0,
+        )  # [B, F]
         states_cpu = states_gpu.cpu()  # Single batch transfer
 
         # Record steps and build result
@@ -507,8 +510,9 @@ class InferenceCoordinator:
         for worker_id, state in self.worker_states.items():
             if state.frames_collected >= self.warmup_frames:
                 buffer_list = list(state.learner_buffer)
-                assert len(buffer_list) == self.seq_len, \
-                    f"Buffer length {len(buffer_list)} != seq_len {self.seq_len}"
+                assert (
+                    len(buffer_list) == self.seq_len
+                ), f"Buffer length {len(buffer_list)} != seq_len {self.seq_len}"
                 frames = torch.stack(buffer_list, dim=0)
                 ready_inputs.append(frames)
                 ready_workers.append(worker_id)
@@ -520,7 +524,7 @@ class InferenceCoordinator:
         batch = torch.stack(ready_inputs, dim=0).to(self.device)
         inputs = build_model_inputs(batch, self.colmap)
 
-        with torch.no_grad(), torch.amp.autocast('cuda', enabled=True):
+        with torch.no_grad(), torch.amp.autocast("cuda", enabled=True):
             outputs = self.learner_model(inputs)
 
         values = outputs.get("value", torch.zeros(len(ready_workers), 1, 1))

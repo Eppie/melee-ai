@@ -69,7 +69,9 @@ def perform_forward_pass(
         else:
             # Linear ramp from initial to final over the non-final portion
             ramp_progress = progress / (1.0 - final_fraction)
-            imbalance_scale = initial_scale + (final_scale - initial_scale) * ramp_progress
+            imbalance_scale = (
+                initial_scale + (final_scale - initial_scale) * ramp_progress
+            )
 
         imbalance_scale = float(max(min(imbalance_scale, final_scale), initial_scale))
 

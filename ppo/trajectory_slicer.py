@@ -67,7 +67,9 @@ class TrajectorySlicer:
         self.gae_lambda = gae_lambda
         self.normalize_advantages = normalize_advantages
 
-    def _actions_to_primitives(self, actions: Dict[str, torch.Tensor]) -> Dict[str, any]:
+    def _actions_to_primitives(
+        self, actions: Dict[str, torch.Tensor]
+    ) -> Dict[str, any]:
         """Convert action tensors to Python primitives to avoid file descriptor leaks.
 
         PyTorch tensors use file descriptors when sent through multiprocessing queues,
@@ -108,16 +110,16 @@ class TrajectorySlicer:
 
         # Accumulate timing stats
         timing_sums = {
-            'buffer_update': 0.0,
-            'batch_prep': 0.0,
-            'input_building': 0.0,
-            'learner_forward': 0.0,
-            'learner_sampling': 0.0,
-            'opponent_batch_prep': 0.0,
-            'opponent_forward': 0.0,
-            'opponent_sampling': 0.0,
-            'recording': 0.0,
-            'total': 0.0,
+            "buffer_update": 0.0,
+            "batch_prep": 0.0,
+            "input_building": 0.0,
+            "learner_forward": 0.0,
+            "learner_sampling": 0.0,
+            "opponent_batch_prep": 0.0,
+            "opponent_forward": 0.0,
+            "opponent_sampling": 0.0,
+            "recording": 0.0,
+            "total": 0.0,
         }
         timing_counts = 0
 
@@ -147,16 +149,16 @@ class TrajectorySlicer:
             actions, timings = self.coordinator.process_states(worker_states)
 
             # Accumulate timing stats
-            timing_sums['buffer_update'] += timings.buffer_update
-            timing_sums['batch_prep'] += timings.batch_prep
-            timing_sums['input_building'] += timings.input_building
-            timing_sums['learner_forward'] += timings.learner_forward
-            timing_sums['learner_sampling'] += timings.learner_sampling
-            timing_sums['opponent_batch_prep'] += timings.opponent_batch_prep
-            timing_sums['opponent_forward'] += timings.opponent_forward
-            timing_sums['opponent_sampling'] += timings.opponent_sampling
-            timing_sums['recording'] += timings.recording
-            timing_sums['total'] += timings.total
+            timing_sums["buffer_update"] += timings.buffer_update
+            timing_sums["batch_prep"] += timings.batch_prep
+            timing_sums["input_building"] += timings.input_building
+            timing_sums["learner_forward"] += timings.learner_forward
+            timing_sums["learner_sampling"] += timings.learner_sampling
+            timing_sums["opponent_batch_prep"] += timings.opponent_batch_prep
+            timing_sums["opponent_forward"] += timings.opponent_forward
+            timing_sums["opponent_sampling"] += timings.opponent_sampling
+            timing_sums["recording"] += timings.recording
+            timing_sums["total"] += timings.total
             timing_counts += 1
 
             # Send actions to workers (convert to primitives to avoid file descriptor leaks)
@@ -189,14 +191,23 @@ class TrajectorySlicer:
             batch_count = frames_collected // len(worker_states)
             if batch_count % 50 == 0:
                 # Compute averages
-                avg_timings = {k: v / timing_counts * 1000 for k, v in timing_sums.items()}
+                avg_timings = {
+                    k: v / timing_counts * 1000 for k, v in timing_sums.items()
+                }
 
                 # Calculate GPU vs CPU time
-                gpu_time = avg_timings['learner_forward'] + avg_timings['opponent_forward']
-                cpu_time = (avg_timings['buffer_update'] + avg_timings['batch_prep'] +
-                           avg_timings['input_building'] + avg_timings['learner_sampling'] +
-                           avg_timings['opponent_batch_prep'] + avg_timings['opponent_sampling'] +
-                           avg_timings['recording'])
+                gpu_time = (
+                    avg_timings["learner_forward"] + avg_timings["opponent_forward"]
+                )
+                cpu_time = (
+                    avg_timings["buffer_update"]
+                    + avg_timings["batch_prep"]
+                    + avg_timings["input_building"]
+                    + avg_timings["learner_sampling"]
+                    + avg_timings["opponent_batch_prep"]
+                    + avg_timings["opponent_sampling"]
+                    + avg_timings["recording"]
+                )
 
                 print(
                     f"  [TIMING] Batch: {batch_time*1000:.1f}ms | "
@@ -240,7 +251,9 @@ class TrajectorySlicer:
                         f"FPS: {current_fps:.1f} (avg: {overall_fps:.1f})"
                     )
                 else:
-                    print(f"  Collected {frames_collected}/{self.rollout_length} frames")
+                    print(
+                        f"  Collected {frames_collected}/{self.rollout_length} frames"
+                    )
 
                 last_print_time = current_time
                 last_print_frames = frames_collected
@@ -275,16 +288,25 @@ class TrajectorySlicer:
         # Print final timing summary
         if timing_counts > 0:
             avg_timings = {k: v / timing_counts * 1000 for k, v in timing_sums.items()}
-            gpu_time = avg_timings['learner_forward'] + avg_timings['opponent_forward']
-            cpu_time = (avg_timings['buffer_update'] + avg_timings['batch_prep'] +
-                       avg_timings['input_building'] + avg_timings['learner_sampling'] +
-                       avg_timings['opponent_batch_prep'] + avg_timings['opponent_sampling'] +
-                       avg_timings['recording'])
+            gpu_time = avg_timings["learner_forward"] + avg_timings["opponent_forward"]
+            cpu_time = (
+                avg_timings["buffer_update"]
+                + avg_timings["batch_prep"]
+                + avg_timings["input_building"]
+                + avg_timings["learner_sampling"]
+                + avg_timings["opponent_batch_prep"]
+                + avg_timings["opponent_sampling"]
+                + avg_timings["recording"]
+            )
 
             print("\n=== Inference Performance Summary ===")
             print(f"Average inference time: {avg_timings['total']:.2f}ms")
-            print(f"  GPU time: {gpu_time:.2f}ms ({gpu_time/avg_timings['total']*100:.1f}%)")
-            print(f"  CPU time: {cpu_time:.2f}ms ({cpu_time/avg_timings['total']*100:.1f}%)")
+            print(
+                f"  GPU time: {gpu_time:.2f}ms ({gpu_time/avg_timings['total']*100:.1f}%)"
+            )
+            print(
+                f"  CPU time: {cpu_time:.2f}ms ({cpu_time/avg_timings['total']*100:.1f}%)"
+            )
             print(f"\nGPU breakdown:")
             print(f"  Learner forward:  {avg_timings['learner_forward']:.2f}ms")
             print(f"  Opponent forward: {avg_timings['opponent_forward']:.2f}ms")

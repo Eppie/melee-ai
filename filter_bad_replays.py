@@ -169,7 +169,9 @@ def quality_reason(game: Game) -> FilterFailure | None:
     return None
 
 
-def process_file(path: Path, allowed_chars: set[Character] | None = None) -> pa.Table | None:
+def process_file(
+    path: Path, allowed_chars: set[Character] | None = None
+) -> pa.Table | None:
     """
     Parse one .slp, move it to an appropriate 'failed' folder if it flunks,
     and return a flattened pyarrow.Table (or None).  *All* exceptions are
@@ -273,7 +275,9 @@ def _extract_member(zip_path: Path, member_name: str, dest_dir: Path) -> Path:
     return dest_path
 
 
-def _extract_and_process_member(zip_path: Path, member_name: str, allowed_chars: set[Character] | None) -> None:
+def _extract_and_process_member(
+    zip_path: Path, member_name: str, allowed_chars: set[Character] | None
+) -> None:
     """
     Extract a single member into a per-process temp dir and run validation on it.
     Doing this inside the process pool keeps both extraction and parsing parallel,
@@ -359,12 +363,12 @@ def main() -> None:
     allowed_chars: set[Character] | None = None
     if args.chars:
         allowed_chars = set()
-        for char_name in args.chars.upper().split(','):
+        for char_name in args.chars.upper().split(","):
             try:
                 allowed_chars.add(Character[char_name])
             except KeyError:
                 print(f"Warning: Unknown character '{char_name}' ignored.")
-                
+
     if args.zip_file:
         _process_zip_archive(
             zip_path=args.zip_file,

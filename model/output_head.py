@@ -4,7 +4,13 @@ from torch import nn
 
 
 class SimpleHead(nn.Module):
-    def __init__(self, input_size: int, output_size: int, hidden: int = 128, dropout: float = 0.05):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        hidden: int = 128,
+        dropout: float = 0.05,
+    ):
         super().__init__()
         self.fc1 = nn.Linear(input_size, hidden, bias=True)
         self.dropout = nn.Dropout(dropout)

@@ -132,7 +132,9 @@ def run_statistics(config: StatsConfig) -> Dict[str, Any]:
             print(f"  - {c.name}")
 
     # Split episodes into chunks for parallel processing
-    chunk_size = max(1, len(episodes) // (n_workers * 4))  # 4 chunks per worker for load balancing
+    chunk_size = max(
+        1, len(episodes) // (n_workers * 4)
+    )  # 4 chunks per worker for load balancing
     episode_chunks = [
         episodes[i : i + chunk_size] for i in range(0, len(episodes), chunk_size)
     ]

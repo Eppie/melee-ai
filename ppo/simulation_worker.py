@@ -68,6 +68,7 @@ def run_worker(
     """
     # Initialize config for this worker process (needed for spawn method)
     from config.config import init_config
+
     init_config()
 
     worker = SimulationWorker(
@@ -433,6 +434,7 @@ class SimulationWorker:
         actions: Dict,
     ) -> ControllerState:
         """Convert action dict (tensors or primitives) to ControllerState."""
+
         # Helper to extract int from tensor or primitive
         def to_int(val):
             if isinstance(val, int):

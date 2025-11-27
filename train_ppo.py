@@ -124,7 +124,7 @@ def run_distributed_training(
 
     # Compile model for faster inference (2-3x speedup)
     print("Compiling model for inference...")
-    model = torch.compile(model, mode='reduce-overhead')
+    model = torch.compile(model, mode="reduce-overhead")
 
     # Create inference coordinator
     coordinator = InferenceCoordinator(
@@ -447,7 +447,9 @@ def run_episode_worker(
     config = get_config()
     device = torch.device("cpu")
     model = GPT(config).to(device)
-    model_state_dict = torch.load(model_state_dict_path, map_location=device, weights_only=True)
+    model_state_dict = torch.load(
+        model_state_dict_path, map_location=device, weights_only=True
+    )
     model_state = match_state_dict_keys(model_state_dict, model)
     model.load_state_dict(model_state)
     model.eval()
@@ -455,7 +457,9 @@ def run_episode_worker(
     opponent_model = None
     if opponent_state_dict_path is not None and opponent_state_dict_path.exists():
         opponent_model = GPT(config).to(device)
-        opponent_state_dict = torch.load(opponent_state_dict_path, map_location=device, weights_only=True)
+        opponent_state_dict = torch.load(
+            opponent_state_dict_path, map_location=device, weights_only=True
+        )
         opponent_state = match_state_dict_keys(opponent_state_dict, opponent_model)
         opponent_model.load_state_dict(opponent_state)
         opponent_model.eval()
@@ -1067,8 +1071,8 @@ def main():
 
     # Enable TF32 for faster matmul on Ampere+ GPUs (new PyTorch 2.9+ API)
     if device.type == "cuda":
-        torch.backends.cuda.matmul.fp32_precision = 'tf32'
-        torch.backends.cudnn.conv.fp32_precision = 'tf32'
+        torch.backends.cuda.matmul.fp32_precision = "tf32"
+        torch.backends.cudnn.conv.fp32_precision = "tf32"
 
     # Create model
     model = GPT(config).to(device)
@@ -1147,7 +1151,7 @@ def main():
 if __name__ == "__main__":
     # Set spawn method for CUDA multiprocessing compatibility
     try:
-        mp.set_start_method('spawn', force=False)
+        mp.set_start_method("spawn", force=False)
     except RuntimeError:
         # Start method already set
         pass

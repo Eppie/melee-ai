@@ -25,14 +25,13 @@ def strip_compiled_prefix(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     all_have_prefix = all(k.startswith(PREFIX) for k in state_dict.keys())
 
     if all_have_prefix:
-        return {k[len(PREFIX):]: v for k, v in state_dict.items()}
+        return {k[len(PREFIX) :]: v for k, v in state_dict.items()}
 
     return state_dict
 
 
 def match_state_dict_keys(
-    state_dict: Dict[str, Any],
-    model: nn.Module
+    state_dict: Dict[str, Any], model: nn.Module
 ) -> Dict[str, Any]:
     """Adjust state dict keys to match model's compilation state.
 
@@ -68,7 +67,7 @@ def match_state_dict_keys(
 
     # Case 2: Checkpoint is compiled but model isn't -> strip prefix
     if ckpt_has_prefix and not model_has_prefix:
-        return {k[len(PREFIX):]: v for k, v in state_dict.items()}
+        return {k[len(PREFIX) :]: v for k, v in state_dict.items()}
 
     # Case 3: Both match -> return unchanged
     return state_dict

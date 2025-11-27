@@ -308,7 +308,9 @@ def maybe_run_validation(
     final_fraction = config.train.imbalance_scale_final_fraction
 
     # Match training's imbalance scale computation
-    warmup_steps = config.train.schedule_warmup_epochs * (components.total_steps // config.train.epochs)
+    warmup_steps = config.train.schedule_warmup_epochs * (
+        components.total_steps // config.train.epochs
+    )
     in_warmup = global_step < warmup_steps
 
     if in_warmup:

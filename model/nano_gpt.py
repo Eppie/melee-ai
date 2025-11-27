@@ -97,7 +97,9 @@ class GPT(nn.Module):
             button_input_size = self.embedding_dim
             main_stick_input_size = self.embedding_dim + self.button_output_size
             c_stick_input_size = (
-                self.embedding_dim + self.button_output_size + self.main_stick_output_size
+                self.embedding_dim
+                + self.button_output_size
+                + self.main_stick_output_size
             )
             shoulder_input_size = (
                 self.embedding_dim

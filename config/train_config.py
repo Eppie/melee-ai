@@ -26,7 +26,7 @@ class TrainConfig(BaseModel):
         ),
     )
     epochs: int = Field(
-        default=32,
+        default=64,
         ge=1,
         description=(
             "Number of training epochs. One epoch = one pass through the entire dataset. "
@@ -52,14 +52,14 @@ class TrainConfig(BaseModel):
         ),
     )
     betas: Tuple[float, float] = Field(
-        default=(0.9, 0.95),
+        default=(0.9, 0.98),
         description=(
             "AdamW momentum coefficients (beta1, beta2) for gradient and squared gradient moving averages. "
             "beta1 controls first moment (mean), beta2 controls second moment (variance). "
             "Effect: Higher beta1 (0.9-0.95) = smoother gradient updates, more momentum; "
             "higher beta2 (0.95-0.999) = more stable adaptive learning rates. "
             "Reasonable values: beta1=[0.85, 0.95], beta2=[0.95, 0.999]. "
-            "Default (0.9, 0.95) is lower than typical (0.9, 0.999) for faster adaptation. "
+            "Default (0.9, 0.98) is lower than typical (0.9, 0.999) for faster adaptation. "
             "Interacts with: lr (higher betas may allow higher lr), batch_size (larger batches often use higher betas)."
         ),
     )
@@ -92,7 +92,7 @@ class TrainConfig(BaseModel):
         description="Keep dataloader workers alive between epochs. Faster but uses more memory.",
     )
     stride: int = Field(
-        default=16,
+        default=8,
         ge=1,
         description=(
             "Stride between consecutive training windows. Lower stride = more overlapping windows = "

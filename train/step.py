@@ -153,7 +153,7 @@ def perform_forward_pass(
     return ForwardPassResult(
         pred=pred,
         target_info=target_info,
-        weights=weights,
+        weights=combined_weights,
         loss=loss,
         loss_components=loss_components,
         value_pred=value_pred,

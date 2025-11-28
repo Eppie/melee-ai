@@ -177,13 +177,13 @@ if __name__ == "__main__":
                 swag=False,
             )
             # TODO: Make it configurable via CLI param if we are going to to play vs human or CPU or self
-            # menu_helper.choose_character(
-            #     character=Character.FOX,
-            #     gamestate=gamestate,
-            #     controller=controllers[2],
-            #     cpu_level=9,
-            #     costume=1,
-            #     swag=False,
-            #     start=True,
-            # )
+            menu_helper.choose_character(
+                character=Character.FOX,
+                gamestate=gamestate,
+                controller=controllers[2],
+                cpu_level=9,
+                costume=1,
+                swag=False,
+                start=True,
+            )
         previous_gamestate = gamestate

@@ -20,17 +20,18 @@ class ImitationConfig(BaseModel):
             "'value_advantage' = weight by advantage (learn from surprising outcomes); "
             "'value_filter' = filter to top percentile by value (only learn from best states); "
             "'hybrid' = combine multiple strategies (see hybrid_strategies/hybrid_weights). "
-            "Recommended: 'hybrid' for balanced learning, 'value_weighted' for quality-focused."
+            "Recommended: 'hybrid' for superhuman play (filters bad play + weights good play)."
         ),
     )
     value_k: float = Field(
-        default=1.0,
+        default=2.0,
         gt=0,
         description=(
             "Scaling factor for value-based weighting. Controls strength of value-based prioritization. "
             "Effect: Higher k (2.0-5.0) = stronger emphasis on high-value states; "
             "lower k (0.5-1.0) = more uniform weighting. Reasonable range: [0.5, 5.0]. "
-            "Used in: value_weighted, value_advantage strategies. Interacts with: value_temperature."
+            "Used in: value_weighted, value_advantage strategies. Interacts with: value_temperature. "
+            "Default 2.0 optimized for superhuman play."
         ),
     )
     value_temperature: float = Field(
@@ -44,11 +45,11 @@ class ImitationConfig(BaseModel):
         ),
     )
     value_use_exp: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Use exponential (softmax) weighting instead of linear for value-based sampling. "
             "Effect: True = sharper focus on high-value states (exponential emphasis); "
-            "False = gentler weighting (linear scaling). Recommended: False for stability."
+            "False = gentler weighting (linear scaling). Default True for superhuman play."
         ),
     )
     advantage_n_steps: int = Field(
@@ -99,14 +100,14 @@ class ImitationConfig(BaseModel):
         ),
     )
     filter_percentile: float = Field(
-        default=50.0,
+        default=30.0,
         ge=0,
         le=100,
         description=(
             "Percentile cutoff for value_filter strategy. Only train on top X% of samples by value. "
-            "Effect: Lower percentile (20-40) = train only on best samples, may overfit to good play; "
+            "Effect: Lower percentile (20-40) = train only on best samples (superhuman focus); "
             "higher percentile (60-80) = more diverse samples. Reasonable range: [20, 80]. "
-            "Used in: value_filter strategy. Interacts with: filter_soft (hard vs soft filtering)."
+            "Used in: value_filter strategy. Default 30.0 = train only on top 70% (filter worst play)."
         ),
     )
     filter_soft: bool = Field(

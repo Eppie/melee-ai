@@ -68,7 +68,7 @@ class GPTConfig(BaseModel):
         ),
     )
     dropout: float = Field(
-        default=0.1,
+        default=0.05,
         ge=0,
         le=1,
         description=(

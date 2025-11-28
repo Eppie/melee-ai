@@ -17,6 +17,7 @@ from train.batch_utils import (
 )
 from train.components import ForwardPassResult, TrainingComponents
 from train.gradients import collect_gradient_diagnostics
+from train.imitation_weights import compute_imitation_weights
 from train.value_head import compute_value_targets
 
 
@@ -85,7 +86,8 @@ def perform_forward_pass(
             )
         )
 
-        weights = compute_component_sample_weights(
+        # Compute change-based weights (focus on action changes)
+        change_weights = compute_component_sample_weights(
             target_info,
             components.device,
             ratios=components.ratios,
@@ -93,11 +95,24 @@ def perform_forward_pass(
             change_scale=imbalance_scale,
         )
 
+        # Compute value-based weights (focus on high-value states)
+        # This weights frames by their value_target to emphasize learning from winning play
+        imitation_weights_tensor = compute_imitation_weights(
+            X, components.value_idx, config.imitation
+        )  # [B, L]
+
+        # Combine change-based and value-based weights
+        # Apply value weights to all components
+        combined_weights = {}
+        for key, change_w in change_weights.items():
+            # Multiply change weights by value weights
+            combined_weights[key] = change_w * imitation_weights_tensor
+
         policy_loss_components = compute_loss_components(
             pred,
             target_info,
             label_smoothing=label_smoothing,
-            sample_weights=weights,
+            sample_weights=combined_weights,
             loss_config=config.loss_weights,
             ce_weight_scale=imbalance_scale,
             pos_weight_scale=imbalance_scale,
@@ -115,7 +130,7 @@ def perform_forward_pass(
         value_loss_raw = torch.nn.functional.mse_loss(
             value_pred, value_target, reduction="none"
         ).squeeze(-1)
-        value_w = weights.get("global", weights["main"])
+        value_w = combined_weights.get("global", combined_weights["main"])
         loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
         loss = loss + config.rl.value_loss_coef * loss_value
         loss_components["value"] = loss_value

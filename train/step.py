@@ -106,7 +106,14 @@ def perform_forward_pass(
         combined_weights = {}
         for key, change_w in change_weights.items():
             # Multiply change weights by value weights
-            combined_weights[key] = change_w * imitation_weights_tensor
+            # Handle broadcasting: change_w might be [B, L] or [B, L, num_classes]
+            # imitation_weights is [B, L], so reshape to [B, L, 1] for broadcasting if needed
+            if change_w.ndim == 3:
+                # change_w is [B, L, C], so broadcast imitation weights to [B, L, 1]
+                combined_weights[key] = change_w * imitation_weights_tensor.unsqueeze(-1)
+            else:
+                # change_w is [B, L], direct multiplication
+                combined_weights[key] = change_w * imitation_weights_tensor
 
         policy_loss_components = compute_loss_components(
             pred,

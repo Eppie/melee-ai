@@ -161,7 +161,7 @@ class TrainConfig(BaseModel):
         ),
     )
     imbalance_scale_final: float = Field(
-        default=0.5,
+        default=1.0,
         ge=0,
         le=1,
         description=(

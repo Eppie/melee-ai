@@ -24,14 +24,14 @@ class ImitationConfig(BaseModel):
         ),
     )
     value_k: float = Field(
-        default=2.0,
+        default=1.0,
         gt=0,
         description=(
             "Scaling factor for value-based weighting. Controls strength of value-based prioritization. "
             "Effect: Higher k (2.0-5.0) = stronger emphasis on high-value states; "
             "lower k (0.5-1.0) = more uniform weighting. Reasonable range: [0.5, 5.0]. "
             "Used in: value_weighted, value_advantage strategies. Interacts with: value_temperature. "
-            "Default 2.0 optimized for superhuman play."
+            "Default 1.0 provides gentle emphasis while avoiding extreme outliers."
         ),
     )
     value_temperature: float = Field(
@@ -100,33 +100,34 @@ class ImitationConfig(BaseModel):
         ),
     )
     filter_percentile: float = Field(
-        default=30.0,
+        default=15.0,
         ge=0,
         le=100,
         description=(
             "Percentile cutoff for value_filter strategy. Only train on top X% of samples by value. "
             "Effect: Lower percentile (20-40) = train only on best samples (superhuman focus); "
             "higher percentile (60-80) = more diverse samples. Reasonable range: [20, 80]. "
-            "Used in: value_filter strategy. Default 30.0 = train only on top 70% (filter worst play)."
+            "Used in: value_filter strategy. Default 15.0 = filter only worst 15% (preserves training signal)."
         ),
     )
     filter_soft: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Use soft (weighted) filtering instead of hard cutoff for value_filter strategy. "
             "Effect: True = smooth transition around percentile cutoff; "
             "False = sharp cutoff (samples below percentile get 0 weight). "
-            "Recommended: False for clear filtering, True for smoother learning. "
+            "Recommended: True for smoother learning and avoiding abrupt weight transitions. "
             "Interacts with: filter_temperature (controls softness)."
         ),
     )
     filter_temperature: float = Field(
-        default=1.0,
+        default=0.5,
         gt=0,
         description=(
             "Temperature for soft filtering. Only used if filter_soft=True. "
             "Effect: Lower temperature (0.5-1.0) = sharper transition; "
-            "higher temperature (1.0-2.0) = smoother transition. Reasonable range: [0.5, 2.0]."
+            "higher temperature (1.0-2.0) = smoother transition. Reasonable range: [0.5, 2.0]. "
+            "Default 0.5 provides sharp but smooth sigmoid transition."
         ),
     )
     hybrid_strategies: list[str] = Field(

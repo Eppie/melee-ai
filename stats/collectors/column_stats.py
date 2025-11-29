@@ -305,9 +305,9 @@ class ColumnStatsCollector(StatsCollector):
         self.categorical_threshold = categorical_threshold
 
         # Column type classification
-        self._column_types: Dict[str, str] = (
-            {}
-        )  # "boolean", "categorical", "continuous"
+        self._column_types: Dict[
+            str, str
+        ] = {}  # "boolean", "categorical", "continuous"
         self._continuous_stats: Dict[str, ContinuousStats] = {}
         self._categorical_stats: Dict[str, CategoricalStats] = {}
 

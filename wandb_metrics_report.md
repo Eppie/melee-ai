@@ -1,118 +1,478 @@
-# Weights & Biases Metrics Reference
+# Comprehensive Wandb Metrics Report
 
-This report covers every metric emitted by `train.py` through the helpers in `train/wandb_utils.py`. For each metric you will find what it measures, why the signal is useful, and how it should behave over the course of training the controller model.
+This document details all metrics logged to wandb during `train.py` execution. Updated post-implementation of comprehensive metrics suite.
 
-## Progress & Scheduling
+---
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `epoch` | Outer training epoch (1-indexed) so you can line runs up with checkpoint cadence. | Monotonic increments up to `config.train.epochs`; stalls or skipped numbers hint at resume logic bugs. |
-| `iter` | Batch index inside the current epoch (includes any resume offset). | Should sweep from 0 toward `len(loader)` each epoch; resets every epoch are expected. |
-| `global_step` | Global batch counter shared with LR schedule and checkpoint metadata. | Must increase by 1 per optimizer step; plateaus mean the loop stopped, regressions indicate accidental rewinds. |
-| `lr` | Current learning rate after cosine warmup/decay. | Starts near `config.train.lr` (≈1.3e-4) then follows the cosine schedule toward ~0; spikes or negatives mean scheduler misuse. |
+## 1. TRAINING METADATA & SCHEDULING
 
-## Loss Terms
+### `epoch`
+- **Description**: Current training epoch number (1-indexed)
+- **Range**: 1 to `config.train.epochs`
+- **Related metrics**: `iter`, `global_step`
+- **Interpretation**:
+  - Tracks which pass through the dataset is currently running
+  - Used to coordinate learning rate schedules and checkpoint saving
+- **Utility**: Essential for tracking training progress
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `loss/total` | Sum of all active loss components (stick + buttons + shoulder + optional value). | Should trend downward from ~3–5 in early training toward <1; sudden jumps imply dataloader or optimizer instability. |
-| `loss/main` | Cross-entropy over the quantised main stick bins (64-way). | Expect a steady decrease toward ~0.6–0.8; sustained values >1.5 after warmup indicate the model is missing core stick behaviour. |
-| `loss/c` | Cross-entropy for the C-stick logits (≈9 classes). | Begins near log(9)≈2.2 and should settle below ~0.5; plateaus >1 show the model is not learning smash DI targets. |
-| `loss/buttons` | Weighted BCE for the five button channels. | Should slide toward 0.05–0.15; rising values usually mean the sigmoid head is saturating or class balancing broke. |
-| `loss/shoulder` | Cross-entropy over analog shoulder states if present. | Target <0.4 once stable; if it hovers near 1 the shoulder head likely needs more capacity or weighting. |
-| `loss/value` | Discounted-return MSE (scaled by `config.rl.value_loss_coef`) when the value head is enabled. | Falls toward the reward variance scale (typically <0.5); if it sticks near zero when the head is enabled, gradients may be zeroed. |
+### `iter`
+- **Description**: Completed batches within current epoch
+- **Range**: 0 to number of batches per epoch
+- **Related metrics**: `epoch`, `global_step`
+- **Interpretation**:
+  - Resets each epoch
+  - Combined with epoch gives full training position
+- **Utility**: Useful for debugging within-epoch issues
 
-## Main Stick Metrics
+### `global_step`
+- **Description**: Total optimizer steps across all epochs
+- **Range**: 0 to total training steps
+- **Related metrics**: `epoch`, `iter`
+- **Interpretation**:
+  - Never resets, monotonically increasing
+  - Primary x-axis for wandb plots
+- **Utility**: Critical for tracking overall training progress
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `metrics/acc_main_batch` | Overall main-stick top-1 accuracy versus quantised targets. | Should climb into the 0.7–0.9 band; drops below the repeat baseline mean regressions. |
-| `metrics/acc_main_change` | Accuracy on frames where the main stick moves (harder cases). | Expect lower than hold accuracy (0.4–0.6); improvements here signal better reaction modelling. |
-| `metrics/acc_main_hold` | Accuracy on frames where the main stick is held. | Typically >0.9; if it lags the repeat baseline the model is forgetting to persist commands. |
-| `metrics/acc_main_rep` | Accuracy of the "repeat last frame" baseline for main stick. | Dataset-dependent (often 0.75–0.85); serves as a floor you must beat—large shifts mean the dataset distribution changed. |
+### `lr`
+- **Description**: Current learning rate
+- **Range**: Typically 1e-5 to 1e-3 (depends on schedule)
+- **Related metrics**: `global_step`, `schedule/*`
+- **Interpretation**:
+  - **Too high**: Loss may oscillate or diverge, gradients explode
+  - **Too low**: Training too slow, may get stuck in local minima
+  - Should follow expected schedule (warmup → plateau → decay)
+- **Utility**: Essential for diagnosing optimization issues
 
-## C-Stick Metrics
+### `schedule/label_smoothing`
+- **Description**: Current label smoothing value (prevents overconfident predictions)
+- **Range**: Starts at `config.train.label_smoothing`, decays to 0.5× that value
+- **Related metrics**: `loss/*` (affects all CE losses)
+- **Interpretation**:
+  - Starts high during warmup, gradually decreases
+  - Higher values = softer targets, lower overconfidence
+  - **Too high**: Model may underfit, predictions too uncertain
+  - **Too low**: Model may overfit to noise in data
+- **Utility**: Useful for tuning regularization
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `metrics/acc_c_batch` | Overall C-stick accuracy. | Aim for >0.65; much lower implies the head is underfitting high-variance smash inputs. |
-| `metrics/acc_c_change` | C-stick accuracy on change frames. | Usually 0.35–0.55; flat lines near zero hint at the model ignoring new smash inputs. |
-| `metrics/acc_c_hold` | C-stick accuracy on hold frames. | Should exceed 0.85; big dips mean the model releases the stick too often. |
-| `metrics/acc_c_rep` | Repeat-baseline C-stick accuracy. | Reference baseline (~0.7); if it shifts, re-check preprocessing. |
+### `schedule/change_weight_scale`
+- **Description**: Scale factor for class-balancing and change-detection weights
+- **Range**: `config.train.imbalance_scale_initial` → `config.train.imbalance_scale_final`
+- **Related metrics**: `metrics/acc_*_change`, `metrics/acc_*_hold`, `consistency/*`
+- **Interpretation**:
+  - Controls emphasis on rare events (stick changes, button presses)
+  - **Phase 1** (initial): High weight on changes to learn action vocabulary
+  - **Phase 2** (ramp): Gradual transition
+  - **Phase 3** (final): Lower weight to learn timing/holding
+  - **Too high throughout**: Overfits to changes, poor at holding positions
+  - **Too low throughout**: Biased toward neutral stick/no buttons
+- **Utility**: Critical for understanding imbalance correction
 
-## Button Aggregate Metrics
+---
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `metrics/buttons_em_batch` | Exact-match ratio across the five-button vector. | Should rise toward 0.35–0.55; values below the repeat baseline flag poor button coordination. |
-| `metrics/buttons_em_change` | Exact-match on frames where any button toggles. | Expect 0.2–0.4; if it stagnates low, the model is missing tech inputs. |
-| `metrics/buttons_em_hold` | Exact-match on hold frames. | Should exceed 0.8; lower numbers mean the model is spuriously tapping buttons. |
-| `metrics/buttons_f1_micro_batch` | Micro-averaged F1 across all buttons (model). | Target 0.45–0.65; declining scores often follow class-imbalance issues. |
-| `metrics/buttons_f1_micro_maj` | Micro F1 of the majority-class baseline (mostly "no press"). | Should remain near a constant (~0.2–0.3); if the model falls below this, predictions regressed badly. |
-| `metrics/buttons_f1_micro_rep` | Micro F1 of the repeat-last-frame baseline. | Baseline typically ~0.35–0.45; use it to gauge real gains on fast sequences. |
-| `metrics/buttons_em_rep` | Exact-match for the repeat baseline. | Usually ~0.3; leverage as a sanity check for `buttons_em_*` metrics. |
+## 2. LOSS METRICS
 
-## Per-Button Metrics
+### `loss/total`
+- **Description**: Total weighted loss across all output heads
+- **Range**: Typically 0.5-3.0 at start, converges to 0.1-0.5
+- **Related metrics**: `loss/main`, `loss/c`, `loss/buttons`, `loss/shoulder`, `loss/value`, `loss_fraction/*`
+- **Interpretation**:
+  - Sum of all component losses weighted by their coefficients
+  - **Increasing**: Model diverging, check gradients/lr
+  - **Plateauing early**: Model may need more capacity or lr adjustment
+  - **Noisy**: Check `loss/total_std` and batch size
+- **Utility**: PRIMARY training metric; absolutely essential
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `buttons/A_acc` | Per-frame accuracy for the A button. | Should clear 0.9 on holds; large drops suggest the head is missing jab/tilt timing. |
-| `buttons/A_f1` | F1 score for the A button. | Aim for 0.4–0.6; falling below 0.3 means fails on rare press frames. |
-| `buttons/A_rate` | Observed activation rate for A. | Should match dataset frequency (~4–5%); drift hints at label leakage or sampling skew. |
-| `buttons/B_acc` | Per-frame accuracy for B. | Same expectations as A; holds above 0.9 indicate stable charge behaviour. |
-| `buttons/B_f1` | F1 score for B. | Target 0.35–0.55; low values mean poor special-move precision. |
-| `buttons/B_rate` | Activation rate for B. | Should stay near 4%; spikes imply overly aggressive specials. |
-| `buttons/X/Y_acc` | Accuracy for X/Y jump buttons. | Aim for >0.9; lower scores imply missed jump buffering. |
-| `buttons/X/Y_f1` | F1 for X/Y. | Target 0.5–0.7; use to monitor short-hop timing quality. |
-| `buttons/X/Y_rate` | Activation rate for X/Y. | Should hover around 8–9%; trends upward mean jump spam. |
-| `buttons/Z_acc` | Accuracy for Z (grab). | Expect >0.95 because grabs are sparse; big dips mean false positives. |
-| `buttons/Z_f1` | F1 for Z. | Target 0.25–0.4 given ~1% positives; any drop below 0.2 signals missed tech chases. |
-| `buttons/Z_rate` | Activation rate for Z. | Should stay near 1%; increases imply runaway grab spam. |
-| `buttons/L/R_acc` | Accuracy for L/R shield triggers. | Should exceed 0.85 due to longer holds. |
-| `buttons/L/R_f1` | F1 for L/R. | Target 0.45–0.6; low values mean missed shield drops or wavedashes. |
-| `buttons/L/R_rate` | Activation rate for L/R. | Should remain around 11–12%; large swings point to weighting bugs. |
+### `loss/total_std`
+- **Description**: Standard deviation of total loss across last 100 batches
+- **Range**: 0.0-2.0, typically 0.05-0.3
+- **Related metrics**: `loss/total`, `loss/total_cv`
+- **Interpretation**:
+  - Measures batch-to-batch loss variance
+  - **High (>0.5)**: Very noisy training, inconsistent batches
+  - **Increasing over time**: Training becoming unstable
+  - **Very low (<0.02)**: Batches very similar (may indicate limited data diversity)
+- **Utility**: Essential for detecting training instability
 
-## Value Head Metrics
+### `loss/total_cv`
+- **Description**: Coefficient of variation for loss (std/mean)
+- **Range**: 0.0-2.0, typically 0.1-0.5
+- **Related metrics**: `loss/total_std`, `loss/total`
+- **Interpretation**:
+  - Normalized measure of loss variability
+  - **>0.5**: Very unstable training → consider gradient accumulation or larger batch size
+  - **0.2-0.4**: Moderate variance (normal)
+  - **<0.1**: Very stable training
+- **Utility**: Better than std for comparing across different loss scales
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `value/pred_mean` | Mean predicted discounted return. | Should align with `value/target_mean`; divergence shows bias. |
-| `value/target_mean` | Mean of the discounted-return targets. | Should stay close to the game reward scale (~0–3); drastic shifts suggest reward preprocessing changes. |
-| `value/mse` | Mean-squared error of value predictions. | Should decline below 0.5; spikes usually mean bootstrapping instability. |
-| `value/mae` | Mean absolute error for the value head. | Tracks interpretable error; aim for <0.5. |
-| `value/corr` | Pearson correlation between prediction and target. | Should rise toward 0.4–0.7; negative values indicate the head is anti-correlated and likely diverging. |
+### `loss/main`
+- **Description**: Cross-entropy loss for main stick (64 discrete positions)
+- **Range**: Typically 1.5-4.0 at start, converges to 0.3-1.0
+- **Related metrics**: `metrics/acc_main_batch`, `logits/main_*`, `loss_fraction/main`
+- **Interpretation**:
+  - Higher than other stick losses because 64 classes vs 9 for c-stick
+  - Random baseline ≈ ln(64) ≈ 4.16
+  - **> 3.0**: Model not learning stick control well
+  - **< 0.5**: Very good, approaching human-level precision
+- **Utility**: Essential for diagnosing stick control
 
-## Throughput & AMP
+### `loss/c`
+- **Description**: Cross-entropy loss for C-stick (9 discrete positions)
+- **Range**: Typically 0.8-2.2 at start, converges to 0.1-0.5
+- **Related metrics**: `metrics/acc_c_batch`, `logits/c_*`, `loss_fraction/c`
+- **Interpretation**:
+  - Lower than main stick loss (fewer classes)
+  - Random baseline ≈ ln(9) ≈ 2.20
+  - C-stick mostly neutral, so should converge faster than main
+  - **> 1.5**: Model struggling with c-stick directional inputs
+  - **< 0.3**: Excellent c-stick control
+- **Utility**: Essential for diagnosing c-stick control
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `throughput/frames_per_s` | Effective training throughput (batch_size × sequence length ÷ wall-clock). | Target a stable plateau (e.g., 2k–5k frames/s on modern GPUs); sustained drops point to dataloader or GPU throttling. |
-| `optimizer/loss_scale` | Automatic mixed-precision loss scale from `GradScaler`. | Starts high (e.g., 2¹⁶) and adapts; rapid collapse toward 1 means underflow issues, while constant growth suggests AMP is healthy. |
+### `loss/buttons`
+- **Description**: Binary cross-entropy loss for button outputs (5 buttons: A, B, X/Y, Z, L/R)
+- **Range**: Typically 0.2-0.7 at start, converges to 0.05-0.2
+- **Related metrics**: `metrics/buttons_em_batch`, `buttons/*_f1`, `loss_fraction/buttons`
+- **Interpretation**:
+  - Multi-label BCE summed across 5 buttons
+  - Most frames have no buttons pressed (imbalanced)
+  - **> 0.4**: Poor button prediction
+  - **< 0.1**: Good button control
+  - Compare to majority baseline (all zeros)
+- **Utility**: Essential for diagnosing button prediction
 
-## Gradient Diagnostics
+### `loss/shoulder`
+- **Description**: Cross-entropy loss for shoulder triggers (5 discrete levels)
+- **Range**: Typically 0.5-1.6 at start, converges to 0.1-0.4
+- **Related metrics**: Shoulder accuracy metrics, `loss_fraction/shoulder`
+- **Interpretation**:
+  - 5 classes: [0.0, 0.31, 0.42, 0.55, 1.0]
+  - Heavily imbalanced toward 0.0 (not pressing)
+  - Random baseline ≈ ln(5) ≈ 1.61
+  - **> 1.0**: Model not learning trigger control
+  - **< 0.2**: Good trigger precision
+- **Utility**: Essential for shoulder trigger control
 
-| Metric | Tracks / why it matters | Watch for |
-| --- | --- | --- |
-| `gradients/total_norm` | L2 norm of all gradients before clipping. | Should stay below the clip threshold (~5); spikes imply exploding gradients. |
-| `gradients/mean_abs` | Mean absolute gradient magnitude. | Typically 1e-5–1e-3; growth toward 1 hints at instability. |
-| `gradients/mean` | Signed average gradient value. | Should sit near 0; persistent bias indicates asymmetrical updates. |
-| `gradients/std` | Standard deviation of gradient values. | Expect 1e-5–1e-3; surges correlate with noisy batches. |
-| `gradients/max_abs` | Largest absolute gradient entry. | Staying <1 is ideal; anything >>1 precedes NaNs. |
-| `gradients/zero_fraction` | Share of gradient elements exactly zero. | High (0.4–0.7) is normal with sparse activations; creeping toward 1 suggests dead neurons. |
-| `gradients/num_elements` | Count of gradient elements inspected. | Should be constant (≈parameter count); drops indicate frozen modules. |
-| `gradients/zero_count` | Number of zero gradients. | Mirrors `zero_fraction`; sudden jumps imply saturation. |
-| `gradients/nan_count` | NaN gradients encountered. | Must remain 0; any positive value requires immediate investigation. |
-| `gradients/inf_count` | Inf gradients encountered. | Should stay 0; positives suggest overflow. |
-| `gradients/nonfinite_count` | Total NaN+Inf gradients. | Must be 0; non-zero values usually coincide with loss spikes. |
-| `gradients/params_with_grad` | Parameter tensors that produced gradients. | Should equal the model parameter count; decreases mean some layers are disconnected. |
-| `gradients/param_total_norm` | L2 norm of model parameters. | Slow drift upward is expected; sudden explosions align with weight blow-up. |
-| `gradients/param_max_abs` | Maximum absolute parameter value. | Should remain within a few units; huge jumps (>10) imply weight explosion. |
-| `gradients/grad_param_ratio_mean` | Mean |grad| / |param| ratio per tensor. | Usually 1e-3–1e-1; values >1 indicate overly aggressive updates. |
-| `gradients/grad_param_ratio_max` | Maximum |grad| / |param| ratio. | Should stay <1; spikes above 5 are red flags for layer instability. |
-| `gradients/grad_param_ratio_min` | Minimum |grad| / |param| ratio. | Near-zero values that persist point to layers receiving almost no gradient. |
-| `gradients/grad_to_param_norm_ratio` | Global gradient norm versus parameter norm. | Should settle well below 1; sustained growth implies step sizes that will overshoot. |
-| `gradients/total_norm_pre_clip` | Gradient norm before clipping (duplicate of `total_norm`). | Use to verify clipping behaviour; repeated values ≥5 mean the clip is constantly engaged. |
-| `gradients/total_norm_post_clip` | Gradient norm after clipping. | Should be ≤`grad_clip` (5); higher numbers indicate clip misconfiguration. |
-| `gradients/was_clipped` | Indicator (0/1) for whether clipping activated. | Mostly 0 with occasional 1s; a stream of 1s means the base LR is too high. |
-| `gradients/clip_coef` | Scaling factor applied by clipping. | Equals 1 when unclipped; values <0.5 highlight severe clipping. |
-| `gradients/nonfinite_fraction` | Fraction of gradients that were NaN/Inf. | Must stay at 0.0; any rise requires halting the run. |
+### `loss/value`
+- **Description**: MSE loss for value head (predicts future reward/advantage)
+- **Range**: Typically 0.01-0.5, weighted by `config.rl.value_loss_coef`
+- **Related metrics**: `value/mse`, `value/pred_mean`, `value/target_mean`, `loss_fraction/value`
+- **Interpretation**:
+  - Trained on full unfiltered distribution (not value-weighted)
+  - Used for value-based sample weighting in imitation
+  - **High MSE + low correlation**: Value head not learning
+- **Utility**: Important for value-weighted imitation
+
+### `loss_fraction/{component}`
+- **Description**: What percentage of total loss comes from each component (main, c, buttons, shoulder, value)
+- **Range**: 0.0-1.0, sum = 1.0
+- **Related metrics**: `loss/*` components
+- **Interpretation**:
+  - Shows which head contributes most to training signal
+  - **One head >> others**: That head dominating learning
+  - **Changing over time**: Learning dynamics shifting
+  - Expected: main stick often largest due to 64 classes
+- **Utility**: VERY USEFUL for understanding learning dynamics and head balance
+
+---
+
+## 3. ACCURACY METRICS (MAIN STICK)
+
+### `metrics/acc_main_batch`
+- **Description**: Overall main stick prediction accuracy across full batch
+- **Range**: 0.0-1.0, typically 0.05-0.70
+- **Related metrics**: `metrics/acc_main_change`, `metrics/acc_main_hold`, `accuracy/main_stick/top3`
+- **Interpretation**:
+  - % of frames where predicted stick position exactly matches target
+  - Random baseline ≈ 1/64 ≈ 0.016
+  - **< 0.2**: Poor, barely better than random
+  - **0.3-0.5**: Moderate performance
+  - **> 0.6**: Good stick control
+  - Compare to change/hold split to diagnose bias
+- **Utility**: PRIMARY accuracy metric for main stick
+
+### `metrics/acc_main_change`
+- **Description**: Accuracy on frames where stick position changed from previous frame
+- **Range**: 0.0-1.0, typically lower than batch accuracy
+- **Related metrics**: `metrics/acc_main_batch`, `schedule/change_weight_scale`, `consistency/main_stick/target_change_rate`
+- **Interpretation**:
+  - Harder than hold accuracy (predicting new movements)
+  - If much lower than hold: model struggling with stick movements
+  - Should improve as `change_weight_scale` decreases during training
+  - **< 0.2**: Not learning movement patterns
+  - **0.3-0.5**: Learning basic movements
+  - **> 0.5**: Good movement prediction
+- **Utility**: Critical for diagnosing movement vs holding
+
+### `metrics/acc_main_hold`
+- **Description**: Accuracy on frames where stick position unchanged from previous
+- **Range**: 0.0-1.0, typically higher than change accuracy
+- **Related metrics**: `metrics/acc_main_batch`, `metrics/acc_main_change`
+- **Interpretation**:
+  - Easier task (repeat last position)
+  - If much higher than change: model biased to repeating
+  - **Ideal**: Should be moderately higher than change (0.1-0.2 gap)
+  - **> 0.8 with low change acc**: Repetition bias problem
+- **Utility**: Useful for diagnosing repetition bias
+
+---
+
+## 4. ACCURACY METRICS (C-STICK & SHOULDER)
+
+### `metrics/acc_c_batch`, `metrics/acc_c_change`, `metrics/acc_c_hold`
+- Similar to main stick metrics but for C-stick (9 classes)
+- Expected accuracy typically higher due to fewer classes and C-stick being mostly neutral
+
+---
+
+## 5. BUTTON METRICS
+
+### `metrics/buttons_em_batch`, `metrics/buttons_em_change`, `metrics/buttons_em_hold`
+- **Description**: Exact match accuracy (all 5 buttons correct simultaneously)
+- Critical metric: `buttons_em_change` shows button timing quality
+
+### `metrics/buttons_f1_micro_batch`, `metrics/buttons_f1_micro_maj`
+- Micro-averaged F1 vs majority baseline
+
+### Per-button metrics: `buttons/{button}_f1`, `buttons/{button}_precision`, `buttons/{button}_recall`, `buttons/{button}_rate`
+- For each button: A, B, X/Y, Z, L/R
+- F1 is primary per-button metric
+- Rate provides data distribution context
+
+---
+
+## 6. VALUE HEAD METRICS
+
+### `value/pred_mean`, `value/target_mean`, `value/mse`, `value/mae`, `value/corr`
+- Standard regression metrics for value prediction
+- `value_pred_bias` = pred_mean - target_mean (should be ≈0)
+
+---
+
+## 7. CONFIDENCE & ENTROPY METRICS
+
+Per head: `main_stick`, `c_stick`, `shoulder`
+
+### `confidence/{head}/avg_maxprob`
+- **Description**: Average maximum probability across all predictions
+- **Range**: 0.0-1.0, typically 0.3-0.9
+- **Interpretation**: How confident is the model?
+- **Should increase during training**
+
+### `confidence/{head}/avg_maxprob_correct`
+- **Description**: Average max probability only when prediction is correct
+- **Range**: Should be higher than avg_maxprob
+- **Interpretation**: Model should be more confident when correct (calibration)
+- **Ideal gap**: 0.1-0.3 higher than avg_maxprob
+
+### `entropy/{head}/mean`
+- **Description**: Average Shannon entropy of predictions (in nats)
+- **Range**: 0.0 to ln(num_classes)
+- **Interpretation**: Prediction uncertainty
+- **Should decrease during training**
+- **Too low too quickly**: Possible mode collapse
+
+**Calibration check:**
+- **Low entropy + high accuracy**: Confident and correct ✓
+- **Low entropy + low accuracy**: "Confidently wrong" (poor calibration!)
+
+---
+
+## 8. TOP-K ACCURACY
+
+Per head: `main_stick`, `c_stick`, `shoulder`
+
+### `accuracy/{head}/top3`, `accuracy/{head}/top5`
+- **Description**: Fraction where target is in top-K predictions
+- **Interpretation**:
+  - **top5 >> top1**: Model has partial understanding but not precise
+  - **top5 ≈ top1**: Model very confident or very wrong
+- **Utility**: Shows if model is "close" even when not exactly right
+
+---
+
+## 9. FREQUENCY STATISTICS (MODE COLLAPSE DETECTION)
+
+Per head for both predictions (`freq`) and targets (`tgt_freq`)
+
+### `freq/{head}/top1_class`, `freq/{head}/top1_prop`
+- **Description**: Most frequent class and its proportion
+- **CRITICAL**: If `top1_prop → 1.0`, model has MODE COLLAPSED!
+- **Compare pred vs target**: Should match; if not, model is biased
+
+### `freq/{head}/diversity`
+- **Description**: Gini-Simpson diversity index (1 - Σp²)
+- **Range**: 0.0-1.0 (higher = more diverse)
+- **CRITICAL**:
+  - **→ 0**: Mode collapse!
+  - **< 0.3**: Very low diversity
+  - **> 0.7**: Good diversity
+- **Compare pred vs target diversity**
+
+**Example red flag:**
+
+```
+freq/main_stick/top1_prop = 0.85  # Bad: 85% neutral
+tgt_freq/main_stick/top1_prop = 0.25  # Data only 25% neutral
+freq/main_stick/diversity = 0.25  # Very low
+# → Model defaulting to neutral (lazy learning!)
+```
+
+---
+
+## 10. TEMPORAL CONSISTENCY
+
+Per head: `main_stick`, `c_stick`, `shoulder`, `buttons`
+
+### `consistency/{head}/pred_change_rate`, `consistency/{head}/target_change_rate`
+- **Description**: How often predictions/targets change
+
+### `consistency/{head}/change_rate_ratio`
+- **Description**: pred_change_rate / target_change_rate
+- **Interpretation**:
+  - **>> 1 (e.g., 2.0)**: Model "jittery" (predictions flip-flopping)
+  - **≈ 1.0**: Good temporal consistency ✓
+  - **<< 1 (e.g., 0.5)**: Model too "sticky"
+- **CRITICAL metric for prediction stability**
+
+---
+
+## 11. IMITATION WEIGHT STATISTICS
+
+### `imitation/weight_mean`, `imitation/weight_std`, `imitation/weight_max/min`, `imitation/weight_p95/p05`
+- Value-based sample weighting statistics
+
+### `imitation/effective_batch_fraction`
+- **Description**: Effective batch size / actual batch size
+- **Range**: 0.0-1.0
+- **CRITICAL**:
+  - **→ 0 (e.g., 0.05)**: Only 5% of samples contributing (VERY aggressive filtering!)
+  - **0.1-0.3**: Moderate filtering
+  - **> 0.7**: Light filtering
+  - **≈ 1.0**: No filtering
+- **If too low, may be dropping too much training signal**
+
+---
+
+## 12. GRADIENT VARIANCE (STABILITY)
+
+### `gradients/total_norm_variance`, `gradients/total_norm_std`, `gradients/total_norm_cv`
+- **Description**: Variance/std/CV of gradient norms across last 100 batches
+- **Interpretation**:
+  - **CV > 0.7**: Unstable gradients → reduce LR or increase clipping
+  - **CV 0.3-0.6**: Normal
+  - **CV < 0.2**: Very stable ✓
+- **VERY USEFUL for detecting gradient instability**
+
+### `gradients/total_norm`, `gradients/total_norm_pre_clip`, `gradients/total_norm_post_clip`
+- Standard gradient norm metrics
+- Pre/post clip shows if clipping is active
+
+### `gradients/nan_count`, `gradients/inf_count`
+- **Should ALWAYS be 0**
+- **If > 0**: CRITICAL BUG, stop training!
+
+---
+
+## 13. WEIGHT DRIFT
+
+### `params/total_norm`
+- Current parameter L2 norm
+
+### `params/total_norm_velocity`
+- **Description**: Change in parameter norm per step
+- **Range**: Typically -0.01 to +0.01
+- **Interpretation**:
+  - **Positive**: Weights growing (normal early training)
+  - **Negative**: Weights shrinking (weight decay or collapse)
+  - **|velocity| >> 0.1**: Rapid changes (potential instability)
+  - **≈ 0**: Parameters stabilized
+- **VERY USEFUL for detecting instability early**
+
+---
+
+## 14. LOGIT & BIAS DIAGNOSTICS
+
+### `logits/{head}_mean/std/max/min`
+- Statistics of raw logits (pre-softmax/sigmoid)
+- For CE heads: mean ≈ 0 is healthy
+- std should be 1-3 (not too low or too high)
+
+### `head_logits/{head}/max_abs`
+- Maximum absolute logit value
+- **> 15**: Potential instability
+
+### `bias/*_out_mean/std/max`
+- Output layer bias statistics
+- `head_bias/{head}/max_abs` detects extreme biases
+
+---
+
+## 15. PERFORMANCE
+
+### `throughput/frames_per_s`
+- Training throughput
+- **Decreasing over time**: Performance issue
+
+### `optimizer/loss_scale`
+- Dynamic loss scaling for FP16
+- Stable at high value = good FP16 utilization
+
+---
+
+## CRITICAL MONITORING CHECKLIST
+
+**Mode Collapse Detection:**
+
+```python
+freq/{head}/diversity < 0.5
+freq/{head}/top1_prop > 0.8
+```
+
+**Calibration Check:**
+
+```python
+confidence/{head}/avg_maxprob_correct - confidence/{head}/avg_maxprob < 0.05
+```
+
+**Instability Detection:**
+
+```python
+gradients/total_norm_cv > 0.5
+loss/total_cv > 0.4
+params/total_norm_velocity > 0.1
+gradients/nan_count > 0  # CRITICAL!
+```
+
+**Value Weighting:**
+
+```python
+imitation/effective_batch_fraction < 0.1  # Too aggressive
+```
+
+**Temporal Stability:**
+
+```python
+consistency/{head}/change_rate_ratio far from 1.0
+```
+
+---
+
+## SUMMARY
+
+**Total Metrics: ~200+**
+
+**Most Critical:**
+1. `loss/total` and `loss/total_std/cv`
+2. `freq/{head}/diversity` and `freq/{head}/top1_prop` (mode collapse!)
+3. `confidence/{head}/avg_maxprob_correct` (calibration)
+4. `consistency/{head}/change_rate_ratio` (temporal stability)
+5. `gradients/total_norm_cv` and `gradients/nan_count` (optimization health)
+6. `imitation/effective_batch_fraction` (data usage)
+7. `params/total_norm_velocity` (parameter stability)
+8. `loss_fraction/{component}` (head balance)
+
+**Primary Accuracy Metrics:**
+- `metrics/acc_main_change` (harder than hold)
+- `metrics/buttons_em_change` (button timing quality)
+- `accuracy/{head}/top5` (partial credit)
+
+*Last updated: Post-implementation of comprehensive metrics suite*

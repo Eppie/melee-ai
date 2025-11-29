@@ -51,7 +51,9 @@ def collect_head_diagnostics(
     for head in head_names:
         if head in pred:
             logits = pred[head]
-            diagnostics[f"head_logits/{head}/max_abs"] = float(logits.abs().max())
+            diagnostics[f"head_logits/{head}/max_abs"] = float(
+                logits.abs().max().detach()
+            )
 
     # Output layer bias max_abs statistics (very cheap - small tensors)
     # Note: mean already logged in gather_logit_and_bias_metrics_batched()

@@ -21,6 +21,59 @@ from train.imitation_weights import compute_imitation_weights
 from train.value_head import compute_value_targets
 
 
+def collect_head_diagnostics(
+    model: torch.nn.Module, pred: Dict[str, torch.Tensor]
+) -> Dict[str, float]:
+    """Collect per-head diagnostic metrics for instability detection.
+
+    Tracks logit statistics and output layer biases to catch early warning signs
+    of gradient explosion or head divergence.
+
+    Args:
+        model: The GPT model with output heads
+        pred: Dictionary of model predictions
+
+    Returns:
+        Dictionary of diagnostic metrics with keys like:
+        - head_logits/{head}/mean
+        - head_logits/{head}/std
+        - head_logits/{head}/max_abs
+        - head_bias/{head}/mean
+        - head_bias/{head}/max_abs
+    """
+    diagnostics = {}
+
+    # Logit statistics (cheap - already in memory)
+    head_names = ["main_stick", "c_stick", "buttons", "shoulder", "value"]
+    for head in head_names:
+        if head in pred:
+            logits = pred[head]
+            diagnostics[f"head_logits/{head}/mean"] = float(logits.mean())
+            diagnostics[f"head_logits/{head}/std"] = float(logits.std())
+            diagnostics[f"head_logits/{head}/max_abs"] = float(logits.abs().max())
+
+    # Output layer bias statistics (very cheap - small tensors)
+    # Check for growing biases which indicate head struggling
+    bias_keys = {
+        "main_stick": "_orig_mod.main_stick_head.fc2.bias",
+        "c_stick": "_orig_mod.c_stick_head.fc2.bias",
+        "buttons": "_orig_mod.button_head.fc2.bias",
+        "shoulder": "_orig_mod.shoulder_head.fc2.bias",
+        "value": "_orig_mod.value_head.fc2.bias",
+    }
+
+    state_dict = model.state_dict()
+    for head, key in bias_keys.items():
+        # Handle both compiled (_orig_mod) and non-compiled models
+        actual_key = key if key in state_dict else key.replace("_orig_mod.", "")
+        if actual_key in state_dict:
+            bias = state_dict[actual_key]
+            diagnostics[f"head_bias/{head}/mean"] = float(bias.mean())
+            diagnostics[f"head_bias/{head}/max_abs"] = float(bias.abs().max())
+
+    return diagnostics
+
+
 def perform_forward_pass(
     components: TrainingComponents,
     batch_tensors: Dict[str, torch.Tensor],
@@ -137,8 +190,13 @@ def perform_forward_pass(
         value_loss_raw = torch.nn.functional.mse_loss(
             value_pred, value_target, reduction="none"
         ).squeeze(-1)
-        value_w = combined_weights.get("global", combined_weights["main"])
-        loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
+
+        # CRITICAL: Value head trains on FULL distribution (not filtered)
+        # Policy heads use combined_weights (filtered for high-value states)
+        # This prevents value head from learning biased estimator while
+        # policy heads still benefit from focusing on winning play
+        loss_value = value_loss_raw.mean()  # Uniform weighting
+
         loss = loss + config.rl.value_loss_coef * loss_value
         loss_components["value"] = loss_value
 
@@ -149,6 +207,22 @@ def perform_forward_pass(
         "shoulder_idx": target_info.get("shoulder_idx"),
     }
     batch_inputs = {"X": X}
+
+    # Collect per-head diagnostics for instability detection
+    head_diagnostics = collect_head_diagnostics(components.model, pred)
+
+    # Add value head prediction statistics for distribution mismatch detection
+    head_diagnostics["value_pred_mean"] = float(value_pred.mean())
+    head_diagnostics["value_target_mean"] = float(value_target.mean())
+    head_diagnostics["value_pred_bias"] = float(
+        value_pred.mean() - value_target.mean()
+    )
+
+    # Add loss component breakdown (what % of total loss from each head?)
+    total_loss_val = float(loss.detach())
+    if total_loss_val > 1e-6:  # Avoid division by zero
+        for key, component in loss_components.items():
+            head_diagnostics[f"loss_fraction/{key}"] = float(component.detach()) / total_loss_val
 
     return ForwardPassResult(
         pred=pred,
@@ -162,6 +236,7 @@ def perform_forward_pass(
         batch_targets=batch_targets,
         label_smoothing=label_smoothing,
         change_scale=imbalance_scale,
+        head_diagnostics=head_diagnostics,
     )
 
 
@@ -191,6 +266,12 @@ def perform_backward_pass(
         # bfloat16 or full precision - no scaling needed
         loss.backward()
 
+    # Clip value head gradients separately BEFORE global clipping
+    # This prevents value head from corrupting transformer even if it has large errors
+    value_head_grad_norm = float(
+        clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
+    )
+
     grad_clip = components.config.train.grad_clip
     pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
 
@@ -199,6 +280,8 @@ def perform_backward_pass(
         grad_stats = collect_gradient_diagnostics(components.model)
         grad_stats["total_norm_pre_clip"] = pre_clip_norm
         grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
+        grad_stats["value_head_norm_pre_clip"] = value_head_grad_norm
+        grad_stats["value_head_norm_post_clip"] = min(value_head_grad_norm, 1.0)
 
     if scaler.is_enabled():
         scaler.step(optimizer)

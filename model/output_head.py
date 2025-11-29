@@ -10,22 +10,28 @@ class SimpleHead(nn.Module):
         output_size: int,
         hidden: int = 128,
         dropout: float = 0.05,
+        use_layer_norm: bool = True,
     ):
         super().__init__()
         self.fc1 = nn.Linear(input_size, hidden, bias=True)
         self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(hidden) if use_layer_norm else None
         self.fc2 = nn.Linear(hidden, output_size, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Standard forward pass through both layers."""
         h = F.relu(self.fc1(x))
         h = self.dropout(h)
+        if self.layer_norm is not None:
+            h = self.layer_norm(h)
         return self.fc2(h)
 
     def forward_intermediate(self, x: torch.Tensor) -> torch.Tensor:
         """Returns intermediate features after first layer (before final projection)."""
         h = F.relu(self.fc1(x))
         h = self.dropout(h)
+        if self.layer_norm is not None:
+            h = self.layer_norm(h)
         return h
 
     def forward_from_intermediate(self, h: torch.Tensor) -> torch.Tensor:

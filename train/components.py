@@ -91,6 +91,7 @@ class ForwardPassResult:
     batch_targets: Dict[str, torch.Tensor]
     label_smoothing: float
     change_scale: float
+    head_diagnostics: Dict[str, float] = None  # Per-head metrics for instability detection
 
 
 @dataclass

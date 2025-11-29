@@ -402,6 +402,10 @@ def prepare_logging_bundle(
     # Logit and bias metrics (single transfer)
     log_payload.update(gather_logit_and_bias_metrics_batched(pred, components.model))
 
+    # Per-head diagnostic metrics for instability detection
+    if forward_result.head_diagnostics is not None:
+        log_payload.update(forward_result.head_diagnostics)
+
     log_payload["optimizer/loss_scale"] = float(components.scaler.get_scale())
 
     for i, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):

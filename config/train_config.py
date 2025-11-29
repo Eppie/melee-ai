@@ -36,9 +36,13 @@ class TrainConfig(BaseModel):
         ),
     )
     lr: float = Field(
-        default=3e-4,
+        default=2e-4,
         gt=0,
-        description="Learning rate for AdamW optimizer. Interacts with warmup_steps and schedule.",
+        description=(
+            "Learning rate for AdamW optimizer. Reduced from 3e-4 to 2e-4 for more stable imitation learning. "
+            "Effect: Lower lr (1e-4 to 2e-4) = more stable but slower learning; higher lr (3e-4 to 5e-4) = faster but less stable. "
+            "Reasonable range: [1e-4, 5e-4]. Interacts with: warmup_steps, grad_clip, value_loss_coef."
+        ),
     )
     weight_decay: float = Field(
         default=0.002,
@@ -114,13 +118,15 @@ class TrainConfig(BaseModel):
 
     # Losses
     grad_clip: float = Field(
-        default=5.0,
+        default=1.0,
         gt=0,
         description=(
-            "Maximum gradient norm for gradient clipping. Prevents exploding gradients. "
+            "Maximum gradient norm for GLOBAL gradient clipping. Prevents exploding gradients. "
+            "IMPORTANT: Value head has separate clipping at max_norm=1.0 applied BEFORE this global clip. "
+            "Reduced from 5.0 to 1.0 for tighter control after value head instability issues. "
             "Effect: Lower values (0.5-2.0) clip more aggressively, more stable but slower learning; "
-            "higher values (5.0-10.0) allow larger updates. Reasonable range: [0.5, 10.0]. "
-            "Interacts with: lr (higher lr may need lower grad_clip), model depth (deeper models may need lower values)."
+            "higher values (5.0-10.0) allow larger updates but risk instability. Reasonable range: [0.5, 5.0]. "
+            "Interacts with: lr (higher lr may need lower grad_clip), separate value head clipping (max_norm=1.0)."
         ),
     )
     label_smoothing: float = Field(

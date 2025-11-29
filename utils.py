@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+import time
+
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -195,3 +198,139 @@ def print_model_diagram(
     diagram = "\n".join(lines)
     print(diagram, file=sys.stdout)
     return diagram
+
+
+class Profiler:
+    """
+    Lightweight wall-clock profiler.
+
+    Stats ignore the burn-in iterations once the burn-in period has completed
+    """
+
+    def __init__(self, burnin: int = 1, ema_alpha: float = 0.1) -> None:
+        # Core counters
+        self.cumtime: float = 0.0
+        self.cumtime_sq: float = 0.0  # for variance/stddev
+        self.num_calls: int = 0
+
+        # Burn-in handling
+        self.burnin: int = burnin
+        self.needs_reset: bool = False
+
+        # Extra stats
+        self.min_time: float = math.inf
+        self.max_time: float = 0.0
+        self.last_time: float = 0.0
+
+        # Exponential moving average of time
+        self.ema_alpha: float = ema_alpha
+        self.ema_time: Optional[float] = None
+
+        # Internal timing
+        self._enter_time: float = 0.0
+
+    def _reset_stats(self) -> None:
+        self.cumtime = 0.0
+        self.cumtime_sq = 0.0
+        self.num_calls = 0
+        self.min_time = math.inf
+        self.max_time = 0.0
+        self.last_time = 0.0
+        self.ema_time = None
+
+    def __enter__(self) -> "Profiler":
+        if self.needs_reset:
+            self._reset_stats()
+            self.needs_reset = False
+
+        self._enter_time = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        duration = time.perf_counter() - self._enter_time
+
+        # Update stats
+        self.num_calls += 1
+        self.cumtime += duration
+        self.cumtime_sq += duration * duration
+        self.last_time = duration
+
+        if duration < self.min_time:
+            self.min_time = duration
+        if duration > self.max_time:
+            self.max_time = duration
+
+        if self.ema_alpha > 0.0:
+            if self.ema_time is None:
+                self.ema_time = duration
+            else:
+                self.ema_time += self.ema_alpha * (duration - self.ema_time)
+
+        if self.burnin > 0:
+            self.burnin -= 1
+            if self.burnin == 0:
+                self.needs_reset = True
+
+    # --- Public accessors ---
+
+    def mean_time(self) -> float:
+        """Arithmetic mean of durations (seconds)."""
+        if self.num_calls == 0:
+            return 0.0
+        return self.cumtime / self.num_calls
+
+    def std_time(self) -> float:
+        """Sample standard deviation of durations (seconds)."""
+        if self.num_calls < 2:
+            return 0.0
+        n = self.num_calls
+        mean = self.cumtime / n
+        # variance = E[x^2] - (E[x])^2
+        var = max(self.cumtime_sq / n - mean * mean, 0.0)
+        return math.sqrt(var)
+
+    def total_time(self) -> float:
+        """Total accumulated time (seconds)."""
+        return self.cumtime
+
+    def min_duration(self) -> float:
+        """Minimum observed duration (seconds)."""
+        if self.num_calls == 0 or self.min_time is math.inf:
+            return 0.0
+        return self.min_time
+
+    def max_duration(self) -> float:
+        """Maximum observed duration (seconds)."""
+        return self.max_time if self.num_calls > 0 else 0.0
+
+    def last_duration(self) -> float:
+        """Duration of the most recent call (seconds)."""
+        return self.last_time
+
+    def ema_duration(self) -> float:
+        """
+        Exponential moving average of durations (seconds).
+
+        Smoother than raw mean when there is drift; 0.0 if no data yet.
+        """
+        return self.ema_time if self.ema_time is not None else 0.0
+
+    def calls_per_second(self) -> float:
+        """Throughput based on accumulated time."""
+        if self.cumtime <= 0.0:
+            return 0.0
+        return self.num_calls / self.cumtime
+
+    def summary(self) -> Dict[str, float]:
+        """Convenient snapshot of all stats."""
+        return {
+            "num_calls": float(self.num_calls),
+            "total_time": self.total_time(),
+            "mean_time": self.mean_time(),
+            "std_time": self.std_time(),
+            "min_time": self.min_duration(),
+            "max_time": self.max_duration(),
+            "last_time": self.last_duration(),
+            "ema_time": self.ema_duration(),
+            "calls_per_second": self.calls_per_second(),
+        }

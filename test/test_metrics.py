@@ -8,6 +8,7 @@ import torch
 
 from train.metrics import (
     MetricsAccumulator,
+    compute_binary_rates,
     compute_change_hold_accuracy,
     compute_confusion_matrix,
     multilabel_prf,
@@ -526,6 +527,31 @@ class TestMetricsAccumulator:
         # Frame 4: [0, 0] != [1, 0] ✗
         # Total matches: 3 out of 5
         assert acc.btn_maj_em_correct.item() == 3
+
+
+class TestBinaryRates:
+    """Test suite for compute_binary_rates helper."""
+
+    def test_binary_rate_computation(self):
+        """Check TPR/TNR/FPR/FNR calculations for mixed outcomes."""
+        tp = torch.tensor([5.0, 0.0])
+        fp = torch.tensor([1.0, 2.0])
+        fn = torch.tensor([1.0, 0.0])
+
+        tpr, tnr, fpr, fnr, tn = compute_binary_rates(tp, fp, fn, total_count=10.0)
+
+        # Class 0: pos=6, neg=4 → tn=3
+        assert torch.allclose(tn, torch.tensor([3.0, 8.0]))
+        assert tpr.tolist()[0] == pytest.approx(5 / 6, rel=1e-5)
+        assert tnr.tolist()[0] == pytest.approx(3 / 4, rel=1e-5)
+        assert fpr.tolist()[0] == pytest.approx(1 / 4, rel=1e-5)
+        assert fnr.tolist()[0] == pytest.approx(1 / 6, rel=1e-5)
+
+        # Class 1: no positives, 2 false positives against 10 total
+        assert tpr.tolist()[1] == 0.0
+        assert fnr.tolist()[1] == 0.0
+        assert tnr.tolist()[1] == pytest.approx(0.8, rel=1e-5)
+        assert fpr.tolist()[1] == pytest.approx(0.2, rel=1e-5)
 
 
 class TestConfusionMatrix:

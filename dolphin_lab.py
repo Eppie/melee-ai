@@ -163,9 +163,9 @@ class GameLab:
         )
         self._drain_test_state: Optional[ShieldDrainTestState] = None
         self.firefox_results: List[FirefoxTestResult] = []
-        self._angle_queue: Deque[
-            Tuple[int, Tuple[float, float], int, int, int]
-        ] = deque()
+        self._angle_queue: Deque[Tuple[int, Tuple[float, float], int, int, int]] = (
+            deque()
+        )
         self._current_params: Optional[
             Tuple[int, Tuple[float, float], int, int, int]
         ] = None

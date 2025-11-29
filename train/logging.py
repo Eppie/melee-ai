@@ -20,7 +20,7 @@ from train.components import (
     TrainingComponents,
 )
 from train.display import format_confusion_matrix
-from train.metrics import compute_confusion_matrix, multilabel_prf
+from train.metrics import compute_binary_rates, compute_confusion_matrix, multilabel_prf
 
 
 def _compute_tensor_stats_batch(tensors: List[torch.Tensor]) -> torch.Tensor:
@@ -428,7 +428,14 @@ def prepare_logging_bundle(
     btn_fn = (btn_true_flat * (1.0 - btn_pred_flat)).sum(dim=0)
     eps = 1e-9
     btn_prec = btn_tp / (btn_tp + btn_fp + eps)
-    btn_rec = btn_tp / (btn_tp + btn_fn + eps)
+    btn_tpr, btn_tnr, btn_fpr, btn_fnr, _ = compute_binary_rates(
+        true_positives=btn_tp,
+        false_positives=btn_fp,
+        false_negatives=btn_fn,
+        total_count=float(btn_true_flat.shape[0]),
+        eps=eps,
+    )
+    btn_rec = btn_tpr  # Recall equals TPR for binary button labels
     btn_f1 = 2 * btn_prec * btn_rec / (btn_prec + btn_rec + eps)
     btn_rate = btn_true_flat.mean(dim=0)
 
@@ -477,6 +484,9 @@ def prepare_logging_bundle(
             btn_prec,
             btn_rec,
             btn_rate,
+            btn_tnr,
+            btn_fpr,
+            btn_fnr,
         ]
     )
 
@@ -514,6 +524,13 @@ def prepare_logging_bundle(
     idx += num_buttons
     btn_rate_cpu = all_scalars_cpu[idx : idx + num_buttons]
     idx += num_buttons
+    btn_tnr_cpu = all_scalars_cpu[idx : idx + num_buttons]
+    idx += num_buttons
+    btn_fpr_cpu = all_scalars_cpu[idx : idx + num_buttons]
+    idx += num_buttons
+    btn_fnr_cpu = all_scalars_cpu[idx : idx + num_buttons]
+    idx += num_buttons
+    btn_tpr_cpu = btn_rec_cpu
 
     # Confusion matrix (requires CPU anyway)
     K_main = int(target_info.get("main_K", logits_main.shape[-1]))
@@ -544,15 +561,20 @@ def prepare_logging_bundle(
     btn_line2 = f"            maj F1μ {f1_maj:.3f}"
 
     per_button: List[str] = []
+    per_button_rates: List[str] = []
     for i, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
         label = _BUTTON_PRETTY.get(name, name)
         per_button.append(
             f"{label}: acc {btn_match_cpu[i]:.3f} F1 {btn_f1_cpu[i]:.3f} rate {btn_rate_cpu[i]:.3f}"
         )
+        per_button_rates.append(
+            f"{label}: TPR {btn_tpr_cpu[i]:.3f} TNR {btn_tnr_cpu[i]:.3f} FPR {btn_fpr_cpu[i]:.3f} FNR {btn_fnr_cpu[i]:.3f}"
+        )
 
     log_lines.append(btn_line1)
     log_lines.append(btn_line2)
     log_lines.append("            " + " | ".join(per_button))
+    log_lines.append("            " + " | ".join(per_button_rates))
     log_lines.append(f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f}")
     log_lines.append(
         f"  VALUE:    pred {value_pred_mean:.3f} | targ {value_target_mean:.3f} | "
@@ -603,6 +625,10 @@ def prepare_logging_bundle(
         log_payload[f"buttons/{label}_precision"] = btn_prec_cpu[i]
         log_payload[f"buttons/{label}_recall"] = btn_rec_cpu[i]
         log_payload[f"buttons/{label}_rate"] = btn_rate_cpu[i]
+        log_payload[f"buttons/{label}_tpr"] = btn_tpr_cpu[i]
+        log_payload[f"buttons/{label}_tnr"] = btn_tnr_cpu[i]
+        log_payload[f"buttons/{label}_fpr"] = btn_fpr_cpu[i]
+        log_payload[f"buttons/{label}_fnr"] = btn_fnr_cpu[i]
 
     log_payload.update(
         {

@@ -243,7 +243,7 @@ This document details all metrics logged to wandb during `train.py` execution. U
 
 ### `value/pred_mean`, `value/target_mean`, `value/mse`, `value/mae`, `value/corr`
 - Standard regression metrics for value prediction
-- `value_pred_bias` = pred_mean - target_mean (should be ≈0)
+- `value_pred_bias` = `pred_mean - target_mean` (should be ≈0)
 
 ---
 
@@ -461,6 +461,7 @@ consistency/{head}/change_rate_ratio far from 1.0
 **Total Metrics: ~200+**
 
 **Most Critical:**
+
 1. `loss/total` and `loss/total_std/cv`
 2. `freq/{head}/diversity` and `freq/{head}/top1_prop` (mode collapse!)
 3. `confidence/{head}/avg_maxprob_correct` (calibration)

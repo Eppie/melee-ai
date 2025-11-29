@@ -1078,9 +1078,9 @@ class FrameData:
         if not alreadythere:
             self.rows.append(row)
 
-        self.prevfacing[
-            gamestate.opponent_state.action
-        ] = gamestate.opponent_state.facing
+        self.prevfacing[gamestate.opponent_state.action] = (
+            gamestate.opponent_state.facing
+        )
         self.prevprojectilecount[gamestate.opponent_state.action] = len(
             gamestate.projectiles
         )

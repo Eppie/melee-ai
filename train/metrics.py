@@ -431,6 +431,49 @@ def compute_confusion_matrix(
     return cm.cpu()
 
 
+def compute_binary_rates(
+    true_positives: torch.Tensor,
+    false_positives: torch.Tensor,
+    false_negatives: torch.Tensor,
+    total_count: float | torch.Tensor,
+    eps: float = 1e-9,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute TPR/TNR/FPR/FNR and true negatives from confusion counts.
+
+    Args:
+        true_positives: Per-class true positive counts.
+        false_positives: Per-class false positive counts.
+        false_negatives: Per-class false negative counts.
+        total_count: Total number of examples per class (scalar).
+        eps: Small constant to avoid division by zero.
+
+    Returns:
+        Tuple of tensors ``(tpr, tnr, fpr, fnr, tn)`` each shaped like the inputs.
+    """
+    tp = true_positives.float()
+    fp = false_positives.float()
+    fn = false_negatives.float()
+    total = (
+        total_count.to(tp)
+        if isinstance(total_count, torch.Tensor)
+        else tp.new_tensor(float(total_count))
+    )
+
+    positives = tp + fn
+    negatives = total - positives
+    tn = torch.clamp(negatives - fp, min=0.0)
+
+    pos_den = positives + eps
+    neg_den = tn + fp + eps
+
+    tpr = tp / pos_den
+    fnr = fn / pos_den
+    tnr = tn / neg_den
+    fpr = fp / neg_den
+
+    return tpr, tnr, fpr, fnr, tn
+
+
 # TODO: why is this unused?
 def compute_change_hold_accuracy(
     pred: torch.Tensor,

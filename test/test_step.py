@@ -73,7 +73,14 @@ def test_perform_backward_pass_clips_gradients_without_stats(
         collect_grad_stats=False,
     )
 
-    clip_mock.assert_called_once_with(
+    assert clip_mock.call_count == 2
+    # First call: value head with max_norm=1.0
+    assert clip_mock.call_args_list[0].kwargs["max_norm"] == 1.0
+
+    # Second call: global clip with configured grad_clip
+    # Note: model.parameters() returns the list object set in build_training_components
+    # and assert_called_with checks for equality.
+    clip_mock.assert_any_call(
         components.model.parameters(),
         components.config.train.grad_clip,
     )

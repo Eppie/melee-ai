@@ -71,7 +71,7 @@ def collect_head_diagnostics(
         actual_key = key if key in state_dict else key.replace("_orig_mod.", "")
         if actual_key in state_dict:
             bias = state_dict[actual_key]
-            diagnostics[f"head_bias/{head}/max_abs"] = float(bias.abs().max())
+            diagnostics[f"head_bias/{head}/max_abs"] = float(bias.abs().max().detach())
 
     return diagnostics
 
@@ -216,7 +216,9 @@ def perform_forward_pass(
     head_diagnostics = collect_head_diagnostics(components.model, pred)
 
     # Add value head prediction bias (mean and target_mean are logged elsewhere)
-    head_diagnostics["value_pred_bias"] = float(value_pred.mean() - value_target.mean())
+    head_diagnostics["value_pred_bias"] = float(
+        (value_pred.mean() - value_target.mean()).detach()
+    )
 
     # Add loss component breakdown (what % of total loss from each head?)
     total_loss_val = float(loss.detach())

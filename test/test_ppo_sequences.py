@@ -20,12 +20,6 @@ class TestBuildSequenceWindows:
             steps.append(
                 Step(
                     state=torch.randn(50),
-                    action_logits={
-                        "main_stick": torch.randn(64),
-                        "c_stick": torch.randn(9),
-                        "buttons": torch.randn(5),
-                        "shoulder": torch.randn(5),
-                    },
                     action_taken={
                         "main_stick": torch.tensor(i % 64),
                         "c_stick": torch.tensor(i % 9),
@@ -78,12 +72,6 @@ class TestBuildSequenceWindows:
             steps.append(
                 Step(
                     state=torch.randn(50),
-                    action_logits={
-                        "main_stick": torch.randn(64),
-                        "c_stick": torch.randn(9),
-                        "buttons": torch.randn(5),
-                        "shoulder": torch.randn(5),
-                    },
                     action_taken={
                         "main_stick": torch.tensor(i % 64),
                         "c_stick": torch.tensor(i % 9),
@@ -127,12 +115,6 @@ class TestBuildSequenceWindows:
                 steps.append(
                     Step(
                         state=torch.randn(50),
-                        action_logits={
-                            "main_stick": torch.randn(64),
-                            "c_stick": torch.randn(9),
-                            "buttons": torch.randn(5),
-                            "shoulder": torch.randn(5),
-                        },
                         action_taken={
                             "main_stick": torch.tensor(i % 64),
                             "c_stick": torch.tensor(i % 9),
@@ -173,12 +155,6 @@ class TestBuildSequenceWindows:
             steps.append(
                 Step(
                     state=torch.randn(50),
-                    action_logits={
-                        "main_stick": torch.randn(64),
-                        "c_stick": torch.randn(9),
-                        "buttons": torch.randn(5),
-                        "shoulder": torch.randn(5),
-                    },
                     action_taken={
                         "main_stick": torch.tensor(i % 64),
                         "c_stick": torch.tensor(i % 9),
@@ -243,7 +219,6 @@ class TestComputeTotalPPOLossSequence:
         loss, metrics = compute_total_ppo_loss(
             new_action_logits=new_action_logits,
             new_values=new_values,
-            old_action_logits=old_action_logits,
             old_values=old_values,
             actions_taken=actions_taken,
             old_log_probs=old_log_probs,
@@ -297,7 +272,6 @@ class TestComputeTotalPPOLossSequence:
         loss, metrics = compute_total_ppo_loss(
             new_action_logits=new_action_logits,
             new_values=new_values,
-            old_action_logits=old_action_logits,
             old_values=old_values,
             actions_taken=actions_taken,
             old_log_probs=old_log_probs,
@@ -333,7 +307,6 @@ class TestComputeTotalPPOLossSequence:
         loss, metrics = compute_total_ppo_loss(
             new_action_logits=new_action_logits,
             new_values=new_values,
-            old_action_logits=old_action_logits,
             old_values=old_values,
             actions_taken=actions_taken,
             old_log_probs=old_log_probs,
@@ -368,7 +341,6 @@ class TestComputeTotalPPOLossSequence:
         loss, _ = compute_total_ppo_loss(
             new_action_logits=new_action_logits,
             new_values=new_values,
-            old_action_logits=old_action_logits,
             old_values=old_values,
             actions_taken=actions_taken,
             old_log_probs=old_log_probs,

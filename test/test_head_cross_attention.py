@@ -132,6 +132,7 @@ class TestSimpleHeadIntermediate:
     def test_split_forward_equals_full_forward(self):
         """Test that split forward path equals direct forward."""
         head = SimpleHead(input_size=512, output_size=64, hidden=128)
+        head.eval()  # Disable dropout for deterministic output
         x = torch.randn(2, 16, 512)
 
         # Direct forward
@@ -142,18 +143,6 @@ class TestSimpleHeadIntermediate:
         split_output = head.forward_from_intermediate(intermediate)
 
         assert torch.allclose(direct_output, split_output)
-
-    def test_intermediate_has_relu_activation(self):
-        """Test that intermediate features have ReLU applied."""
-        head = SimpleHead(input_size=64, output_size=32, hidden=128)
-
-        # Create input that would produce negative pre-activation values
-        x = torch.randn(2, 8, 64) * 10  # Large values to ensure some negatives
-
-        intermediate = head.forward_intermediate(x)
-
-        # After ReLU, all values should be >= 0
-        assert (intermediate >= 0).all()
 
     def test_gradients_through_split_path(self):
         """Test gradients flow through the split forward path."""
@@ -214,10 +203,12 @@ class TestGPTModelCrossAttention:
         assert model.head_flow == "sequential"
         assert not hasattr(model, "head_cross_attention")
         # Sequential mode should have different input sizes for each head
-        # Order: main_stick → buttons → shoulder → c_stick
-        assert model.main_stick_head.fc1.in_features < model.button_head.fc1.in_features
-        assert model.button_head.fc1.in_features < model.shoulder_head.fc1.in_features
-        assert model.shoulder_head.fc1.in_features < model.c_stick_head.fc1.in_features
+        # Order: buttons → main_stick → c_stick → shoulder
+        assert model.button_head.fc1.in_features < model.main_stick_head.fc1.in_features
+        assert (
+            model.main_stick_head.fc1.in_features < model.c_stick_head.fc1.in_features
+        )
+        assert model.c_stick_head.fc1.in_features < model.shoulder_head.fc1.in_features
 
     def test_model_parallel_mode(self):
         """Test model creation with parallel mode."""

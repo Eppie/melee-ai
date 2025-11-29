@@ -15,6 +15,7 @@ from column_map import ColumnMap
 from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
 from train.wandb_utils import WandbLogger
+from utils import Profiler
 
 
 @dataclass
@@ -113,6 +114,10 @@ class TrainingComponents:
         default_factory=lambda: VarianceTracker(window_size=100)
     )
     weight_drift_tracker: WeightDriftTracker = field(default_factory=WeightDriftTracker)
+    # Profiling infrastructure (profiles first 1000 steps of current process)
+    profiling_enabled: bool = True
+    profiling_step_count: int = 0
+    profilers: Dict[str, Profiler] = field(default_factory=dict)
 
 
 @dataclass
@@ -126,9 +131,9 @@ class TrainingState:
 
 @dataclass
 class EpochContext:
-    epoch_loss_sum: Optional[torch.Tensor] = (
-        None  # Accumulated on GPU, transferred only when needed
-    )
+    epoch_loss_sum: Optional[
+        torch.Tensor
+    ] = None  # Accumulated on GPU, transferred only when needed
     iters_processed: int = 0
     applied_skip: int = 0
     frames_since_last_log: float = 0.0
@@ -193,9 +198,9 @@ class ForwardPassResult:
     batch_targets: Dict[str, torch.Tensor]
     label_smoothing: float
     change_scale: float
-    head_diagnostics: Dict[str, float] = (
-        None  # Per-head metrics for instability detection
-    )
+    head_diagnostics: Dict[
+        str, float
+    ] = None  # Per-head metrics for instability detection
     imitation_weights: torch.Tensor = None  # Value-based sample weights [B, L]
 
 

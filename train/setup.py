@@ -21,7 +21,7 @@ from train.batch_utils import SampleWeightRatios
 from train.checkpoint import _load_latest_checkpoint
 from train.components import AMPContext, TrainingComponents
 from train.wandb_utils import WandbConfig, WandbLogger, init_wandb
-from utils import _resolve_device
+from utils import _resolve_device, Profiler
 
 
 def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
@@ -267,5 +267,20 @@ def initialize_training_components(
         last_step_file=last_step_file,
         debug=debug,
     )
+
+    # Initialize profilers (each with burnin=1 to exclude first step)
+    profiler_names = [
+        "total_step",
+        "data_prep",
+        "progress_calc",
+        "forward",
+        "lr_update",
+        "backward",
+        "stats_update",
+        "checkpoint",
+        "logging",
+    ]
+    for name in profiler_names:
+        components.profilers[name] = Profiler(burnin=1, ema_alpha=0.1)
 
     return components, start_epoch, global_step, start_iter

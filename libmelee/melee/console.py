@@ -1344,33 +1344,33 @@ class Console:
                 gamestate.players[1].character_selected = gamestate.players[1].character
             except TypeError:
                 gamestate.players[1].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[1].character_selected = (
-                    enums.Character.UNKNOWN_CHARACTER
-                )
+                gamestate.players[
+                    1
+                ].character_selected = enums.Character.UNKNOWN_CHARACTER
             try:
                 gamestate.players[2].character = enums.to_internal(_u8(mv, 0x2A))
                 gamestate.players[2].character_selected = gamestate.players[2].character
             except TypeError:
                 gamestate.players[2].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[2].character_selected = (
-                    enums.Character.UNKNOWN_CHARACTER
-                )
+                gamestate.players[
+                    2
+                ].character_selected = enums.Character.UNKNOWN_CHARACTER
             try:
                 gamestate.players[3].character = enums.to_internal(_u8(mv, 0x2B))
                 gamestate.players[3].character_selected = gamestate.players[3].character
             except TypeError:
                 gamestate.players[3].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[3].character_selected = (
-                    enums.Character.UNKNOWN_CHARACTER
-                )
+                gamestate.players[
+                    3
+                ].character_selected = enums.Character.UNKNOWN_CHARACTER
             try:
                 gamestate.players[4].character = enums.to_internal(_u8(mv, 0x2C))
                 gamestate.players[4].character_selected = gamestate.players[4].character
             except TypeError:
                 gamestate.players[4].character = enums.Character.UNKNOWN_CHARACTER
-                gamestate.players[4].character_selected = (
-                    enums.Character.UNKNOWN_CHARACTER
-                )
+                gamestate.players[
+                    4
+                ].character_selected = enums.Character.UNKNOWN_CHARACTER
 
         if gamestate.menu_state == enums.Menu.STAGE_SELECT:
             try:

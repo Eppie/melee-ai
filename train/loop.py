@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from typing import Dict
 
 import torch
@@ -11,6 +12,7 @@ from train.checkpoint import maybe_checkpoint_batch, maybe_checkpoint_epoch
 from train.components import EpochContext, TrainingState
 from train.logging import emit_logging, prepare_logging_bundle
 from train.lr_schedule import _update_learning_rate
+from train.profiling import print_profiling_results
 from train.setup import initialize_training_components, print_config
 from train.step import perform_backward_pass, perform_forward_pass
 from train.wandb_utils import finish_wandb
@@ -103,74 +105,117 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             epoch_ctx.skip_remaining -= 1
             continue
 
-        batch_tensors = _prepare_batch(batch, components.device)
-        progress = _compute_training_progress(
-            epoch,
-            iteration,
-            total_batches,
-            config.train.epochs,
-            config.train.schedule_warmup_epochs,
-            config.train.schedule_cooldown_epochs,
-        )
-        forward_result = perform_forward_pass(
-            components,
-            batch_tensors,
-            progress=progress,
-            in_warmup=epoch < config.train.schedule_warmup_epochs,
+        # Determine if we should profile this step
+        should_profile = (
+            components.profiling_enabled and components.profiling_step_count < 1000
         )
 
-        current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
-        log_this_iter = _should_log(current_iter)
-        lr = _update_learning_rate(components, state.global_step)
-        grad_stats = perform_backward_pass(
-            components,
-            forward_result.loss,
-            collect_grad_stats=components.logger.enabled and log_this_iter,
-        )
+        # Get profiler references (or nullcontext for zero overhead when disabled)
+        prof = components.profilers
+        ctx = lambda name: prof[name] if should_profile else nullcontext()
 
-        epoch_ctx.iters_processed += 1
-        _update_epoch_statistics(epoch_ctx, forward_result)
-        state.global_step += 1
+        with ctx("total_step"):
+            # Data preparation
+            with ctx("data_prep"):
+                batch_tensors = _prepare_batch(batch, components.device)
 
-        # Update variance trackers
-        loss_value = float(forward_result.loss.detach().cpu().item())
-        components.loss_variance_tracker.add(loss_value)
-        if grad_stats and "total_norm" in grad_stats:
-            components.gradient_variance_tracker.add(grad_stats["total_norm"])
+            # Progress computation
+            with ctx("progress_calc"):
+                progress = _compute_training_progress(
+                    epoch,
+                    iteration,
+                    total_batches,
+                    config.train.epochs,
+                    config.train.schedule_warmup_epochs,
+                    config.train.schedule_cooldown_epochs,
+                )
 
-        completed_batches = epoch_ctx.applied_skip + epoch_ctx.iters_processed
-        maybe_checkpoint_batch(
-            components,
-            epoch,
-            iteration,
-            completed_batches,
-            state.global_step,
-        )
+            # Forward pass
+            with ctx("forward"):
+                forward_result = perform_forward_pass(
+                    components,
+                    batch_tensors,
+                    progress=progress,
+                    in_warmup=epoch < config.train.schedule_warmup_epochs,
+                )
 
-        if log_this_iter:
-            now = time.time()
-            dt = max(1e-9, now - epoch_ctx.last_log_time)
-            frames_per_s = epoch_ctx.frames_since_last_log / dt
-            avg_loss_running = epoch_ctx.get_avg_loss()
-            bundle = prepare_logging_bundle(
-                components=components,
-                forward_result=forward_result,
-                epoch=epoch,
-                completed_batches=completed_batches,
-                lr=lr,
-                frames_per_s=frames_per_s,
-                avg_loss_running=avg_loss_running,
-                grad_stats=grad_stats,
-                global_step=state.global_step,
-                epoch_ctx=epoch_ctx,
-            )
-            emit_logging(
-                components=components,
-                bundle=bundle,
-                grad_stats=grad_stats,
-                global_step=state.global_step,
-                epoch_ctx=epoch_ctx,
-            )
+            current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
+            log_this_iter = _should_log(current_iter)
+
+            # Learning rate update
+            with ctx("lr_update"):
+                lr = _update_learning_rate(components, state.global_step)
+
+            # Backward pass
+            with ctx("backward"):
+                grad_stats = perform_backward_pass(
+                    components,
+                    forward_result.loss,
+                    collect_grad_stats=components.logger.enabled and log_this_iter,
+                )
+
+            epoch_ctx.iters_processed += 1
+
+            # Statistics update
+            with ctx("stats_update"):
+                _update_epoch_statistics(epoch_ctx, forward_result)
+                state.global_step += 1
+
+                # Update variance trackers
+                loss_value = float(forward_result.loss.detach().cpu().item())
+                components.loss_variance_tracker.add(loss_value)
+                if grad_stats and "total_norm" in grad_stats:
+                    components.gradient_variance_tracker.add(grad_stats["total_norm"])
+
+            # Checkpointing
+            completed_batches = epoch_ctx.applied_skip + epoch_ctx.iters_processed
+            with ctx("checkpoint"):
+                maybe_checkpoint_batch(
+                    components,
+                    epoch,
+                    iteration,
+                    completed_batches,
+                    state.global_step,
+                )
+
+            # Logging
+            if log_this_iter:
+                with ctx("logging"):
+                    now = time.time()
+                    dt = max(1e-9, now - epoch_ctx.last_log_time)
+                    frames_per_s = epoch_ctx.frames_since_last_log / dt
+                    avg_loss_running = epoch_ctx.get_avg_loss()
+                    bundle = prepare_logging_bundle(
+                        components=components,
+                        forward_result=forward_result,
+                        epoch=epoch,
+                        completed_batches=completed_batches,
+                        lr=lr,
+                        frames_per_s=frames_per_s,
+                        avg_loss_running=avg_loss_running,
+                        grad_stats=grad_stats,
+                        global_step=state.global_step,
+                        epoch_ctx=epoch_ctx,
+                    )
+                    emit_logging(
+                        components=components,
+                        bundle=bundle,
+                        grad_stats=grad_stats,
+                        global_step=state.global_step,
+                        epoch_ctx=epoch_ctx,
+                    )
+                    epoch_ctx.last_log_time = now
+                    epoch_ctx.frames_since_last_log = 0.0
+
+        # Increment profiling step count and check if profiling just completed
+        if should_profile:
+            components.profiling_step_count += 1
+            if components.profiling_step_count >= 1000:
+                print("\n" + "=" * 80)
+                print("PROFILING COMPLETE - 1000 steps profiled")
+                print("=" * 80 + "\n")
+                print_profiling_results(components.profilers)
+                print("\n" + "=" * 80 + "\n")
 
     if epoch == state.resume_epoch:
         state.resume_iter = 0

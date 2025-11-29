@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import time
 from textwrap import indent
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tensordict import TensorDict
 
 from constants import CONTROLLER_KEY_GROUPS, _BUTTON_PRETTY, _MAIN_STICK_LABELS
@@ -132,6 +133,192 @@ def _compute_masked_accuracy(
     return (pred[mask] == target[mask]).float().mean()
 
 
+def compute_confidence_metrics(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    head_name: str,
+) -> Dict[str, float]:
+    """Compute confidence and entropy metrics for a classification head.
+
+    Args:
+        logits: [B, L, K] logits
+        targets: [B, L] target indices
+        head_name: Name for metric keys (e.g., "main_stick")
+
+    Returns:
+        Dictionary with:
+        - confidence/{head}/avg_maxprob: Average max probability
+        - confidence/{head}/avg_maxprob_correct: Avg max prob when correct
+        - entropy/{head}/mean: Average entropy in nats
+    """
+    B, L, K = logits.shape
+    probs = F.softmax(logits, dim=-1)  # [B, L, K]
+
+    # Max probabilities (confidence)
+    max_probs = probs.max(dim=-1).values  # [B, L]
+
+    # Check which predictions are correct
+    pred_idx = logits.argmax(dim=-1)  # [B, L]
+    correct_mask = pred_idx == targets  # [B, L]
+
+    # Entropy: -sum(p * log(p))
+    entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)  # [B, L]
+
+    # Aggregate on GPU, then single transfer
+    stats = torch.stack(
+        [
+            max_probs.mean(),
+            (
+                max_probs[correct_mask].mean()
+                if correct_mask.any()
+                else torch.tensor(0.0, device=logits.device)
+            ),
+            entropy.mean(),
+        ]
+    )
+
+    stats_cpu = stats.cpu().tolist()
+
+    return {
+        f"confidence/{head_name}/avg_maxprob": stats_cpu[0],
+        f"confidence/{head_name}/avg_maxprob_correct": stats_cpu[1],
+        f"entropy/{head_name}/mean": stats_cpu[2],
+    }
+
+
+def compute_topk_accuracy(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    head_name: str,
+    k_values: List[int] = [1, 3, 5],
+) -> Dict[str, float]:
+    """Compute top-K accuracy for k in k_values.
+
+    Args:
+        logits: [B, L, K] logits
+        targets: [B, L] target indices
+        head_name: Name for metric keys
+        k_values: List of K values to compute
+
+    Returns:
+        Dictionary with accuracy/{head}/topK for each K
+    """
+    B, L, K = logits.shape
+    targets_flat = targets.reshape(-1)  # [B*L]
+    logits_flat = logits.reshape(B * L, K)  # [B*L, K]
+
+    # Filter k_values to only those <= K
+    valid_k = [k for k in k_values if k <= K]
+    if not valid_k:
+        return {}
+
+    max_k = max(valid_k)
+    topk_indices = logits_flat.topk(max_k, dim=-1).indices  # [B*L, max_k]
+
+    # Check if target is in top-k for each k
+    targets_expanded = targets_flat.unsqueeze(-1)  # [B*L, 1]
+
+    results = {}
+    for k in valid_k:
+        # Check if target in top k
+        in_topk = (topk_indices[:, :k] == targets_expanded).any(dim=-1)
+        acc = in_topk.float().mean()
+        results[f"accuracy/{head_name}/top{k}"] = float(acc.cpu().item())
+
+    return results
+
+
+def compute_frequency_stats(
+    predictions: torch.Tensor,
+    num_classes: int,
+    head_name: str,
+    prefix: str = "freq",
+) -> Dict[str, float]:
+    """Compute prediction frequency statistics to detect mode collapse.
+
+    Args:
+        predictions: [B, L] predicted class indices
+        num_classes: Total number of classes
+        head_name: Name for metric keys
+        prefix: "freq" for predictions, "tgt_freq" for targets
+
+    Returns:
+        Dictionary with:
+        - {prefix}/{head}/top1_class: Most frequent class
+        - {prefix}/{head}/top1_prop: Proportion of most frequent class
+        - {prefix}/{head}/top5_class_{i}: i-th most frequent class
+        - {prefix}/{head}/top5_prop_{i}: Proportion of i-th most frequent
+        - {prefix}/{head}/diversity: Gini-Simpson diversity index
+    """
+    pred_flat = predictions.reshape(-1)
+
+    # Compute class frequencies
+    counts = torch.bincount(pred_flat, minlength=num_classes).float()
+    props = counts / counts.sum()
+
+    # Top-k most frequent
+    topk_props, topk_classes = props.topk(min(5, num_classes))
+
+    # Gini-Simpson diversity: 1 - sum(p_i^2)
+    # Higher = more diverse, lower = mode collapse
+    diversity = 1.0 - (props**2).sum()
+
+    # Single GPU->CPU transfer
+    topk_props_cpu = topk_props.cpu().tolist()
+    topk_classes_cpu = topk_classes.cpu().tolist()
+    diversity_cpu = float(diversity.cpu().item())
+
+    results = {
+        f"{prefix}/{head_name}/top1_class": topk_classes_cpu[0],
+        f"{prefix}/{head_name}/top1_prop": topk_props_cpu[0],
+        f"{prefix}/{head_name}/diversity": diversity_cpu,
+    }
+
+    # Add top-5 if we have at least 5 classes
+    for i in range(min(5, len(topk_classes_cpu))):
+        results[f"{prefix}/{head_name}/top5_class_{i}"] = topk_classes_cpu[i]
+        results[f"{prefix}/{head_name}/top5_prop_{i}"] = topk_props_cpu[i]
+
+    return results
+
+
+def compute_temporal_consistency(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    head_name: str,
+) -> Dict[str, float]:
+    """Compute how often predictions/targets change vs stay constant.
+
+    Args:
+        predictions: [B, L] predicted indices
+        targets: [B, L] target indices
+        head_name: Name for metric keys
+
+    Returns:
+        Dictionary with:
+        - consistency/{head}/pred_change_rate: How often predictions change
+        - consistency/{head}/target_change_rate: How often targets change
+        - consistency/{head}/change_rate_ratio: pred/target ratio
+    """
+    B, L = predictions.shape
+
+    # Change masks (exclude first frame which has no previous)
+    pred_changes = (predictions[:, 1:] != predictions[:, :-1]).float().mean()
+    target_changes = (targets[:, 1:] != targets[:, :-1]).float().mean()
+
+    # Ratio of pred changes to target changes
+    ratio = pred_changes / (target_changes + 1e-9)
+
+    # Single transfer
+    stats = torch.stack([pred_changes, target_changes, ratio]).cpu().tolist()
+
+    return {
+        f"consistency/{head_name}/pred_change_rate": stats[0],
+        f"consistency/{head_name}/target_change_rate": stats[1],
+        f"consistency/{head_name}/change_rate_ratio": stats[2],
+    }
+
+
 def prepare_logging_bundle(
     components: TrainingComponents,
     forward_result: ForwardPassResult,
@@ -142,6 +329,7 @@ def prepare_logging_bundle(
     avg_loss_running: float,
     grad_stats: Dict[str, float],
     global_step: int,
+    epoch_ctx: Optional[EpochContext] = None,
 ) -> LoggingBundle:
     pred = forward_result.pred
     target_info = forward_result.target_info
@@ -425,6 +613,169 @@ def prepare_logging_bundle(
             "value/corr": correlation,
         }
     )
+
+    # === NEW METRICS ===
+
+    # 1. Confidence and entropy metrics for stick heads
+    log_payload.update(
+        compute_confidence_metrics(
+            logits_main.reshape(batch_size, sequence_length, -1),
+            target_main_2d,
+            "main_stick",
+        )
+    )
+    log_payload.update(
+        compute_confidence_metrics(
+            logits_c.reshape(batch_size, sequence_length, -1), target_c_2d, "c_stick"
+        )
+    )
+    log_payload.update(compute_confidence_metrics(sh_logits, sh_true_idx, "shoulder"))
+
+    # 2. Top-K accuracy for stick heads
+    log_payload.update(
+        compute_topk_accuracy(
+            logits_main.reshape(batch_size, sequence_length, -1),
+            target_main_2d,
+            "main_stick",
+            k_values=[1, 3, 5],
+        )
+    )
+    log_payload.update(
+        compute_topk_accuracy(
+            logits_c.reshape(batch_size, sequence_length, -1),
+            target_c_2d,
+            "c_stick",
+            k_values=[1, 3, 5],
+        )
+    )
+    log_payload.update(
+        compute_topk_accuracy(sh_logits, sh_true_idx, "shoulder", k_values=[1, 3, 5])
+    )
+
+    # 3. Frequency statistics (mode collapse detection)
+    # For predictions
+    log_payload.update(
+        compute_frequency_stats(
+            main_pred,
+            int(target_info.get("main_K", logits_main.shape[-1])),
+            "main_stick",
+            prefix="freq",
+        )
+    )
+    log_payload.update(
+        compute_frequency_stats(
+            c_pred,
+            int(target_info.get("c_K", logits_c.shape[-1])),
+            "c_stick",
+            prefix="freq",
+        )
+    )
+    log_payload.update(
+        compute_frequency_stats(
+            sh_pred_idx, sh_logits.shape[-1], "shoulder", prefix="freq"
+        )
+    )
+
+    # For targets (ground truth distribution)
+    log_payload.update(
+        compute_frequency_stats(
+            target_main_2d,
+            int(target_info.get("main_K", logits_main.shape[-1])),
+            "main_stick",
+            prefix="tgt_freq",
+        )
+    )
+    log_payload.update(
+        compute_frequency_stats(
+            target_c_2d,
+            int(target_info.get("c_K", logits_c.shape[-1])),
+            "c_stick",
+            prefix="tgt_freq",
+        )
+    )
+    log_payload.update(
+        compute_frequency_stats(
+            sh_true_idx, sh_logits.shape[-1], "shoulder", prefix="tgt_freq"
+        )
+    )
+
+    # 4. Temporal consistency
+    log_payload.update(
+        compute_temporal_consistency(main_pred, target_main_2d, "main_stick")
+    )
+    log_payload.update(compute_temporal_consistency(c_pred, target_c_2d, "c_stick"))
+    log_payload.update(
+        compute_temporal_consistency(sh_pred_idx, sh_true_idx, "shoulder")
+    )
+
+    # Button temporal consistency (use exact match as binary signal)
+    log_payload.update(
+        compute_temporal_consistency(
+            correct_btn_em.int(),
+            torch.ones_like(correct_btn_em, dtype=torch.int32),
+            "buttons",
+        )
+    )
+
+    # 5. Sample weight statistics (imitation learning weights)
+    if forward_result.imitation_weights is not None:
+        weights = forward_result.imitation_weights  # [B, L]
+        weights_sq = weights**2
+
+        # Compute effective batch size: (sum w)^2 / sum(w^2)
+        # This shows how many samples are effectively contributing
+        eff_batch_size = (weights.sum() ** 2) / (weights_sq.sum() + 1e-9)
+
+        weight_stats_tensor = torch.stack(
+            [
+                weights.mean(),
+                weights.std(),
+                weights.max(),
+                weights.min(),
+                torch.quantile(weights.flatten(), 0.95),
+                torch.quantile(weights.flatten(), 0.05),
+                eff_batch_size / weights.numel(),  # Normalized by actual batch size
+            ]
+        )
+        weight_stats_cpu = weight_stats_tensor.cpu().tolist()
+
+        log_payload.update(
+            {
+                "imitation/weight_mean": weight_stats_cpu[0],
+                "imitation/weight_std": weight_stats_cpu[1],
+                "imitation/weight_max": weight_stats_cpu[2],
+                "imitation/weight_min": weight_stats_cpu[3],
+                "imitation/weight_p95": weight_stats_cpu[4],
+                "imitation/weight_p05": weight_stats_cpu[5],
+                "imitation/effective_batch_fraction": weight_stats_cpu[6],
+            }
+        )
+
+    # 6. Loss variance (batch-to-batch stability)
+    if epoch_ctx is not None:
+        loss_std = epoch_ctx.get_loss_std()
+        loss_cv = loss_std / (avg_loss_running + 1e-9)  # Coefficient of variation
+        log_payload.update(
+            {
+                "loss/total_std": loss_std,
+                "loss/total_cv": loss_cv,
+            }
+        )
+
+    # 7. Gradient variance (gradient stability across batches)
+    grad_variance_metrics = {
+        "gradients/total_norm_variance": components.gradient_variance_tracker.get_variance(),
+        "gradients/total_norm_std": components.gradient_variance_tracker.get_std(),
+        "gradients/total_norm_cv": components.gradient_variance_tracker.get_cv(),
+    }
+    log_payload.update(grad_variance_metrics)
+
+    # 8. Weight drift (parameter norm velocity)
+    if grad_stats and "param_total_norm" in grad_stats:
+        weight_drift_metrics = components.weight_drift_tracker.update(
+            grad_stats["param_total_norm"], global_step
+        )
+        log_payload.update(weight_drift_metrics)
 
     return LoggingBundle(log_lines=log_lines, payload=log_payload)
 

@@ -188,12 +188,12 @@ class EpisodeStatsCollector(StatsCollector):
             "p1_wins": self._p1_wins,
             "p2_wins": self._p2_wins,
             "draws": self._draws,
-            "p1_win_rate": self._p1_wins / total_decisive * 100
-            if total_decisive
-            else 0,
-            "p2_win_rate": self._p2_wins / total_decisive * 100
-            if total_decisive
-            else 0,
+            "p1_win_rate": (
+                self._p1_wins / total_decisive * 100 if total_decisive else 0
+            ),
+            "p2_win_rate": (
+                self._p2_wins / total_decisive * 100 if total_decisive else 0
+            ),
         }
 
         # Damage statistics

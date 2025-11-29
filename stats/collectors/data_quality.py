@@ -223,9 +223,9 @@ class DataQualityCollector(StatsCollector):
                 nan_inf_issues[col_name] = {
                     "nan_count": nan_count,
                     "inf_count": inf_count,
-                    "nan_percent": nan_count / total_frames * 100
-                    if total_frames
-                    else 0,
+                    "nan_percent": (
+                        nan_count / total_frames * 100 if total_frames else 0
+                    ),
                 }
 
         # Feature utilization
@@ -234,9 +234,9 @@ class DataQualityCollector(StatsCollector):
             non_default = self._non_default_counts.get(col_name, 0)
             feature_utilization[col_name] = {
                 "non_default_count": non_default,
-                "non_default_percent": non_default / total_frames * 100
-                if total_frames
-                else 0,
+                "non_default_percent": (
+                    non_default / total_frames * 100 if total_frames else 0
+                ),
             }
 
         return {

@@ -132,6 +132,12 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
         _update_epoch_statistics(epoch_ctx, forward_result)
         state.global_step += 1
 
+        # Update variance trackers
+        loss_value = float(forward_result.loss.detach().cpu().item())
+        components.loss_variance_tracker.add(loss_value)
+        if grad_stats and "total_norm" in grad_stats:
+            components.gradient_variance_tracker.add(grad_stats["total_norm"])
+
         completed_batches = epoch_ctx.applied_skip + epoch_ctx.iters_processed
         maybe_checkpoint_batch(
             components,
@@ -156,6 +162,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 avg_loss_running=avg_loss_running,
                 grad_stats=grad_stats,
                 global_step=state.global_step,
+                epoch_ctx=epoch_ctx,
             )
             emit_logging(
                 components=components,

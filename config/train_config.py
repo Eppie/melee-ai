@@ -26,7 +26,7 @@ class TrainConfig(BaseModel):
         ),
     )
     epochs: int = Field(
-        default=64,
+        default=32,
         ge=1,
         description=(
             "Number of training epochs. One epoch = one pass through the entire dataset. "
@@ -52,7 +52,7 @@ class TrainConfig(BaseModel):
         ),
     )
     betas: Tuple[float, float] = Field(
-        default=(0.9, 0.98),
+        default=(0.9, 0.95),
         description=(
             "AdamW momentum coefficients (beta1, beta2) for gradient and squared gradient moving averages. "
             "beta1 controls first moment (mean), beta2 controls second moment (variance). "

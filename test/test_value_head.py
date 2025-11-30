@@ -85,15 +85,16 @@ def replay_reward_data():
 def test_compute_frame_rewards_damage_and_stock(reward_setup):
     """Damage deltas and stock losses convert to the configured rewards."""
     colmap, idx = reward_setup
-    assert idx.p2_percent is not None and idx.p2_stock is not None
+    assert idx.p2_percent is not None and idx.p2_action is not None
 
     seq_len = 4
     X = _zeros_feature_tensor(colmap, seq_len)
 
     # Opponent percent rises by 2, then by 3 -> convert to rewards at frames 1 and 2.
     X[0, :, idx.p2_percent] = torch.tensor([0.0, 2.0, 5.0, 5.0])
-    # Opponent loses one stock between frames 1 and 2.
-    X[0, :, idx.p2_stock] = torch.tensor([4.0, 4.0, 3.0, 3.0])
+    # Opponent loses one stock between frames 1 and 2 (action transitions from alive to dying)
+    # Action > 0xA means alive, action <= 0xA means dying
+    X[0, :, idx.p2_action] = torch.tensor([50.0, 50.0, 5.0, 5.0])  # Alive -> Alive -> Dying -> Dying
 
     rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
 
@@ -238,7 +239,7 @@ def test_replay_rewards_shape_and_sparsity(replay_reward_data):
     [
         (31, -0.0784),
         (36, -0.0784),
-        (6917, -1.0),
+        (6917, -1.0),  # Updated: action-based death detection at frame 6918 gives reward at 6917 (reward_stock_taken=1.0)
     ],
 )
 def test_replay_rewards_matches_known_frames(replay_reward_data, frame, value):

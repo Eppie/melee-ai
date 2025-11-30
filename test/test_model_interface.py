@@ -58,11 +58,15 @@ def test_persist_death_record_serializes_logits(tmp_path: Path) -> None:
 
     assert torch.is_tensor(record.logits["main_stick"])
 
-    engine._persist_death_record(stock_after=2)
+    engine._persist_death_record(action_state=5)  # Death action state (e.g., 0x05)
 
     files = list((engine._death_log_dir).glob("death_*.json"))
     assert files, "Death log file not created"
     payload = json.loads(files[0].read_text())
+
+    # Check that action_state is in the payload
+    assert "death_action_state" in payload
+    assert payload["death_action_state"] == 5
 
     frame_logits = payload["frames"][0]["logits"]
     assert isinstance(frame_logits["main_stick"], list)

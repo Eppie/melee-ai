@@ -151,10 +151,6 @@ class SimulationWorker:
         self.prev_features: Optional[torch.Tensor] = None
         self.frame_count = 0
 
-        # Stock tracking for logging
-        self.prev_p1_stock: Optional[int] = None
-        self.prev_p2_stock: Optional[int] = None
-
         # Running flag
         self.running = False
 
@@ -313,46 +309,19 @@ class SimulationWorker:
         if self.prev_features is not None:
             reward = self._compute_reward(self.prev_features, features)
 
-        # Check for episode end (stocks depleted)
+        # Episode continues indefinitely (infinite stocks/time in PPO)
+        # Episodes are sliced arbitrarily by the coordinator
         done = False
         p1 = gamestate.players.get(self.learner_port)
         p2 = gamestate.players.get(self.opponent_port)
-        if p1 and p2:
-            # Track stock losses
-            if self.prev_p1_stock is not None and p1.stock < self.prev_p1_stock:
-                stocks_lost = self.prev_p1_stock - p1.stock
-                print(
-                    f"[Worker {self.worker_id}] P1 lost {stocks_lost} stock(s)! "
-                    f"({self.prev_p1_stock} → {p1.stock}) | "
-                    f"P1: {p1.percent:.1f}% | P2: {p2.percent:.1f}%"
-                )
-            if self.prev_p2_stock is not None and p2.stock < self.prev_p2_stock:
-                stocks_lost = self.prev_p2_stock - p2.stock
-                print(
-                    f"[Worker {self.worker_id}] P2 lost {stocks_lost} stock(s)! "
-                    f"({self.prev_p2_stock} → {p2.stock}) | "
-                    f"P1: {p1.percent:.1f}% | P2: {p2.percent:.1f}%"
-                )
 
+        if p1 and p2:
             # Print percent every 120 frames (2 seconds of game time)
             if self.frame_count % 120 == 0:
                 print(
                     f"[Worker {self.worker_id}] Frame {self.frame_count} | "
                     f"P1: {p1.percent:.1f}% ({p1.stock} stocks) | "
                     f"P2: {p2.percent:.1f}% ({p2.stock} stocks)"
-                )
-
-            # Update stock tracking
-            self.prev_p1_stock = p1.stock
-            self.prev_p2_stock = p2.stock
-
-            # Check for match end
-            if p1.stock == 0 or p2.stock == 0:
-                done = True
-                winner = "P1" if p1.stock > 0 else "P2"
-                print(
-                    f"[Worker {self.worker_id}] Match ended: {winner} wins "
-                    f"(P1: {p1.stock} stocks @ {p1.percent:.1f}%, P2: {p2.stock} stocks @ {p2.percent:.1f}%)"
                 )
 
         # Send state to coordinator (convert tensor to numpy to avoid file descriptor issues)
@@ -480,13 +449,11 @@ class SimulationWorker:
     def _restart_match(self) -> None:
         """Restart the match after it ends.
 
-        Since we're using infinite_time=True, matches only end when stocks
-        are depleted. We need to navigate back through menus to start a new match.
+        Note: With infinite stocks/time, matches never actually end naturally.
+        This is here for manual reset scenarios.
         """
         print(f"[Worker {self.worker_id}] Restarting match...")
         self.prev_features = None
-        self.prev_p1_stock = None
-        self.prev_p2_stock = None
         self.frame_count = 0
         # The menu navigation will happen automatically in the main loop
         # when we detect we're no longer in-game

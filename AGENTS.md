@@ -13,3 +13,6 @@ Stick to 4-space indentation, full type hints, and `snake_case` functions with `
 
 ## Testing Guidelines
 Pytest already adds the repo root to `PYTHONPATH`, so prefer absolute imports. Place new suites in `test_<feature>.py` files with descriptive `test_*` names and fixtures that reuse `test/test.slp` for controller traces. Run `pytest -q` before pushing, and add regression cases whenever you change quantization tables, window datasets, or PPO loss math.
+
+## Planning
+Important: When writing complex features or significant refactors, or when specifically asked, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.

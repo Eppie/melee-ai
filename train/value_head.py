@@ -15,8 +15,8 @@ from config.config import get_config
 class RewardFeatureIdx:
     """Cached indices for reward computation features."""
 
-    p1_stock: Optional[int] = None
-    p2_stock: Optional[int] = None
+    p1_action: Optional[int] = None
+    p2_action: Optional[int] = None
     p1_percent: Optional[int] = None
     p2_percent: Optional[int] = None
     p1_is_in_hitlag: Optional[int] = None
@@ -31,8 +31,8 @@ def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
     """Resolve frequently accessed feature indices from a :class:`ColumnMap` in one pass.
 
     Example:
-        If ``colmap.feat_names`` equals ``["p1_stock", "p2_stock", "p1_percent"]``, calling
-        ``build_reward_feature_index`` returns ``RewardFeatureIdx(p1_stock=0, p2_stock=1,
+        If ``colmap.feat_names`` equals ``["p1_action", "p2_action", "p1_percent"]``, calling
+        ``build_reward_feature_index`` returns ``RewardFeatureIdx(p1_action=0, p2_action=1,
         p1_percent=2, ...)`` while any missing names (such as ``p2_percent``) remain ``None``. The
         example demonstrates how the helper searches each feature name and records the integer
         position so later reward computations can index into tensors without repeated list lookups.
@@ -49,8 +49,8 @@ def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
         return names.index(name)
 
     return RewardFeatureIdx(
-        p1_stock=idx("p1_stock"),
-        p2_stock=idx("p2_stock"),
+        p1_action=idx("p1_action"),
+        p2_action=idx("p2_action"),
         p1_percent=idx("p1_percent"),
         p2_percent=idx("p2_percent"),
         p1_is_in_hitlag=idx("p1_is_in_hitlag"),
@@ -104,10 +104,21 @@ def _compute_player_rewards(
     d_opp.clamp_min_(0.0)
     rewards[:, prev_slice].add_(d_opp.mul_(cfg.reward_damage_dealt))
 
-    # --- Stock changes
-    opp_stock_idx = getattr(idx, f"{opponent}_stock")
-    d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
-    stock_taken = (-d_opp_stock).clamp_min_(0)
+    # --- Death detection using action state (opponent dying)
+    # Action state IDs 0-10 (0x00-0x0A) are death states
+    opp_action_idx = getattr(idx, f"{opponent}_action")
+    opp_action = X[:, :, opp_action_idx]  # [B, L]
+    opp_is_dying = opp_action <= 0x0A  # [B, L]
+
+    # Detect transitions from living to dying (stock loss)
+    # deaths[t] = not dying at t-1 AND dying at t
+    opp_deaths = torch.logical_and(
+        torch.logical_not(opp_is_dying[:, :-1]),  # not dying at prev frame
+        opp_is_dying[:, 1:]  # dying at current frame
+    )  # [B, L-1]
+
+    # Reward for taking opponent's stock
+    stock_taken = opp_deaths.to(dtype)  # Convert bool to float
     rewards[:, prev_slice].add_(stock_taken.mul_(cfg.reward_stock_taken))
 
     # --- Hitlag rewards/penalties (per-frame) ---

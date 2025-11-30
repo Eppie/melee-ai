@@ -42,7 +42,7 @@ class RLConfig(BaseModel):
         ),
     )
     reward_stock_taken: float = Field(
-        default=4.0,
+        default=1.0,
         description=(
             "Reward for taking an opponent's stock. Large bonus for eliminations. "
             "Should be ~20-100x damage reward for proper scaling. Reasonable range: [1.0, 10.0]."

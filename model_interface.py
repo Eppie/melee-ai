@@ -444,7 +444,7 @@ class GPTInferenceEngine:
         self._frames_seen = 0
         self._death_log_dir = Path.cwd() / "death_logs"
         self._death_counter = 0
-        self._prev_stock: Optional[int] = None
+        self._prev_action: Optional[int] = None
 
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
         """Convert raw_inputs into an ordered tensor of feature values (optimized)."""
@@ -551,7 +551,7 @@ class GPTInferenceEngine:
                 serialized[key] = value
         return serialized
 
-    def _persist_death_record(self, stock_after: int) -> None:
+    def _persist_death_record(self, action_state: int) -> None:
         """Write the current frame history to disk after a stock loss."""
         frames = list(self.frame_history)
         if not frames:
@@ -562,7 +562,7 @@ class GPTInferenceEngine:
             "seq_len": self.seq_len,
             "warmup_frames": self.warmup_frames,
             "frames_seen": self._frames_seen,
-            "stock_after_death": stock_after,
+            "death_action_state": action_state,
             "feature_names": self.feature_names,
             "target_names": self.target_names,
             "frames": [
@@ -585,14 +585,18 @@ class GPTInferenceEngine:
         except Exception:
             pass
 
-    def _maybe_log_death(self, current_stock: Optional[float]) -> None:
-        """Detect stock drops and trigger death logging."""
-        if current_stock is None:
+    def _maybe_log_death(self, current_action: Optional[float]) -> None:
+        """Detect stock loss via action state transition and trigger death logging."""
+        if current_action is None:
             return
-        stock_value = int(current_stock)
-        if self._prev_stock is not None and stock_value < self._prev_stock:
-            self._persist_death_record(stock_value)
-        self._prev_stock = stock_value
+        action_value = int(current_action)
+        # Detect transition from alive (action > 0xA) to dying (action <= 0xA)
+        is_dying = action_value <= 0x0A
+        if self._prev_action is not None:
+            was_dying = self._prev_action <= 0x0A
+            if not was_dying and is_dying:
+                self._persist_death_record(action_value)
+        self._prev_action = action_value
 
     # TODO: Raw or processed here?
     def _decode_stick(self, logits: torch.Tensor, palette: np.ndarray) -> np.ndarray:
@@ -665,7 +669,7 @@ class GPTInferenceEngine:
         record = self._record_frame(features, raw_snapshot)
         inputs_td = self.prepare_inputs(features)
         self._frames_seen += 1
-        self._maybe_log_death(raw_snapshot.get("p1_stock"))
+        self._maybe_log_death(raw_snapshot.get("p1_action"))
 
         if inputs_td is None or len(self.buffer) < self.warmup_frames:
             controller = ControllerState.neutral()
@@ -697,7 +701,7 @@ class GPTInferenceEngine:
         record = self._record_frame(features, raw_snapshot)
         inputs_td = self.prepare_inputs(features)
         self._frames_seen += 1
-        self._maybe_log_death(raw_snapshot.get("p1_stock"))
+        self._maybe_log_death(raw_snapshot.get("p1_action"))
 
         return inputs_td, raw_snapshot, features, record
 

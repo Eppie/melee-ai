@@ -36,7 +36,7 @@ class TestPPOConfig:
 
     def test_default_distributed_mode(self):
         cfg = get_config()
-        assert cfg.ppo.distributed_mode is False
+        assert cfg.ppo.distributed_mode is True
 
     def test_rollout_length_validation(self):
         """rollout_length must be >= 100."""

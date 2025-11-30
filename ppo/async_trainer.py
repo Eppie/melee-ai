@@ -33,7 +33,7 @@ from ppo.ppo_loss import compute_total_ppo_loss
 from ppo.trajectory_slicer import RolloutSlice
 from schema import get_feature_names, get_target_names
 from train.batch_utils import build_model_inputs
-from utils import _resolve_device
+from utils import _resolve_device, Profiler
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,15 @@ class TrainingMetrics:
     clipped_fraction: float
     num_windows: int
     reverted: bool = False
+
+    # Profiling stats (in milliseconds for easier reading)
+    time_prepare_windows_ms: float = 0.0
+    time_combine_windows_ms: float = 0.0
+    time_forward_ms: float = 0.0
+    time_loss_ms: float = 0.0
+    time_backward_ms: float = 0.0
+    time_optimizer_ms: float = 0.0
+    time_total_training_ms: float = 0.0
 
 
 class AsyncPPOTrainer:
@@ -342,46 +351,60 @@ def _train_with_accumulation(
     ppo_cfg = config.ppo
     rl_cfg = config.rl
 
-    # Prepare training windows from all rollouts
-    all_windows = []
-    for rollout in rollouts:
-        windows = _prepare_windows(rollout, config, device)
-        all_windows.append(windows)
+    # Create profilers for this training run
+    prof_prepare = Profiler(burnin=0)
+    prof_combine = Profiler(burnin=0)
+    prof_total = Profiler(burnin=0)
 
-    # Combine windows from all rollouts
-    combined_windows = _combine_windows(all_windows)
+    with prof_total:
+        # Prepare training windows from all rollouts
+        all_windows = []
+        for rollout in rollouts:
+            with prof_prepare:
+                windows = _prepare_windows(rollout, config, device)
+            all_windows.append(windows)
 
-    # Save checkpoint before training (for potential reversion)
-    checkpoint_state = None
-    if hasattr(ppo_cfg, "max_mean_actor_kl") and ppo_cfg.max_mean_actor_kl > 0:
-        checkpoint_state = model.state_dict()
+        # Combine windows from all rollouts
+        with prof_combine:
+            combined_windows = _combine_windows(all_windows)
 
-    # Run PPO epochs with gradient accumulation
-    metrics = _ppo_training_loop(
-        model=model,
-        teacher_model=teacher_model,
-        optimizer=optimizer,
-        windows=combined_windows,
-        ppo_cfg=ppo_cfg,
-        rl_cfg=rl_cfg,
-        colmap=colmap,
-        device=device,
-    )
+        # Save checkpoint before training (for potential reversion)
+        checkpoint_state = None
+        if hasattr(ppo_cfg, "max_mean_actor_kl") and ppo_cfg.max_mean_actor_kl > 0:
+            checkpoint_state = model.state_dict()
 
-    # Safety check: revert if KL divergence too high
-    reverted = False
-    if (
-        checkpoint_state is not None
-        and hasattr(ppo_cfg, "max_mean_actor_kl")
-        and metrics.approx_kl > ppo_cfg.max_mean_actor_kl
-    ):
-        logger.warning(
-            f"Actor KL {metrics.approx_kl:.4f} > {ppo_cfg.max_mean_actor_kl:.4f}, reverting checkpoint"
+        # Run PPO epochs with gradient accumulation
+        metrics = _ppo_training_loop(
+            model=model,
+            teacher_model=teacher_model,
+            optimizer=optimizer,
+            windows=combined_windows,
+            ppo_cfg=ppo_cfg,
+            rl_cfg=rl_cfg,
+            colmap=colmap,
+            device=device,
         )
-        model.load_state_dict(checkpoint_state)
-        reverted = True
+
+        # Safety check: revert if KL divergence too high
+        reverted = False
+        if (
+            checkpoint_state is not None
+            and hasattr(ppo_cfg, "max_mean_actor_kl")
+            and metrics.approx_kl > ppo_cfg.max_mean_actor_kl
+        ):
+            logger.warning(
+                f"Actor KL {metrics.approx_kl:.4f} > {ppo_cfg.max_mean_actor_kl:.4f}, reverting checkpoint"
+            )
+            model.load_state_dict(checkpoint_state)
+            reverted = True
 
     metrics.reverted = reverted
+
+    # Add profiling stats to metrics (convert to ms)
+    metrics.time_prepare_windows_ms = prof_prepare.mean_time() * 1000
+    metrics.time_combine_windows_ms = prof_combine.mean_time() * 1000
+    metrics.time_total_training_ms = prof_total.total_time() * 1000
+
     return metrics
 
 
@@ -542,6 +565,12 @@ def _ppo_training_loop(
     all_clipped_frac = []
     epoch_metrics = {}
 
+    # Create profilers for detailed timing
+    prof_forward = Profiler(burnin=0)
+    prof_loss = Profiler(burnin=0)
+    prof_backward = Profiler(burnin=0)
+    prof_optimizer = Profiler(burnin=0)
+
     # Run PPO epochs
     for ppo_epoch in range(ppo_cfg.ppo_epochs):
         # Shuffle windows
@@ -578,43 +607,46 @@ def _ppo_training_loop(
                 continue
 
             # Forward pass
-            with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
-                model_inputs = build_model_inputs(mb_states, colmap)
-                outputs = model(model_inputs)
+            with prof_forward:
+                with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
+                    model_inputs = build_model_inputs(mb_states, colmap)
+                    outputs = model(model_inputs)
 
-                new_action_logits = {}
-                for head in ["main_stick", "c_stick", "buttons", "shoulder"]:
-                    if head in outputs:
-                        new_action_logits[head] = outputs[head]
+                    new_action_logits = {}
+                    for head in ["main_stick", "c_stick", "buttons", "shoulder"]:
+                        if head in outputs:
+                            new_action_logits[head] = outputs[head]
 
-                new_values = outputs.get(
-                    "value", torch.zeros(mb_size, seq_len, 1, device=device)
-                )[:, :, 0]
+                    new_values = outputs.get(
+                        "value", torch.zeros(mb_size, seq_len, 1, device=device)
+                    )[:, :, 0]
 
-                # Skip if NaN
-                has_nan = any(
-                    torch.isnan(v).any() or torch.isinf(v).any()
-                    for v in new_action_logits.values()
-                )
-                if has_nan or torch.isnan(new_values).any():
-                    logger.warning("NaN in model outputs, skipping batch")
-                    continue
+            # Skip if NaN
+            has_nan = any(
+                torch.isnan(v).any() or torch.isinf(v).any()
+                for v in new_action_logits.values()
+            )
+            if has_nan or torch.isnan(new_values).any():
+                logger.warning("NaN in model outputs, skipping batch")
+                continue
 
-                # Compute loss
-                loss, loss_metrics = compute_total_ppo_loss(
-                    new_action_logits=new_action_logits,
-                    new_values=new_values,
-                    old_values=mb_old_values,
-                    actions_taken=mb_actions_taken,
-                    old_log_probs=mb_old_log_probs,
-                    advantages=mb_advantages,
-                    returns=mb_returns,
-                    clip_ratio=ppo_cfg.clip_ratio,
-                    entropy_coef=ppo_cfg.entropy_coef,
-                    value_coef=rl_cfg.value_loss_coef,
-                    value_clip=ppo_cfg.value_clip,
-                    loss_mask=loss_mask,
-                )
+            # Compute loss
+            with prof_loss:
+                with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
+                    loss, loss_metrics = compute_total_ppo_loss(
+                        new_action_logits=new_action_logits,
+                        new_values=new_values,
+                        old_values=mb_old_values,
+                        actions_taken=mb_actions_taken,
+                        old_log_probs=mb_old_log_probs,
+                        advantages=mb_advantages,
+                        returns=mb_returns,
+                        clip_ratio=ppo_cfg.clip_ratio,
+                        entropy_coef=ppo_cfg.entropy_coef,
+                        value_coef=rl_cfg.value_loss_coef,
+                        value_clip=ppo_cfg.value_clip,
+                        loss_mask=loss_mask,
+                    )
 
             # Check for NaN
             if torch.isnan(loss) or torch.isinf(loss):
@@ -622,25 +654,27 @@ def _ppo_training_loop(
                 continue
 
             # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-
-            # Check gradients
-            has_nan_grad = any(
-                p.grad is not None
-                and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any())
-                for p in model.parameters()
-            )
-            if has_nan_grad:
-                logger.warning("NaN gradients, skipping step")
+            with prof_backward:
                 optimizer.zero_grad()
-                continue
+                loss.backward()
 
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
+                # Check gradients
+                has_nan_grad = any(
+                    p.grad is not None
+                    and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any())
+                    for p in model.parameters()
+                )
+                if has_nan_grad:
+                    logger.warning("NaN gradients, skipping step")
+                    optimizer.zero_grad()
+                    continue
+
+                # Clip gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
 
             # Optimizer step
-            optimizer.step()
+            with prof_optimizer:
+                optimizer.step()
 
             # Record metrics
             epoch_losses.append(loss.item())
@@ -682,4 +716,9 @@ def _ppo_training_loop(
         approx_kl=approx_kl,
         clipped_fraction=clipped_frac,
         num_windows=num_windows,
+        # Add profiling stats (convert to ms)
+        time_forward_ms=prof_forward.mean_time() * 1000,
+        time_loss_ms=prof_loss.mean_time() * 1000,
+        time_backward_ms=prof_backward.mean_time() * 1000,
+        time_optimizer_ms=prof_optimizer.mean_time() * 1000,
     )

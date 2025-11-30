@@ -111,7 +111,6 @@ class Trajectory:
         Returns:
             Dictionary containing:
                 - states: [T, F] stacked states
-                - action_logits_*: [T, ...] logits for each action head
                 - actions_*: [T, ...] actions taken for each head
                 - old_log_probs: [T] log probabilities
                 - values: [T] value estimates
@@ -128,16 +127,13 @@ class Trajectory:
         # Stack states
         states = torch.stack([step.state for step in self.steps]).to(device)  # [T, F]
 
-        # Stack action logits and actions for each head
+        # Stack actions for each head
         result = {"states": states}
 
         # Assuming action heads: main_stick, c_stick, buttons, shoulder
         action_heads = ["main_stick", "c_stick", "buttons", "shoulder"]
         for head in action_heads:
-            if head in self.steps[0].action_logits:
-                result[f"action_logits_{head}"] = torch.stack(
-                    [step.action_logits[head] for step in self.steps]
-                ).to(device)
+            if head in self.steps[0].action_taken:
                 result[f"actions_{head}"] = torch.stack(
                     [step.action_taken[head] for step in self.steps]
                 ).to(device)
@@ -153,71 +149,3 @@ class Trajectory:
         result["advantages"] = self.advantages.to(device)  # [T]
 
         return result
-
-
-class TrajectoryBuffer:
-    """Buffer for collecting trajectories during self-play."""
-
-    def __init__(self):
-        self.current_trajectory: List[Step] = []
-        self.completed_trajectories: List[Trajectory] = []
-
-    def add_step(
-        self,
-        state: torch.Tensor,
-        action_logits: Dict[str, torch.Tensor],
-        action_taken: Dict[str, torch.Tensor],
-        log_prob: torch.Tensor,
-        value: torch.Tensor,
-        reward: float,
-        done: bool,
-    ) -> None:
-        """Add a step to the current trajectory."""
-        step = Step(
-            state=state.cpu(),
-            action_logits={k: v.cpu() for k, v in action_logits.items()},
-            action_taken={k: v.cpu() for k, v in action_taken.items()},
-            log_prob=log_prob.cpu(),
-            value=value.cpu(),
-            reward=reward,
-            done=done,
-        )
-        self.current_trajectory.append(step)
-
-    def finish_trajectory(self, returns: Optional[torch.Tensor] = None) -> None:
-        """Finish the current trajectory and add to completed list."""
-        if len(self.current_trajectory) > 0:
-            trajectory = Trajectory(steps=self.current_trajectory)
-            if returns is not None:
-                returns = returns.detach().clone().reshape(-1)
-                if returns.numel() != len(self.current_trajectory):
-                    raise ValueError("Returns length does not match trajectory length")
-                trajectory.returns = returns
-            self.completed_trajectories.append(trajectory)
-            self.current_trajectory = []
-
-    def compute_all_gae(
-        self,
-        gamma: float = 0.995,
-        gae_lambda: float = 0.95,
-        normalize: bool = True,
-    ) -> None:
-        """Compute GAE for all completed trajectories."""
-        for trajectory in self.completed_trajectories:
-            trajectory.compute_gae(gamma, gae_lambda, normalize)
-
-    def get_trajectories(self) -> List[Trajectory]:
-        """Get all completed trajectories."""
-        return self.completed_trajectories
-
-    def clear(self) -> None:
-        """Clear all trajectories."""
-        self.current_trajectory = []
-        self.completed_trajectories = []
-
-    def discard_current(self) -> None:
-        """Drop the in-progress trajectory without saving it."""
-        self.current_trajectory = []
-
-    def __len__(self) -> int:
-        return len(self.completed_trajectories)

@@ -62,7 +62,7 @@ class ZarrConfig(BaseModel):
         ),
     )
     episode_count: int = Field(
-        default=100,
+        default=1,
         ge=1,
         description=(
             "Number of episodes (replay files) to process for training dataset. "
@@ -72,7 +72,7 @@ class ZarrConfig(BaseModel):
         ),
     )
     validation_count: int = Field(
-        default=100,
+        default=30,
         ge=1,
         description=(
             "Number of episodes to process for validation dataset. Held out from training. "

@@ -52,6 +52,38 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable pin_memory on the DataLoader (disabled by default).",
     )
+    parser.add_argument(
+        "--in-memory",
+        action="store_true",
+        help="Load each episode fully into RAM on first access to bypass zarr I/O.",
+    )
+    parser.add_argument(
+        "--in-memory-shared",
+        action="store_true",
+        help=(
+            "Eagerly load all episodes into torch shared memory so multiple workers "
+            "can reuse a single copy."
+        ),
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Number of DataLoader workers (defaults to 0 for single-process loading).",
+    )
+    parser.add_argument(
+        "--start-method",
+        type=str,
+        default=None,
+        choices=["fork", "spawn", "forkserver", None],
+        help="torch.multiprocessing start method for workers (defaults to PyTorch's platform default).",
+    )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=None,
+        help="Override DataLoader prefetch_factor (PyTorch default=2 when num_workers>0).",
+    )
     return parser.parse_args()
 
 
@@ -63,18 +95,35 @@ def build_loader(args: argparse.Namespace) -> torch.utils.data.DataLoader:
     batch_size = args.batch_size or config.train.batch_size
     stride = args.stride or config.train.stride
 
-    dataset = WindowDataset(args.dataset_root)
+    dataset = WindowDataset(
+        args.dataset_root,
+        in_memory=args.in_memory,
+        in_memory_shared=args.in_memory_shared,
+    )
     sampler = RandomWindowSampler(index=dataset.index, stride=stride)
     sampler.set_epoch(0)
+
+    mp_ctx = None
+    if args.num_workers and args.start_method:
+        try:
+            mp_ctx = torch.multiprocessing.get_context(args.start_method)
+        except RuntimeError as exc:
+            print(
+                f"[benchmark] Requested start method '{args.start_method}' unavailable ({exc}); using default."
+            )
+            mp_ctx = None
 
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
         sampler=sampler,
-        num_workers=0,
+        num_workers=args.num_workers,
         pin_memory=args.pin_memory,
         drop_last=False,
         worker_init_fn=worker_init_fn,
+        persistent_workers=(args.num_workers > 0),
+        multiprocessing_context=mp_ctx,
+        prefetch_factor=args.prefetch_factor if args.prefetch_factor else None,
     )
     return loader
 

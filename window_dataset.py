@@ -188,8 +188,17 @@ class WindowDataset(Dataset):
     def __init__(
         self,
         data_dir: str | Path,
+        *,
+        in_memory: bool = False,
+        in_memory_shared: bool = False,
     ) -> None:
-        """Prepare the dataset by indexing shards."""
+        """Prepare the dataset by indexing shards.
+
+        ``in_memory`` loads episode arrays lazily into RAM on first access
+        (per-process). ``in_memory_shared`` eagerly loads all episodes into
+        torch shared memory so multiple workers can reuse the same backing
+        buffers without duplicating memory.
+        """
         super().__init__()
         self.index = ZarrCorpusIndex(data_dir)
         self.seq_len = self.index.seq_len
@@ -199,6 +208,14 @@ class WindowDataset(Dataset):
         self._target_names_sel = list(self._target_names)
         self._shard_cache: Dict[int, zarr.Group] = {}
         self._episode_cache: Dict[Tuple[int, int], Tuple[zarr.Array, zarr.Array]] = {}
+        self._shared_episode_cache: Dict[
+            Tuple[int, int], Tuple[torch.Tensor, torch.Tensor]
+        ] = {}
+        self._episode_arrays_cache: Dict[
+            Tuple[int, int], Tuple[np.ndarray, np.ndarray]
+        ] = {}
+        self._in_memory = bool(in_memory or in_memory_shared)
+        self._in_memory_shared = bool(in_memory_shared)
         # Enforce preprocessed data presence
         preprocessed = self.index.meta.get("preprocessed", {})
         if not (preprocessed.get("features") and preprocessed.get("targets")):
@@ -220,6 +237,9 @@ class WindowDataset(Dataset):
             raise RuntimeError(
                 f"Preprocessed dataset missing required target columns: {missing}"
             )
+
+        if self._in_memory_shared:
+            self._load_all_episodes_shared()
 
     def __len__(self) -> int:
         """Return the total number of sliding windows across the corpus."""
@@ -244,20 +264,28 @@ class WindowDataset(Dataset):
         ep = self.index.episodes[ep_idx]
         start = offset  # within episode, window starts at this index
 
-        feature_array, target_array = self.index.open_episode_arrays(ep)
+        feature_array, target_array = self._get_episode_arrays(ep)
         # Slice contiguous window; arrays are (T, F) and (T, Yd)
-        feature_window = feature_array[
-            start : start + self.seq_len, :
-        ]  # (seq_len, num_features)
-        target_window = target_array[
-            start : start + self.seq_len, :
-        ]  # (seq_len, num_targets)
+        if isinstance(feature_array, torch.Tensor):
+            features_out = feature_array[
+                start : start + self.seq_len, :
+            ]  # already float32 tensor
+            targets_out = target_array[start : start + self.seq_len, :]
+        else:
+            feature_window = feature_array[
+                start : start + self.seq_len, :
+            ]  # (seq_len, num_features)
+            target_window = target_array[
+                start : start + self.seq_len, :
+            ]  # (seq_len, num_targets)
 
-        features_out: ProcessedTorchTensor = torch.from_numpy(
-            np.ascontiguousarray(feature_window).astype(np.float32, copy=False)
-        )
-        targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
-        targets_out = torch.from_numpy(targets_as_numpy.astype(np.float32, copy=False))
+            features_out: ProcessedTorchTensor = torch.from_numpy(
+                np.ascontiguousarray(feature_window).astype(np.float32, copy=False)
+            )
+            targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
+            targets_out = torch.from_numpy(
+                targets_as_numpy.astype(np.float32, copy=False)
+            )
 
         return {
             "X": features_out,
@@ -265,6 +293,60 @@ class WindowDataset(Dataset):
             "episode_id": ep.episode_id,
             "start": start,
         }
+
+    def _get_episode_arrays(
+        self, ep: EpisodeInfo
+    ) -> Tuple[np.ndarray | zarr.Array | torch.Tensor, np.ndarray | zarr.Array | torch.Tensor]:
+        """Return feature/target arrays for ``ep``, optionally keeping them in RAM."""
+        cache_key = (ep.shard_id, ep.episode_id)
+
+        if self._in_memory_shared:
+            cached_shared = self._shared_episode_cache.get(cache_key)
+            if cached_shared is not None:
+                return cached_shared
+
+        if self._in_memory:
+            cached = self._episode_arrays_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        feature_array, target_array = self.index.open_episode_arrays(ep)
+        if self._in_memory_shared:
+            # Should only happen if a new episode is encountered after initial load;
+            # fall back to on-the-fly load into shared memory.
+            f_tensor = torch.from_numpy(
+                np.ascontiguousarray(feature_array[:], dtype=np.float32)
+            ).share_memory_()
+            t_tensor = torch.from_numpy(
+                np.ascontiguousarray(target_array[:], dtype=np.float32)
+            ).share_memory_()
+            self._shared_episode_cache[cache_key] = (f_tensor, t_tensor)
+            return f_tensor, t_tensor
+
+        if self._in_memory:
+            features_np = np.ascontiguousarray(feature_array[:], dtype=np.float32)
+            targets_np = np.ascontiguousarray(target_array[:], dtype=np.float32)
+            self._episode_arrays_cache[cache_key] = (features_np, targets_np)
+            return features_np, targets_np
+
+        return feature_array, target_array
+
+    def _load_all_episodes_shared(self) -> None:
+        """Eagerly load all episodes into shared memory tensors (one copy for all workers)."""
+        total_eps = len(self.index.episodes)
+        print(f"[dataset] Preloading {total_eps} episodes into shared memory...")
+        for idx, ep in enumerate(self.index.episodes):
+            cache_key = (ep.shard_id, ep.episode_id)
+            feature_array, target_array = self.index.open_episode_arrays(ep)
+            f_tensor = torch.from_numpy(
+                np.ascontiguousarray(feature_array[:], dtype=np.float32)
+            ).share_memory_()
+            t_tensor = torch.from_numpy(
+                np.ascontiguousarray(target_array[:], dtype=np.float32)
+            ).share_memory_()
+            self._shared_episode_cache[cache_key] = (f_tensor, t_tensor)
+            if (idx + 1) % 25 == 0 or (idx + 1) == total_eps:
+                print(f"[dataset]   loaded {idx + 1}/{total_eps} episodes")
 
 
 class RandomWindowSampler(Sampler[int]):

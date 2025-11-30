@@ -508,7 +508,11 @@ class GPTInferenceEngine:
 
     def _snapshot_targets(self, raw_inputs: Mapping[str, float]) -> Dict[str, float]:
         """Extract controller targets from raw_inputs."""
-        return {name: float(raw_inputs[name]) for name in self.target_names}
+        return {
+            name: float(raw_inputs[name])
+            for name in self.target_names
+            if name in raw_inputs
+        }
 
     def _record_frame(
         self, model_features: Mapping[str, float], raw_inputs: Mapping[str, float]

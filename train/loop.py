@@ -97,7 +97,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
     if epoch == state.resume_epoch:
         epoch_ctx.applied_skip = state.resume_iter
         epoch_ctx.skip_remaining = state.resume_iter
-        if state.resume_iter and hasattr(components.sampler, "set_start_offset"):
+        if not chunked and state.resume_iter and hasattr(components.sampler, "set_start_offset"):
             try:
                 components.sampler.set_start_offset(state.resume_iter)
                 print(
@@ -108,7 +108,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 print(
                     f"Sampler offset failed ({exc}); falling back to loading batches for skip."
                 )
-        elif state.resume_iter:
+        elif state.resume_iter and not chunked:
             print(
                 f"Resuming epoch {epoch + 1}: skipping first {state.resume_iter} batches by consuming them (may take time)."
             )
@@ -179,7 +179,22 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
     loaders = [components.loader] if not chunked else []
     if chunked and hasattr(dataset, "_total_chunks"):
         loaders = []
+        stride = config.train.stride
+        batch_size = config.train.batch_size
+        epoch_mod = epoch % max(1, stride)
+        skip_batches = epoch_ctx.skip_remaining
+
         for chunk_idx in range(int(dataset._total_chunks)):
+            chunk_batches = dataset.count_chunk_batches(
+                chunk_idx,
+                stride=stride,
+                batch_size=batch_size,
+                epoch_mod=epoch_mod,
+            )
+            if skip_batches >= chunk_batches:
+                skip_batches -= chunk_batches
+                continue
+
             try:
                 dataset.set_active_chunk(chunk_idx)
                 if hasattr(components.sampler, "set_active_episodes"):
@@ -188,6 +203,11 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     )
                 if hasattr(components.sampler, "set_epoch"):
                     components.sampler.set_epoch(epoch)
+                if skip_batches > 0 and hasattr(components.sampler, "set_start_offset"):
+                    # Skip sample-level windows roughly equal to the skipped batches
+                    components.sampler.set_start_offset(skip_batches * batch_size)
+                    skip_batches = 0
+                epoch_ctx.skip_remaining = 0  # handled via sampler offset
             except Exception as exc:
                 print(f"[dataloader] Failed to set chunk {chunk_idx} ({exc}); skipping.")
                 continue
@@ -281,13 +301,14 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         frames_per_s = epoch_ctx.frames_since_last_log / dt
                         avg_loss_running = epoch_ctx.get_avg_loss()
                         bundle = prepare_logging_bundle(
-                            components=components,
-                            forward_result=forward_result,
-                            epoch=epoch,
-                            completed_batches=completed_batches,
-                            lr=lr,
-                            frames_per_s=frames_per_s,
-                            avg_loss_running=avg_loss_running,
+                        components=components,
+                        forward_result=forward_result,
+                        epoch=epoch,
+                        completed_batches=completed_batches,
+                        total_batches=total_batches,
+                        lr=lr,
+                        frames_per_s=frames_per_s,
+                        avg_loss_running=avg_loss_running,
                             grad_stats=grad_stats,
                             global_step=state.global_step,
                             epoch_ctx=epoch_ctx,
@@ -341,6 +362,47 @@ def train_loop(
         model, loader, ds, sampler, debug
     )
     config = components.config
+
+    def _total_batches_for_epoch(epoch: int) -> int:
+        dataset = getattr(components, "dataset", None)
+        chunked = (
+            dataset is not None
+            and getattr(dataset, "_total_chunks", None) is not None
+            and getattr(dataset, "_total_chunks") > 1
+        )
+        if chunked:
+            return max(
+                1,
+                dataset.total_batches_for_epoch(
+                    stride=config.train.stride,
+                    batch_size=config.train.batch_size,
+                    epoch=epoch,
+                ),
+            )
+        try:
+            return max(int(len(components.loader)), 1)
+        except Exception:
+            return 1
+
+    # If resume_iter is beyond the current epoch length, advance epochs accordingly
+    while start_epoch < config.train.epochs:
+        tb = _total_batches_for_epoch(start_epoch)
+        if start_iter < tb:
+            break
+        print(
+            f"[resume] resume_iter {start_iter} exceeds total_batches {tb} for epoch {start_epoch + 1}; "
+            "advancing to next epoch."
+        )
+        start_iter -= tb
+        start_epoch += 1
+
+    if start_epoch >= config.train.epochs:
+        print(
+            f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting."
+        )
+        if not debug:
+            finish_wandb()
+        return
 
     state = TrainingState(
         components=components,

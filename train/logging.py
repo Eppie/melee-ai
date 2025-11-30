@@ -324,6 +324,7 @@ def prepare_logging_bundle(
     forward_result: ForwardPassResult,
     epoch: int,
     completed_batches: int,
+    total_batches: int,
     lr: float,
     frames_per_s: float,
     avg_loss_running: float,
@@ -548,7 +549,7 @@ def prepare_logging_bundle(
     # Build log lines
     log_lines: List[str] = [
         (
-            f"ep {epoch + 1}/{config.train.epochs} it {completed_batches}\n"
+            f"ep {epoch + 1}/{config.train.epochs} it {completed_batches}/{total_batches}\n"
             f"  loss {avg_loss_running:.4f} | lr {lr:.2e} | frames/s {frames_per_s:,.0f} | "
             f"ls {forward_result.label_smoothing:.4f} | cw {forward_result.change_scale:.3f} | {loss_summary}"
         ),

@@ -243,8 +243,11 @@ class TrainConfig(BaseModel):
 
     # Performance optimizations
     torch_compile: bool = Field(
-        default=True,
-        description="Enable torch.compile for model optimization. May have initial overhead.",
+        default_factory=lambda: _should_enable_torch_compile(),
+        description=(
+            "Enable torch.compile for model optimization. Auto-disabled on non-CUDA backends; "
+            "only CUDA devices attempt compilation. May have initial overhead."
+        ),
     )
     torch_compile_mode: Optional[str] = Field(
         default="max-autotune",
@@ -306,3 +309,11 @@ def _should_enable_cudnn_benchmark() -> bool:
     if hasattr(torch.backends, "cuda") and torch.cuda.is_available():
         return True
     return False
+
+
+def _should_enable_torch_compile() -> bool:
+    """
+    Auto-detect if torch.compile should be enabled.
+    Only enable on CUDA devices; disable on MPS/CPU.
+    """
+    return bool(hasattr(torch.backends, "cuda") and torch.cuda.is_available())

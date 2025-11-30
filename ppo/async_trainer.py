@@ -608,7 +608,9 @@ def _ppo_training_loop(
 
             # Forward pass
             with prof_forward:
-                with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
+                with autocast(
+                    device_type=device.type, dtype=torch.bfloat16, enabled=True
+                ):
                     model_inputs = build_model_inputs(mb_states, colmap)
                     outputs = model(model_inputs)
 
@@ -632,7 +634,9 @@ def _ppo_training_loop(
 
             # Compute loss
             with prof_loss:
-                with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
+                with autocast(
+                    device_type=device.type, dtype=torch.bfloat16, enabled=True
+                ):
                     loss, loss_metrics = compute_total_ppo_loss(
                         new_action_logits=new_action_logits,
                         new_values=new_values,
@@ -670,7 +674,9 @@ def _ppo_training_loop(
                     continue
 
                 # Clip gradients
-                torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), ppo_cfg.max_grad_norm
+                )
 
             # Optimizer step
             with prof_optimizer:

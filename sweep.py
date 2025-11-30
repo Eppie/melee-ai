@@ -35,7 +35,6 @@ from loss import _compute_ce_weights, _compute_pos_weights
 from model.nano_gpt import GPT
 
 # Train module utilities
-from controller_quantization import quantize_targets
 from train.batch_utils import build_model_inputs
 from train.metrics import MetricsAccumulator
 from utils import _resolve_device
@@ -584,7 +583,28 @@ def run_training_once(
                         Y = batch["Y"].to(device, non_blocking=True)
 
                         inputs_td = build_model_inputs(X, colmap)
-                        target_info = quantize_targets(Y, colmap, input_domain="unit11")
+                        if (
+                            colmap.y_main_idx is None
+                            or colmap.y_c_idx is None
+                            or colmap.y_shoulder_idx is None
+                            or not colmap.y_buttons
+                        ):
+                            raise RuntimeError(
+                                "Pre-quantized targets required but target indices missing; regenerate dataset with preprocessing."
+                            )
+                        head_dims = cfg.model.target_shapes_by_head
+                        target_info = {
+                            "main_idx": Y[..., colmap.y_main_idx].to(torch.long),
+                            "c_idx": Y[..., colmap.y_c_idx].to(torch.long),
+                            "shoulder_idx": Y[..., colmap.y_shoulder_idx].to(
+                                torch.long
+                            ),
+                            "buttons": Y[..., colmap.y_buttons].to(torch.float32),
+                            "main_K": int(head_dims["main_stick"]),
+                            "c_K": int(head_dims["c_stick"]),
+                            "buttons_K": len(colmap.y_buttons),
+                            "shoulder_K": int(head_dims["shoulder"]),
+                        }
 
                         pred = model(inputs_td)
                         B, L, _ = pred["main_stick"].shape

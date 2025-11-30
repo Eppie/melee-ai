@@ -133,9 +133,15 @@ class TestTrajectoryComputeGAE:
         assert pytest.approx(trajectory.advantages[2].item(), abs=1e-6) == gae_2
 
         # Returns should be advantages + values
-        assert pytest.approx(trajectory.returns[0].item(), abs=1e-6) == gae_0 + values[0]
-        assert pytest.approx(trajectory.returns[1].item(), abs=1e-6) == gae_1 + values[1]
-        assert pytest.approx(trajectory.returns[2].item(), abs=1e-6) == gae_2 + values[2]
+        assert (
+            pytest.approx(trajectory.returns[0].item(), abs=1e-6) == gae_0 + values[0]
+        )
+        assert (
+            pytest.approx(trajectory.returns[1].item(), abs=1e-6) == gae_1 + values[1]
+        )
+        assert (
+            pytest.approx(trajectory.returns[2].item(), abs=1e-6) == gae_2 + values[2]
+        )
 
     def test_gae_normalization(self):
         """Test that advantage normalization works correctly."""
@@ -178,7 +184,9 @@ class TestTrajectoryComputeGAE:
 
         # Without normalization, mean should NOT be 0 (unless raw GAE happens to be 0)
         # Just check that values are computed (not zeros)
-        assert not torch.allclose(trajectory.advantages, torch.zeros_like(trajectory.advantages))
+        assert not torch.allclose(
+            trajectory.advantages, torch.zeros_like(trajectory.advantages)
+        )
 
     def test_gae_zero_variance_advantages(self):
         """Test GAE when all advantages are identical (zero variance)."""
@@ -204,7 +212,7 @@ class TestTrajectoryComputeGAE:
         # All advantages should be equal (to each other)
         assert torch.allclose(
             trajectory.advantages,
-            trajectory.advantages[0].expand_as(trajectory.advantages)
+            trajectory.advantages[0].expand_as(trajectory.advantages),
         )
 
     def test_gae_with_precomputed_returns(self):
@@ -228,7 +236,9 @@ class TestTrajectoryComputeGAE:
         trajectory.compute_gae(gamma=0.99, gae_lambda=0.95, normalize=False)
 
         # Advantages should be returns - values
-        expected_advantages = precomputed_returns - torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0])
+        expected_advantages = precomputed_returns - torch.tensor(
+            [0.0, 1.0, 2.0, 3.0, 4.0]
+        )
         assert torch.allclose(trajectory.advantages, expected_advantages, atol=1e-6)
 
         # Returns should be preserved
@@ -282,9 +292,7 @@ class TestTrajectoryComputeGAE:
 
         # Advantages should be different
         assert not torch.allclose(
-            traj_high_lambda.advantages,
-            traj_low_lambda.advantages,
-            atol=1e-3
+            traj_high_lambda.advantages, traj_low_lambda.advantages, atol=1e-3
         )
 
 

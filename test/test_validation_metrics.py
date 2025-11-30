@@ -60,12 +60,10 @@ def _build_feature_names(include_value_target: bool = True) -> list[str]:
 
 
 TARGET_NAMES = [
-    "p1_main_stick_x",
-    "p1_main_stick_y",
-    "p1_c_stick_x",
-    "p1_c_stick_y",
+    "p1_main_stick_idx",
+    "p1_c_stick_idx",
+    "p1_shoulder_idx",
     *BUTTON_TARGET_NAMES,
-    "p1_shoulder_analog",
 ]
 
 

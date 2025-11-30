@@ -21,8 +21,18 @@ def zarr_corpus(tmp_path: Path) -> Path:
         "build_config": {"seq_len": 4},
         "schema": {
             "features": ["p1_main_stick_x", "p1_main_stick_y"],
-            "targets": ["p1_main_stick_x", "p1_main_stick_y"],
+            "targets": [
+                "p1_main_stick_idx",
+                "p1_c_stick_idx",
+                "p1_shoulder_idx",
+                "p1_button_a",
+                "p1_button_b",
+                "p1_button_xy",
+                "p1_button_z",
+                "p1_button_lr",
+            ],
         },
+        "preprocessed": {"features": True, "targets": True},
     }
     with (data_dir / "meta.json").open("w") as f:
         json.dump(meta, f)
@@ -64,10 +74,9 @@ def zarr_corpus(tmp_path: Path) -> Path:
 
 def test_window_dataset_double_quantization(zarr_corpus: Path):
     """
-    Tests that the WindowDataset does not apply feature transforms to the target tensor (Y).
-    This prevents the double quantization issue.
+    Tests that the WindowDataset trusts preprocessed data and does not transform X or Y.
     """
-    # Create a WindowDataset instance (transforms are now hardcoded and always applied)
+    # Create a WindowDataset instance (expects preprocessed data)
     dataset = window_dataset.WindowDataset(zarr_corpus)
 
     # Get a window from the dataset
@@ -80,15 +89,13 @@ def test_window_dataset_double_quantization(zarr_corpus: Path):
     original_x = root["ep_000000/X"][:4]
     original_y = root["ep_000000/Y"][:4]
 
-    # Assert that the X tensor has been transformed (i.e., it's different from the original)
-    assert not np.allclose(
+    # Assert that X and Y tensors match stored values (no runtime transforms)
+    assert np.allclose(
         x_window.numpy(), original_x
-    ), "X tensor should be transformed"
-
-    # Assert that the Y tensor has NOT been transformed (i.e., it's the same as the original)
+    ), "X tensor should match preprocessed storage"
     assert np.allclose(
         y_window.numpy(), original_y
-    ), "Y tensor should not be transformed"
+    ), "Y tensor should match preprocessed storage"
 
 
 def test_window_to_episode_prefers_window_index(

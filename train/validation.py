@@ -12,7 +12,6 @@ from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
 from constants import CONTROLLER_KEY_GROUPS
-from controller_quantization import quantize_targets
 from loss import compute_loss_components
 from train.batch_utils import (
     SampleWeightRatios,
@@ -156,7 +155,26 @@ def run_validation(
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
             inputs_td = build_model_inputs(X, colmap)
-            target_info = quantize_targets(Y, colmap, input_domain="unit01")
+            if (
+                colmap.y_main_idx is None
+                or colmap.y_c_idx is None
+                or colmap.y_shoulder_idx is None
+                or not colmap.y_buttons
+            ):
+                raise RuntimeError(
+                    "Pre-quantized targets required but target indices missing; regenerate dataset with preprocessing."
+                )
+            head_dims = config.model.target_shapes_by_head
+            target_info = {
+                "main_idx": Y[..., colmap.y_main_idx].to(torch.long),
+                "c_idx": Y[..., colmap.y_c_idx].to(torch.long),
+                "shoulder_idx": Y[..., colmap.y_shoulder_idx].to(torch.long),
+                "buttons": Y[..., colmap.y_buttons].to(torch.float32),
+                "main_K": int(head_dims["main_stick"]),
+                "c_K": int(head_dims["c_stick"]),
+                "buttons_K": len(colmap.y_buttons),
+                "shoulder_K": int(head_dims["shoulder"]),
+            }
             weights = compute_component_sample_weights(
                 target_info,
                 device,

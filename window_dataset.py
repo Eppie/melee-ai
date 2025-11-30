@@ -10,8 +10,7 @@ import torch
 import zarr
 from torch.utils.data import Dataset, Sampler
 
-from data_types import RawNumpyArray, ProcessedNumpyArray, ProcessedTorchTensor
-from feature_transforms import apply_feature_transforms
+from data_types import RawNumpyArray, ProcessedTorchTensor
 
 FLOAT32_BYTES = np.dtype(np.float32).itemsize
 
@@ -200,6 +199,27 @@ class WindowDataset(Dataset):
         self._target_names_sel = list(self._target_names)
         self._shard_cache: Dict[int, zarr.Group] = {}
         self._episode_cache: Dict[Tuple[int, int], Tuple[zarr.Array, zarr.Array]] = {}
+        # Enforce preprocessed data presence
+        preprocessed = self.index.meta.get("preprocessed", {})
+        if not (preprocessed.get("features") and preprocessed.get("targets")):
+            raise RuntimeError(
+                "Dataset is not preprocessed. Regenerate dataset with preprocessing enabled."
+            )
+        required_targets = {
+            "p1_main_stick_idx",
+            "p1_c_stick_idx",
+            "p1_shoulder_idx",
+            "p1_button_a",
+            "p1_button_b",
+            "p1_button_xy",
+            "p1_button_z",
+            "p1_button_lr",
+        }
+        missing = sorted(required_targets.difference(self._target_names_sel))
+        if missing:
+            raise RuntimeError(
+                f"Preprocessed dataset missing required target columns: {missing}"
+            )
 
     def __len__(self) -> int:
         """Return the total number of sliding windows across the corpus."""
@@ -219,7 +239,7 @@ class WindowDataset(Dataset):
         return batch_size * floats_per_window * FLOAT32_BYTES
 
     def __getitem__(self, i: int) -> Dict[str, object]:
-        """Load window ``i`` and apply feature transforms."""
+        """Load window ``i`` from preprocessed storage."""
         ep_idx, offset = self.index.window_to_episode(i)
         ep = self.index.episodes[ep_idx]
         start = offset  # within episode, window starts at this index
@@ -233,13 +253,8 @@ class WindowDataset(Dataset):
             start : start + self.seq_len, :
         ]  # (seq_len, num_targets)
 
-        # Apply feature transforms
-        feature_window: RawNumpyArray = np.ascontiguousarray(feature_window)
-        feature_window: ProcessedNumpyArray = apply_feature_transforms(
-            feature_window, self._feature_names
-        )
         features_out: ProcessedTorchTensor = torch.from_numpy(
-            feature_window.astype(np.float32, copy=False)
+            np.ascontiguousarray(feature_window).astype(np.float32, copy=False)
         )
         targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
         targets_out = torch.from_numpy(targets_as_numpy.astype(np.float32, copy=False))

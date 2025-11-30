@@ -57,17 +57,20 @@ class ColumnMap:
             return targ2idx[name]
 
         # Only set up target indices if targets are provided
-        if self.targ_names:
-            self.y_main = (_tid("p1_main_stick_x"), _tid("p1_main_stick_y"))
-            self.y_c = (_tid("p1_c_stick_x"), _tid("p1_c_stick_y"))
-            self.y_buttons = [_tid(name) for name in BUTTON_TARGET_NAMES]
-            self.y_shoulder = targ2idx.get("p1_shoulder_analog")
-        else:
-            # Set to None when no targets available (e.g., for reward computation)
-            self.y_main = None
-            self.y_c = None
-            self.y_buttons = None
-            self.y_shoulder = None
+        if not self.targ_names:
+            raise KeyError("Quantized targets are required but target_names is empty")
+
+        required = ["p1_main_stick_idx", "p1_c_stick_idx", "p1_shoulder_idx"]
+        missing = [name for name in required if name not in targ2idx]
+        btn_missing = [name for name in BUTTON_TARGET_NAMES if name not in targ2idx]
+        if missing or btn_missing:
+            raise KeyError(
+                f"Quantized target layout missing columns; missing={missing + btn_missing}, available={self.targ_names}"
+            )
+        self.y_main_idx = _tid("p1_main_stick_idx")
+        self.y_c_idx = _tid("p1_c_stick_idx")
+        self.y_shoulder_idx = _tid("p1_shoulder_idx")
+        self.y_buttons = [_tid(name) for name in BUTTON_TARGET_NAMES]
 
     @classmethod
     def from_dataset(

@@ -254,13 +254,23 @@ def run_distributed_training(
                     print(f"\n{'='*60}")
                     print("TRAINING PERFORMANCE")
                     print(f"{'='*60}")
-                    print(f"Total training time: {train_metrics.time_total_training_ms:.1f}ms")
-                    print(f"  Prepare windows:   {train_metrics.time_prepare_windows_ms:.1f}ms")
-                    print(f"  Combine windows:   {train_metrics.time_combine_windows_ms:.1f}ms")
+                    print(
+                        f"Total training time: {train_metrics.time_total_training_ms:.1f}ms"
+                    )
+                    print(
+                        f"  Prepare windows:   {train_metrics.time_prepare_windows_ms:.1f}ms"
+                    )
+                    print(
+                        f"  Combine windows:   {train_metrics.time_combine_windows_ms:.1f}ms"
+                    )
                     print(f"  Forward pass:      {train_metrics.time_forward_ms:.1f}ms")
                     print(f"  Loss computation:  {train_metrics.time_loss_ms:.1f}ms")
-                    print(f"  Backward pass:     {train_metrics.time_backward_ms:.1f}ms")
-                    print(f"  Optimizer step:    {train_metrics.time_optimizer_ms:.1f}ms")
+                    print(
+                        f"  Backward pass:     {train_metrics.time_backward_ms:.1f}ms"
+                    )
+                    print(
+                        f"  Optimizer step:    {train_metrics.time_optimizer_ms:.1f}ms"
+                    )
                     print(f"{'='*60}\n")
 
                     if train_metrics.reverted:
@@ -328,13 +338,17 @@ def run_distributed_training(
                             "total_frames": total_frames,
                         },
                     )
-                print(f"Opponent rotation took {prof_opponent_rotation.last_duration() * 1000:.1f}ms")
+                print(
+                    f"Opponent rotation took {prof_opponent_rotation.last_duration() * 1000:.1f}ms"
+                )
 
             # Save checkpoint
             if rollout_num % args.save_every == 0:
                 with prof_checkpoint:
                     save_checkpoint(model, optimizer, rollout_num, args.out_dir)
-                print(f"Checkpoint save took {prof_checkpoint.last_duration() * 1000:.1f}ms")
+                print(
+                    f"Checkpoint save took {prof_checkpoint.last_duration() * 1000:.1f}ms"
+                )
 
     except KeyboardInterrupt:
         print("\n\nTraining interrupted by user")
@@ -363,9 +377,13 @@ def run_distributed_training(
         print("OVERALL PROFILING SUMMARY")
         print(f"{'='*60}")
         if prof_checkpoint.num_calls > 0:
-            print(f"Checkpoints: {prof_checkpoint.num_calls} saves, avg {prof_checkpoint.mean_time() * 1000:.1f}ms, total {prof_checkpoint.total_time():.2f}s")
+            print(
+                f"Checkpoints: {prof_checkpoint.num_calls} saves, avg {prof_checkpoint.mean_time() * 1000:.1f}ms, total {prof_checkpoint.total_time():.2f}s"
+            )
         if prof_opponent_rotation.num_calls > 0:
-            print(f"Opponent rotation: {prof_opponent_rotation.num_calls} rotations, avg {prof_opponent_rotation.mean_time() * 1000:.1f}ms, total {prof_opponent_rotation.total_time():.2f}s")
+            print(
+                f"Opponent rotation: {prof_opponent_rotation.num_calls} rotations, avg {prof_opponent_rotation.mean_time() * 1000:.1f}ms, total {prof_opponent_rotation.total_time():.2f}s"
+            )
         print(f"{'='*60}\n")
 
         print("Distributed training complete!")
@@ -448,7 +466,9 @@ def train_on_windows(
 
             # Forward pass
             with prof_forward:
-                with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
+                with autocast(
+                    device_type=device.type, dtype=torch.bfloat16, enabled=True
+                ):
                     model_inputs = build_model_inputs(mb_states, colmap)
                     outputs = model(model_inputs)
 
@@ -472,7 +492,9 @@ def train_on_windows(
 
             # Loss computation
             with prof_loss:
-                with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
+                with autocast(
+                    device_type=device.type, dtype=torch.bfloat16, enabled=True
+                ):
                     loss, loss_metrics = compute_total_ppo_loss(
                         new_action_logits=new_action_logits,
                         new_values=new_values,
@@ -508,7 +530,9 @@ def train_on_windows(
                     optimizer.zero_grad()
                     continue
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), ppo_cfg.max_grad_norm
+                )
 
             # Optimizer step
             with prof_optimizer:
@@ -540,17 +564,28 @@ def train_on_windows(
     print(f"\n{'='*60}")
     print("TRAINING PERFORMANCE")
     print(f"{'='*60}")
-    print(f"Forward pass:      {prof_forward.mean_time() * 1000:.1f}ms (total: {prof_forward.total_time():.2f}s, {prof_forward.num_calls} calls)")
-    print(f"Loss computation:  {prof_loss.mean_time() * 1000:.1f}ms (total: {prof_loss.total_time():.2f}s, {prof_loss.num_calls} calls)")
-    print(f"Backward pass:     {prof_backward.mean_time() * 1000:.1f}ms (total: {prof_backward.total_time():.2f}s, {prof_backward.num_calls} calls)")
-    print(f"Optimizer step:    {prof_optimizer.mean_time() * 1000:.1f}ms (total: {prof_optimizer.total_time():.2f}s, {prof_optimizer.num_calls} calls)")
-    total_training = prof_forward.total_time() + prof_loss.total_time() + prof_backward.total_time() + prof_optimizer.total_time()
+    print(
+        f"Forward pass:      {prof_forward.mean_time() * 1000:.1f}ms (total: {prof_forward.total_time():.2f}s, {prof_forward.num_calls} calls)"
+    )
+    print(
+        f"Loss computation:  {prof_loss.mean_time() * 1000:.1f}ms (total: {prof_loss.total_time():.2f}s, {prof_loss.num_calls} calls)"
+    )
+    print(
+        f"Backward pass:     {prof_backward.mean_time() * 1000:.1f}ms (total: {prof_backward.total_time():.2f}s, {prof_backward.num_calls} calls)"
+    )
+    print(
+        f"Optimizer step:    {prof_optimizer.mean_time() * 1000:.1f}ms (total: {prof_optimizer.total_time():.2f}s, {prof_optimizer.num_calls} calls)"
+    )
+    total_training = (
+        prof_forward.total_time()
+        + prof_loss.total_time()
+        + prof_backward.total_time()
+        + prof_optimizer.total_time()
+    )
     print(f"Total training:    {total_training:.2f}s")
     print(f"{'='*60}\n")
 
     return metrics
-
-
 
 
 # =============================================================================

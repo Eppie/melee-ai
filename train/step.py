@@ -9,7 +9,6 @@ from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
 from constants import CONTROLLER_KEY_GROUPS
-from controller_quantization import quantize_targets
 from loss import compute_loss_components
 from train.batch_utils import (
     build_model_inputs,
@@ -95,7 +94,26 @@ def perform_forward_pass(
         enabled=amp.enabled,
     ):
         inputs_td = build_model_inputs(X, components.column_map)
-        target_info = quantize_targets(Y, components.column_map, input_domain="unit01")
+        if (
+            components.column_map.y_main_idx is None
+            or components.column_map.y_c_idx is None
+            or components.column_map.y_shoulder_idx is None
+            or not components.column_map.y_buttons
+        ):
+            raise RuntimeError(
+                "Pre-quantized targets required but target indices missing; regenerate dataset with preprocessing."
+            )
+        head_dims = components.config.model.target_shapes_by_head
+        target_info = {
+            "main_idx": Y[..., components.column_map.y_main_idx].to(torch.long),
+            "c_idx": Y[..., components.column_map.y_c_idx].to(torch.long),
+            "shoulder_idx": Y[..., components.column_map.y_shoulder_idx].to(torch.long),
+            "buttons": Y[..., components.column_map.y_buttons].to(torch.float32),
+            "main_K": int(head_dims["main_stick"]),  # should align with palette size
+            "c_K": int(head_dims["c_stick"]),
+            "buttons_K": len(components.column_map.y_buttons),
+            "shoulder_K": int(head_dims["shoulder"]),
+        }
         pred = components.model(inputs_td)
         # Clone to prevent CUDA graph overwriting when using torch.compile()
         pred = pred.clone()

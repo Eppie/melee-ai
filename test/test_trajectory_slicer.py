@@ -234,9 +234,7 @@ class TestComputeGAEWithBootstrap:
             steps.append(step)
 
         trajectory = Trajectory(steps=steps)
-        slicer_with_norm._compute_gae_with_bootstrap(
-            trajectory, torch.tensor(0.5)
-        )
+        slicer_with_norm._compute_gae_with_bootstrap(trajectory, torch.tensor(0.5))
 
         # Normalized advantages should have mean ~0 and std ~1
         mean = trajectory.advantages.mean()
@@ -287,9 +285,7 @@ class TestComputeGAEWithBootstrap:
             steps.append(step)
 
         trajectory = Trajectory(steps=steps)
-        slicer_with_norm._compute_gae_with_bootstrap(
-            trajectory, torch.tensor(1.0)
-        )
+        slicer_with_norm._compute_gae_with_bootstrap(trajectory, torch.tensor(1.0))
 
         # With zero variance, should just center (mean = 0)
         mean = trajectory.advantages.mean()
@@ -369,7 +365,9 @@ class TestBuildSequenceWindows:
 
     def test_empty_trajectories(self):
         """Test with empty trajectory list."""
-        result = self.slicer._build_sequence_windows([], seq_len=10, stride=5, device=self.device)
+        result = self.slicer._build_sequence_windows(
+            [], seq_len=10, stride=5, device=self.device
+        )
         assert len(result) == 0
 
     def test_single_short_trajectory(self):
@@ -528,7 +526,14 @@ class TestBuildSequenceWindows:
         )
 
         # Check all required keys are present
-        required_keys = ["states", "advantages", "returns", "old_log_probs", "values", "valid_mask"]
+        required_keys = [
+            "states",
+            "advantages",
+            "returns",
+            "old_log_probs",
+            "values",
+            "valid_mask",
+        ]
         for key in required_keys:
             assert key in result
 
@@ -614,7 +619,10 @@ class TestBuildSequenceWindows:
         )
 
         # Small stride should produce more windows
-        assert result_small_stride["states"].shape[0] > result_large_stride["states"].shape[0]
+        assert (
+            result_small_stride["states"].shape[0]
+            > result_large_stride["states"].shape[0]
+        )
 
     def test_trajectory_without_gae_skipped(self):
         """Test that trajectories without computed GAE are skipped."""
@@ -682,7 +690,9 @@ class TestPrepareTrainingData:
             total_frames=0,
         )
 
-        result = self.slicer.prepare_training_data(rollout, seq_len=10, device=self.device)
+        result = self.slicer.prepare_training_data(
+            rollout, seq_len=10, device=self.device
+        )
 
         assert len(result) == 0
 
@@ -706,7 +716,9 @@ class TestPrepareTrainingData:
         )
 
         seq_len = 10
-        result = self.slicer.prepare_training_data(rollout, seq_len=seq_len, device=self.device)
+        result = self.slicer.prepare_training_data(
+            rollout, seq_len=seq_len, device=self.device
+        )
 
         # Should have windows created
         assert "states" in result
@@ -739,7 +751,9 @@ class TestPrepareTrainingData:
         )
 
         seq_len = 10
-        result = self.slicer.prepare_training_data(rollout, seq_len=seq_len, device=self.device)
+        result = self.slicer.prepare_training_data(
+            rollout, seq_len=seq_len, device=self.device
+        )
 
         # Should combine windows from all workers
         # Each worker: 15 steps, seq_len=10, stride ~= 10//64 = max(1, 0) = 1
@@ -816,7 +830,9 @@ class TestPrepareTrainingData:
             total_frames=15,
         )
 
-        result = self.slicer.prepare_training_data(rollout, seq_len=10, device=self.device)
+        result = self.slicer.prepare_training_data(
+            rollout, seq_len=10, device=self.device
+        )
 
         # Should only process worker 0
         assert "states" in result
@@ -842,7 +858,9 @@ class TestPrepareTrainingData:
         )
 
         # Should not raise an error, should use 0.0
-        result = self.slicer.prepare_training_data(rollout, seq_len=10, device=self.device)
+        result = self.slicer.prepare_training_data(
+            rollout, seq_len=10, device=self.device
+        )
 
         assert "states" in result
 
@@ -950,7 +968,9 @@ class TestEdgeCases:
 
         # Should create many windows
         expected_windows = (1000 - seq_len) // stride + 1
-        assert result["states"].shape[0] >= expected_windows - 1  # Allow for final window logic
+        assert (
+            result["states"].shape[0] >= expected_windows - 1
+        )  # Allow for final window logic
 
 
 class TestProductionScenarios:

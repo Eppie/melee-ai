@@ -15,9 +15,17 @@ import zarr
 
 from column_map import ColumnMap
 from config import get_config, init_config
+from constants import BUTTON_TARGET_NAMES
 from data_types import RawNumpyArray
+from controller_quantization import quantize_targets
 from libmelee.melee.console import Console
-from schema import Row, extract_row, get_feature_names, get_target_names
+from schema import (
+    Row,
+    extract_row,
+    get_feature_names,
+    get_raw_target_names,
+)
+from feature_transforms import apply_feature_transforms
 from train.value_head import (
     build_reward_feature_index,
     compute_value_targets,
@@ -26,6 +34,29 @@ from train.value_head import (
 ROW_FIELDS = tuple(fields(Row))
 
 DERIVED_FEATURES = ("value_target",)
+
+
+class _RawTargetColumnMap:
+    """Minimal column map for raw controller targets used during dataset build."""
+
+    def __init__(self, target_names: Sequence[str]) -> None:
+        idx = {n: i for i, n in enumerate(target_names)}
+        required = [
+            "p1_main_stick_x",
+            "p1_main_stick_y",
+            "p1_c_stick_x",
+            "p1_c_stick_y",
+            "p1_shoulder_analog",
+        ] + list(BUTTON_TARGET_NAMES)
+        missing = [name for name in required if name not in idx]
+        if missing:
+            raise KeyError(
+                f"Raw target layout missing columns; missing={missing}, available={target_names}"
+            )
+        self.y_main = (idx["p1_main_stick_x"], idx["p1_main_stick_y"])
+        self.y_c = (idx["p1_c_stick_x"], idx["p1_c_stick_y"])
+        self.y_shoulder = idx["p1_shoulder_analog"]
+        self.y_buttons = [idx[name] for name in BUTTON_TARGET_NAMES]
 
 
 def _ensure_config_initialized() -> None:
@@ -407,9 +438,49 @@ def _process_episode_task(
     _ensure_config_initialized()
     config = get_config()
     rows = process_one_episode(raw_path)
-    X, Y, feat_dtypes, targ_dtypes, feature_names, target_names = _rows_to_dense(
-        rows, schema
-    )
+    (
+        X,
+        Y_raw,
+        feat_dtypes,
+        _targ_dtypes_raw,
+        feature_names,
+        target_names,
+    ) = _rows_to_dense(rows, schema)
+
+    # Apply feature transforms (quantization/scaling) in-place
+    X = np.ascontiguousarray(X)
+    X = apply_feature_transforms(X, feature_names)
+    X = np.ascontiguousarray(X.astype(np.float32, copy=False))
+
+    # Quantize targets to indices
+    torch_Y = torch.from_numpy(Y_raw).unsqueeze(0)  # [1, T, Yd]
+    raw_colmap = _RawTargetColumnMap(target_names)
+    target_info = quantize_targets(torch_Y, raw_colmap, input_domain="unit01")
+    main_idx = target_info["main_idx"].squeeze(0).cpu().numpy().astype(np.int32)
+    c_idx = target_info["c_idx"].squeeze(0).cpu().numpy().astype(np.int32)
+    shoulder_idx = target_info["shoulder_idx"].squeeze(0).cpu().numpy().astype(np.int32)
+    buttons = target_info["buttons"].squeeze(0).cpu().numpy().astype(np.float32)
+
+    Y = np.concatenate(
+        [
+            main_idx.reshape(-1, 1),
+            c_idx.reshape(-1, 1),
+            shoulder_idx.reshape(-1, 1),
+            buttons,
+        ],
+        axis=1,
+    ).astype(np.float32, copy=False)
+    targ_dtypes = ["float32"] * Y.shape[1]
+    target_names = [
+        "p1_main_stick_idx",
+        "p1_c_stick_idx",
+        "p1_shoulder_idx",
+        "p1_button_a",
+        "p1_button_b",
+        "p1_button_xy",
+        "p1_button_z",
+        "p1_button_lr",
+    ]
 
     derived_features = [name for name in schema.features if name in DERIVED_FEATURES]
     if derived_features:
@@ -510,8 +581,45 @@ def _merge_and_write_metadata(
         "created_at_unix": int(time.time()),
         "build_config": config.model_dump(mode="json"),
         "schema": {"features": list(feature_names), "targets": list(target_names)},
+        "preprocessed": {
+            "features": True,
+            "targets": True,
+            "input_domain": "unit01",
+            "target_layout": {
+                "main": "p1_main_stick_idx",
+                "c": "p1_c_stick_idx",
+                "shoulder": "p1_shoulder_idx",
+                "buttons": [
+                    "p1_button_a",
+                    "p1_button_b",
+                    "p1_button_xy",
+                    "p1_button_z",
+                    "p1_button_lr",
+                ],
+            },
+            "palette_sizes": {
+                "main": len(target_names),  # placeholder; overridden below
+            },
+        },
         "feat_dtypes": feat_dtypes,
         "targ_dtypes": targ_dtypes,
+    }
+
+    # Palette sizes: recover from controller_quantization constants
+    from constants import (
+        _MAIN_STICK_PALETTE_CPU,
+        _C_STICK_PALETTE_CPU,
+        SHOULDER_QUANTIZED,
+        CONTROLLER_KEY_GROUPS,
+    )
+
+    from constants import CONTROLLER_KEY_GROUPS
+
+    meta["preprocessed"]["palette_sizes"] = {
+        "main": int(_MAIN_STICK_PALETTE_CPU.shape[0]),
+        "c": int(_C_STICK_PALETTE_CPU.shape[0]),
+        "shoulder": int(len(SHOULDER_QUANTIZED)),
+        "buttons": len(CONTROLLER_KEY_GROUPS["buttons"]),
     }
 
     with (out_dir / "meta.json").open("w") as f:
@@ -703,12 +811,12 @@ def create_melee_schema() -> Schema:
     Example
     -------
     Calling this helper wraps :func:`get_feature_names` and
-    :func:`get_target_names`, producing a schema object ready for
+    :func:`get_raw_target_names`, producing a schema object ready for
     :func:`build_dataset`.
     """
     return Schema(
         features=get_feature_names(),
-        targets=get_target_names(),
+        targets=get_raw_target_names(),
     )
 
 

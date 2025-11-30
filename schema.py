@@ -227,8 +227,8 @@ def get_feature_names() -> list[str]:
     return names
 
 
-def get_target_names() -> list[str]:
-    """Canonical target ordering for model output (P1 controller only)."""
+def get_raw_target_names() -> list[str]:
+    """Raw controller targets (continuous) for dataset extraction (P1 only)."""
     controller_fields = {
         "main_stick_x",
         "main_stick_y",
@@ -242,6 +242,20 @@ def get_target_names() -> list[str]:
         "button_lr",
     }
     return [f"p1_{field}" for field, *_ in PLAYER_SPEC if field in controller_fields]
+
+
+def get_target_names() -> list[str]:
+    """Quantized controller targets (P1 only) stored in the preprocessed dataset."""
+    return [
+        "p1_main_stick_idx",
+        "p1_c_stick_idx",
+        "p1_shoulder_idx",
+        "p1_button_a",
+        "p1_button_b",
+        "p1_button_xy",
+        "p1_button_z",
+        "p1_button_lr",
+    ]
 
 
 # Build the dataclass dynamically (flattened attributes), with slots for memory/perf
@@ -261,5 +275,6 @@ __all__ = [
     "extract_player_fields",
     "extract_row",
     "get_feature_names",
+    "get_raw_target_names",
     "get_target_names",
 ]

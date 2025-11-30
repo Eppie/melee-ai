@@ -114,7 +114,7 @@ def _compute_player_rewards(
     # deaths[t] = not dying at t-1 AND dying at t
     opp_deaths = torch.logical_and(
         torch.logical_not(opp_is_dying[:, :-1]),  # not dying at prev frame
-        opp_is_dying[:, 1:]  # dying at current frame
+        opp_is_dying[:, 1:],  # dying at current frame
     )  # [B, L-1]
 
     # Reward for taking opponent's stock

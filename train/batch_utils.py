@@ -10,7 +10,6 @@ from tensordict import TensorDict
 from torch import Tensor
 
 from column_map import ColumnMap
-from controller_quantization import quantize_targets
 
 
 def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorDict:

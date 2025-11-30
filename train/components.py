@@ -101,6 +101,7 @@ class TrainingComponents:
     ratios: SampleWeightRatios
     column_map: ColumnMap
     value_idx: int
+    dataset: any
     loader: any
     sampler: any
     total_steps: int

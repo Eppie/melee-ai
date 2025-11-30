@@ -191,6 +191,7 @@ class WindowDataset(Dataset):
         *,
         in_memory: bool = False,
         in_memory_shared: bool = False,
+        shared_chunk_size: Optional[int] = None,
     ) -> None:
         """Prepare the dataset by indexing shards.
 
@@ -216,6 +217,10 @@ class WindowDataset(Dataset):
         ] = {}
         self._in_memory = bool(in_memory or in_memory_shared)
         self._in_memory_shared = bool(in_memory_shared)
+        self._shared_chunk_size = int(shared_chunk_size) if shared_chunk_size else None
+        self._total_chunks: Optional[int] = None
+        self._active_chunk_idx: Optional[int] = None
+        self._active_episode_indices: Optional[np.ndarray] = None
         # Enforce preprocessed data presence
         preprocessed = self.index.meta.get("preprocessed", {})
         if not (preprocessed.get("features") and preprocessed.get("targets")):
@@ -239,11 +244,53 @@ class WindowDataset(Dataset):
             )
 
         if self._in_memory_shared:
-            self._load_all_episodes_shared()
+            self._initialize_shared_chunks()
 
     def __len__(self) -> int:
         """Return the total number of sliding windows across the corpus."""
-        return self.index.total_windows
+        if self._active_episode_indices is None:
+            return self.index.total_windows
+        return int(
+            sum(
+                self.index.episodes[epi].num_windows for epi in self._active_episode_indices
+            )
+        )
+
+    def _chunk_bounds(self, chunk_idx: int) -> Tuple[int, int]:
+        if self._shared_chunk_size is None:
+            return 0, len(self.index.episodes)
+        start = chunk_idx * self._shared_chunk_size
+        end = min(len(self.index.episodes), start + self._shared_chunk_size)
+        return start, end
+
+    def count_chunk_batches(
+        self, chunk_idx: int, stride: int, batch_size: int, epoch_mod: int
+    ) -> int:
+        """Estimate batches for a chunk without loading arrays."""
+        start, end = self._chunk_bounds(chunk_idx)
+        total_windows = 0
+        m = epoch_mod % max(1, stride)
+        for epi in range(start, end):
+            ep = self.index.episodes[int(epi)]
+            w = ep.num_windows
+            if w <= m:
+                continue
+            total_windows += ((w - 1 - m) // stride) + 1
+        if batch_size <= 0:
+            return 0
+        return int(np.ceil(total_windows / float(batch_size)))
+
+    def total_batches_for_epoch(self, stride: int, batch_size: int, epoch: int) -> int:
+        """Total batches across all chunks for a given epoch modulo stride."""
+        if self._total_chunks is None:
+            return int(np.ceil(self.index.total_windows / float(batch_size)))
+        epoch_mod = epoch % max(1, stride)
+        batches = 0
+        for chunk_idx in range(self._total_chunks):
+            batches += self.count_chunk_batches(
+                chunk_idx, stride=stride, batch_size=batch_size, epoch_mod=epoch_mod
+            )
+        return batches
 
     def estimate_batch_bytes(self, batch_size: int) -> int:
         """
@@ -330,12 +377,39 @@ class WindowDataset(Dataset):
             return features_np, targets_np
 
         return feature_array, target_array
-
-    def _load_all_episodes_shared(self) -> None:
-        """Eagerly load all episodes into shared memory tensors (one copy for all workers)."""
+    def _initialize_shared_chunks(self) -> None:
+        """Prepare shared-memory caching with chunked preloading."""
         total_eps = len(self.index.episodes)
-        print(f"[dataset] Preloading {total_eps} episodes into shared memory...")
-        for idx, ep in enumerate(self.index.episodes):
+        if self._shared_chunk_size is None or self._shared_chunk_size <= 0:
+            self._shared_chunk_size = total_eps
+        self._total_chunks = max(1, (total_eps + self._shared_chunk_size - 1) // self._shared_chunk_size)
+        self.set_active_chunk(0)
+
+    def set_active_chunk(self, chunk_idx: int) -> None:
+        """Load a chunk of episodes into shared memory and evict previous chunk."""
+        if self._total_chunks is None:
+            return
+        chunk_idx = int(chunk_idx) % self._total_chunks
+        if self._active_chunk_idx == chunk_idx:
+            return
+
+        # Evict old chunk
+        self._shared_episode_cache = {}
+        self._episode_arrays_cache = {}
+        self._episode_cache = {}
+        self._active_chunk_idx = chunk_idx
+
+        start = chunk_idx * self._shared_chunk_size
+        end = min(len(self.index.episodes), start + self._shared_chunk_size)
+        self._active_episode_indices = np.arange(start, end, dtype=np.int32)
+
+        total_to_load = end - start
+        print(
+            f"[dataset] Preloading chunk {chunk_idx + 1}/{self._total_chunks} "
+            f"episodes {start}-{end - 1} into shared memory..."
+        )
+        for idx, epi in enumerate(self._active_episode_indices):
+            ep = self.index.episodes[int(epi)]
             cache_key = (ep.shard_id, ep.episode_id)
             feature_array, target_array = self.index.open_episode_arrays(ep)
             f_tensor = torch.from_numpy(
@@ -345,8 +419,20 @@ class WindowDataset(Dataset):
                 np.ascontiguousarray(target_array[:], dtype=np.float32)
             ).share_memory_()
             self._shared_episode_cache[cache_key] = (f_tensor, t_tensor)
-            if (idx + 1) % 25 == 0 or (idx + 1) == total_eps:
-                print(f"[dataset]   loaded {idx + 1}/{total_eps} episodes")
+            if (idx + 1) % 25 == 0 or (idx + 1) == total_to_load:
+                print(f"[dataset]   loaded {idx + 1}/{total_to_load} episodes in chunk")
+
+    def set_active_chunk_for_epoch(
+        self, epoch: int, stride: int, sampler: Optional["RandomWindowSampler"] = None
+    ) -> None:
+        """Advance shared-memory chunk based on epoch/stride and update sampler."""
+        if not self._in_memory_shared or self._total_chunks is None:
+            return
+        stride = max(1, int(stride))
+        chunk_idx = int(epoch // stride)
+        self.set_active_chunk(chunk_idx)
+        if sampler is not None and hasattr(sampler, "set_active_episodes"):
+            sampler.set_active_episodes(self._active_episode_indices.tolist())
 
 
 class RandomWindowSampler(Sampler[int]):
@@ -369,6 +455,7 @@ class RandomWindowSampler(Sampler[int]):
         index: ZarrCorpusIndex,
         stride: int = 1,
         generator: Optional[torch.Generator] = None,
+        active_episode_indices: Optional[Sequence[int]] = None,
     ) -> None:
         """Create a sampler that enforces a stride across episode windows."""
         super().__init__()
@@ -379,6 +466,13 @@ class RandomWindowSampler(Sampler[int]):
         self.generator = generator
         self.epoch = 0
         self._start_offset = 0
+        if active_episode_indices is None:
+            self._active_episode_indices = np.arange(
+                len(self.index.episodes), dtype=np.int32
+            )
+        else:
+            arr = np.array(active_episode_indices, dtype=np.int32)
+            self._active_episode_indices = np.unique(arr)
 
     def set_epoch(self, epoch: int) -> None:
         """Record the epoch so future iterations honor ``epoch % stride``."""
@@ -388,12 +482,18 @@ class RandomWindowSampler(Sampler[int]):
         """Skip the first ``offset`` samples the next time the sampler runs."""
         self._start_offset = max(0, int(offset))
 
+    def set_active_episodes(self, episode_indices: Sequence[int]) -> None:
+        """Restrict sampling to the provided episode indices."""
+        arr = np.array(episode_indices, dtype=np.int32)
+        self._active_episode_indices = np.unique(arr)
+
     def _count_for_epoch(self, epoch: int) -> int:
         """Count how many windows satisfy the stride for ``epoch``."""
         s = self.stride
         m = epoch % s
         total = 0
-        for ep in self.index.episodes:
+        for epi in self._active_episode_indices:
+            ep = self.index.episodes[int(epi)]
             w = ep.num_windows
             if w <= m:
                 continue
@@ -415,7 +515,8 @@ class RandomWindowSampler(Sampler[int]):
             return
         buffer = np.empty(total, dtype=np.int32)
         cursor = 0
-        for epi, ep in enumerate(self.index.episodes):
+        for epi in self._active_episode_indices:
+            ep = self.index.episodes[int(epi)]
             w = ep.num_windows
             if w <= m:
                 continue
@@ -458,6 +559,7 @@ def make_dataloader(
     ds = WindowDataset(
         config.zarr.out_root,
         in_memory_shared=getattr(config.train, "in_memory_shared", False),
+        shared_chunk_size=getattr(config.train, "in_memory_shared_chunk_size", None),
     )
 
     stride = config.train.stride
@@ -465,6 +567,8 @@ def make_dataloader(
         index=ds.index,
         stride=stride,
     )
+    if getattr(ds, "_active_episode_indices", None) is not None:
+        sampler.set_active_episodes(ds._active_episode_indices.tolist())
 
     mp_ctx = None
     start_method = getattr(config.train, "worker_start_method", None)

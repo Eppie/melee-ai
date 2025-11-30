@@ -85,6 +85,14 @@ class TrainConfig(BaseModel):
             "Disable if the dataset does not fit in host memory."
         ),
     )
+    in_memory_shared_chunk_size: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Number of episodes to preload into shared memory at a time. "
+            "Episodes are streamed in chunks to limit RAM usage (e.g., 1000 at a time)."
+        ),
+    )
     prefetch_factor: int = Field(
         default=4,
         ge=1,

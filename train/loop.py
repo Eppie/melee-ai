@@ -16,6 +16,7 @@ from train.profiling import print_profiling_results
 from train.setup import initialize_training_components, print_config
 from train.step import perform_backward_pass, perform_forward_pass
 from train.wandb_utils import finish_wandb
+from window_dataset import worker_init_fn
 
 
 def _prepare_batch(
@@ -68,15 +69,27 @@ def _update_epoch_statistics(epoch_ctx: EpochContext, forward_result) -> None:
 def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
     components = state.components
     config = components.config
-
+    dataset = getattr(components, "dataset", None)
+    chunked = (
+        dataset is not None
+        and getattr(dataset, "_total_chunks", None) is not None
+        and getattr(dataset, "_total_chunks") > 1
+    )
     if hasattr(components.sampler, "set_epoch"):
         components.sampler.set_epoch(epoch)
     components.model.train()
 
-    try:
-        total_batches = len(components.loader)
-    except TypeError:
-        total_batches = 0
+    if chunked:
+        stride = config.train.stride
+        batch_size = config.train.batch_size
+        total_batches = dataset.total_batches_for_epoch(
+            stride=stride, batch_size=batch_size, epoch=epoch
+        )
+    else:
+        try:
+            total_batches = len(components.loader)
+        except TypeError:
+            total_batches = 0
     total_batches = max(int(total_batches), 1)
 
     epoch_ctx = EpochContext()
@@ -100,122 +113,206 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 f"Resuming epoch {epoch + 1}: skipping first {state.resume_iter} batches by consuming them (may take time)."
             )
 
-    for iteration, batch in enumerate(components.loader):
-        if epoch_ctx.skip_remaining:
-            epoch_ctx.skip_remaining -= 1
-            continue
+    iteration = 0
 
-        # Determine if we should profile this step
-        should_profile = (
-            components.profiling_enabled and components.profiling_step_count < 1000
+    def _build_loader_for_chunk():
+        mp_ctx = None
+        start_method = getattr(config.train, "worker_start_method", None)
+        if config.train.num_workers and config.train.num_workers > 0 and start_method:
+            try:
+                mp_ctx = torch.multiprocessing.get_context(start_method)
+            except RuntimeError as exc:
+                print(
+                    f"[dataloader] Requested start method '{start_method}' unavailable ({exc}); using default."
+                )
+                mp_ctx = None
+
+        pin_memory = config.train.pin_memory
+        num_workers = config.train.num_workers
+        prefetch_factor = None
+        if num_workers and num_workers > 0:
+            prefetch_factor = config.train.prefetch_factor
+            max_prefetch_mb = getattr(config.train, "max_loader_prefetch_mb", None)
+            if max_prefetch_mb:
+                batch_bytes = max(
+                    1, dataset.estimate_batch_bytes(config.train.batch_size)
+                )
+                max_prefetch_bytes = max_prefetch_mb * 1024 * 1024
+                total_batches_budget = max_prefetch_bytes // batch_bytes
+                budget_saturated = False
+                if total_batches_budget == 0:
+                    total_batches_budget = 1
+                    budget_saturated = True
+                allowed_per_worker = total_batches_budget // num_workers
+                if allowed_per_worker == 0:
+                    allowed_per_worker = 1
+                    budget_saturated = True
+                if allowed_per_worker < prefetch_factor:
+                    approx_batch_mb = batch_bytes / (1024**2)
+                    print(
+                        "[dataloader] Reducing prefetch_factor from "
+                        f"{prefetch_factor} to {allowed_per_worker} to honor "
+                        f"{max_prefetch_mb} MiB prefetch budget (batch ≈ "
+                        f"{approx_batch_mb:.2f} MiB)."
+                    )
+                    if budget_saturated:
+                        print(
+                            "[dataloader] Consider lowering train.num_workers or "
+                            "batch_size, or increase train.max_loader_prefetch_mb "
+                            "if you need more throughput."
+                        )
+                    prefetch_factor = allowed_per_worker
+
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_size=config.train.batch_size,
+            sampler=components.sampler,
+            num_workers=config.train.num_workers,
+            pin_memory=pin_memory,
+            drop_last=False,
+            worker_init_fn=worker_init_fn,
+            persistent_workers=(config.train.persistent_workers and not chunked),
+            multiprocessing_context=mp_ctx,
+            prefetch_factor=prefetch_factor,
         )
 
-        # Get profiler references (or nullcontext for zero overhead when disabled)
-        prof = components.profilers
-        ctx = lambda name: prof[name] if should_profile else nullcontext()
-
-        with ctx("total_step"):
-            # Data preparation
-            with ctx("data_prep"):
-                batch_tensors = _prepare_batch(batch, components.device)
-
-            # Progress computation
-            with ctx("progress_calc"):
-                progress = _compute_training_progress(
-                    epoch,
-                    iteration,
-                    total_batches,
-                    config.train.epochs,
-                    config.train.schedule_warmup_epochs,
-                    config.train.schedule_cooldown_epochs,
-                )
-
-            # Forward pass
-            with ctx("forward"):
-                forward_result = perform_forward_pass(
-                    components,
-                    batch_tensors,
-                    progress=progress,
-                    in_warmup=epoch < config.train.schedule_warmup_epochs,
-                )
-
-            current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
-            log_this_iter = _should_log(current_iter)
-
-            # Learning rate update
-            with ctx("lr_update"):
-                lr = _update_learning_rate(components, state.global_step)
-
-            # Backward pass
-            with ctx("backward"):
-                grad_stats = perform_backward_pass(
-                    components,
-                    forward_result.loss,
-                    collect_grad_stats=components.logger.enabled and log_this_iter,
-                )
-
-            epoch_ctx.iters_processed += 1
-
-            # Statistics update
-            with ctx("stats_update"):
-                _update_epoch_statistics(epoch_ctx, forward_result)
-                state.global_step += 1
-
-                # Update variance trackers
-                loss_value = float(forward_result.loss.detach().cpu().item())
-                components.loss_variance_tracker.add(loss_value)
-                if grad_stats and "total_norm" in grad_stats:
-                    components.gradient_variance_tracker.add(grad_stats["total_norm"])
-
-            # Checkpointing
-            completed_batches = epoch_ctx.applied_skip + epoch_ctx.iters_processed
-            with ctx("checkpoint"):
-                maybe_checkpoint_batch(
-                    components,
-                    epoch,
-                    iteration,
-                    completed_batches,
-                    state.global_step,
-                )
-
-            # Logging
-            if log_this_iter:
-                with ctx("logging"):
-                    now = time.time()
-                    dt = max(1e-9, now - epoch_ctx.last_log_time)
-                    frames_per_s = epoch_ctx.frames_since_last_log / dt
-                    avg_loss_running = epoch_ctx.get_avg_loss()
-                    bundle = prepare_logging_bundle(
-                        components=components,
-                        forward_result=forward_result,
-                        epoch=epoch,
-                        completed_batches=completed_batches,
-                        lr=lr,
-                        frames_per_s=frames_per_s,
-                        avg_loss_running=avg_loss_running,
-                        grad_stats=grad_stats,
-                        global_step=state.global_step,
-                        epoch_ctx=epoch_ctx,
+    loaders = [components.loader] if not chunked else []
+    if chunked and hasattr(dataset, "_total_chunks"):
+        loaders = []
+        for chunk_idx in range(int(dataset._total_chunks)):
+            try:
+                dataset.set_active_chunk(chunk_idx)
+                if hasattr(components.sampler, "set_active_episodes"):
+                    components.sampler.set_active_episodes(
+                        dataset._active_episode_indices.tolist()
                     )
-                    emit_logging(
-                        components=components,
-                        bundle=bundle,
-                        grad_stats=grad_stats,
-                        global_step=state.global_step,
-                        epoch_ctx=epoch_ctx,
-                    )
-                    epoch_ctx.last_log_time = now
-                    epoch_ctx.frames_since_last_log = 0.0
+                if hasattr(components.sampler, "set_epoch"):
+                    components.sampler.set_epoch(epoch)
+            except Exception as exc:
+                print(f"[dataloader] Failed to set chunk {chunk_idx} ({exc}); skipping.")
+                continue
+            loaders.append(_build_loader_for_chunk())
 
-        # Increment profiling step count and check if profiling just completed
-        if should_profile:
-            components.profiling_step_count += 1
-            if components.profiling_step_count >= 1000:
-                print("\n" + "=" * 80)
-                print("PROFILING COMPLETE - 1000 steps profiled")
-                print("=" * 80 + "\n")
-                print_profiling_results(components.profilers)
-                print("\n" + "=" * 80 + "\n")
+    for loader in loaders:
+        for batch in loader:
+            if epoch_ctx.skip_remaining:
+                epoch_ctx.skip_remaining -= 1
+                iteration += 1
+                continue
+
+            # Determine if we should profile this step
+            should_profile = (
+                components.profiling_enabled and components.profiling_step_count < 1000
+            )
+
+            # Get profiler references (or nullcontext for zero overhead when disabled)
+            prof = components.profilers
+            ctx = lambda name: prof[name] if should_profile else nullcontext()
+
+            with ctx("total_step"):
+                # Data preparation
+                with ctx("data_prep"):
+                    batch_tensors = _prepare_batch(batch, components.device)
+
+                # Progress computation
+                with ctx("progress_calc"):
+                    progress = _compute_training_progress(
+                        epoch,
+                        iteration,
+                        total_batches,
+                        config.train.epochs,
+                        config.train.schedule_warmup_epochs,
+                        config.train.schedule_cooldown_epochs,
+                    )
+
+                # Forward pass
+                with ctx("forward"):
+                    forward_result = perform_forward_pass(
+                        components,
+                        batch_tensors,
+                        progress=progress,
+                        in_warmup=epoch < config.train.schedule_warmup_epochs,
+                    )
+
+                current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
+                log_this_iter = _should_log(current_iter)
+
+                # Learning rate update
+                with ctx("lr_update"):
+                    lr = _update_learning_rate(components, state.global_step)
+
+                # Backward pass
+                with ctx("backward"):
+                    grad_stats = perform_backward_pass(
+                        components,
+                        forward_result.loss,
+                        collect_grad_stats=components.logger.enabled and log_this_iter,
+                    )
+
+                epoch_ctx.iters_processed += 1
+
+                # Statistics update
+                with ctx("stats_update"):
+                    _update_epoch_statistics(epoch_ctx, forward_result)
+                    state.global_step += 1
+
+                    # Update variance trackers
+                    loss_value = float(forward_result.loss.detach().cpu().item())
+                    components.loss_variance_tracker.add(loss_value)
+                    if grad_stats and "total_norm" in grad_stats:
+                        components.gradient_variance_tracker.add(grad_stats["total_norm"])
+
+                # Checkpointing
+                completed_batches = epoch_ctx.applied_skip + epoch_ctx.iters_processed
+                with ctx("checkpoint"):
+                    maybe_checkpoint_batch(
+                        components,
+                        epoch,
+                        iteration,
+                        completed_batches,
+                        state.global_step,
+                    )
+
+                # Logging
+                if log_this_iter:
+                    with ctx("logging"):
+                        now = time.time()
+                        dt = max(1e-9, now - epoch_ctx.last_log_time)
+                        frames_per_s = epoch_ctx.frames_since_last_log / dt
+                        avg_loss_running = epoch_ctx.get_avg_loss()
+                        bundle = prepare_logging_bundle(
+                            components=components,
+                            forward_result=forward_result,
+                            epoch=epoch,
+                            completed_batches=completed_batches,
+                            lr=lr,
+                            frames_per_s=frames_per_s,
+                            avg_loss_running=avg_loss_running,
+                            grad_stats=grad_stats,
+                            global_step=state.global_step,
+                            epoch_ctx=epoch_ctx,
+                        )
+                        emit_logging(
+                            components=components,
+                            bundle=bundle,
+                            grad_stats=grad_stats,
+                            global_step=state.global_step,
+                            epoch_ctx=epoch_ctx,
+                        )
+                        epoch_ctx.last_log_time = now
+                        epoch_ctx.frames_since_last_log = 0.0
+
+            # Increment profiling step count and check if profiling just completed
+            if should_profile:
+                components.profiling_step_count += 1
+                if components.profiling_step_count >= 1000:
+                    print("\n" + "=" * 80)
+                    print("PROFILING COMPLETE - 1000 steps profiled")
+                    print("=" * 80 + "\n")
+                    print_profiling_results(components.profilers)
+                    print("\n" + "=" * 80 + "\n")
+
+            iteration += 1
 
     if epoch == state.resume_epoch:
         state.resume_iter = 0

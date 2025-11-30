@@ -455,7 +455,10 @@ def make_dataloader(
     config: "Config",
 ) -> Tuple[torch.utils.data.DataLoader, WindowDataset, Sampler[int]]:
     """Construct the dataset, sampler, and DataLoader."""
-    ds = WindowDataset(config.zarr.out_root)
+    ds = WindowDataset(
+        config.zarr.out_root,
+        in_memory_shared=getattr(config.train, "in_memory_shared", False),
+    )
 
     stride = config.train.stride
     sampler = RandomWindowSampler(

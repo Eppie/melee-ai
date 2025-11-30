@@ -680,6 +680,34 @@ class GPTInferenceEngine:
         self._update_prev_controller_features(controller)
         return controller
 
+    def prepare_only(
+        self, frame_inputs: Mapping[str, float] | ModelFrameInputs
+    ) -> Tuple[Optional[TensorDict], Dict[str, float], Dict[str, float], FrameRecord]:
+        """Prepare inputs without running inference (for batched inference)."""
+        # Fast path type checking
+        if isinstance(frame_inputs, ModelFrameInputs):
+            raw_snapshot = frame_inputs.raw
+            transformed = frame_inputs.transformed
+        else:
+            # Single-pass coercion
+            raw_snapshot = {k: _coerce_scalar(v) for k, v in frame_inputs.items()}
+            transformed = {k: float(v) for k, v in frame_inputs.items()}
+
+        features = self._override_controller_features(transformed)
+        record = self._record_frame(features, raw_snapshot)
+        inputs_td = self.prepare_inputs(features)
+        self._frames_seen += 1
+        self._maybe_log_death(raw_snapshot.get("p1_stock"))
+
+        return inputs_td, raw_snapshot, features, record
+
+    def decode_only(self, outputs: TensorDict, record: FrameRecord) -> ControllerState:
+        """Decode model outputs into controller state (for batched inference)."""
+        record.logits = self._capture_logits(outputs)
+        controller = self._decode_outputs(outputs)
+        self._update_prev_controller_features(controller)
+        return controller
+
 
 _ACTIVE_ENGINE: Optional[GPTInferenceEngine] = None
 

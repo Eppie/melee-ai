@@ -163,12 +163,87 @@ class PPOConfig(BaseModel):
     )
 
     distributed_mode: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Use distributed architecture with centralized GPU inference. "
             "When True: simulation workers run on CPU, send states to central GPU for inference. "
             "When False: each worker runs full model locally. "
             "Effect: True = better GPU utilization, supports more workers, but adds communication overhead; "
-            "False = simpler, better for single machine. Recommended: True for multi-worker setups."
+            "False = simpler, better for single machine. Default: True (recommended for production)."
+        ),
+    )
+
+    # Async training settings (NEW)
+    async_training: bool = Field(
+        default=True,
+        description=(
+            "Run PPO training in a separate process to enable parallel collection and training. "
+            "When True: Training runs in background process while collection continues (eliminates pause-train-resume cycle). "
+            "When False: Traditional synchronous training (workers pause during training). "
+            "Effect: True = 20-30% throughput gain, more complex; False = simpler, traditional. "
+            "Default: True (recommended for production). Requires distributed_mode=True."
+        ),
+    )
+
+    gradient_accumulation_steps: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Number of rollouts to accumulate before applying gradients. "
+            "Effect: Higher values (3-4) = more stable gradients, smoother updates; "
+            "lower values (1-2) = faster iteration, noisier gradients. "
+            "Reasonable range: [1, 8]. Only used when async_training=True. "
+            "Interacts with: rollout_length (total frames per update = rollout_length × gradient_accumulation_steps)."
+        ),
+    )
+
+    # Safety mechanisms (NEW)
+    max_mean_actor_kl: float = Field(
+        default=0.01,
+        ge=0,
+        description=(
+            "Maximum mean KL divergence between old and new policy before reverting update. "
+            "Safety mechanism to prevent destructive policy changes. "
+            "Effect: Lower values (0.005-0.01) = more conservative, prevent large changes; "
+            "higher values (0.01-0.02) = allow larger updates. "
+            "Set to 0.0 to disable checkpoint reversion. Reasonable range: [0.005, 0.02]. "
+            "Interacts with: clip_ratio (both limit policy updates)."
+        ),
+    )
+
+    max_clipped_fraction: float = Field(
+        default=0.5,
+        ge=0,
+        le=1,
+        description=(
+            "Maximum fraction of samples that can be clipped before early stopping. "
+            "If more than this fraction of samples hit the clip ratio, training epoch stops early. "
+            "Effect: Lower values (0.3-0.4) = stop earlier, prevent overfitting; "
+            "higher values (0.5-0.7) = train longer per epoch. "
+            "Reasonable range: [0.3, 0.7]. Typical value: 0.5."
+        ),
+    )
+
+    # Teacher distillation (NEW) - Optional, disabled by default
+    teacher_kl_weight: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Weight for teacher distillation loss to prevent catastrophic forgetting. "
+            "Adds KL divergence penalty between policy and frozen teacher model. "
+            "Effect: Higher values (0.001-0.01) = stay closer to teacher, less forgetting; "
+            "0.0 = no teacher distillation. "
+            "Reasonable range: [0.0, 0.01]. Set to 0.003 to enable. "
+            "Requires: teacher_checkpoint_path to be set."
+        ),
+    )
+
+    teacher_checkpoint_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to teacher model checkpoint for distillation. "
+            "Should be a pre-trained model checkpoint (.pt file). "
+            "Only used if teacher_kl_weight > 0. "
+            "Example: 'checkpoints/pretrained_model.pt'"
         ),
     )

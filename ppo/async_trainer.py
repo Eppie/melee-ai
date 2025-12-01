@@ -90,9 +90,10 @@ class AsyncPPOTrainer:
             config_dict: Configuration dictionary (if None, uses current config)
         """
         # Communication queues
-        self.rollout_queue: mp.Queue = mp.Queue(maxsize=2)  # Double buffer
+        # Queue should be larger than gradient_accumulation_steps to prevent deadlock
+        self.rollout_queue: mp.Queue = mp.Queue(maxsize=10)  # Buffer for multiple rollouts
         self.parameter_queue: mp.Queue = mp.Queue(maxsize=1)  # Latest params
-        self.metrics_queue: mp.Queue = mp.Queue(maxsize=10)  # Metrics stream
+        self.metrics_queue: mp.Queue = mp.Queue(maxsize=20)  # Metrics stream
         self.shutdown_event: mp.Event = mp.Event()
 
         # Get config

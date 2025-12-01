@@ -433,12 +433,13 @@ class WindowDataset(Dataset):
             print(f"[dataset] Estimated memory per episode: {mb_per_episode:.2f} MB")
 
             # Calculate optimal chunk size
+            # Use 0.5 safety margin to leave headroom for PyTorch workers + OS overhead
             self._shared_chunk_size = calculate_optimal_chunk_size(
                 total_episodes=total_eps,
                 bytes_per_episode=bytes_per_episode,
                 num_overlapping=self._num_overlapping_chunks,
                 ram_budget_mb=ram_budget_mb,
-                safety_margin=0.8,
+                safety_margin=0.5,
             )
             print(f"[dataset] Auto-sized chunks to {self._shared_chunk_size} episodes")
             print(

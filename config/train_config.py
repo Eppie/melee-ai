@@ -85,12 +85,37 @@ class TrainConfig(BaseModel):
             "Disable if the dataset does not fit in host memory."
         ),
     )
-    in_memory_shared_chunk_size: int = Field(
-        default=1000,
-        ge=1,
+    in_memory_shared_chunk_size: int | str = Field(
+        default="auto",
         description=(
             "Number of episodes to preload into shared memory at a time. "
+            "Use 'auto' for dynamic sizing based on available RAM, or an integer for fixed size. "
             "Episodes are streamed in chunks to limit RAM usage (e.g., 1000 at a time)."
+        ),
+    )
+    num_overlapping_chunks: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Number of chunks to keep loaded simultaneously for multi-chunk overlap. "
+            "Higher values improve shuffling quality but use more RAM. "
+            "With num_overlapping=2, chunks [0,1], [1,2], [2,3] are loaded sequentially, "
+            "providing a 2x larger shuffle window compared to single-chunk mode."
+        ),
+    )
+    chunk_size_ram_budget_mb: int | None = Field(
+        default=None,
+        description=(
+            "Override available RAM detection for chunk sizing (in MB). "
+            "Useful for remote training where psutil may report incorrect values. "
+            "If None, uses psutil.virtual_memory().available."
+        ),
+    )
+    background_chunk_preload: bool = Field(
+        default=True,
+        description=(
+            "Load next chunk in background thread during training to eliminate chunk-switch stalls. "
+            "Improves GPU utilization but adds complexity."
         ),
     )
     prefetch_factor: int = Field(

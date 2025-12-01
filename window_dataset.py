@@ -10,6 +10,13 @@ import torch
 import zarr
 from torch.utils.data import Dataset, Sampler
 
+from data_loading.chunk_manager import ChunkManager
+from data_loading.dataloader_factory import DataLoaderFactory
+from data_loading.memory_utils import (
+    calculate_optimal_chunk_size,
+    estimate_episode_memory,
+    get_available_ram_mb,
+)
 from data_types import RawNumpyArray, ProcessedTorchTensor
 
 FLOAT32_BYTES = np.dtype(np.float32).itemsize
@@ -191,7 +198,10 @@ class WindowDataset(Dataset):
         *,
         in_memory: bool = False,
         in_memory_shared: bool = False,
-        shared_chunk_size: Optional[int] = None,
+        shared_chunk_size: Optional[int | str] = None,
+        num_overlapping_chunks: int = 2,
+        chunk_size_ram_budget_mb: Optional[int] = None,
+        background_chunk_preload: bool = False,
     ) -> None:
         """Prepare the dataset by indexing shards.
 
@@ -199,6 +209,15 @@ class WindowDataset(Dataset):
         (per-process). ``in_memory_shared`` eagerly loads all episodes into
         torch shared memory so multiple workers can reuse the same backing
         buffers without duplicating memory.
+
+        Args:
+            data_dir: Path to Zarr dataset directory
+            in_memory: Enable per-process episode caching
+            in_memory_shared: Enable shared memory chunking
+            shared_chunk_size: Episodes per chunk ("auto" for dynamic, int for fixed)
+            num_overlapping_chunks: Number of chunks to load simultaneously
+            chunk_size_ram_budget_mb: Override RAM detection (MB)
+            background_chunk_preload: Enable background chunk preloading
         """
         super().__init__()
         self.index = ZarrCorpusIndex(data_dir)
@@ -217,10 +236,20 @@ class WindowDataset(Dataset):
         ] = {}
         self._in_memory = bool(in_memory or in_memory_shared)
         self._in_memory_shared = bool(in_memory_shared)
-        self._shared_chunk_size = int(shared_chunk_size) if shared_chunk_size else None
+
+        # Store chunk configuration
+        self._shared_chunk_size_config = shared_chunk_size
+        self._num_overlapping_chunks = num_overlapping_chunks
+        self._chunk_size_ram_budget_mb = chunk_size_ram_budget_mb
+        self._background_chunk_preload = background_chunk_preload
+
+        # Will be set during _initialize_shared_chunks
+        self._shared_chunk_size: Optional[int] = None
         self._total_chunks: Optional[int] = None
         self._active_chunk_idx: Optional[int] = None
         self._active_episode_indices: Optional[np.ndarray] = None
+        self._chunk_manager: Optional["ChunkManager"] = None
+
         # Enforce preprocessed data presence
         preprocessed = self.index.meta.get("preprocessed", {})
         if not (preprocessed.get("features") and preprocessed.get("targets")):
@@ -252,7 +281,8 @@ class WindowDataset(Dataset):
             return self.index.total_windows
         return int(
             sum(
-                self.index.episodes[epi].num_windows for epi in self._active_episode_indices
+                self.index.episodes[epi].num_windows
+                for epi in self._active_episode_indices
             )
         )
 
@@ -343,7 +373,9 @@ class WindowDataset(Dataset):
 
     def _get_episode_arrays(
         self, ep: EpisodeInfo
-    ) -> Tuple[np.ndarray | zarr.Array | torch.Tensor, np.ndarray | zarr.Array | torch.Tensor]:
+    ) -> Tuple[
+        np.ndarray | zarr.Array | torch.Tensor, np.ndarray | zarr.Array | torch.Tensor
+    ]:
         """Return feature/target arrays for ``ep``, optionally keeping them in RAM."""
         cache_key = (ep.shard_id, ep.episode_id)
 
@@ -377,50 +409,149 @@ class WindowDataset(Dataset):
             return features_np, targets_np
 
         return feature_array, target_array
+
     def _initialize_shared_chunks(self) -> None:
-        """Prepare shared-memory caching with chunked preloading."""
+        """Prepare shared-memory caching with chunked preloading and ChunkManager."""
         total_eps = len(self.index.episodes)
-        if self._shared_chunk_size is None or self._shared_chunk_size <= 0:
+
+        # Determine chunk size (dynamic or fixed)
+        if self._shared_chunk_size_config == "auto":
+            # Dynamic chunk sizing
+            print("[dataset] Using automatic chunk sizing based on available RAM...")
+
+            # Get available RAM
+            if self._chunk_size_ram_budget_mb is not None:
+                ram_budget_mb = self._chunk_size_ram_budget_mb
+                print(f"[dataset] Using RAM budget override: {ram_budget_mb} MB")
+            else:
+                ram_budget_mb = get_available_ram_mb()
+                print(f"[dataset] Detected available RAM: {ram_budget_mb} MB")
+
+            # Estimate episode memory
+            bytes_per_episode = estimate_episode_memory(self.index, sample_size=100)
+            mb_per_episode = bytes_per_episode / (1024**2)
+            print(f"[dataset] Estimated memory per episode: {mb_per_episode:.2f} MB")
+
+            # Calculate optimal chunk size
+            self._shared_chunk_size = calculate_optimal_chunk_size(
+                total_episodes=total_eps,
+                bytes_per_episode=bytes_per_episode,
+                num_overlapping=self._num_overlapping_chunks,
+                ram_budget_mb=ram_budget_mb,
+                safety_margin=0.8,
+            )
+            print(f"[dataset] Auto-sized chunks to {self._shared_chunk_size} episodes")
+            print(
+                f"[dataset] With {self._num_overlapping_chunks} overlapping chunks, "
+                f"total memory budget: ~{self._shared_chunk_size * self._num_overlapping_chunks * mb_per_episode:.1f} MB"
+            )
+        elif isinstance(self._shared_chunk_size_config, int):
+            self._shared_chunk_size = self._shared_chunk_size_config
+            print(
+                f"[dataset] Using fixed chunk size: {self._shared_chunk_size} episodes"
+            )
+        else:
+            # Fallback: load all episodes as one chunk
             self._shared_chunk_size = total_eps
-        self._total_chunks = max(1, (total_eps + self._shared_chunk_size - 1) // self._shared_chunk_size)
-        self.set_active_chunk(0)
+            print(f"[dataset] Loading all {total_eps} episodes as single chunk")
+
+        # Calculate total chunks
+        self._total_chunks = max(
+            1, (total_eps + self._shared_chunk_size - 1) // self._shared_chunk_size
+        )
+
+        # Initialize ChunkManager
+        self._chunk_manager = ChunkManager(
+            index=self.index,
+            chunk_size=self._shared_chunk_size,
+            num_overlapping=self._num_overlapping_chunks,
+            enable_background_load=self._background_chunk_preload,
+        )
+
+        print(
+            f"[dataset] Initialized ChunkManager: {self._total_chunks} total chunks, "
+            f"{self._num_overlapping_chunks} overlapping, "
+            f"background_preload={self._background_chunk_preload}"
+        )
+
+        # Load initial chunk(s) - for single chunk mode, load chunk 0
+        # For multi-chunk mode, the training loop will call load_chunks with overlap
+        initial_chunks = [0]
+        if self._num_overlapping_chunks > 1 and self._total_chunks > 1:
+            # Load first overlapping set
+            initial_chunks = list(
+                range(min(self._num_overlapping_chunks, self._total_chunks))
+            )
+
+        self._active_episode_indices = self._chunk_manager.load_chunks(initial_chunks)
+        self._shared_episode_cache = self._chunk_manager.get_cache()
+        self._active_chunk_idx = initial_chunks[0]  # For backward compatibility
+
+    def load_chunks(self, chunk_indices: List[int]) -> np.ndarray:
+        """Load multiple chunks for multi-chunk overlap mode.
+
+        Args:
+            chunk_indices: List of chunk indices to load (e.g., [0, 1] for overlapping)
+
+        Returns:
+            numpy array of episode indices across all loaded chunks
+        """
+        if self._chunk_manager is None:
+            raise RuntimeError(
+                "ChunkManager not initialized. Set in_memory_shared=True."
+            )
+
+        self._active_episode_indices = self._chunk_manager.load_chunks(chunk_indices)
+        self._shared_episode_cache = self._chunk_manager.get_cache()
+        self._active_chunk_idx = chunk_indices[0] if chunk_indices else 0
+
+        return self._active_episode_indices
 
     def set_active_chunk(self, chunk_idx: int) -> None:
-        """Load a chunk of episodes into shared memory and evict previous chunk."""
+        """Load a single chunk (backward compatibility - delegates to load_chunks).
+
+        For new code, prefer using load_chunks() directly for multi-chunk support.
+        """
         if self._total_chunks is None:
             return
+
         chunk_idx = int(chunk_idx) % self._total_chunks
-        if self._active_chunk_idx == chunk_idx:
-            return
 
-        # Evict old chunk
-        self._shared_episode_cache = {}
-        self._episode_arrays_cache = {}
-        self._episode_cache = {}
-        self._active_chunk_idx = chunk_idx
+        # Use ChunkManager if available, otherwise fall back to old behavior
+        if self._chunk_manager is not None:
+            self.load_chunks([chunk_idx])
+        else:
+            # Fallback for non-ChunkManager mode (shouldn't happen with current code)
+            # Evict old chunk
+            self._shared_episode_cache = {}
+            self._episode_arrays_cache = {}
+            self._episode_cache = {}
+            self._active_chunk_idx = chunk_idx
 
-        start = chunk_idx * self._shared_chunk_size
-        end = min(len(self.index.episodes), start + self._shared_chunk_size)
-        self._active_episode_indices = np.arange(start, end, dtype=np.int32)
+            start = chunk_idx * self._shared_chunk_size
+            end = min(len(self.index.episodes), start + self._shared_chunk_size)
+            self._active_episode_indices = np.arange(start, end, dtype=np.int32)
 
-        total_to_load = end - start
-        print(
-            f"[dataset] Preloading chunk {chunk_idx + 1}/{self._total_chunks} "
-            f"episodes {start}-{end - 1} into shared memory..."
-        )
-        for idx, epi in enumerate(self._active_episode_indices):
-            ep = self.index.episodes[int(epi)]
-            cache_key = (ep.shard_id, ep.episode_id)
-            feature_array, target_array = self.index.open_episode_arrays(ep)
-            f_tensor = torch.from_numpy(
-                np.ascontiguousarray(feature_array[:], dtype=np.float32)
-            ).share_memory_()
-            t_tensor = torch.from_numpy(
-                np.ascontiguousarray(target_array[:], dtype=np.float32)
-            ).share_memory_()
-            self._shared_episode_cache[cache_key] = (f_tensor, t_tensor)
-            if (idx + 1) % 25 == 0 or (idx + 1) == total_to_load:
-                print(f"[dataset]   loaded {idx + 1}/{total_to_load} episodes in chunk")
+            total_to_load = end - start
+            print(
+                f"[dataset] Preloading chunk {chunk_idx + 1}/{self._total_chunks} "
+                f"episodes {start}-{end - 1} into shared memory..."
+            )
+            for idx, epi in enumerate(self._active_episode_indices):
+                ep = self.index.episodes[int(epi)]
+                cache_key = (ep.shard_id, ep.episode_id)
+                feature_array, target_array = self.index.open_episode_arrays(ep)
+                f_tensor = torch.from_numpy(
+                    np.ascontiguousarray(feature_array[:], dtype=np.float32)
+                ).share_memory_()
+                t_tensor = torch.from_numpy(
+                    np.ascontiguousarray(target_array[:], dtype=np.float32)
+                ).share_memory_()
+                self._shared_episode_cache[cache_key] = (f_tensor, t_tensor)
+                if (idx + 1) % 25 == 0 or (idx + 1) == total_to_load:
+                    print(
+                        f"[dataset]   loaded {idx + 1}/{total_to_load} episodes in chunk"
+                    )
 
     def set_active_chunk_for_epoch(
         self, epoch: int, stride: int, sampler: Optional["RandomWindowSampler"] = None
@@ -560,6 +691,13 @@ def make_dataloader(
         config.zarr.out_root,
         in_memory_shared=getattr(config.train, "in_memory_shared", False),
         shared_chunk_size=getattr(config.train, "in_memory_shared_chunk_size", None),
+        num_overlapping_chunks=getattr(config.train, "num_overlapping_chunks", 2),
+        chunk_size_ram_budget_mb=getattr(
+            config.train, "chunk_size_ram_budget_mb", None
+        ),
+        background_chunk_preload=getattr(
+            config.train, "background_chunk_preload", False
+        ),
     )
 
     stride = config.train.stride
@@ -570,63 +708,11 @@ def make_dataloader(
     if getattr(ds, "_active_episode_indices", None) is not None:
         sampler.set_active_episodes(ds._active_episode_indices.tolist())
 
-    mp_ctx = None
-    start_method = getattr(config.train, "worker_start_method", None)
-    if config.train.num_workers and config.train.num_workers > 0 and start_method:
-        try:
-            mp_ctx = torch.multiprocessing.get_context(start_method)
-        except RuntimeError as exc:
-            print(
-                f"[dataloader] Requested start method '{start_method}' unavailable "
-                f"({exc}); falling back to PyTorch default."
-            )
-            mp_ctx = None
-
-    pin_memory = config.train.pin_memory
-    prefetch_factor = None
-    if config.train.num_workers and config.train.num_workers > 0:
-        prefetch_factor = config.train.prefetch_factor
-        max_prefetch_mb = getattr(config.train, "max_loader_prefetch_mb", None)
-        if max_prefetch_mb:
-            batch_bytes = max(1, ds.estimate_batch_bytes(config.train.batch_size))
-            max_prefetch_bytes = max_prefetch_mb * 1024 * 1024
-            total_batches_budget = max_prefetch_bytes // batch_bytes
-            budget_saturated = False
-            if total_batches_budget == 0:
-                total_batches_budget = 1
-                budget_saturated = True
-            allowed_per_worker = total_batches_budget // config.train.num_workers
-            if allowed_per_worker == 0:
-                allowed_per_worker = 1
-                budget_saturated = True
-            if allowed_per_worker < prefetch_factor:
-                approx_batch_mb = batch_bytes / (1024**2)
-                print(
-                    "[dataloader] Reducing prefetch_factor from "
-                    f"{prefetch_factor} to {allowed_per_worker} to honor "
-                    f"{max_prefetch_mb} MiB prefetch budget (batch ≈ "
-                    f"{approx_batch_mb:.2f} MiB)."
-                )
-                if budget_saturated:
-                    print(
-                        "[dataloader] Consider lowering train.num_workers or "
-                        "batch_size, or increase train.max_loader_prefetch_mb "
-                        "if you need more throughput."
-                    )
-                prefetch_factor = allowed_per_worker
-
-    loader = torch.utils.data.DataLoader(
-        ds,
-        batch_size=config.train.batch_size,
+    # Use DataLoaderFactory for consistent configuration
+    loader = DataLoaderFactory.create(
+        dataset=ds,
         sampler=sampler,
-        num_workers=config.train.num_workers,
-        pin_memory=pin_memory,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=(
-            config.train.persistent_workers if config.train.num_workers > 0 else False
-        ),
-        worker_init_fn=worker_init_fn,
-        drop_last=False,
-        multiprocessing_context=mp_ctx,
+        config=config,
+        is_chunked_mode=False,  # Initial loader is not in chunked mode
     )
     return loader, ds, sampler

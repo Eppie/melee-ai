@@ -12,6 +12,7 @@ from tensordict import TensorDict
 from torch.amp import GradScaler
 
 from column_map import ColumnMap
+from data_loading.instrumentation import DataLoadingMetrics
 from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
 from train.wandb_utils import WandbLogger
@@ -119,6 +120,8 @@ class TrainingComponents:
     profiling_enabled: bool = True
     profiling_step_count: int = 0
     profilers: Dict[str, Profiler] = field(default_factory=dict)
+    # Data loading metrics
+    dataloader_metrics: DataLoadingMetrics = field(default_factory=DataLoadingMetrics)
 
 
 @dataclass

@@ -97,7 +97,11 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
     if epoch == state.resume_epoch:
         epoch_ctx.applied_skip = state.resume_iter
         epoch_ctx.skip_remaining = state.resume_iter
-        if not chunked and state.resume_iter and hasattr(components.sampler, "set_start_offset"):
+        if (
+            not chunked
+            and state.resume_iter
+            and hasattr(components.sampler, "set_start_offset")
+        ):
             try:
                 components.sampler.set_start_offset(state.resume_iter)
                 print(
@@ -187,19 +191,63 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
         epoch_mod = epoch % max(1, stride)
         skip_batches = epoch_ctx.skip_remaining
 
-        for chunk_idx in range(int(dataset._total_chunks)):
-            chunk_batches = dataset.count_chunk_batches(
-                chunk_idx,
-                stride=stride,
-                batch_size=batch_size,
-                epoch_mod=epoch_mod,
-            )
-            if skip_batches >= chunk_batches:
-                skip_batches -= chunk_batches
+        # Multi-chunk overlap: determine number of overlapping chunks
+        num_overlapping = getattr(dataset, "_num_overlapping_chunks", 1)
+        total_chunks = int(dataset._total_chunks)
+
+        # Calculate number of iterations needed to cover all chunks with overlap
+        # For overlapping chunks, we advance by 1 chunk each iteration
+        # Example: With 10 chunks and 2 overlapping: [0,1], [1,2], [2,3], ..., [9,0]
+        if num_overlapping > 1:
+            # We need total_chunks iterations to ensure all chunks are visited
+            num_iterations = total_chunks
+        else:
+            # Single chunk mode: iterate through each chunk
+            num_iterations = total_chunks
+
+        for iteration_idx in range(num_iterations):
+            # Calculate which chunks to load for this iteration
+            if num_overlapping > 1:
+                # Multi-chunk overlap: load overlapping set
+                chunk_indices = [
+                    (iteration_idx + offset) % total_chunks
+                    for offset in range(num_overlapping)
+                ]
+            else:
+                # Single chunk mode: load one chunk at a time
+                chunk_indices = [iteration_idx % total_chunks]
+
+            # Count batches for this iteration (across all chunks in the set)
+            iteration_batches = 0
+            for chunk_idx in chunk_indices:
+                iteration_batches += dataset.count_chunk_batches(
+                    chunk_idx,
+                    stride=stride,
+                    batch_size=batch_size,
+                    epoch_mod=epoch_mod,
+                )
+
+            # Skip if resuming from checkpoint
+            if skip_batches >= iteration_batches:
+                skip_batches -= iteration_batches
                 continue
 
             try:
-                dataset.set_active_chunk(chunk_idx)
+                # Load chunks (supports multi-chunk overlap) with timing
+                chunk_load_start = time.time()
+                if hasattr(dataset, "load_chunks"):
+                    dataset.load_chunks(chunk_indices)
+                else:
+                    # Fallback for old API
+                    dataset.set_active_chunk(chunk_indices[0])
+                chunk_load_duration = time.time() - chunk_load_start
+
+                # Record chunk load time
+                components.dataloader_metrics.record_chunk_load(
+                    chunk_load_duration, iteration=iteration_idx
+                )
+
+                # Update sampler with active episodes
                 if hasattr(components.sampler, "set_active_episodes"):
                     components.sampler.set_active_episodes(
                         dataset._active_episode_indices.tolist()
@@ -211,12 +259,17 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     skip_batches = 0
                 epoch_ctx.skip_remaining = 0
             except Exception as exc:
-                print(f"[dataloader] Failed to set chunk {chunk_idx} ({exc}); skipping.")
+                print(
+                    f"[dataloader] Failed to load chunks {chunk_indices} ({exc}); skipping."
+                )
                 continue
 
             loader = _build_loader_for_chunk()
 
             for batch in loader:
+                # Record batch start for idle time tracking
+                components.dataloader_metrics.record_batch_start()
+
                 # Determine if we should profile this step
                 should_profile = (
                     components.profiling_enabled
@@ -228,9 +281,14 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 ctx = lambda name: prof[name] if should_profile else nullcontext()
 
                 with ctx("total_step"):
-                    # Data preparation
+                    # Data preparation with timing
                     with ctx("data_prep"):
+                        batch_prep_start = time.time()
                         batch_tensors = _prepare_batch(batch, components.device)
+                        batch_prep_duration = time.time() - batch_prep_start
+                        components.dataloader_metrics.record_batch_prep(
+                            batch_prep_duration
+                        )
 
                     # Progress computation
                     with ctx("progress_calc"):
@@ -284,7 +342,9 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                             )
 
                     # Checkpointing
-                    completed_batches = epoch_ctx.applied_skip + epoch_ctx.iters_processed
+                    completed_batches = (
+                        epoch_ctx.applied_skip + epoch_ctx.iters_processed
+                    )
                     with ctx("checkpoint"):
                         maybe_checkpoint_batch(
                             components,
@@ -333,6 +393,9 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         print("=" * 80 + "\n")
                         print_profiling_results(components.profilers)
                         print("\n" + "=" * 80 + "\n")
+
+                # Record batch end for timing metrics
+                components.dataloader_metrics.record_batch_end()
 
                 iteration += 1
 
@@ -405,7 +468,9 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     loss_value = float(forward_result.loss.detach().cpu().item())
                     components.loss_variance_tracker.add(loss_value)
                     if grad_stats and "total_norm" in grad_stats:
-                        components.gradient_variance_tracker.add(grad_stats["total_norm"])
+                        components.gradient_variance_tracker.add(
+                            grad_stats["total_norm"]
+                        )
 
                 # Checkpointing
                 completed_batches = epoch_ctx.applied_skip + epoch_ctx.iters_processed
@@ -426,14 +491,14 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         frames_per_s = epoch_ctx.frames_since_last_log / dt
                         avg_loss_running = epoch_ctx.get_avg_loss()
                         bundle = prepare_logging_bundle(
-                        components=components,
-                        forward_result=forward_result,
-                        epoch=epoch,
-                        completed_batches=completed_batches,
-                        total_batches=total_batches,
-                        lr=lr,
-                        frames_per_s=frames_per_s,
-                        avg_loss_running=avg_loss_running,
+                            components=components,
+                            forward_result=forward_result,
+                            epoch=epoch,
+                            completed_batches=completed_batches,
+                            total_batches=total_batches,
+                            lr=lr,
+                            frames_per_s=frames_per_s,
+                            avg_loss_running=avg_loss_running,
                             grad_stats=grad_stats,
                             global_step=state.global_step,
                             epoch_ctx=epoch_ctx,

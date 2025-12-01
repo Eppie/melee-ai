@@ -222,9 +222,25 @@ class AsyncPPOTrainer:
 
         # Rebuild model in this process
         print("[AsyncTrainer] Creating model...", flush=True)
-        model = GPT(config)
+        try:
+            model = GPT(config)
+            print("[AsyncTrainer] Model created successfully!", flush=True)
+        except Exception as e:
+            print(f"[AsyncTrainer] ERROR creating model: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            raise
+
         print("[AsyncTrainer] Loading state dict...", flush=True)
-        model.load_state_dict(model_state)
+        try:
+            model.load_state_dict(model_state)
+            print("[AsyncTrainer] State dict loaded successfully!", flush=True)
+        except Exception as e:
+            print(f"[AsyncTrainer] ERROR loading state dict: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            raise
+
         print("[AsyncTrainer] Moving model to device...", flush=True)
         model = model.to(device)
         print("[AsyncTrainer] Setting model to train mode...", flush=True)

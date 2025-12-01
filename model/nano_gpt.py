@@ -164,7 +164,9 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
 
     def _precompute_rotary_embeddings(self, sequence_length, head_dim, base=256.0):
-        device = _resolve_device()
+        # Create on CPU to avoid CUDA initialization in forked processes
+        # Tensors will be moved to the correct device when model.to(device) is called
+        device = torch.device("cpu")
         # stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
         inverse_frequency = 1.0 / (base ** (channel_range / head_dim))

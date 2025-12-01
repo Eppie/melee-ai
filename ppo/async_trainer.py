@@ -117,6 +117,7 @@ class AsyncPPOTrainer:
         self.process.start()
 
         logger.info(f"AsyncPPOTrainer started with PID {self.process.pid}")
+        print(f"AsyncPPOTrainer process started with PID {self.process.pid}")
 
     def submit_rollout(self, rollout: RolloutSlice) -> bool:
         """Submit a rollout for training (non-blocking).
@@ -127,6 +128,12 @@ class AsyncPPOTrainer:
         Returns:
             True if submitted successfully, False if queue is full
         """
+        # Check if process is alive
+        if not self.process.is_alive():
+            logger.error(f"Training process is dead! Exit code: {self.process.exitcode}")
+            print(f"ERROR: Training process is dead! Exit code: {self.process.exitcode}")
+            return False
+
         try:
             self.rollout_queue.put_nowait(rollout)
             return True
@@ -191,6 +198,8 @@ class AsyncPPOTrainer:
         This runs in a separate process with its own CUDA context.
         It accumulates rollouts and trains when enough have been collected.
         """
+        print("[AsyncTrainer] Training process _training_process() started", flush=True)
+
         # Rebuild config in this process
         from config import Config
 
@@ -255,10 +264,12 @@ class AsyncPPOTrainer:
         logger.info("Training process ready")
 
         # Main training loop
+        print(f"[AsyncTrainer] Entering training loop", flush=True)
         while not shutdown.is_set():
             try:
                 # Get rollout with timeout
                 rollout = rollout_queue.get(timeout=1.0)
+                print(f"[AsyncTrainer] Received rollout with {len(rollout.observations)} frames", flush=True)
             except queue.Empty:
                 continue
 

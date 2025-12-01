@@ -699,9 +699,9 @@ def main():
 
 
 if __name__ == "__main__":
-    # Set spawn method for CUDA multiprocessing compatibility
+    # Set fork method for CUDA multiprocessing on Linux (spawn causes issues with CUDA tensors)
     try:
-        mp.set_start_method("spawn", force=False)
+        mp.set_start_method("fork", force=False)
     except RuntimeError:
         # Start method already set
         pass

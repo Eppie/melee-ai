@@ -26,7 +26,7 @@ from libmelee.melee.enums import Button, Character, ControllerType, Menu, Stage
 from libmelee.melee.gamestate import GameState
 from libmelee.melee.menuhelper import MenuHelper
 from model_interface import ControllerState, collect_raw_inputs_from_gamestate
-from schema import get_feature_names
+from schema import get_feature_names, get_target_names
 from train.value_head import build_reward_feature_index, compute_frame_rewards
 from column_map import ColumnMap
 
@@ -133,7 +133,7 @@ class SimulationWorker:
         from config.config import get_config
 
         cfg = get_config()
-        target_names = []  # We don't need targets for reward computation
+        target_names = get_target_names()  # Required by ColumnMap even though not used for rewards
         self.colmap = ColumnMap(self.feature_names, target_names)
         self.reward_feature_idx = build_reward_feature_index(self.colmap)
 

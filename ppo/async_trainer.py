@@ -203,30 +203,40 @@ class AsyncPPOTrainer:
         # Rebuild config in this process
         from config import Config
 
+        print("[AsyncTrainer] Validating config...", flush=True)
         config = Config.model_validate(config_dict)
 
         # Set as global config
         from config import config as config_module
 
+        print("[AsyncTrainer] Setting global config...", flush=True)
         config_module._GLOBAL_CONFIG = config
         ppo_cfg = config.ppo
         rl_cfg = config.rl
 
         # Set up device
+        print("[AsyncTrainer] Resolving device...", flush=True)
         device = _resolve_device()
         logger.info(f"Training process using device: {device}")
+        print(f"[AsyncTrainer] Device: {device}", flush=True)
 
         # Rebuild model in this process
+        print("[AsyncTrainer] Creating model...", flush=True)
         model = GPT(config)
+        print("[AsyncTrainer] Loading state dict...", flush=True)
         model.load_state_dict(model_state)
+        print("[AsyncTrainer] Moving model to device...", flush=True)
         model = model.to(device)
+        print("[AsyncTrainer] Setting model to train mode...", flush=True)
         model.train()
 
         # Build optimizer
+        print("[AsyncTrainer] Creating optimizer...", flush=True)
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=ppo_cfg.lr, weight_decay=0.0
         )
         if optimizer_state is not None:
+            print("[AsyncTrainer] Loading optimizer state...", flush=True)
             optimizer.load_state_dict(optimizer_state)
 
         # Optional: Load teacher model if configured
@@ -253,9 +263,12 @@ class AsyncPPOTrainer:
         gradient_accumulation_steps = getattr(ppo_cfg, "gradient_accumulation_steps", 3)
 
         # Create helper instances
+        print("[AsyncTrainer] Getting feature and target names...", flush=True)
         feature_names = get_feature_names()
         target_names = get_target_names()
+        print("[AsyncTrainer] Creating ColumnMap...", flush=True)
         colmap = ColumnMap(feature_names, target_names)
+        print("[AsyncTrainer] ColumnMap created successfully", flush=True)
 
         # Gradient accumulation buffer
         accumulated_rollouts: List[RolloutSlice] = []

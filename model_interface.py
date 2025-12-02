@@ -12,7 +12,6 @@ from typing import (
     List,
     Mapping,
     Optional,
-    Sequence,
     Tuple,
 )
 
@@ -43,83 +42,7 @@ from schema import (
 from train import build_model_inputs
 from utils import _resolve_device, match_state_dict_keys
 
-"""
-Add this code to the TOP of model_interface.py (after imports)
-"""
-import os
-import atexit
-import cProfile
-import pstats
-from functools import wraps
 from pathlib import Path
-
-# Check if profiling is enabled via environment variable
-ENABLE_PROFILING = os.environ.get("PROFILE_MODEL_INTERFACE", "0") == "1"
-
-if ENABLE_PROFILING:
-    print("[PROFILING] model_interface.py profiling enabled")
-    _profiler = cProfile.Profile()
-    _profiler.enable()
-
-    def _save_profile_stats():
-        """Save profiling stats on exit"""
-        _profiler.disable()
-        output_dir = Path.cwd() / "profiling_output"
-        output_dir.mkdir(exist_ok=True)
-
-        # Save raw stats
-        stats_file = output_dir / "model_interface_profile.stats"
-        _profiler.dump_stats(str(stats_file))
-        print(f"[PROFILING] Raw stats saved to: {stats_file}")
-
-        # Save human-readable report
-        report_file = output_dir / "model_interface_profile.txt"
-        with open(report_file, "w") as f:
-            ps = pstats.Stats(_profiler, stream=f)
-
-            # Filter to only show model_interface.py functions
-            ps.strip_dirs()
-            f.write("=" * 80 + "\n")
-            f.write("TOP 50 FUNCTIONS BY CUMULATIVE TIME\n")
-            f.write("=" * 80 + "\n")
-            ps.sort_stats("cumulative").print_stats("model_interface", 50)
-
-            f.write("\n" + "=" * 80 + "\n")
-            f.write("TOP 50 FUNCTIONS BY TOTAL TIME\n")
-            f.write("=" * 80 + "\n")
-            ps.sort_stats("tottime").print_stats("model_interface", 50)
-
-            f.write("\n" + "=" * 80 + "\n")
-            f.write("TOP 30 CALLERS\n")
-            f.write("=" * 80 + "\n")
-            ps.print_callers("model_interface", 30)
-
-        print(f"[PROFILING] Human-readable report saved to: {report_file}")
-
-        # Print summary to console
-        print("\n" + "=" * 80)
-        print("PROFILING SUMMARY (Top 20 by cumulative time)")
-        print("=" * 80)
-        ps = pstats.Stats(_profiler)
-        ps.strip_dirs()
-        ps.sort_stats("cumulative").print_stats("model_interface", 20)
-
-    atexit.register(_save_profile_stats)
-else:
-    _profiler = None
-
-
-def profile_function(func):
-    """Decorator to profile individual functions"""
-    if not ENABLE_PROFILING:
-        return func
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    return wrapper
-
 
 _DEFAULT_FEATURE_NAMES = get_feature_names()
 _DEFAULT_TARGET_NAMES = get_target_names()
@@ -364,7 +287,7 @@ class GPTInferenceEngine:
     ) -> None:
         """Load the GPT checkpoint and initialize inference buffers."""
         print(
-            f"[TRACE:GPTInferenceEngine.__init__] Loading checkpoint from {checkpoint_path}"
+            f"[GPTInferenceEngine.__init__] Loading checkpoint from {checkpoint_path}"
         )
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         train_cfg = ckpt.get("config", {})

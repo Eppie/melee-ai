@@ -43,6 +43,15 @@ LEGAL_TOURNAMENT_STAGES = [
     Stage.FOUNTAIN_OF_DREAMS,
 ]
 
+SUPPORTED_CHARS = [
+    Character.FOX,
+    Character.FALCO,
+    Character.CPTFALCON,
+    Character.JIGGLYPUFF,
+    Character.MARTH,
+    Character.SHEIK
+]
+
 
 if __name__ == "__main__":
     init_config()
@@ -181,6 +190,8 @@ if __name__ == "__main__":
 
     menu_helper = MenuHelper()
     current_stage = random.choice(LEGAL_TOURNAMENT_STAGES)
+    bot_char = random.choice(SUPPORTED_CHARS)
+    opp_char = random.choice(SUPPORTED_CHARS)
 
     BOT_PORT = 1
     OPP_PORT = 2
@@ -289,12 +300,16 @@ if __name__ == "__main__":
                 Menu.IN_GAME,
                 Menu.SUDDEN_DEATH,
             ]:
+
                 current_stage = random.choice(LEGAL_TOURNAMENT_STAGES)
+                bot_char = random.choice(SUPPORTED_CHARS)
+                opp_char = random.choice(SUPPORTED_CHARS)
+                print(f"Picking stage: {current_stage}, bot: {bot_char}, opp: {opp_char}")
 
             menu_helper.menu_helper_simple(
                 gamestate,
                 controllers[1],
-                Character.FOX,
+                Character.CPTFALCON,
                 current_stage,
                 costume=1,
                 autostart=False,
@@ -305,20 +320,20 @@ if __name__ == "__main__":
                 menu_helper.menu_helper_simple(
                     gamestate,
                     controllers[2],
-                    Character.FOX,
+                    opp_char,
                     current_stage,
                     costume=2,
-                    autostart=True,
+                    autostart=False,
                     swag=False,
                 )
             else:
                 menu_helper.choose_character(
-                    character=Character.FOX,
+                    character=opp_char,
                     gamestate=gamestate,
                     controller=controllers[2],
                     cpu_level=9,
                     costume=2,
                     swag=False,
-                    start=True,
+                    start=False,
                 )
         previous_gamestate = gamestate

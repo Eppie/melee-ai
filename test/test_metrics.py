@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 import torch
 
 from train.metrics import (
     MetricsAccumulator,
     compute_binary_rates,
-    compute_change_hold_accuracy,
     compute_confusion_matrix,
     multilabel_prf,
 )
@@ -637,115 +635,6 @@ class TestConfusionMatrix:
         # Should still work and produce correct result
         expected = torch.eye(3, dtype=torch.int64)
         assert torch.equal(cm, expected)
-
-
-class TestChangeHoldAccuracy:
-    """Test suite for compute_change_hold_accuracy function."""
-
-    def test_perfect_change_and_hold(self):
-        """Test with perfect predictions for both change and hold frames."""
-        pred = torch.tensor([[0, 1, 1, 0]])
-        true = torch.tensor([[0, 1, 1, 0]])
-        change_mask = torch.tensor([[False, True, False, True]])
-        hold_mask = ~change_mask
-
-        change_acc, hold_acc = compute_change_hold_accuracy(
-            pred, true, change_mask, hold_mask
-        )
-
-        assert change_acc == 1.0
-        assert hold_acc == 1.0
-
-    def test_all_changes_wrong(self):
-        """Test when all change predictions are wrong."""
-        pred = torch.tensor([[0, 0, 1, 1]])
-        true = torch.tensor([[0, 1, 1, 0]])
-        change_mask = torch.tensor([[False, True, False, True]])
-        hold_mask = ~change_mask
-
-        change_acc, hold_acc = compute_change_hold_accuracy(
-            pred, true, change_mask, hold_mask
-        )
-
-        assert change_acc == 0.0  # Both change frames wrong
-        assert hold_acc == 1.0  # Both hold frames correct
-
-    def test_all_holds_wrong(self):
-        """Test when all hold predictions are wrong."""
-        pred = torch.tensor([[1, 1, 0, 0]])
-        true = torch.tensor([[0, 1, 1, 0]])
-        change_mask = torch.tensor([[False, True, False, True]])
-        hold_mask = ~change_mask
-
-        change_acc, hold_acc = compute_change_hold_accuracy(
-            pred, true, change_mask, hold_mask
-        )
-
-        assert change_acc == 1.0  # Both change frames correct
-        assert hold_acc == 0.0  # Both hold frames wrong
-
-    def test_no_change_frames(self):
-        """Test when there are no change frames."""
-        pred = torch.tensor([[0, 1, 1, 0]])
-        true = torch.tensor([[0, 1, 1, 0]])
-        change_mask = torch.zeros_like(pred, dtype=torch.bool)
-        hold_mask = torch.ones_like(pred, dtype=torch.bool)
-
-        change_acc, hold_acc = compute_change_hold_accuracy(
-            pred, true, change_mask, hold_mask
-        )
-
-        assert change_acc == 0.0  # No change frames
-        assert hold_acc == 1.0  # All frames are holds and correct
-
-    def test_no_hold_frames(self):
-        """Test when there are no hold frames."""
-        pred = torch.tensor([[0, 1, 1, 0]])
-        true = torch.tensor([[0, 1, 1, 0]])
-        change_mask = torch.ones_like(pred, dtype=torch.bool)
-        hold_mask = torch.zeros_like(pred, dtype=torch.bool)
-
-        change_acc, hold_acc = compute_change_hold_accuracy(
-            pred, true, change_mask, hold_mask
-        )
-
-        assert change_acc == 1.0  # All frames are changes and correct
-        assert hold_acc == 0.0  # No hold frames
-
-    def test_partial_accuracy(self):
-        """Test with partial accuracy on both change and hold."""
-        # Pred: [0, 1, 2, 3, 4, 5]
-        # True: [0, 0, 2, 2, 4, 4]
-        # Change frames: 1, 3, 5 -> accuracies: wrong, wrong, wrong = 0/3
-        # Hold frames: 0, 2, 4 -> accuracies: correct, correct, correct = 3/3
-        pred = torch.tensor([[0, 1, 2, 3, 4, 5]])
-        true = torch.tensor([[0, 0, 2, 2, 4, 4]])
-        change_mask = torch.tensor([[False, True, False, True, False, True]])
-        hold_mask = ~change_mask
-
-        change_acc, hold_acc = compute_change_hold_accuracy(
-            pred, true, change_mask, hold_mask
-        )
-
-        assert change_acc == 0.0
-        assert hold_acc == 1.0
-
-    def test_batch_dimension(self):
-        """Test with multiple batch elements."""
-        pred = torch.tensor([[0, 1, 1, 0], [2, 2, 3, 3]])
-        true = torch.tensor([[0, 1, 1, 0], [2, 2, 3, 3]])
-        change_mask = torch.tensor(
-            [[False, True, False, True], [True, False, True, False]]
-        )
-        hold_mask = ~change_mask
-
-        change_acc, hold_acc = compute_change_hold_accuracy(
-            pred, true, change_mask, hold_mask
-        )
-
-        # All correct in both batches
-        assert change_acc == 1.0
-        assert hold_acc == 1.0
 
 
 class TestMultilabelPRF:

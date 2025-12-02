@@ -28,9 +28,6 @@ from train.checkpoint import (
 from train.display import (
     format_confusion_matrix,
     format_metrics_dict,
-    format_loss_summary,
-    format_training_progress,
-    print_batch_preview,
 )
 from train.gradients import (
     _move_optimizer_state_to_device as move_optimizer_state_to_device,
@@ -42,7 +39,6 @@ from train.lr_schedule import (
 from train.metrics import (
     MetricsAccumulator,
     compute_confusion_matrix,
-    compute_change_hold_accuracy,
     multilabel_prf,
 )
 from train.value_head import (
@@ -91,7 +87,6 @@ __all__ = [
     # Metrics
     "MetricsAccumulator",
     "compute_confusion_matrix",
-    "compute_change_hold_accuracy",
     "multilabel_prf",
     # LR schedule
     "cosine_lr_schedule",
@@ -108,9 +103,6 @@ __all__ = [
     # Display
     "format_confusion_matrix",
     "format_metrics_dict",
-    "format_loss_summary",
-    "format_training_progress",
-    "print_batch_preview",
     # Setup helpers
     "parse_cli_overrides",
     "print_config",

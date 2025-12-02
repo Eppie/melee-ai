@@ -40,8 +40,8 @@ from train.batch_utils import build_model_inputs  # noqa: E402
 from utils import match_state_dict_keys  # noqa: E402
 
 
-CHECKPOINT_PATH = Path("checkpoints/model_ep014_050001.pt")
-DATA_ROOT = Path("processed_data_1000")
+CHECKPOINT_PATH = Path("checkpoints/model_ep021_005001.pt")
+DATA_ROOT = Path("validation_set")
 NUM_WINDOWS = 8
 OUTPUT_PATH = Path("analysis/feature_importance_results.json")
 

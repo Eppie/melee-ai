@@ -17,7 +17,7 @@ def _get_default_paths() -> Tuple[str, str, str]:
 
     if system == "Darwin":
         return (
-            "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX",
+            "/Users/eppie/Downloads/ALL_REPLAYS/ALL",
             "/Users/eppie/PycharmProjects/nano-melee/processed_data_1000",
             "/Users/eppie/PycharmProjects/nano-melee/validation_set",
         )
@@ -62,7 +62,7 @@ class ZarrConfig(BaseModel):
         ),
     )
     episode_count: int = Field(
-        default=6800,
+        default=1,
         ge=1,
         description=(
             "Number of episodes (replay files) to process for training dataset. "
@@ -72,7 +72,7 @@ class ZarrConfig(BaseModel):
         ),
     )
     validation_count: int = Field(
-        default=200,
+        default=2000,
         ge=1,
         description=(
             "Number of episodes to process for validation dataset. Held out from training. "
@@ -101,13 +101,11 @@ class ZarrConfig(BaseModel):
         ),
     )
     chunk_frames: int = Field(
-        default=512,
+        default=32768,
         ge=1,
         description=(
-            "Number of frames per Zarr chunk along the time axis. Optimized for typical window sizes. "
-            "Effect: Should be >= block_size to minimize chunk reads per window. "
-            "Default 512 ensures 256-512 frame windows usually hit 1-2 chunks. "
-            "Reasonable range: [256, 1024]. Interacts with: model.block_size (should be >= block_size)."
+            "Number of frames per Zarr chunk along the time axis. Larger chunks reduce __setitem__/sync "
+            "overhead during writes. Interacts with: model.block_size (should be >= block_size)."
         ),
     )
     seed: int = Field(

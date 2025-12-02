@@ -474,45 +474,6 @@ def compute_binary_rates(
     return tpr, tnr, fpr, fnr, tn
 
 
-# TODO: why is this unused?
-def compute_change_hold_accuracy(
-    pred: torch.Tensor,
-    true: torch.Tensor,
-    change_mask: torch.Tensor,
-    hold_mask: torch.Tensor,
-) -> Tuple[float, float]:
-    """Measure accuracy for frames that changed versus those that stayed the same.
-
-    Example:
-        Suppose ``pred`` and ``true`` are ``[[0, 1, 1, 0]]`` and ``[[0, 0, 1, 0]]`` respectively with
-        ``change_mask = [[False, True, False, False]]`` and ``hold_mask`` as the logical NOT. The
-        helper computes ``correct = [True, False, True, True]``. ``change_accuracy`` averages the
-        single change frame (``False`` → ``0.0``) and ``hold_accuracy`` averages the remaining three
-        frames (``[True, True, True]`` → ``1.0``). The example mirrors the masking and averaging
-        operations exactly.
-
-    Args:
-        pred: Predictions ``[B, L]``.
-        true: True labels ``[B, L]``.
-        change_mask: Boolean mask for change frames ``[B, L]``.
-        hold_mask: Boolean mask for hold frames ``[B, L]``.
-
-    Returns:
-        Tuple ``(change_accuracy, hold_accuracy)``.
-    """
-    correct = pred == true
-
-    change_acc = 0.0
-    if change_mask.any():
-        change_acc = float(correct[change_mask].float().mean().item())
-
-    hold_acc = 0.0
-    if hold_mask.any():
-        hold_acc = float(correct[hold_mask].float().mean().item())
-
-    return change_acc, hold_acc
-
-
 # TODO: Optimize? are there more useful metrics? expose precision and recall here too?
 # TODO: What is the difference between micro and macro?
 def multilabel_prf(

@@ -7,8 +7,8 @@ from stats.utils.melee_constants import (
     CHARACTER_NAMES,
     GAME_LIMITS,
 )
-from stats.utils.parallel import parallel_process_episodes, split_into_chunks
-from stats.utils.formatting import format_number, format_percent, format_table
+from stats.utils.parallel import split_into_chunks
+from stats.utils.formatting import format_number, format_percent
 
 __all__ = [
     "ACTION_STATE_NAMES",
@@ -16,9 +16,7 @@ __all__ = [
     "STAGE_NAMES",
     "CHARACTER_NAMES",
     "GAME_LIMITS",
-    "parallel_process_episodes",
     "split_into_chunks",
     "format_number",
     "format_percent",
-    "format_table",
 ]

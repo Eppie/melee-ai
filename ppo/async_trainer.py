@@ -91,7 +91,9 @@ class AsyncPPOTrainer:
         """
         # Communication queues
         # Queue should be larger than gradient_accumulation_steps to prevent deadlock
-        self.rollout_queue: mp.Queue = mp.Queue(maxsize=10)  # Buffer for multiple rollouts
+        self.rollout_queue: mp.Queue = mp.Queue(
+            maxsize=10
+        )  # Buffer for multiple rollouts
         self.parameter_queue: mp.Queue = mp.Queue(maxsize=1)  # Latest params
         self.metrics_queue: mp.Queue = mp.Queue(maxsize=20)  # Metrics stream
         self.shutdown_event: mp.Event = mp.Event()
@@ -130,8 +132,12 @@ class AsyncPPOTrainer:
         """
         # Check if process is alive
         if not self.process.is_alive():
-            logger.error(f"Training process is dead! Exit code: {self.process.exitcode}")
-            print(f"ERROR: Training process is dead! Exit code: {self.process.exitcode}")
+            logger.error(
+                f"Training process is dead! Exit code: {self.process.exitcode}"
+            )
+            print(
+                f"ERROR: Training process is dead! Exit code: {self.process.exitcode}"
+            )
             return False
 
         try:
@@ -228,6 +234,7 @@ class AsyncPPOTrainer:
         except Exception as e:
             print(f"[AsyncTrainer] ERROR creating model: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
             raise
 
@@ -238,6 +245,7 @@ class AsyncPPOTrainer:
         except Exception as e:
             print(f"[AsyncTrainer] ERROR loading state dict: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
             raise
 
@@ -298,7 +306,10 @@ class AsyncPPOTrainer:
             try:
                 # Get rollout with timeout
                 rollout = rollout_queue.get(timeout=1.0)
-                print(f"[AsyncTrainer] Received rollout with {len(rollout.observations)} frames", flush=True)
+                print(
+                    f"[AsyncTrainer] Received rollout with {len(rollout.observations)} frames",
+                    flush=True,
+                )
             except queue.Empty:
                 continue
 

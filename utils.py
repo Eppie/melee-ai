@@ -10,29 +10,6 @@ import torch
 import torch.nn as nn
 
 
-def strip_compiled_prefix(state_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip _orig_mod. prefix from state dict keys if present.
-
-    This handles the case where a model was saved with torch.compile()
-    (which adds _orig_mod. prefix) but is being loaded into a non-compiled model.
-
-    Args:
-        state_dict: State dictionary potentially with _orig_mod. prefix
-
-    Returns:
-        State dictionary with _orig_mod. prefix stripped if all keys have it
-    """
-    PREFIX = "_orig_mod."
-
-    # Check if all keys start with the prefix
-    all_have_prefix = all(k.startswith(PREFIX) for k in state_dict.keys())
-
-    if all_have_prefix:
-        return {k[len(PREFIX) :]: v for k, v in state_dict.items()}
-
-    return state_dict
-
-
 def match_state_dict_keys(
     state_dict: Dict[str, Any], model: nn.Module
 ) -> Dict[str, Any]:

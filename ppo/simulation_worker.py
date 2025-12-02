@@ -133,8 +133,12 @@ class SimulationWorker:
         from config.config import get_config
 
         cfg = get_config()
-        target_names = get_target_names()  # Required by ColumnMap even though not used for rewards
-        print(f"[Worker {worker_id}] DEBUG: target_names type={type(target_names)}, len={len(target_names)}, content={target_names}")
+        target_names = (
+            get_target_names()
+        )  # Required by ColumnMap even though not used for rewards
+        print(
+            f"[Worker {worker_id}] DEBUG: target_names type={type(target_names)}, len={len(target_names)}, content={target_names}"
+        )
         self.colmap = ColumnMap(self.feature_names, target_names)
         self.reward_feature_idx = build_reward_feature_index(self.colmap)
 

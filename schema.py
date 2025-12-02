@@ -17,6 +17,7 @@ from preprocess import (
 COMMON_SPEC = [
     ("stage", np.int32),  # Stage enum
 ]
+_COMMON_FIELD_NAMES = [name for name, *_ in COMMON_SPEC]
 
 BUTTONS = [
     ("button_a", np.float32),
@@ -69,6 +70,14 @@ PLAYER_SPEC = [
     ("off_stage", np.float32),
     ("l_cancel_status", np.int32),  # TODO: Maybe one-hot encode this?
 ]
+_PLAYER_FIELD_NAMES = [name for name, *_ in PLAYER_SPEC]
+_BUTTON_A = enums.Button.BUTTON_A
+_BUTTON_B = enums.Button.BUTTON_B
+_BUTTON_X = enums.Button.BUTTON_X
+_BUTTON_Y = enums.Button.BUTTON_Y
+_BUTTON_Z = enums.Button.BUTTON_Z
+_BUTTON_L = enums.Button.BUTTON_L
+_BUTTON_R = enums.Button.BUTTON_R
 
 
 def _require_controller_state(player: PlayerState):
@@ -78,79 +87,8 @@ def _require_controller_state(player: PlayerState):
     return controller
 
 
-def _as_int32(value: Any) -> np.int32:
-    return np.int32(value)
-
-
-def _as_float32(value: Any) -> np.float32:
-    return np.float32(value)
-
-
-def _button_extractor(button: enums.Button) -> Callable[[PlayerState], np.float32]:
-    def extractor(player: PlayerState) -> np.float32:
-        buttons = _require_controller_state(player).button
-        return np.float32(bool(buttons[button]))
-
-    return extractor
-
-
 COMMON_EXTRACTORS: Dict[str, Callable[[GameState], Any]] = {
     "stage": lambda state: _preprocess_stage(state.stage),
-}
-
-PLAYER_EXTRACTORS: Dict[str, Callable[[PlayerState], Any]] = {
-    "action": lambda player: _preprocess_action(player.action),
-    "character": lambda player: _preprocess_character(player.character),
-    "position_x": lambda player: _as_float32(player.position.x),
-    "position_y": lambda player: _as_float32(player.position.y),
-    "percent": lambda player: _as_int32(player.percent),
-    "stock": lambda player: _as_int32(player.stock),
-    "facing": lambda player: _as_float32(player.facing),
-    "on_ground": lambda player: _as_float32(player.on_ground),
-    "button_a": _button_extractor(enums.Button.BUTTON_A),
-    "button_b": _button_extractor(enums.Button.BUTTON_B),
-    "button_xy": lambda player: _preprocess_x_y_buttons(
-        bool(_require_controller_state(player).button[enums.Button.BUTTON_X]),
-        bool(_require_controller_state(player).button[enums.Button.BUTTON_Y]),
-    ),
-    "button_z": _button_extractor(enums.Button.BUTTON_Z),
-    "button_lr": lambda player: _preprocess_l_r_buttons(
-        bool(_require_controller_state(player).button[enums.Button.BUTTON_L]),
-        bool(_require_controller_state(player).button[enums.Button.BUTTON_R]),
-    ),
-    "main_stick_x": lambda player: _as_float32(
-        _require_controller_state(player).main_stick[0]
-    ),
-    "main_stick_y": lambda player: _as_float32(
-        _require_controller_state(player).main_stick[1]
-    ),
-    "c_stick_x": lambda player: _as_float32(
-        _require_controller_state(player).c_stick[0]
-    ),
-    "c_stick_y": lambda player: _as_float32(
-        _require_controller_state(player).c_stick[1]
-    ),
-    "shoulder_analog": lambda player: _as_float32(
-        _require_controller_state(player).l_shoulder
-    ),
-    "shield_strength": lambda player: _as_float32(player.shield_strength),
-    "is_fastfalling": lambda player: _as_float32(player.is_fastfalling),
-    "is_defender_in_hitlag": lambda player: _as_float32(player.is_defender_in_hitlag),
-    "is_in_hitlag": lambda player: _as_float32(player.is_in_hitlag),
-    "is_holding_character": lambda player: _as_float32(player.is_holding_character),
-    "is_shield_active": lambda player: _as_float32(player.is_shield_active),
-    "is_in_hitstun": lambda player: _as_float32(player.is_in_hitstun),
-    "is_dead": lambda player: _as_float32(player.is_dead),
-    "is_offscreen": lambda player: _as_float32(player.is_offscreen),
-    "is_invulnerable": lambda player: _as_float32(player.invulnerable),
-    "jumps_left": lambda player: _as_int32(player.jumps_left),
-    # "speed_air_x_self": lambda player: _as_float32(player.speed_air_x_self),
-    # "speed_y_self": lambda player: _as_float32(player.speed_y_self),
-    # "speed_x_attack": lambda player: _as_float32(player.speed_x_attack),
-    # "speed_y_attack": lambda player: _as_float32(player.speed_y_attack),
-    # "speed_ground_x_self": lambda player: _as_float32(player.speed_ground_x_self),
-    "off_stage": lambda player: _as_float32(player.off_stage),
-    "l_cancel_status": lambda player: _as_int32(player.l_cancel_status),
 }
 
 _COMMON_SPEC_NAMES = {name for name, _ in COMMON_SPEC}
@@ -161,38 +99,94 @@ if _COMMON_SPEC_NAMES != set(COMMON_EXTRACTORS):
         f"COMMON_EXTRACTORS mismatch spec. missing={sorted(missing)} extra={sorted(extra)}"
     )
 
-_PLAYER_SPEC_NAMES = {name for name, _ in PLAYER_SPEC}
-if _PLAYER_SPEC_NAMES != set(PLAYER_EXTRACTORS):
-    missing = _PLAYER_SPEC_NAMES - set(PLAYER_EXTRACTORS)
-    extra = set(PLAYER_EXTRACTORS) - _PLAYER_SPEC_NAMES
-    raise ValueError(
-        f"PLAYER_EXTRACTORS mismatch spec. missing={sorted(missing)} extra={sorted(extra)}"
+
+def _extract_common_values(game_state: GameState) -> tuple[Any, ...]:
+    return (_preprocess_stage(game_state.stage),)
+
+
+def _extract_player_values(player: PlayerState) -> tuple[Any, ...]:
+    controller = _require_controller_state(player)
+    buttons = controller.button
+    button_x = bool(buttons[_BUTTON_X])
+    button_y = bool(buttons[_BUTTON_Y])
+    button_l = bool(buttons[_BUTTON_L])
+    button_r = bool(buttons[_BUTTON_R])
+    main_stick_x, main_stick_y = controller.main_stick
+    c_stick_x, c_stick_y = controller.c_stick
+    button_xy = float(button_x or button_y)
+    button_lr = float(button_l or button_r)
+    return (
+        _preprocess_action(player.action),
+        _preprocess_character(player.character),
+        player.position.x,
+        player.position.y,
+        int(player.percent),
+        int(player.stock),
+        float(player.facing),
+        float(player.on_ground),
+        float(buttons[_BUTTON_A]),
+        float(buttons[_BUTTON_B]),
+        button_xy,
+        float(buttons[_BUTTON_Z]),
+        button_lr,
+        main_stick_x,
+        main_stick_y,
+        c_stick_x,
+        c_stick_y,
+        controller.l_shoulder,
+        player.shield_strength,
+        float(player.is_fastfalling),
+        float(player.is_defender_in_hitlag),
+        float(player.is_in_hitlag),
+        float(player.is_holding_character),
+        float(player.is_shield_active),
+        float(player.is_in_hitstun),
+        float(player.is_dead),
+        float(player.is_offscreen),
+        float(player.invulnerable),
+        int(player.jumps_left),
+        # player.speed_air_x_self,
+        # player.speed_y_self,
+        # player.speed_x_attack,
+        # player.speed_y_attack,
+        # player.speed_ground_x_self,
+        float(player.off_stage),
+        int(player.l_cancel_status),
     )
 
 
 def extract_common_fields(game_state: GameState) -> dict[str, Any]:
-    return {name: COMMON_EXTRACTORS[name](game_state) for name, _ in COMMON_SPEC}
+    values = _extract_common_values(game_state)
+    return dict(zip(_COMMON_FIELD_NAMES, values))
 
 
 def extract_player_fields(player: PlayerState) -> dict[str, Any]:
-    return {name: PLAYER_EXTRACTORS[name](player) for name, _ in PLAYER_SPEC}
+    values = _extract_player_values(player)
+    return dict(zip(_PLAYER_FIELD_NAMES, values))
 
 
 def extract_row(game_state: GameState) -> "Row":
-    players = sorted(game_state.players.keys())
-    if len(players) < 2:
-        raise ValueError(f"Need at least 2 players, got {len(players)}")
+    player_keys = list(game_state.players.keys())
+    num_players = len(player_keys)
+    if num_players < 2:
+        raise ValueError(f"Need at least 2 players, got {num_players}")
+    if num_players == 2:
+        p1_key, p2_key = player_keys
+        if p1_key > p2_key:
+            p1_key, p2_key = p2_key, p1_key
+    else:
+        p1_key, p2_key = sorted(player_keys)[:2]
 
-    p1_state = game_state.players[players[0]]
-    p2_state = game_state.players[players[1]]
+    p1_state = game_state.players[p1_key]
+    p2_state = game_state.players[p2_key]
 
-    fields = {
-        **extract_common_fields(game_state),
-        **{f"p1_{k}": v for k, v in extract_player_fields(p1_state).items()},
-        **{f"p2_{k}": v for k, v in extract_player_fields(p2_state).items()},
-    }
+    values = (
+        _extract_common_values(game_state)
+        + _extract_player_values(p1_state)
+        + _extract_player_values(p2_state)
+    )
 
-    return Row(**fields)
+    return Row(*values)
 
 
 def _prefixed(spec, prefix: str):

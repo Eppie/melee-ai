@@ -83,10 +83,6 @@ def _default_home_path(path: str) -> str:
     raise FileNotFoundError("Could not find dolphin home directory.")
 
 
-def read_byte(event_bytes: bytes, offset: int):
-    return np.ndarray((1,), ">B", event_bytes, offset)[0]
-
-
 def read_shift_jis(event_bytes: bytes, offset: int) -> str:
     # Same behavior, but fast scan with memoryview
     mv = memoryview(event_bytes)

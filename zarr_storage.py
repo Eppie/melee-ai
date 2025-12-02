@@ -3,8 +3,9 @@ import math
 import os
 import shutil
 import time
-from concurrent.futures import Future, ProcessPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass, fields
+from operator import attrgetter
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -19,12 +20,7 @@ from constants import BUTTON_TARGET_NAMES
 from data_types import RawNumpyArray
 from controller_quantization import quantize_targets
 from libmelee.melee.console import Console
-from schema import (
-    Row,
-    extract_row,
-    get_feature_names,
-    get_raw_target_names,
-)
+from schema import COMMON_SPEC, PLAYER_SPEC, Row, extract_row, get_feature_names, get_raw_target_names
 from feature_transforms import apply_feature_transforms
 from train.value_head import (
     build_reward_feature_index,
@@ -32,6 +28,11 @@ from train.value_head import (
 )
 
 ROW_FIELDS = tuple(fields(Row))
+_ROW_FIELD_NAMES = [field.name for field in ROW_FIELDS]
+_ROW_FIELD_INDEX = {name: idx for idx, name in enumerate(_ROW_FIELD_NAMES)}
+_ROW_ATTR_GETTER = attrgetter(*_ROW_FIELD_NAMES)
+_NUM_COMMON_FIELDS = len(COMMON_SPEC)
+_NUM_PLAYER_FIELDS = len(PLAYER_SPEC)
 
 DERIVED_FEATURES = ("value_target",)
 
@@ -110,16 +111,11 @@ def _swap_row_players(row: Row) -> Row:
     where ``p1_percent=20`` and ``p2_percent=10`` while ``stage`` remains ``1``.
     This is used by :func:`_row_to_winner_first` when flipping episode perspective.
     """
-    swap_values: dict[str, object] = {}
-    for field in ROW_FIELDS:
-        name = field.name
-        if name.startswith("p1_"):
-            swap_values[name] = getattr(row, f"p2_{name[3:]}")
-        elif name.startswith("p2_"):
-            swap_values[name] = getattr(row, f"p1_{name[3:]}")
-        else:
-            swap_values[name] = getattr(row, name)
-    return Row(**swap_values)
+    values = _ROW_ATTR_GETTER(row)
+    start_p1 = _NUM_COMMON_FIELDS
+    start_p2 = start_p1 + _NUM_PLAYER_FIELDS
+    swapped = values[:_NUM_COMMON_FIELDS] + values[start_p2 : start_p2 + _NUM_PLAYER_FIELDS] + values[start_p1:start_p2]
+    return Row(*swapped)
 
 
 @dataclass(frozen=True)
@@ -392,30 +388,20 @@ def _rows_to_dense(
     feat_dtypes: List[str] = []
     targ_dtypes: List[str] = []
 
-    T_out = num_frames - 1
-    X = np.empty((T_out, num_features), dtype=np.float32)
-    Y = np.empty((T_out, num_targets), dtype=np.float32)
+    row_values = np.array([_ROW_ATTR_GETTER(row) for row in rows], dtype=object)
+    feature_indices = [_ROW_FIELD_INDEX[name] for name in base_feature_names]
+    target_indices = [_ROW_FIELD_INDEX[name] for name in base_target_names]
 
-    for name in base_feature_names:
-        v0 = getattr(rows[0], name)
-        feat_dtypes.append("int32" if isinstance(v0, (int, np.integer)) else "float32")
-    for name in base_target_names:
-        v0 = getattr(rows[0], name)
-        targ_dtypes.append("int32" if isinstance(v0, (int, np.integer)) else "float32")
+    def _dtype_label(value: object) -> str:
+        if isinstance(value, (bool, np.bool_)):
+            return "float32"
+        return "int32" if isinstance(value, (int, np.integer)) else "float32"
 
-    for j, name in enumerate(base_feature_names):
-        X[:, j] = np.fromiter(
-            (getattr(rows[i], name) for i in range(T_out)),
-            count=T_out,
-            dtype=np.float32,
-        )
+    feat_dtypes.extend(_dtype_label(row_values[0, idx]) for idx in feature_indices)
+    targ_dtypes.extend(_dtype_label(row_values[0, idx]) for idx in target_indices)
 
-    for j, name in enumerate(base_target_names):
-        Y[:, j] = np.fromiter(
-            (getattr(rows[i + 1], name) for i in range(T_out)),
-            count=T_out,
-            dtype=np.float32,
-        )
+    X = np.asarray(row_values[:-1, feature_indices], dtype=np.float32)
+    Y = np.asarray(row_values[1:, target_indices], dtype=np.float32)
 
     feature_names_out = list(base_feature_names)
     target_names_out = list(base_target_names)
@@ -654,6 +640,11 @@ def build_dataset(
     Path(out_root).mkdir(parents=True, exist_ok=True)
 
     max_workers = min(N, max(1, os.cpu_count() or 1))
+    # For profiling, set ZARR_USE_THREADS=1 to avoid multiprocessing pickling issues
+    use_threads = os.environ.get('ZARR_USE_THREADS', '').lower() in ('1', 'true', 'yes')
+    if use_threads:
+        max_workers = 1  # ThreadPoolExecutor doesn't benefit from many workers due to GIL
+
     writers: Dict[int, EpisodeWriter] = {}
     shard_episode_entries: Dict[int, List[Tuple[int, int]]] = {
         i: [] for i in range(num_shards)
@@ -684,7 +675,8 @@ def build_dataset(
     jobs = _job_iter()
     futures: Dict[Future, Tuple[int, int]] = {}
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    ExecutorClass = ThreadPoolExecutor if use_threads else ProcessPoolExecutor
+    with ExecutorClass(max_workers=max_workers) as executor:
 
         def submit_next() -> bool:
             try:
@@ -830,15 +822,22 @@ def main():
     and prints summary statistics such as average frames per episode.
     """
     import glob
+    import multiprocessing
+
+    # Set multiprocessing start method to 'fork' for better pickling support on macOS
+    try:
+        multiprocessing.set_start_method('fork', force=False)
+    except RuntimeError:
+        pass  # Already set
 
     init_config()
     config = get_config()
 
     train_slp_files = sorted(
-        glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp"))
+        glob.glob(os.path.join(config.zarr.input_root, "master-*.slp"))
     )[: config.zarr.episode_count]
     validation_slp_files = sorted(
-        glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp"))
+        glob.glob(os.path.join(config.zarr.input_root, "master-*.slp"))
     )[
         config.zarr.episode_count : config.zarr.episode_count
         + config.zarr.validation_count

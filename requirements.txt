@@ -13,3 +13,4 @@ pydantic-settings==2.4.0
 pyyaml==6.0.1
 pyarrow~=21.0.0
 wandb~=0.21.0
+loguru

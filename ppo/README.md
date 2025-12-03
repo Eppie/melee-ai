@@ -1,180 +1,210 @@
-# PPO Self-Play Training
+# PPO Reinforcement Learning System
 
-This directory contains the implementation of Proximal Policy Optimization (PPO) for self-play training of the Melee AI.
+Hierarchical PPO training system for Melee bot with self-play and opponent diversity.
 
-## Overview
+## Architecture
 
-The PPO implementation includes:
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     Coordinator (CRD)                          │
+│                    [1 GPU Process]                            │
+│                                                               │
+│  • Batched inference (96 envs)                               │
+│  • PPO training loop                                          │
+│  • Opponent pool management                                   │
+│  • Checkpoint saving                                          │
+└───────────────────┬──────────────────────────────────────────┘
+                    │
+        ┌───────────┴───────────┬─────────────┐
+        │                       │             │
+┌───────▼────────┐    ┌────────▼──────┐     ...  (12 shards)
+│  ArenaShard 0  │    │ ArenaShard 1  │
+│  [CPU Process] │    │  [CPU Process]│
+│                │    │               │
+│  8 ENV threads │    │  8 ENV threads│
+│  8 Dolphins    │    │  8 Dolphins   │
+└────────────────┘    └───────────────┘
 
-1. **Opponent Pool**: Maintains a pool of past model versions to train against
-2. **Self-Play Environment**: Manages two players (learner vs opponent) in libmelee
-3. **Trajectory Collection**: Stores experiences during gameplay
-4. **GAE (Generalized Advantage Estimation)**: Computes advantages for policy updates
-5. **PPO Loss**: Clipped surrogate objective with value function and entropy bonus
+Total: 1 CRD + 12 S8 = 96 Dolphin environments
+```
+
+## Features
+
+### Self-Play with Opponent Diversity
+- **80% Historical Opponents**: Sample from pool of past checkpoints
+- **20% Self-Play**: Current policy plays against itself
+- Opponent reassignment every rollout (1024 frames)
+
+### Zero-Copy Data Flow
+- Shared memory slabs for features and actions
+- Pinned host memory for async H2D transfers
+- Incremental updates (only new frame column)
+
+### PPO Training
+- GAE (λ=0.95) for advantage estimation
+- Clipped objective (ε=0.2)
+- Value function bootstrap
+- Entropy bonus for exploration
 
 ## Quick Start
 
-### Prerequisites
+### 1. Train with Imitation Learning First
 
-- Dolphin Slippi (Ishiiruka build) installed
-- Melee ISO file
-- Trained initial checkpoint (optional)
-
-### Running PPO Training
+Before PPO, you need a good initialization:
 
 ```bash
-python train_ppo.py \
-    --dolphin-path /path/to/dolphin-emu \
-    --iso /path/to/melee.iso \
-    --checkpoint checkpoints/model_ep013_060001.pt \
-    --num-episodes 1000 \
-    --save-every 10 \
-    --add-to-pool-every 5 \
-    --out-dir checkpoints/ppo
+# Train on Slippi replays first
+python train.py --set train.epochs=100
 ```
 
-### Configuration
-
-PPO parameters can be configured in `config.py` under the `PPOConfig` class:
-
-- `pool_size`: Number of opponents to keep (default: 5)
-- `clip_ratio`: PPO clipping epsilon (default: 0.2)
-- `entropy_coef`: Entropy bonus coefficient (default: 0.01)
-- `gae_lambda`: GAE lambda parameter (default: 0.95)
-- `ppo_epochs`: Training epochs per episode (default: 4)
-- `minibatch_size`: Minibatch size for updates (default: 64)
-- `max_episode_frames`: Max frames per episode (default: 18000)
-
-You can override these via command line:
+### 2. Launch PPO Training
 
 ```bash
-python train_ppo.py ... --set ppo.pool_size=10 --set ppo.clip_ratio=0.15
+# Full scale (96 environments)
+python train_ppo_rl.py --init-checkpoint checkpoints/latest.pt
+
+# Small scale for testing (16 environments)
+python train_ppo_rl.py \
+    --init-checkpoint checkpoints/latest.pt \
+    --num-shards 2 \
+    --envs-per-shard 8
 ```
 
-## How It Works
+### 3. Monitor Training
 
-### Episode Flow
+Training will print:
+- FPS (frames per second across all environments)
+- PPO loss metrics (policy, value, entropy)
+- Importance sampling ratios
+- Checkpoint saves
 
-1. **Episode Start**: 
-   - Random opponent is selected from the pool
-   - Opponent model is loaded with frozen weights
-   - Buffers are cleared
+### 4. Stop Training
 
-2. **Gameplay**:
-   - Both players act based on model outputs
-   - Learner samples actions (exploration)
-   - Opponent uses deterministic policy
-   - Experiences stored in trajectory buffer
-   - Rewards computed per-frame
+Press `Ctrl+C` for graceful shutdown. The coordinator will:
+1. Signal all shards to stop
+2. Wait for processes to exit
+3. Close shared memory
+4. Save final checkpoint
 
-3. **Episode End**:
-   - Trajectory buffer finalized
-   - GAE advantages computed
-   - PPO training performed
-   - Model optionally added to opponent pool
+## Configuration
 
-### Reward Structure
+### Command Line Arguments
 
-Rewards are computed using the existing reward system from `train/value_head.py`:
+```bash
+python train_ppo_rl.py --help
+```
 
-- **Damage**: +0.01 per % dealt, -0.01 per % taken
-- **Stocks**: +0.3 for taking stock, -0.3 for losing stock
-- **Hitlag**: +0.02 when hitting opponent, -0.02 when being hit
-- **Shield**: Penalty for low shield (scales with depletion)
-- **Per-frame**: Small constant penalty (-0.001) to discourage stalling
+Key options:
+- `--init-checkpoint`: Initial policy (required)
+- `--num-shards`: Number of S8 processes (default: 12)
+- `--envs-per-shard`: Dolphins per shard (default: 8)
+- `--lr`: Learning rate (default: 3e-4)
+- `--opponent-pool-size`: Historical checkpoints to keep (default: 20)
+- `--opponent-sample-prob`: Probability of historical opponent (default: 0.8)
+- `--checkpoint-interval`: Steps between saves (default: 10)
 
-### PPO Loss
-
-Total loss = Policy Loss + Value Loss + Entropy Bonus
-
-1. **Policy Loss** (clipped surrogate):
-   ```
-   L_policy = -E[min(ratio * A, clip(ratio, 1-ε, 1+ε) * A)]
-   where ratio = π_new(a|s) / π_old(a|s)
-   ```
-
-2. **Value Loss** (MSE):
-   ```
-   L_value = E[(V(s) - R)²]
-   ```
-
-3. **Entropy Bonus**:
-   ```
-   L_entropy = -β * E[H(π(·|s))]
-   ```
-
-## File Structure
+### File Structure
 
 ```
 ppo/
-├── __init__.py              # Module init
-├── opponent_pool.py         # Opponent pool management
-├── trajectory.py            # Trajectory collection & GAE
-├── ppo_loss.py             # PPO loss computation
-├── selfplay_env.py         # Self-play environment wrapper
-└── README.md               # This file
-
-train_ppo.py                # Main training script
+├── config.py              # PPOConfig with all hyperparameters
+├── coordinator.py         # GPU process (inference + training)
+├── arena_shard.py         # S8 process (manages 8 ENV threads)
+├── env_worker.py          # ENV thread (single Dolphin lifecycle)
+├── shared_memory.py       # Zero-copy data structures
+├── opponent.py            # Opponent pool & matchmaking
+├── rollout.py             # Rollout buffer & GAE computation
+├── ppo_loss.py            # PPO loss functions
+├── ipc.py                 # IPC primitives
+└── tests/                 # Comprehensive test suite
 ```
 
-## Monitoring
+## Performance
 
-Training metrics are logged to Weights & Biases:
+### Expected Throughput
 
-- **Episode metrics**: frames, rewards, stocks, damage
-- **Policy metrics**: entropy, clipping fraction, ratio statistics
-- **Value metrics**: value predictions, errors
-- **Pool metrics**: pool size, opponent statistics
+With 96 environments on M2 Max (MPS):
+- **Inference**: ~5-10ms per step (batched)
+- **Environment**: ~16ms per frame (60 FPS target)
+- **Throughput**: ~5000-10000 frames/sec total
 
-## Tips
+Bottleneck is typically Dolphin emulation, not inference.
 
-### Starting from Scratch
+### Memory Usage
 
-If you don't have a trained model:
-1. First train with supervised learning (use `train.py`)
-2. Then switch to PPO for self-play improvement
-
-### Pool Size
-
-- Larger pools (10-20) provide more diverse opponents but slower adaptation
-- Smaller pools (3-5) adapt quickly but risk overfitting to recent strategies
-
-### Hyperparameter Tuning
-
-Key parameters to tune:
-- `clip_ratio`: Higher (0.3) = more aggressive updates, Lower (0.1) = more conservative
-- `entropy_coef`: Higher = more exploration, Lower = more exploitation
-- `gae_lambda`: Higher (0.99) = less bias but more variance, Lower (0.9) = more bias but less variance
-
-### Episode Length
-
-- Shorter episodes (5000 frames): Faster iteration, less diverse data
-- Longer episodes (20000 frames): More diverse, but slower iteration
+- **Shared Memory**: ~7.4 MiB per shard × 12 = ~90 MiB
+- **GPU Ring Buffer**: 96 × 256 × 908 × 2 bytes (bf16) = ~44 MiB
+- **Model**: ~50-200 MiB depending on size
+- **Total**: ~200-400 MiB (very efficient!)
 
 ## Troubleshooting
 
-### "Opponent pool is empty"
+### "Checkpoint not found"
+Provide a valid checkpoint from imitation learning:
+```bash
+python train_ppo_rl.py --init-checkpoint checkpoints/checkpoint_epoch_100.pt
+```
 
-The system will use self-play (current model vs itself) until the pool has at least one model. This is normal on first run.
+### "Failed to connect to Dolphin"
+Check Dolphin path and ISO path:
+```bash
+python train_ppo_rl.py \
+    --dolphin-path "/Applications/Slippi Dolphin.app" \
+    --iso-path "~/Documents/SSBM.iso"
+```
 
-### Game not starting
+### Shards dying
+Check memory usage and Dolphin stability. Reduce scale:
+```bash
+python train_ppo_rl.py --num-shards 4 --envs-per-shard 4
+```
 
-Check that:
-- Dolphin path is correct
-- ISO path is valid
-- No other Dolphin instances are running
+### Slow FPS
+- Check if Dolphin is in headless mode
+- Reduce number of environments
+- Profile with `python -m cProfile`
 
-### Out of memory
+## Development
 
-Reduce:
-- `ppo.minibatch_size`
-- `max_episode_frames`
-- `model.seq_len`
+### Running Tests
 
-### Poor performance
+```bash
+# All PPO tests
+pytest ppo/tests/ -v
 
-- Check reward structure aligns with desired behavior
-- Verify advantage normalization is enabled
-- Try adjusting `gae_lambda` for better credit assignment
-- Increase exploration with higher `entropy_coef`
+# Specific test file
+pytest ppo/tests/test_opponent_pool.py -v
 
+# Integration test (requires Dolphin)
+pytest ppo/tests/test_single_s8.py -v
+```
+
+### Adding New Features
+
+1. **New config parameter**: Add to `ppo/config.py`
+2. **New component**: Create module in `ppo/`
+3. **Tests**: Add to `ppo/tests/`
+4. **Documentation**: Update this README
+
+## FAQ
+
+**Q: How long should I train?**
+A: Start with 10-100k training steps. Monitor policy loss and value estimates.
+
+**Q: What's a good learning rate?**
+A: Start with 3e-4. If ratios diverge, reduce to 1e-4.
+
+**Q: Should I use more environments?**
+A: More environments = more diverse data but higher memory. 96 is a good balance.
+
+**Q: How often should checkpoints save?**
+A: Every 10-100 training steps. Frequent saves → better opponent diversity.
+
+**Q: Can I resume training?**
+A: Not yet implemented. Checkpoints save state but load logic is TODO.
+
+## References
+
+- [Proximal Policy Optimization (Schulman et al., 2017)](https://arxiv.org/abs/1707.06347)
+- [Generalized Advantage Estimation (Schulman et al., 2016)](https://arxiv.org/abs/1506.02438)
+- [Emergent Complexity via Multi-Agent Competition (Bansal et al., 2018)](https://arxiv.org/abs/1710.03748)

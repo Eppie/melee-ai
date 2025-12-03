@@ -217,7 +217,7 @@ def process_one_episode(raw_path: str) -> List[Row]:
                 continue
     except Exception as e:
         if rows:
-            print(f"Warning: Error processing {raw_path} after {len(rows)} frames: {e}")
+            logger.warning(f"Error processing {raw_path} after {len(rows)} frames: {e}")
         else:
             raise ValueError(f"Failed to process {raw_path}: {e}")
 

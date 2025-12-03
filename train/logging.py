@@ -811,6 +811,8 @@ def prepare_logging_bundle(
     return LoggingBundle(log_lines=log_lines, payload=log_payload)
 
 
+from loguru import logger
+
 def emit_logging(
     components: TrainingComponents,
     bundle: LoggingBundle,
@@ -818,7 +820,7 @@ def emit_logging(
     global_step: int,
     epoch_ctx: EpochContext,
 ) -> None:
-    print("\n".join(bundle.log_lines))
+    logger.info("\n" + "\n".join(bundle.log_lines))
 
     if components.logger.enabled:
         components.logger.log_gradients(grad_stats, step=global_step)

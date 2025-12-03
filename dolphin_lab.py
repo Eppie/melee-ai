@@ -23,6 +23,7 @@ Inside a debugger / REPL:
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import signal
 import sys
@@ -30,7 +31,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Deque, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Callable, Deque, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -62,6 +63,15 @@ DELTA_STABILITY_FRAMES = 5
 DELTA_STABILITY_TOLERANCE = 1e-4
 MAX_DRAIN_PRESS_FRAMES = 180
 SPAWN_ACTIONS = {Action.ON_HALO_DESCENT, Action.ON_HALO_WAIT}
+EXCLUDED_ACTION_LOG_STATES: Set[Action] = {Action.STANDING, *SPAWN_ACTIONS}
+NEUTRAL_COMPLETE_ACTIONS: Set[Action] = {
+    Action.STANDING,
+    Action.CROUCHING,
+    Action.CROUCH_END,
+    Action.LANDING,
+    Action.LANDING_SPECIAL,
+}
+MAX_MOVE_CAPTURE_FRAMES = 1200
 
 
 @dataclass
@@ -137,6 +147,9 @@ class GameLab:
         character: Character = Character.FOX,
         verbose: bool = True,
         auto_scan: bool = True,
+        action_log_path: Optional[Path] = None,
+        enable_action_sweep: bool = True,
+        iso_path: Optional[Path] = None,
     ) -> None:
         self.console = console
         self.controllers = controllers
@@ -144,6 +157,9 @@ class GameLab:
         self.character = character
         self.verbose = verbose
         self.auto_scan = auto_scan
+        self.action_log_path = action_log_path
+        self.enable_action_sweep = enable_action_sweep
+        self.iso_path = iso_path
 
         self.menu_helper = MenuHelper()
         self.current_gamestate = None
@@ -175,6 +191,12 @@ class GameLab:
         self._in_game = False
         self.primary_port, *rest = sorted(controllers.keys())
         self.secondary_port = rest[0] if rest else self.primary_port
+        self.action_state_logs: List[Tuple[str, List[str]]] = []
+        self._action_log_file = None
+        self._action_log_writer: Optional[csv.writer] = None
+        self._action_sweep_characters: List[Character] = []
+        self._action_sweep_index = 0
+        self._action_sweep_run_in_match = False
 
     # ------------------------------------------------------------------
     # Controller state mutation APIs (callable from debuggers)
@@ -337,11 +359,288 @@ class GameLab:
                 and not self._auto_complete_logged
             ):
                 self._log("Automatic Firefox scan complete.")
-                self._auto_complete_logged = True
+            self._auto_complete_logged = True
             return
         params = self._angle_queue.popleft()
         port, angle, charge, travel, cooldown = params
         self._start_firefox(port, angle, charge, travel, cooldown)
+
+    def enqueue_action_state_capture(
+        self,
+        *,
+        name: str,
+        move_inputs: Callable[[int], Iterator[None]],
+        character: Character,
+        aerial_or_grounded: str,
+        port: Optional[int] = None,
+        exclude: Optional[Set[Action]] = None,
+        settle_frames: int = 6,
+        cooldown_frames: int = 20,
+    ) -> None:
+        """Log action transitions while performing a move macro."""
+
+        target_port = self.primary_port if port is None else port
+        excluded_actions = exclude
+
+        def _macro() -> Iterator[None]:
+            self._ensure_ingame()
+            yield from self._wait_until_player_active(target_port)
+            self.set_neutral(target_port)
+            yield from self.wait(settle_frames)
+            frame = 0
+            move_iter = move_inputs(target_port)
+            move_iter_exhausted = False
+            started_move = False
+            seen_nonneutral = False
+            while True:
+                if not self._player_present(target_port):
+                    self.set_neutral(target_port)
+                    yield
+                    continue
+                player = self.current_gamestate.players[target_port]
+                if not self._player_is_active(target_port):
+                    self.set_neutral(target_port)
+                    yield
+                    continue
+                if not started_move:
+                    try:
+                        next(move_iter)
+                    except StopIteration:
+                        move_iter_exhausted = True
+                    started_move = True
+                elif not move_iter_exhausted:
+                    try:
+                        next(move_iter)
+                    except StopIteration:
+                        move_iter_exhausted = True
+                action = player.action
+                if excluded_actions is None or action not in excluded_actions:
+                    self._log_action_frame(
+                        character=character,
+                        aerial_or_grounded=aerial_or_grounded,
+                        move=name,
+                        frame=frame,
+                        action=action,
+                    )
+                if action not in EXCLUDED_ACTION_LOG_STATES:
+                    seen_nonneutral = True
+                if seen_nonneutral and self._move_is_complete(player):
+                    break
+                if move_iter_exhausted and frame >= MAX_MOVE_CAPTURE_FRAMES:
+                    self._log(
+                        f"Move capture timeout after {MAX_MOVE_CAPTURE_FRAMES} frames for {name} ({aerial_or_grounded}); breaking."
+                    )
+                    break
+                frame += 1
+                yield
+            self.set_neutral(target_port)
+            yield from self.wait(cooldown_frames)
+
+        self.enqueue_macro(_macro())
+
+    def queue_default_action_state_demo(self, port: Optional[int] = None) -> None:
+        """Queue Fox B-move action-state logger macros."""
+
+        target_port = self.primary_port if port is None else port
+        self.clear_macros()
+        self.enqueue_macro(self.wait(180))  # allow spawn/intro frames to finish
+        moves: List[Tuple[str, str, Callable[[int], Iterator[None]]]] = [
+            ("up B", "grounded", self._fox_up_b_macro),
+            ("side B", "grounded", self._fox_side_b_macro),
+            ("down B", "grounded", self._fox_down_b_macro),
+            ("up B", "aerial", self._fox_up_b_air_macro),
+            ("side B", "aerial", self._fox_side_b_air_macro),
+            ("down B", "aerial", self._fox_down_b_air_macro),
+        ]
+        for move_name, variant, macro in moves:
+            self.enqueue_action_state_capture(
+                name=move_name,
+                character=self.character,
+                aerial_or_grounded=variant,
+                move_inputs=macro,
+                port=target_port,
+            )
+
+    def _fox_up_b_macro(self, port: int) -> Iterator[None]:
+        yield from self.wait(1)
+        self.set_main_stick(port, 0.0, 1.0)
+        self.press_button(port, Button.BUTTON_B)
+        yield
+        self.release_button(port, Button.BUTTON_B)
+        yield from self.wait(DEFAULT_CHARGE_FRAMES)
+        self.set_main_stick(port, 0.0, 1.0)
+        yield from self.wait(DEFAULT_TRAVEL_FRAMES)
+
+    def _fox_side_b_macro(self, port: int) -> Iterator[None]:
+        yield from self.wait(1)
+        self.set_main_stick(port, 1.0, 0.0)
+        self.press_button(port, Button.BUTTON_B)
+        yield
+        self.release_button(port, Button.BUTTON_B)
+        yield from self.wait(DEFAULT_TRAVEL_FRAMES // 2)
+
+    def _fox_down_b_macro(self, port: int) -> Iterator[None]:
+        yield from self.wait(1)
+        self.set_main_stick(port, 0.0, -1.0)
+        self.press_button(port, Button.BUTTON_B)
+        yield
+        self.release_button(port, Button.BUTTON_B)
+        yield from self.wait(DEFAULT_CHARGE_FRAMES)
+
+    def _short_hop(self, port: int, airborne_wait: int = 4) -> Iterator[None]:
+        """Light jump to reach airborne state before a move."""
+
+        self.press_button(port, Button.BUTTON_Y)
+        yield
+        self.release_button(port, Button.BUTTON_Y)
+        yield from self.wait(airborne_wait)
+
+    def _fox_up_b_air_macro(self, port: int) -> Iterator[None]:
+        yield from self.wait(1)
+        yield from self._short_hop(port, airborne_wait=5)
+        self.set_main_stick(port, 0.0, 1.0)
+        self.press_button(port, Button.BUTTON_B)
+        yield
+        self.release_button(port, Button.BUTTON_B)
+        yield from self.wait(DEFAULT_CHARGE_FRAMES)
+        self.set_main_stick(port, 0.0, 1.0)
+        yield from self.wait(DEFAULT_TRAVEL_FRAMES)
+
+    def _fox_side_b_air_macro(self, port: int) -> Iterator[None]:
+        yield from self.wait(1)
+        yield from self._short_hop(port, airborne_wait=5)
+        self.set_main_stick(port, 1.0, 0.0)
+        self.press_button(port, Button.BUTTON_B)
+        yield
+        self.release_button(port, Button.BUTTON_B)
+        yield from self.wait(DEFAULT_TRAVEL_FRAMES // 2)
+
+    def _fox_down_b_air_macro(self, port: int) -> Iterator[None]:
+        yield from self.wait(1)
+        yield from self._short_hop(port, airborne_wait=5)
+        self.set_main_stick(port, 0.0, -1.0)
+        self.press_button(port, Button.BUTTON_B)
+        yield
+        self.release_button(port, Button.BUTTON_B)
+        yield from self.wait(DEFAULT_CHARGE_FRAMES)
+
+    def _all_playable_characters(self) -> List[Character]:
+        blocked = {
+            Character.WIREFRAME_MALE,
+            Character.WIREFRAME_FEMALE,
+            Character.GIGA_BOWSER,
+            Character.SANDBAG,
+            Character.UNKNOWN_CHARACTER,
+            Character.NANA,
+        }
+        return [char for char in Character if char not in blocked]
+
+    def start_action_state_sweep(self) -> None:
+        if not self.enable_action_sweep:
+            return
+        self._action_sweep_characters = self._all_playable_characters()
+        self._action_sweep_index = 0
+        self._action_sweep_run_in_match = False
+        if not self._action_sweep_characters:
+            self._log("No playable characters found for action sweep; disabling.")
+            self.enable_action_sweep = False
+            return
+        self.character = self._action_sweep_characters[0]
+        self._log(
+            f"Action state sweep initialised; starting with {self._human_character_name(self.character)}."
+        )
+
+    def _enqueue_moves_for_current_character(self) -> None:
+        if self._action_sweep_index >= len(self._action_sweep_characters):
+            self.enable_action_sweep = False
+            return
+        character = self._action_sweep_characters[self._action_sweep_index]
+        moves: List[Tuple[str, str, Callable[[int], Iterator[None]]]] = [
+            ("up B", "grounded", self._fox_up_b_macro),
+            ("side B", "grounded", self._fox_side_b_macro),
+            ("down B", "grounded", self._fox_down_b_macro),
+            ("up B", "aerial", self._fox_up_b_air_macro),
+            ("side B", "aerial", self._fox_side_b_air_macro),
+            ("down B", "aerial", self._fox_down_b_air_macro),
+        ]
+        self.enqueue_macro(self.wait(180))
+        for move_name, variant, macro in moves:
+            self.enqueue_action_state_capture(
+                name=move_name,
+                move_inputs=macro,
+                character=character,
+                aerial_or_grounded=variant,
+                port=self.primary_port,
+            )
+        self.enqueue_macro(self._complete_character_and_reset_macro(self.primary_port))
+
+    def _complete_character_and_reset_macro(self, port: int) -> Iterator[None]:
+        self._advance_action_sweep_character()
+        if not self.enable_action_sweep:
+            self._log("Action state sweep complete for all characters.")
+            yield from self.wait(60)
+            return
+        success = self._restart_emulator()
+        if not success:
+            self._log("Restart failed; aborting action sweep.")
+            self.enable_action_sweep = False
+            yield from self.wait(60)
+            return
+        yield from self.wait(300)
+
+    def _advance_action_sweep_character(self) -> None:
+        self._action_sweep_index += 1
+        if self._action_sweep_index < len(self._action_sweep_characters):
+            next_char = self._action_sweep_characters[self._action_sweep_index]
+            self.character = next_char
+            self._action_sweep_run_in_match = False
+            self._log(
+                f"Advancing to next character: {self._human_character_name(next_char)}."
+            )
+        else:
+            self.enable_action_sweep = False
+
+    def _reset_to_css_macro(self, port: int) -> Iterator[None]:
+        self.set_neutral(port)
+        yield from self.wait(10)
+        self._log("Reset: pausing (Start).")
+        # Pause first.
+        self.press_button(port, Button.BUTTON_START)
+        yield from self.wait(10)
+        self.release_button(port, Button.BUTTON_START)
+        yield from self.wait(12)
+        # Hold L+R+A+Start while paused to return to CSS.
+        combo_buttons = (
+            Button.BUTTON_L,
+            Button.BUTTON_R,
+            Button.BUTTON_A,
+            Button.BUTTON_START,
+        )
+        self._log("Reset: holding L+R+A+Start.")
+        for button in combo_buttons:
+            self.press_button(port, button)
+        yield from self.wait(120)
+        self._log("Reset: releasing L+R+A+Start.")
+        for button in combo_buttons:
+            self.release_button(port, button)
+        self.set_neutral(port)
+        # Wait until we leave the match (or timeout), then allow menus to settle.
+        max_wait = 900
+        waited = 0
+        while (
+            self.current_gamestate
+            and self.current_gamestate.menu_state in (Menu.IN_GAME, Menu.SUDDEN_DEATH)
+            and waited < max_wait
+        ):
+            waited += 1
+            yield
+        if waited >= max_wait:
+            self._log("Reset: timeout waiting to exit match; continuing anyway.")
+        else:
+            self._log(
+                f"Reset: detected exit to menu ({self.current_gamestate.menu_state.name if self.current_gamestate else 'unknown'})."
+            )
+        yield from self.wait(180)
 
     def scan_firefox_angles(
         self,
@@ -804,21 +1103,27 @@ class GameLab:
         """Main loop. Blocks forever until interrupted."""
         while True:
             gamestate = self.console.step()
-            if gamestate is None:
-                continue
-            self.current_gamestate = gamestate
-            if gamestate.menu_state in (Menu.IN_GAME, Menu.SUDDEN_DEATH):
-                if not self._in_game:
+            if gamestate is not None:
+                self.current_gamestate = gamestate
+            current_menu = (
+                self.current_gamestate.menu_state
+                if self.current_gamestate
+                else Menu.UNKNOWN_MENU
+            )
+            in_match = current_menu in (Menu.IN_GAME, Menu.SUDDEN_DEATH)
+            if gamestate is not None:
+                if in_match and not self._in_game:
                     self._in_game = True
                     self._log("Entered match; automation enabled.")
-                self._maybe_start_auto_scan()
-                self._process_macros()
-                self._apply_targets()
-            else:
-                if self._in_game:
-                    self._log(f"Exited match (state={gamestate.menu_state.name}).")
+                    self._action_sweep_run_in_match = False
+                if not in_match and self._in_game:
+                    self._log(f"Exited match (state={current_menu.name}).")
                     self._in_game = False
-                    self.clear_macros()
+                    self._action_sweep_run_in_match = False
+                    for port in self.controllers:
+                        self.set_neutral(port)
+                    if not self.enable_action_sweep:
+                        self.clear_macros()
                     if self._shield_test_state is not None:
                         self._log(
                             f"Shield threshold test aborted early (match ended) for port {self._shield_test_state.port}."
@@ -831,7 +1136,14 @@ class GameLab:
                         )
                         self._apply_trigger_raw(self._drain_test_state.port, 0)
                         self._drain_test_state = None
-                self._drive_menus(gamestate)
+
+            if in_match:
+                self._maybe_start_action_sweep()
+                self._maybe_start_auto_scan()
+            self._process_macros()
+            self._apply_targets()
+            if not in_match and self.current_gamestate and not self.macros:
+                self._drive_menus(self.current_gamestate)
 
     def shutdown(self) -> None:
         """Release controllers and stop Dolphin."""
@@ -841,10 +1153,50 @@ class GameLab:
                 controller.disconnect()
             except Exception:
                 pass
+        if self._action_log_file is not None:
+            try:
+                self._action_log_file.close()
+            except Exception:
+                pass
         try:
             self.console.stop()
         except Exception:
             pass
+
+    def _restart_emulator(self) -> bool:
+        """Stop Dolphin and start a fresh instance."""
+
+        self._log("Restarting Dolphin for next character.")
+        try:
+            self.console.stop()
+        except Exception:
+            pass
+        for controller in self.controllers.values():
+            try:
+                controller.release_all()
+                controller.disconnect()
+            except Exception:
+                pass
+        self.current_gamestate = None
+        self._in_game = False
+        self._action_sweep_run_in_match = False
+        try:
+            self.console.run(iso_path=str(self.iso_path) if self.iso_path else None)
+        except Exception as exc:
+            self._log(f"Restart failed to launch Dolphin: {exc}")
+            return False
+        if not self.console.connect():
+            self._log("Restart failed: could not connect to Dolphin.")
+            return False
+        for controller in self.controllers.values():
+            if not controller.connect():
+                self._log(f"Restart warning: failed to connect controller {controller.port}.")
+            try:
+                controller.release_all()
+            except Exception:
+                pass
+        self._log("Restart complete; waiting for menus to load.")
+        return True
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -902,6 +1254,33 @@ class GameLab:
     def _clip_shoulder(self, value: float) -> float:
         return float(max(0.0, min(1.0, value)))
 
+    def _player_present(self, port: int) -> bool:
+        return bool(self.current_gamestate and port in self.current_gamestate.players)
+
+    def _player_is_active(self, port: int) -> bool:
+        if not self._player_present(port):
+            return False
+        player = self.current_gamestate.players[port]
+        if getattr(player, "is_dead", False) or getattr(player, "is_inactive", False):
+            return False
+        return getattr(player, "action", None) not in SPAWN_ACTIONS
+
+    def _move_is_complete(self, player) -> bool:
+        action = getattr(player, "action", None)
+        if action is None:
+            return False
+        if getattr(player, "is_dead", False) or getattr(player, "is_inactive", False):
+            return True
+        if action in NEUTRAL_COMPLETE_ACTIONS:
+            return True
+        return False
+
+    def _wait_until_player_active(self, port: int) -> Iterator[None]:
+        """Yield until the player is alive, active, and past spawn actions."""
+
+        while not self._player_is_active(port):
+            yield
+
     def player_position(self, port: int) -> Tuple[float, float]:
         if not self.current_gamestate or port not in self.current_gamestate.players:
             return (float("nan"), float("nan"))
@@ -914,11 +1293,79 @@ class GameLab:
         ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         print(f"[{ts}][lab] {message}")
 
+    def _human_character_name(self, character: Character) -> str:
+        return character.name.replace("_", " ").title()
+
+    def _ensure_action_log_writer(self) -> None:
+        if self.action_log_path is None:
+            return
+        if self._action_log_writer is not None and self._action_log_file is not None:
+            return
+        path = self.action_log_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_exists = path.exists() and path.stat().st_size > 0
+        self._action_log_file = path.open("a", newline="")
+        self._action_log_writer = csv.writer(self._action_log_file)
+        if not file_exists:
+            self._action_log_writer.writerow(
+                [
+                    "character",
+                    "character_id",
+                    "aerial_or_grounded",
+                    "move",
+                    "frame",
+                    "action_state",
+                ]
+            )
+            self._action_log_file.flush()
+
+    def _log_action_frame(
+        self,
+        *,
+        character: Character,
+        aerial_or_grounded: str,
+        move: str,
+        frame: int,
+        action: Action,
+    ) -> None:
+        if self.action_log_path is None:
+            return
+        self._ensure_action_log_writer()
+        if self._action_log_writer is None or self._action_log_file is None:
+            return
+        row = [
+            self._human_character_name(character),
+            character.value,
+            aerial_or_grounded,
+            move,
+            frame,
+            action.name,
+        ]
+        self._action_log_writer.writerow(row)
+        self._action_log_file.flush()
+        print("[action-csv] " + ",".join(str(item) for item in row))
+
     def _ensure_ingame(self) -> None:
         if not self._in_game:
             raise RuntimeError("Requested action requires an active match.")
 
+    def _maybe_start_action_sweep(self) -> None:
+        if not self.enable_action_sweep:
+            return
+        if not self._in_game:
+            return
+        if self._action_sweep_index >= len(self._action_sweep_characters):
+            return
+        if self.macros or self._current_params:
+            return
+        if self._action_sweep_run_in_match:
+            return
+        self._action_sweep_run_in_match = True
+        self._enqueue_moves_for_current_character()
+
     def _maybe_start_auto_scan(self) -> None:
+        if self.enable_action_sweep:
+            return
         if not self._in_game:
             return
         if self._shield_test_state is not None:
@@ -1174,11 +1621,23 @@ def player_position(port: int) -> Tuple[float, float]:
     return ensure_lab().player_position(port)
 
 
+def queue_default_action_state_demo(port: Optional[int] = None) -> None:
+    """Enqueue the default Fox B-move action logging demo."""
+    ensure_lab().queue_default_action_state_demo(port)
+
+
+def start_action_state_sweep() -> None:
+    """Begin (or restart) the full roster B-move sweep."""
+    ensure_lab().start_action_state_sweep()
+
+
 __all__ = [
     "LAB",
     "CONTROL_PALETTE",
     "FirefoxTestResult",
     "GameLab",
+    "queue_default_action_state_demo",
+    "start_action_state_sweep",
     "measure_shield_threshold",
     "measure_shield_drain",
     "perform_firefox",
@@ -1221,12 +1680,27 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable automatic shield threshold test when the match starts.",
     )
+    parser.add_argument(
+        "--action-log-path",
+        default="action_state_log.csv",
+        help="CSV path for action-state logging (appends; includes header when empty).",
+    )
+    parser.add_argument(
+        "--no-action-state-sweep",
+        action="store_true",
+        help="Disable the automatic per-character B-move action-state sweep.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     init_config()
     args = _parse_args()
+    action_log_path = (
+        None
+        if args.no_action_state_sweep
+        else Path(args.action_log_path).expanduser().resolve()
+    )
 
     console = Console(
         path=args.dolphin_executable_path,
@@ -1288,6 +1762,9 @@ def main() -> None:
         character=Character.FOX,
         verbose=not args.no_verbose,
         auto_scan=not args.no_auto_scan,
+        action_log_path=action_log_path,
+        enable_action_sweep=not args.no_action_state_sweep,
+        iso_path=Path(args.iso).expanduser().resolve() if args.iso else None,
     )
     LAB._log(
         "Lab initialised. Attach a debugger and use helper functions (e.g. measure_shield_threshold)."
@@ -1298,6 +1775,13 @@ def main() -> None:
         LAB._log(
             "Automatic shield threshold test disabled (call measure_shield_threshold manually)."
         )
+    if LAB.enable_action_sweep:
+        LAB._log(
+            f"Action-state sweep enabled. Logging to {LAB.action_log_path} (tail -f to watch)."
+        )
+        LAB.start_action_state_sweep()
+    else:
+        LAB._log("Action-state sweep disabled (--no-action-state-sweep supplied).")
     try:
         LAB.spin()
     finally:

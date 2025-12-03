@@ -1,19 +1,10 @@
-"""PPO (Proximal Policy Optimization) self-play training module.
+"""
+Hierarchical PPO training system for Melee bot.
 
-Distributed training architecture:
-- InferenceCoordinator: Centralized GPU inference for all workers
-- SimulationWorker: Stateless emulator processes
-- TrajectorySlicer: Fixed-length rollouts with bootstrapping
-- OpponentPool: FIFO pool of frozen past models
+Architecture:
+- Coordinator (CRD): GPU process managing inference and PPO training
+- ArenaShard (S8): CPU processes managing Dolphin instances
+- EnvWorker (ENV): Threads within S8, one per Dolphin
 """
 
-from ppo.opponent_pool import OpponentPool
-from ppo.trajectory import Trajectory, Step
-from ppo.ppo_loss import compute_total_ppo_loss
-
-__all__ = [
-    "OpponentPool",
-    "Trajectory",
-    "Step",
-    "compute_total_ppo_loss",
-]
+__version__ = "0.1.0"

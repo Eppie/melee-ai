@@ -309,7 +309,7 @@ if __name__ == "__main__":
             menu_helper.menu_helper_simple(
                 gamestate,
                 controllers[1],
-                Character.CPTFALCON,
+                bot_char,
                 current_stage,
                 costume=1,
                 autostart=False,

@@ -7,6 +7,7 @@ from contextlib import nullcontext
 from typing import Dict
 
 import torch
+from loguru import logger
 
 from train.checkpoint import maybe_checkpoint_batch, maybe_checkpoint_epoch
 from train.components import EpochContext, TrainingState
@@ -104,16 +105,16 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
         ):
             try:
                 components.sampler.set_start_offset(state.resume_iter)
-                print(
+                logger.info(
                     f"Resuming epoch {epoch + 1}: skipping first {state.resume_iter} batches via sampler offset."
                 )
                 epoch_ctx.skip_remaining = 0
             except Exception as exc:
-                print(
+                logger.warning(
                     f"Sampler offset failed ({exc}); falling back to loading batches for skip."
                 )
         elif state.resume_iter and not chunked:
-            print(
+            logger.info(
                 f"Resuming epoch {epoch + 1}: skipping first {state.resume_iter} batches by consuming them (may take time)."
             )
 
@@ -126,7 +127,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             try:
                 mp_ctx = torch.multiprocessing.get_context(start_method)
             except RuntimeError as exc:
-                print(
+                logger.warning(
                     f"[dataloader] Requested start method '{start_method}' unavailable ({exc}); using default."
                 )
                 mp_ctx = None
@@ -153,14 +154,14 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     budget_saturated = True
                 if allowed_per_worker < prefetch_factor:
                     approx_batch_mb = batch_bytes / (1024**2)
-                    print(
+                    logger.warning(
                         "[dataloader] Reducing prefetch_factor from "
                         f"{prefetch_factor} to {allowed_per_worker} to honor "
                         f"{max_prefetch_mb} MiB prefetch budget (batch ≈ "
                         f"{approx_batch_mb:.2f} MiB)."
                     )
                     if budget_saturated:
-                        print(
+                        logger.warning(
                             "[dataloader] Consider lowering train.num_workers or "
                             "batch_size, or increase train.max_loader_prefetch_mb "
                             "if you need more throughput."
@@ -259,7 +260,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     skip_batches = 0
                 epoch_ctx.skip_remaining = 0
             except Exception as exc:
-                print(
+                logger.error(
                     f"[dataloader] Failed to load chunks {chunk_indices} ({exc}); skipping."
                 )
                 continue
@@ -388,11 +389,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 if should_profile:
                     components.profiling_step_count += 1
                     if components.profiling_step_count >= 1000:
-                        print("\n" + "=" * 80)
-                        print("PROFILING COMPLETE - 1000 steps profiled")
-                        print("=" * 80 + "\n")
+                        logger.info("PROFILING COMPLETE - 1000 steps profiled")
                         print_profiling_results(components.profilers)
-                        print("\n" + "=" * 80 + "\n")
 
                 # Record batch end for timing metrics
                 components.dataloader_metrics.record_batch_end()
@@ -521,11 +519,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 if should_profile:
                     components.profiling_step_count += 1
                     if components.profiling_step_count >= 1000:
-                        print("\n" + "=" * 80)
-                        print("PROFILING COMPLETE - 1000 steps profiled")
-                        print("=" * 80 + "\n")
+                        logger.info("PROFILING COMPLETE - 1000 steps profiled")
                         print_profiling_results(components.profilers)
-                        print("\n" + "=" * 80 + "\n")
 
                 iteration += 1
 
@@ -535,7 +530,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
 
     if epoch_ctx.iters_processed:
         avg_epoch_loss = epoch_ctx.get_avg_loss()
-        print(
+        logger.info(
             f"[epoch {epoch + 1}] avg_loss {avg_epoch_loss:.4f} ({epoch_ctx.iters_processed} iters)"
         )
 
@@ -583,7 +578,7 @@ def train_loop(
         tb = _total_batches_for_epoch(start_epoch)
         if start_iter < tb:
             break
-        print(
+        logger.warning(
             f"[resume] resume_iter {start_iter} exceeds total_batches {tb} for epoch {start_epoch + 1}; "
             "advancing to next epoch."
         )
@@ -591,7 +586,7 @@ def train_loop(
         start_epoch += 1
 
     if start_epoch >= config.train.epochs:
-        print(
+        logger.info(
             f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting."
         )
         if not debug:
@@ -606,7 +601,7 @@ def train_loop(
     )
 
     if start_epoch >= config.train.epochs:
-        print(
+        logger.info(
             f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting."
         )
         if not components.debug:

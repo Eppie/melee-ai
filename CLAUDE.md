@@ -6,7 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Nano-Melee trains a GPT-style transformer to play Super Smash Bros. Melee. The model predicts controller outputs from game state via:
 1. **Imitation Learning** - Train on human replays from Slippi `.slp` files
-2. **Reinforcement Learning (PPO)** - Self-play with opponent pool (largely untested)
 
 ## Commands
 
@@ -34,10 +33,6 @@ python validation.py --checkpoint path/to/model.pt
 # Statistics generation
 python -m stats                               # compute all statistics
 python -m stats --zarr-dir processed_data_100/ --max-episodes 100
-
-# PPO self-play (edit paths in script first)
-./run_ppo.sh
-python train_ppo.py --dolphin-path /path/to/dolphin-emu --iso /path/to/melee.iso
 
 # Hyperparameter sweeps
 python sweep.py
@@ -89,7 +84,6 @@ Modular Pydantic configs split by domain:
 - `loss_config.py` - `LossConfig` for loss function weights
 - `feature_config.py` - `FeatureConfig` for feature engineering
 - `rl_config.py` - `RLConfig` for reinforcement learning
-- `ppo_config.py` - `PPOConfig` for PPO-specific settings
 - `imitation_config.py` - `ImitationConfig` for imitation learning
 
 Features:
@@ -113,16 +107,6 @@ Modular training utilities with clean separation of concerns:
 - `lr_schedule.py` - Learning rate schedules (cosine)
 - `wandb_utils.py` - Weights & Biases integration
 - `components.py` - Shared training components
-
-### PPO Self-Play (`ppo/`)
-Distributed PPO implementation with parallel simulation:
-- `opponent_pool.py` - FIFO pool of frozen past models
-- `trajectory.py` - Experience buffer + GAE advantage estimation
-- `trajectory_slicer.py` - Slice trajectories for training sequences
-- `ppo_loss.py` - Clipped surrogate + value + entropy loss
-- `selfplay_env.py` - libmelee environment wrapper
-- `inference_coordinator.py` - Coordinate distributed inference
-- `simulation_worker.py` - Parallel simulation workers
 
 ### Statistics (`stats/`)
 Comprehensive data analysis module with modular collectors:

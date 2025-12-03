@@ -10,6 +10,7 @@ from pprint import pformat
 from typing import Dict, Sequence, Tuple
 
 import torch
+from loguru import logger
 from torch.amp import GradScaler
 from torch.amp.autocast_mode import is_autocast_available
 
@@ -57,8 +58,7 @@ def _make_printable_config(value):
 def print_config(config: object) -> None:
     """Pretty prints the resolved Pydantic configuration."""
     printable_config = _make_printable_config(config.model_dump(mode="python"))
-    print("Resolved training configuration:")
-    print(pformat(printable_config, indent=2, width=100))
+    logger.info("Resolved training configuration:\n" + pformat(printable_config, indent=2, width=100))
 
 
 def configure_amp(config, device: torch.device) -> AMPContext:
@@ -83,12 +83,12 @@ def configure_amp(config, device: torch.device) -> AMPContext:
         dtype=dtype,
     )
 
-    print(f"Using PyTorch {torch.__version__}")
+    logger.info(f"Using PyTorch {torch.__version__}")
     if amp_context.enabled:
         backend = amp_context.device_type.upper()
-        print(f"AMP enabled with {dtype_str} on {backend} backend")
+        logger.info(f"AMP enabled with {dtype_str} on {backend} backend")
     else:
-        print(
+        logger.info(
             f"AMP requested but disabled for device '{device.type}';"
             " falling back to full precision."
         )
@@ -104,7 +104,7 @@ def configure_performance_settings(config, device: torch.device) -> None:
         cache_dir = Path.home() / ".cache" / "torch" / "inductor"
         cache_dir.mkdir(parents=True, exist_ok=True)
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
-        print(f"torch.compile cache enabled: {cache_dir}")
+        logger.info(f"torch.compile cache enabled: {cache_dir}")
 
     # Use legacy API for TF32 settings to avoid mixing APIs
     if device.type == "cuda":
@@ -116,7 +116,7 @@ def configure_performance_settings(config, device: torch.device) -> None:
     # Enable cudnn.benchmark for faster convolutions with consistent input sizes
     if config.train.cudnn_benchmark and device.type == "cuda":
         torch.backends.cudnn.benchmark = True
-        print("cudnn.benchmark enabled for faster CUDA operations")
+        logger.info("cudnn.benchmark enabled for faster CUDA operations")
 
 
 def build_optimizer(model: GPT, config) -> torch.optim.Optimizer:

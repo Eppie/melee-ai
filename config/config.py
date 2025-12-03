@@ -6,14 +6,23 @@ from typing import Any, Dict, Optional, Union
 from pydantic import BaseModel, Field, ValidationInfo, model_validator
 from pydantic_settings import SettingsConfigDict
 
+from .logging_config import setup_logging
+
 from .feature_config import FeatureConfig
 from .gpt_config import GPTConfig, _schema_feature_dims
 from .imitation_config import ImitationConfig
 from .loss_config import LossConfig
-from .ppo_config import PPOConfig
 from .rl_config import RLConfig
 from .train_config import TrainConfig
 from .zarr_config import ZarrConfig
+
+# Import PPOConfig (optional dependency)
+try:
+    from ppo.config import PPOConfig
+    _PPO_AVAILABLE = True
+except ImportError:
+    PPOConfig = None
+    _PPO_AVAILABLE = False
 
 
 class Config(BaseModel):
@@ -31,9 +40,9 @@ class Config(BaseModel):
     model: GPTConfig = Field(default_factory=GPTConfig)
     features: FeatureConfig = Field(default_factory=FeatureConfig)
     rl: RLConfig = Field(default_factory=RLConfig)
-    ppo: PPOConfig = Field(default_factory=PPOConfig)
     loss_weights: LossConfig = Field(default_factory=LossConfig)
     imitation: ImitationConfig = Field(default_factory=ImitationConfig)
+    ppo: Optional[Union[PPOConfig, Any]] = Field(default=None, description="PPO training configuration (optional)")
 
     def freeze(self) -> None:
         """Make config immutable."""
@@ -188,6 +197,7 @@ def init_config(
         # Initialize with overrides
         config = init_config(overrides={"train.lr": "0.001"})
     """
+    setup_logging()
     global _GLOBAL_CONFIG
 
     context = {}
@@ -323,8 +333,9 @@ def init_config_from_checkpoint(
     # Handle legacy checkpoints that only have TrainConfig
     if "train" not in config_dict and "batch_size" in config_dict:
         # This is a legacy checkpoint with only TrainConfig.__dict__
-        print(
-            f"Warning: Checkpoint contains legacy TrainConfig format, using defaults for other configs"
+        from loguru import logger
+        logger.warning(
+            "Checkpoint contains legacy TrainConfig format, using defaults for other configs"
         )
         config_dict = {"train": config_dict}
 

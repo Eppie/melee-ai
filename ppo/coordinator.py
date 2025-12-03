@@ -190,7 +190,13 @@ class Coordinator:
             self.shards.append(p)
             self.pipes.append(coordinator_pipe)
 
-            # Map shared memory slab (read-only from CRD)
+        # Wait briefly for shards to create shared memory
+        import time
+
+        time.sleep(1.0)
+
+        # Now attach to shared memory slabs created by shards
+        for shard_id in range(self.ppo_config.num_shards):
             slab = SharedMemorySlab(
                 shard_id=shard_id,
                 envs_per_shard=self.ppo_config.envs_per_shard,

@@ -117,7 +117,6 @@ class EnvWorker:
         # Start Dolphin
         self.console.run(
             iso_path=str(Path(self.config.iso_path).expanduser()),
-            dolphin_config_path=None,  # Use default
         )
 
         # Connect controllers

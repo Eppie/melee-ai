@@ -210,8 +210,7 @@ class PPOConfig(BaseModel):
         invalid = set(v) - valid_stages
         if invalid:
             raise ValueError(
-                f"Invalid stages: {invalid}\n"
-                f"Valid stages: {valid_stages}"
+                f"Invalid stages: {invalid}\n" f"Valid stages: {valid_stages}"
             )
         if not v:
             raise ValueError("Must specify at least one stage")
@@ -224,8 +223,7 @@ class PPOConfig(BaseModel):
         valid_chars = {"FOX", "FALCO", "MARTH", "SHEIK", "FALCON"}
         if v not in valid_chars:
             raise ValueError(
-                f"Invalid character: {v}\n"
-                f"Valid characters: {valid_chars}"
+                f"Invalid character: {v}\n" f"Valid characters: {valid_chars}"
             )
         return v
 

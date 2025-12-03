@@ -1190,7 +1190,9 @@ class GameLab:
             return False
         for controller in self.controllers.values():
             if not controller.connect():
-                self._log(f"Restart warning: failed to connect controller {controller.port}.")
+                self._log(
+                    f"Restart warning: failed to connect controller {controller.port}."
+                )
             try:
                 controller.release_all()
             except Exception:

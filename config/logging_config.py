@@ -2,6 +2,7 @@ from loguru import logger
 from pathlib import Path
 import sys
 
+
 def setup_logging():
     """
     Configures Loguru for application-wide logging.
@@ -36,5 +37,6 @@ def setup_logging():
     )
 
     logger.info("Loguru logging configured.")
+
 
 # The function will be called by config/config.py

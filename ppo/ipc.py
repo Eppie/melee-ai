@@ -79,7 +79,9 @@ class ShardPipe:
         """
         if timeout is not None:
             if not self.conn.poll(timeout):
-                raise TimeoutError(f"Timeout waiting for message from shard {self.shard_id}")
+                raise TimeoutError(
+                    f"Timeout waiting for message from shard {self.shard_id}"
+                )
 
         data = self.conn.recv()
         return Message.from_tuple(data)

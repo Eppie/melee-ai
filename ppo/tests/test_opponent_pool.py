@@ -62,8 +62,9 @@ def test_opponent_pool_sampling(temp_checkpoint_dir):
     historical_ratio = historical_count / num_samples
 
     # Should be approximately 80% historical (within tolerance)
-    assert 0.75 < historical_ratio < 0.85, \
-        f"Expected ~80% historical, got {historical_ratio*100:.1f}%"
+    assert (
+        0.75 < historical_ratio < 0.85
+    ), f"Expected ~80% historical, got {historical_ratio*100:.1f}%"
 
     print(f"Sampled {historical_ratio*100:.1f}% historical (expected ~80%)")
 
@@ -130,8 +131,9 @@ def test_matchmaker_assignment(temp_checkpoint_dir):
 
     # Should be approximately 80% historical
     historical_ratio = historical_count / 96
-    assert 0.7 < historical_ratio < 0.9, \
-        f"Expected ~80% historical, got {historical_ratio*100:.1f}%"
+    assert (
+        0.7 < historical_ratio < 0.9
+    ), f"Expected ~80% historical, got {historical_ratio*100:.1f}%"
 
     print(f"Matchmaker: {historical_count}/96 historical ({historical_ratio*100:.1f}%)")
 
@@ -154,8 +156,9 @@ def test_matchmaker_is_self_play(temp_checkpoint_dir):
         is_self_play = matchmaker.is_self_play(env_id)
         assignment = matchmaker.match_assignments[env_id]
 
-        assert (is_self_play and assignment is None) or \
-               (not is_self_play and assignment is not None)
+        assert (is_self_play and assignment is None) or (
+            not is_self_play and assignment is not None
+        )
 
     print("Self-play detection consistent with assignments")
 
@@ -181,7 +184,8 @@ def test_matchmaker_reassignment(temp_checkpoint_dir):
 
     # Should have different assignments (with high probability)
     changed_count = sum(
-        1 for env_id in range(96)
+        1
+        for env_id in range(96)
         if initial_assignments[env_id] != matchmaker.match_assignments[env_id]
     )
 

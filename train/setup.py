@@ -58,7 +58,10 @@ def _make_printable_config(value):
 def print_config(config: object) -> None:
     """Pretty prints the resolved Pydantic configuration."""
     printable_config = _make_printable_config(config.model_dump(mode="python"))
-    logger.info("Resolved training configuration:\n" + pformat(printable_config, indent=2, width=100))
+    logger.info(
+        "Resolved training configuration:\n"
+        + pformat(printable_config, indent=2, width=100)
+    )
 
 
 def configure_amp(config, device: torch.device) -> AMPContext:

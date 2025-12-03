@@ -92,7 +92,9 @@ def test_single_env():
             # Featurize
             features = worker._featurize(gamestate)
             print(f"[TEST] Features shape: {features.shape}")
-            print(f"[TEST] Features mean: {features.mean():.4f}, std: {features.std():.4f}")
+            print(
+                f"[TEST] Features mean: {features.mean():.4f}, std: {features.std():.4f}"
+            )
 
             # Write to shared memory
             slab.features[0, worker.t_mod, :] = features

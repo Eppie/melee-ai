@@ -3,7 +3,13 @@ import math
 import os
 import shutil
 import time
-from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import (
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+    FIRST_COMPLETED,
+)
 from dataclasses import dataclass, fields
 from operator import attrgetter
 from pathlib import Path
@@ -20,7 +26,14 @@ from constants import BUTTON_TARGET_NAMES
 from data_types import RawNumpyArray
 from controller_quantization import quantize_targets
 from libmelee.melee.console import Console
-from schema import COMMON_SPEC, PLAYER_SPEC, Row, extract_row, get_feature_names, get_raw_target_names
+from schema import (
+    COMMON_SPEC,
+    PLAYER_SPEC,
+    Row,
+    extract_row,
+    get_feature_names,
+    get_raw_target_names,
+)
 from feature_transforms import apply_feature_transforms
 from train.value_head import (
     build_reward_feature_index,
@@ -114,7 +127,11 @@ def _swap_row_players(row: Row) -> Row:
     values = _ROW_ATTR_GETTER(row)
     start_p1 = _NUM_COMMON_FIELDS
     start_p2 = start_p1 + _NUM_PLAYER_FIELDS
-    swapped = values[:_NUM_COMMON_FIELDS] + values[start_p2 : start_p2 + _NUM_PLAYER_FIELDS] + values[start_p1:start_p2]
+    swapped = (
+        values[:_NUM_COMMON_FIELDS]
+        + values[start_p2 : start_p2 + _NUM_PLAYER_FIELDS]
+        + values[start_p1:start_p2]
+    )
     return Row(*swapped)
 
 
@@ -641,9 +658,11 @@ def build_dataset(
 
     max_workers = min(N, max(1, os.cpu_count() or 1))
     # For profiling, set ZARR_USE_THREADS=1 to avoid multiprocessing pickling issues
-    use_threads = os.environ.get('ZARR_USE_THREADS', '').lower() in ('1', 'true', 'yes')
+    use_threads = os.environ.get("ZARR_USE_THREADS", "").lower() in ("1", "true", "yes")
     if use_threads:
-        max_workers = 1  # ThreadPoolExecutor doesn't benefit from many workers due to GIL
+        max_workers = (
+            1  # ThreadPoolExecutor doesn't benefit from many workers due to GIL
+        )
 
     writers: Dict[int, EpisodeWriter] = {}
     shard_episode_entries: Dict[int, List[Tuple[int, int]]] = {
@@ -826,7 +845,7 @@ def main():
 
     # Set multiprocessing start method to 'fork' for better pickling support on macOS
     try:
-        multiprocessing.set_start_method('fork', force=False)
+        multiprocessing.set_start_method("fork", force=False)
     except RuntimeError:
         pass  # Already set
 

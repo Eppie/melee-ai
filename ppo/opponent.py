@@ -57,7 +57,9 @@ class OpponentPool:
     def refresh_pool(self):
         """Scan checkpoint directory for available checkpoints."""
         if not self.checkpoint_dir.exists():
-            print(f"[OpponentPool] Warning: checkpoint dir {self.checkpoint_dir} does not exist")
+            print(
+                f"[OpponentPool] Warning: checkpoint dir {self.checkpoint_dir} does not exist"
+            )
             self.checkpoint_paths = []
             return
 
@@ -68,15 +70,14 @@ class OpponentPool:
         )
 
         # Keep most recent max_pool_size checkpoints
-        self.checkpoint_paths = all_checkpoints[-self.max_pool_size:]
+        self.checkpoint_paths = all_checkpoints[-self.max_pool_size :]
 
         print(f"[OpponentPool] Discovered {len(self.checkpoint_paths)} checkpoints")
 
         # Clear cache for removed checkpoints
         valid_paths = set(self.checkpoint_paths)
         self.checkpoint_cache = {
-            k: v for k, v in self.checkpoint_cache.items()
-            if k in valid_paths
+            k: v for k, v in self.checkpoint_cache.items() if k in valid_paths
         }
 
         self.steps_since_refresh = 0
@@ -197,7 +198,9 @@ class Matchmaker:
             self.match_assignments[env_id] = checkpoint_path
 
         # Count self-play vs historical
-        self_play_count = sum(1 for path in self.match_assignments.values() if path is None)
+        self_play_count = sum(
+            1 for path in self.match_assignments.values() if path is None
+        )
         historical_count = self.num_envs - self_play_count
 
         print(

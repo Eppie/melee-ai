@@ -104,9 +104,7 @@ def print_profiling_results(profilers: Dict[str, Profiler]) -> None:
 
     if data["checkpoint"]["calls"] > 0:
         lines.append(f"• Checkpointing occurred {data['checkpoint']['calls']} times")
-        lines.append(
-            f"  (Average: {data['checkpoint']['mean']:.1f}ms per checkpoint)"
-        )
+        lines.append(f"  (Average: {data['checkpoint']['mean']:.1f}ms per checkpoint)")
     else:
         lines.append(f"• No checkpoints saved during profiling period")
 
@@ -139,8 +137,6 @@ def print_profiling_results(profilers: Dict[str, Profiler]) -> None:
             lines.append(f"  Max: {summary['max_time']*1000:.3f}ms")
             lines.append(f"  Last: {summary['last_time']*1000:.3f}ms")
             lines.append(f"  EMA: {summary['ema_time']*1000:.3f}ms")
-            lines.append(
-                f"  Throughput: {summary['calls_per_second']:.1f} calls/sec"
-            )
+            lines.append(f"  Throughput: {summary['calls_per_second']:.1f} calls/sec")
 
     logger.info("\n".join(lines))

@@ -55,6 +55,7 @@ class Coordinator:
 
         # Column map for feature indexing
         from schema import get_feature_names, get_target_names
+
         feature_names = get_feature_names()
         target_names = get_target_names()
         self.column_map = ColumnMap(feature_names, target_names)
@@ -138,6 +139,7 @@ class Coordinator:
             model_config = ckpt["config"]
             if isinstance(model_config, dict):
                 from config import Config as ConfigClass
+
                 config = ConfigClass.model_validate(model_config)
             else:
                 config = model_config
@@ -156,6 +158,7 @@ class Coordinator:
 
         # Handle torch.compile prefix mismatch
         from utils import match_state_dict_keys
+
         state_dict = match_state_dict_keys(model.state_dict(), state_dict)
 
         model.load_state_dict(state_dict, strict=False)
@@ -215,7 +218,14 @@ class Coordinator:
         self,
         policy: GPT,
         features: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
         """
         Run forward pass on features with given policy.
 
@@ -283,6 +293,7 @@ class Coordinator:
             # 2. Compute opponent actions
             # Group environments by opponent policy
             from collections import defaultdict
+
             opponent_groups = defaultdict(list)  # Maps opponent_model → [env_ids]
 
             for env_id in range(self.ppo_config.total_envs):
@@ -292,10 +303,18 @@ class Coordinator:
                 opponent_groups[key].append((env_id, opponent_model))
 
             # Initialize opponent action tensors (will be filled per-group)
-            opp_main = torch.zeros(self.ppo_config.total_envs, dtype=torch.long, device=self.device)
-            opp_c = torch.zeros(self.ppo_config.total_envs, dtype=torch.long, device=self.device)
-            opp_shoulder = torch.zeros(self.ppo_config.total_envs, dtype=torch.long, device=self.device)
-            opp_buttons = torch.zeros(self.ppo_config.total_envs, 5, dtype=torch.bool, device=self.device)
+            opp_main = torch.zeros(
+                self.ppo_config.total_envs, dtype=torch.long, device=self.device
+            )
+            opp_c = torch.zeros(
+                self.ppo_config.total_envs, dtype=torch.long, device=self.device
+            )
+            opp_shoulder = torch.zeros(
+                self.ppo_config.total_envs, dtype=torch.long, device=self.device
+            )
+            opp_buttons = torch.zeros(
+                self.ppo_config.total_envs, 5, dtype=torch.bool, device=self.device
+            )
             opp_logps = torch.zeros(self.ppo_config.total_envs, device=self.device)
             opp_values = torch.zeros(self.ppo_config.total_envs, device=self.device)
 
@@ -305,7 +324,9 @@ class Coordinator:
                 opponent_model = env_list[0][1]  # Same for all in group
 
                 # Extract features for this group
-                group_features = self.X_gpu[env_ids]  # [len(env_ids), context_length, 908]
+                group_features = self.X_gpu[
+                    env_ids
+                ]  # [len(env_ids), context_length, 908]
 
                 if opponent_model is None:
                     # Self-play: use ego actions
@@ -419,12 +440,18 @@ class Coordinator:
                 # 7. Update ring position
                 self.t_mod = (self.t_mod + 1) % self.ppo_config.context_length
                 self.step_id += 1
-                self.total_frames += self.ppo_config.total_envs  # Each step processes all envs
+                self.total_frames += (
+                    self.ppo_config.total_envs
+                )  # Each step processes all envs
 
                 # Periodic logging and health check
                 if self.step_id % 100 == 0:
                     ego_values = ego_actions[5]  # values are at index 5
-                    fps = self.total_frames / (time.time() - self.start_time) if hasattr(self, 'start_time') else 0
+                    fps = (
+                        self.total_frames / (time.time() - self.start_time)
+                        if hasattr(self, "start_time")
+                        else 0
+                    )
                     print(
                         f"[CRD] Step {self.step_id}, t_mod={self.t_mod}, "
                         f"frames={self.total_frames:,}, "
@@ -437,7 +464,10 @@ class Coordinator:
                     self._health_check()
 
                 # Check if rollouts completed (every rollout_length frames)
-                if self.step_id % self.ppo_config.rollout_length == 0 and self.step_id > 0:
+                if (
+                    self.step_id % self.ppo_config.rollout_length == 0
+                    and self.step_id > 0
+                ):
                     self._collect_completed_rollouts()
 
                 # Launch PPO training when enough rollouts accumulated
@@ -449,6 +479,7 @@ class Coordinator:
         except Exception as e:
             print(f"[CRD] Error in main loop: {e}")
             import traceback
+
             traceback.print_exc()
         finally:
             self._cleanup()
@@ -479,15 +510,21 @@ class Coordinator:
         checkpoint = {
             "model_state_dict": self.policy.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "config": self.config.model_dump() if hasattr(self.config, "model_dump") else self.config,
-            "ppo_config": self.ppo_config.model_dump() if hasattr(self.ppo_config, "model_dump") else self.ppo_config,
+            "config": self.config.model_dump()
+            if hasattr(self.config, "model_dump")
+            else self.config,
+            "ppo_config": self.ppo_config.model_dump()
+            if hasattr(self.ppo_config, "model_dump")
+            else self.ppo_config,
             "training_steps": self.training_steps,
             "total_frames": self.total_frames,
             "step_id": self.step_id,
         }
 
         torch.save(checkpoint, checkpoint_path)
-        print(f"[CRD] Saved checkpoint: {checkpoint_path.name} (step {self.training_steps})")
+        print(
+            f"[CRD] Saved checkpoint: {checkpoint_path.name} (step {self.training_steps})"
+        )
 
         # Prune old checkpoints
         self._prune_old_checkpoints()
@@ -539,7 +576,9 @@ class Coordinator:
     def _run_ppo_training(self):
         """Execute PPO training on accumulated rollouts."""
         print(f"[CRD] Starting PPO training with {len(self.rollouts_ready)} rollouts")
-        print(f"[CRD] Training step {self.training_steps}, Total frames: {self.total_frames:,}")
+        print(
+            f"[CRD] Training step {self.training_steps}, Total frames: {self.total_frames:,}"
+        )
 
         self.policy.train()
 
@@ -575,9 +614,13 @@ class Coordinator:
 
                     # Convert actions to dict format
                     action_dict = {
-                        "main_idx": torch.from_numpy(actions["main_idx"]).to(self.device),
+                        "main_idx": torch.from_numpy(actions["main_idx"]).to(
+                            self.device
+                        ),
                         "c_idx": torch.from_numpy(actions["c_idx"]).to(self.device),
-                        "shoulder_idx": torch.from_numpy(actions["shoulder_idx"]).to(self.device),
+                        "shoulder_idx": torch.from_numpy(actions["shoulder_idx"]).to(
+                            self.device
+                        ),
                         "buttons": torch.from_numpy(actions["buttons"]).to(self.device),
                     }
 
@@ -697,6 +740,7 @@ def main():
 
     # Load config
     from config import Config
+
     config = Config()
 
     # Create PPO config

@@ -50,7 +50,9 @@ class ArenaShard:
         self.workers: List[Thread] = []
         self._spawn_workers()
 
-        print(f"[S8-{shard_id}] ArenaShard initialized with {len(self.workers)} workers")
+        print(
+            f"[S8-{shard_id}] ArenaShard initialized with {len(self.workers)} workers"
+        )
 
     def _spawn_workers(self):
         """Spawn EnvWorker threads."""

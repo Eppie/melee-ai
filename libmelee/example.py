@@ -49,7 +49,7 @@ SUPPORTED_CHARS = [
     Character.CPTFALCON,
     Character.JIGGLYPUFF,
     Character.MARTH,
-    Character.SHEIK
+    Character.SHEIK,
 ]
 
 
@@ -300,11 +300,12 @@ if __name__ == "__main__":
                 Menu.IN_GAME,
                 Menu.SUDDEN_DEATH,
             ]:
-
                 current_stage = random.choice(LEGAL_TOURNAMENT_STAGES)
                 bot_char = random.choice(SUPPORTED_CHARS)
                 opp_char = random.choice(SUPPORTED_CHARS)
-                print(f"Picking stage: {current_stage}, bot: {bot_char}, opp: {opp_char}")
+                print(
+                    f"Picking stage: {current_stage}, bot: {bot_char}, opp: {opp_char}"
+                )
 
             menu_helper.menu_helper_simple(
                 gamestate,

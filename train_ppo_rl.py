@@ -146,11 +146,15 @@ def main():
     print("PPO Reinforcement Learning Training")
     print("=" * 80)
     print(f"Initial checkpoint: {args.init_checkpoint}")
-    print(f"Scale: {args.num_shards} shards × {args.envs_per_shard} envs = {args.num_shards * args.envs_per_shard} total")
+    print(
+        f"Scale: {args.num_shards} shards × {args.envs_per_shard} envs = {args.num_shards * args.envs_per_shard} total"
+    )
     print(f"Character: {args.character}")
     print(f"Stages: {', '.join(args.stages)}")
     print(f"Learning rate: {args.lr}")
-    print(f"Opponent pool: {args.opponent_pool_size} checkpoints, {args.opponent_sample_prob*100:.0f}% historical")
+    print(
+        f"Opponent pool: {args.opponent_pool_size} checkpoints, {args.opponent_sample_prob*100:.0f}% historical"
+    )
     print(f"Checkpoint dir: {args.checkpoint_dir}")
     print("=" * 80)
 
@@ -194,6 +198,7 @@ def main():
     except Exception as e:
         print(f"[MAIN] ERROR: Failed to create coordinator: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -207,6 +212,7 @@ def main():
     except Exception as e:
         print(f"\n[MAIN] ERROR: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

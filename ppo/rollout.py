@@ -241,7 +241,9 @@ def create_windowed_batches(
             "features": torch.from_numpy(
                 np.stack([w.features for w in batch_windows])
             ),  # [B, T, F]
-            "actions": np.stack([w.actions for w in batch_windows]),  # [B, T] structured
+            "actions": np.stack(
+                [w.actions for w in batch_windows]
+            ),  # [B, T] structured
             "old_logp": torch.tensor(
                 [w.old_logp for w in batch_windows], dtype=torch.float32
             ),  # [B]

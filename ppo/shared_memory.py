@@ -13,14 +13,16 @@ import torch
 
 # ActionData structured numpy dtype
 # main_idx: int32, c_idx: int32, shoulder_idx: int32, buttons: 5×uint8, logp: float32, value: float32
-ActionData_dtype = np.dtype([
-    ("main_idx", np.int32),
-    ("c_idx", np.int32),
-    ("shoulder_idx", np.int32),
-    ("buttons", np.uint8, (5,)),
-    ("logp", np.float32),
-    ("value", np.float32),
-])
+ActionData_dtype = np.dtype(
+    [
+        ("main_idx", np.int32),
+        ("c_idx", np.int32),
+        ("shoulder_idx", np.int32),
+        ("buttons", np.uint8, (5,)),
+        ("logp", np.float32),
+        ("value", np.float32),
+    ]
+)
 
 
 @dataclass
@@ -33,8 +35,12 @@ class FrameData:
     mask: bool  # False if warmup, True if valid for training
 
     def __post_init__(self):
-        assert self.features.shape == (908,), f"Expected (908,), got {self.features.shape}"
-        assert self.features.dtype == np.float32, f"Expected float32, got {self.features.dtype}"
+        assert self.features.shape == (
+            908,
+        ), f"Expected (908,), got {self.features.shape}"
+        assert (
+            self.features.dtype == np.float32
+        ), f"Expected float32, got {self.features.dtype}"
 
 
 @dataclass
@@ -98,7 +104,9 @@ class SharedMemorySlab:
         self.name = f"ppo_shard_{shard_id}"
 
         # Calculate sizes
-        self.feature_ring_size = envs_per_shard * context_length * feature_dim * 4  # float32
+        self.feature_ring_size = (
+            envs_per_shard * context_length * feature_dim * 4
+        )  # float32
         self.ego_action_slots_size = envs_per_shard * ActionData_dtype.itemsize
         self.opp_action_slots_size = envs_per_shard * ActionData_dtype.itemsize
         self.control_size = envs_per_shard  # ready flags (uint8)

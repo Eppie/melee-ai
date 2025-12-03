@@ -84,7 +84,9 @@ class TestActionData:
         assert action.main_idx == 16
         assert action.c_idx == 7
         assert action.shoulder_idx == 3
-        assert np.array_equal(action.buttons, np.array([False, True, False, True, False]))
+        assert np.array_equal(
+            action.buttons, np.array([False, True, False, True, False])
+        )
         assert np.isclose(action.logp, -2.3)
         assert np.isclose(action.value, 0.42)
 
@@ -263,7 +265,9 @@ class TestPinnedStagingBuffer:
         slabs = []
         for i in range(3):
             shard_id = 10 + i  # Start at 10 to avoid conflicts with other tests
-            slab = cleanup_shm(SharedMemorySlab(shard_id=shard_id, envs_per_shard=4, create=True))
+            slab = cleanup_shm(
+                SharedMemorySlab(shard_id=shard_id, envs_per_shard=4, create=True)
+            )
             slabs.append(slab)
 
         # Write distinct features to each slab

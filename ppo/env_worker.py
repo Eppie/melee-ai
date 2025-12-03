@@ -134,7 +134,9 @@ class EnvWorker:
 
         # Connect to console
         if not self.console.connect():
-            raise RuntimeError(f"ENV {self.global_env_id}: Failed to connect to Dolphin")
+            raise RuntimeError(
+                f"ENV {self.global_env_id}: Failed to connect to Dolphin"
+            )
 
         # Select characters and stage
         character = CHARACTER_MAP[self.config.character]

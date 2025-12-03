@@ -19,6 +19,7 @@ from .zarr_config import ZarrConfig
 # Import PPOConfig (optional dependency)
 try:
     from ppo.config import PPOConfig
+
     _PPO_AVAILABLE = True
 except ImportError:
     PPOConfig = None
@@ -42,7 +43,9 @@ class Config(BaseModel):
     rl: RLConfig = Field(default_factory=RLConfig)
     loss_weights: LossConfig = Field(default_factory=LossConfig)
     imitation: ImitationConfig = Field(default_factory=ImitationConfig)
-    ppo: Optional[Union[PPOConfig, Any]] = Field(default=None, description="PPO training configuration (optional)")
+    ppo: Optional[Union[PPOConfig, Any]] = Field(
+        default=None, description="PPO training configuration (optional)"
+    )
 
     def freeze(self) -> None:
         """Make config immutable."""
@@ -334,6 +337,7 @@ def init_config_from_checkpoint(
     if "train" not in config_dict and "batch_size" in config_dict:
         # This is a legacy checkpoint with only TrainConfig.__dict__
         from loguru import logger
+
         logger.warning(
             "Checkpoint contains legacy TrainConfig format, using defaults for other configs"
         )

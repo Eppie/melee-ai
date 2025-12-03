@@ -84,6 +84,8 @@ class GPT(nn.Module):
         self.c_stick_output_size = self.target_shapes_by_head["c_stick"]
         self.main_stick_output_size = self.target_shapes_by_head["main_stick"]
         self.button_output_size = self.target_shapes_by_head["buttons"]
+        self.future_x_output_size = self.target_shapes_by_head["future_x"]
+        self.future_y_output_size = self.target_shapes_by_head["future_y"]
 
         # TODO: Move this to config
         head_hidden_dim = 128
@@ -93,7 +95,7 @@ class GPT(nn.Module):
 
         if self.head_flow == "sequential":
             # Sequential mode: each head receives concatenated outputs from previous heads
-            # Order: buttons → main_stick → c_stick → shoulder
+            # Order: buttons → main_stick → c_stick → shoulder → future_x → future_y
             button_input_size = self.embedding_dim
             main_stick_input_size = self.embedding_dim + self.button_output_size
             c_stick_input_size = (
@@ -107,12 +109,22 @@ class GPT(nn.Module):
                 + self.main_stick_output_size
                 + self.c_stick_output_size
             )
+            future_x_input_size = (
+                self.embedding_dim
+                + self.button_output_size
+                + self.main_stick_output_size
+                + self.c_stick_output_size
+                + self.shoulder_output_size
+            )
+            future_y_input_size = future_x_input_size + self.future_x_output_size
         else:
             # Parallel and mix modes: all heads receive same base features
             button_input_size = self.embedding_dim
             main_stick_input_size = self.embedding_dim
             c_stick_input_size = self.embedding_dim
             shoulder_input_size = self.embedding_dim
+            future_x_input_size = self.embedding_dim
+            future_y_input_size = self.embedding_dim
 
         self.button_head = SimpleHead(
             button_input_size, self.button_output_size, hidden=head_hidden_dim
@@ -126,13 +138,19 @@ class GPT(nn.Module):
         self.shoulder_head = SimpleHead(
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
         )
+        self.future_x_head = SimpleHead(
+            future_x_input_size, self.future_x_output_size, hidden=head_hidden_dim
+        )
+        self.future_y_head = SimpleHead(
+            future_y_input_size, self.future_y_output_size, hidden=head_hidden_dim
+        )
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
 
         # Cross-attention for heads (only used in "mix" mode)
         if self.head_flow == "mix":
             self.head_cross_attention = HeadCrossAttention(
                 hidden_dim=head_hidden_dim,
-                num_head_types=4,  # buttons, main_stick, c_stick, shoulder
+                num_head_types=6,  # buttons, main_stick, c_stick, shoulder, future_x, future_y
                 num_attn_heads=4,
             )
 
@@ -239,6 +257,8 @@ class GPT(nn.Module):
             main_stick = self.main_stick_head(base_hidden_states)
             c_stick = self.c_stick_head(base_hidden_states)
             shoulder = self.shoulder_head(base_hidden_states)
+            future_x = self.future_x_head(base_hidden_states)
+            future_y = self.future_y_head(base_hidden_states)
 
         elif self.head_flow == "mix":
             # Mix mode: cross-attention between head intermediate features
@@ -253,6 +273,12 @@ class GPT(nn.Module):
             shoulder_features = self.shoulder_head.forward_intermediate(
                 base_hidden_states
             )
+            future_x_features = self.future_x_head.forward_intermediate(
+                base_hidden_states
+            )
+            future_y_features = self.future_y_head.forward_intermediate(
+                base_hidden_states
+            )
 
             # Apply cross-attention across heads
             head_features_list = [
@@ -260,6 +286,8 @@ class GPT(nn.Module):
                 main_stick_features,
                 c_stick_features,
                 shoulder_features,
+                future_x_features,
+                future_y_features,
             ]
             attended_features = self.head_cross_attention(head_features_list)
 
@@ -274,10 +302,16 @@ class GPT(nn.Module):
             shoulder = self.shoulder_head.forward_from_intermediate(
                 attended_features[3]
             )
+            future_x = self.future_x_head.forward_from_intermediate(
+                attended_features[4]
+            )
+            future_y = self.future_y_head.forward_from_intermediate(
+                attended_features[5]
+            )
 
         elif self.head_flow == "sequential":
             # Sequential heads: each head receives concatenated outputs from previous heads
-            # Order: buttons → main_stick → c_stick → shoulder
+            # Order: buttons → main_stick → c_stick → shoulder → future_x → future_y
             button_logits = self.button_head(base_hidden_states)
 
             main_stick = self.main_stick_head(
@@ -303,6 +337,33 @@ class GPT(nn.Module):
                 )
             )
 
+            future_x = self.future_x_head(
+                torch.cat(
+                    (
+                        base_hidden_states,
+                        button_logits.detach(),
+                        main_stick.detach(),
+                        c_stick.detach(),
+                        shoulder.detach(),
+                    ),
+                    dim=-1,
+                )
+            )
+
+            future_y = self.future_y_head(
+                torch.cat(
+                    (
+                        base_hidden_states,
+                        button_logits.detach(),
+                        main_stick.detach(),
+                        c_stick.detach(),
+                        shoulder.detach(),
+                        future_x.detach(),
+                    ),
+                    dim=-1,
+                )
+            )
+
         else:
             raise ValueError(f"Unknown head_flow mode: {self.head_flow}")
 
@@ -312,6 +373,8 @@ class GPT(nn.Module):
                 "main_stick": main_stick,
                 "c_stick": c_stick,
                 "shoulder": shoulder,
+                "future_x": future_x,
+                "future_y": future_y,
             },
             batch_size=(batch_size, sequence_length),
         )

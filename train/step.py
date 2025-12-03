@@ -11,6 +11,7 @@ from torch.nn.utils import clip_grad_norm_
 from constants import CONTROLLER_KEY_GROUPS
 from loss import compute_loss_components
 from train.batch_utils import (
+    augment_batch_with_horizons,
     build_model_inputs,
     compute_component_sample_weights,
 )
@@ -46,7 +47,7 @@ def collect_head_diagnostics(
 
     # Logit max_abs statistics (cheap - already in memory)
     # Note: mean/std already logged in gather_logit_and_bias_metrics_batched()
-    head_names = ["main_stick", "c_stick", "buttons", "shoulder", "value"]
+    head_names = ["main_stick", "c_stick", "buttons", "shoulder", "value", "future_x", "future_y"]
     for head in head_names:
         if head in pred:
             logits = pred[head]
@@ -62,6 +63,8 @@ def collect_head_diagnostics(
         "buttons": "_orig_mod.button_head.fc2.bias",
         "shoulder": "_orig_mod.shoulder_head.fc2.bias",
         "value": "_orig_mod.value_head.fc2.bias",
+        "future_x": "_orig_mod.future_x_head.fc2.bias",
+        "future_y": "_orig_mod.future_y_head.fc2.bias",
     }
 
     state_dict = model.state_dict()
@@ -88,12 +91,18 @@ def perform_forward_pass(
     config = components.config
     amp = components.amp
 
+    # Augment batch with multiple future position horizons
+    # This replicates the batch 4x with different horizon features
+    X_aug, future_x_targets, future_y_targets, future_valid = augment_batch_with_horizons(
+        X, Y, components.column_map, num_horizons=4, max_horizon=60
+    )
+
     with autocast(
         device_type=amp.device_type,
         dtype=amp.dtype,
         enabled=amp.enabled,
     ):
-        inputs_td = build_model_inputs(X, components.column_map)
+        inputs_td = build_model_inputs(X_aug, components.column_map)
         if (
             components.column_map.y_main_idx is None
             or components.column_map.y_c_idx is None
@@ -104,15 +113,25 @@ def perform_forward_pass(
                 "Pre-quantized targets required but target indices missing; regenerate dataset with preprocessing."
             )
         head_dims = components.config.model.target_shapes_by_head
+
+        # Also need to replicate the regular targets 4x to match augmented batch size
+        Y_rep = Y.repeat(4, 1, 1)  # [B*4, L, Yd]
+
         target_info = {
-            "main_idx": Y[..., components.column_map.y_main_idx].to(torch.long),
-            "c_idx": Y[..., components.column_map.y_c_idx].to(torch.long),
-            "shoulder_idx": Y[..., components.column_map.y_shoulder_idx].to(torch.long),
-            "buttons": Y[..., components.column_map.y_buttons].to(torch.float32),
+            "main_idx": Y_rep[..., components.column_map.y_main_idx].to(torch.long),
+            "c_idx": Y_rep[..., components.column_map.y_c_idx].to(torch.long),
+            "shoulder_idx": Y_rep[..., components.column_map.y_shoulder_idx].to(torch.long),
+            "buttons": Y_rep[..., components.column_map.y_buttons].to(torch.float32),
             "main_K": int(head_dims["main_stick"]),  # should align with palette size
             "c_K": int(head_dims["c_stick"]),
             "buttons_K": len(components.column_map.y_buttons),
             "shoulder_K": int(head_dims["shoulder"]),
+            # Add future position targets
+            "future_x_idx": future_x_targets.to(torch.long),
+            "future_y_idx": future_y_targets.to(torch.long),
+            "future_valid": future_valid.to(torch.float32),
+            "future_x_K": int(head_dims["future_x"]),
+            "future_y_K": int(head_dims["future_y"]),
         }
         pred = components.model(inputs_td)
         # Clone to prevent CUDA graph overwriting when using torch.compile()

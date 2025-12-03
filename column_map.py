@@ -72,6 +72,19 @@ class ColumnMap:
         self.y_shoulder_idx = _tid("p1_shoulder_idx")
         self.y_buttons = [_tid(name) for name in BUTTON_TARGET_NAMES]
 
+        # Future position target indices (keyframe horizons: 1, 5, 10, 15, 20, 30, 40, 50, 60)
+        # These are optional for backwards compatibility with old datasets
+        keyframe_horizons = [1, 5, 10, 15, 20, 30, 40, 50, 60]
+        try:
+            self.y_future_x_keyframes = [_tid(f"p1_future_x_h{h}") for h in keyframe_horizons]
+            self.y_future_y_keyframes = [_tid(f"p1_future_y_h{h}") for h in keyframe_horizons]
+            self.y_future_valid_mask = [_tid(f"p1_future_valid_h{h}") for h in keyframe_horizons]
+        except KeyError:
+            # Old dataset without future position columns
+            self.y_future_x_keyframes = []
+            self.y_future_y_keyframes = []
+            self.y_future_valid_mask = []
+
     @classmethod
     def from_dataset(
         cls, dataset

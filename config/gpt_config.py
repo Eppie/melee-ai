@@ -140,10 +140,13 @@ class GPTConfig(BaseModel):
             "c_stick": len(C_STICK_QUANTIZED),
             "buttons": len(BUTTON_TARGET_NAMES),
             "shoulder": len(SHOULDER_QUANTIZED),
+            "future_x": 32,  # Future X position prediction (32 spatial buckets)
+            "future_y": 32,  # Future Y position prediction (32 spatial buckets)
         },
         description=(
             "Output dimension for each prediction head. Auto-populated from quantization tables. "
-            "main_stick: 64 positions, c_stick: 9 positions, buttons: 5 binary, shoulder: 5 levels."
+            "main_stick: 64 positions, c_stick: 9 positions, buttons: 5 binary, shoulder: 5 levels, "
+            "future_x: 32 buckets, future_y: 32 buckets."
         ),
     )
 

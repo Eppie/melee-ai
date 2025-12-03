@@ -474,6 +474,13 @@ class EnhancedMetrics:
         default_factory=list
     )
 
+    # Future position prediction metrics
+    future_x_correct: float = 0.0
+    future_y_correct: float = 0.0
+    future_valid_frames: float = 0.0
+    future_x_total_error: float = 0.0  # Bucket distance error
+    future_y_total_error: float = 0.0  # Bucket distance error
+
     total_frames: int = 0
 
 
@@ -1293,6 +1300,39 @@ def _update_enhanced_metrics(
         enhanced, X, colmap, value_idx, reward_features, value_pred
     )
 
+    # 9. Future position metrics (if available)
+    # Note: During validation, we don't use horizon augmentation, so these may not be present
+    if "future_x_idx" in target_info and "future_y_idx" in target_info:
+        future_x_targets = target_info["future_x_idx"].view(B, L)
+        future_y_targets = target_info["future_y_idx"].view(B, L)
+        future_valid = target_info.get("future_valid", torch.ones_like(future_x_targets).float())
+
+        # Get predictions (may be None if model doesn't have these heads)
+        future_x_logits = target_info.get("future_x_pred")
+        future_y_logits = target_info.get("future_y_pred")
+
+        if future_x_logits is not None and future_y_logits is not None:
+            pred_future_x = future_x_logits.argmax(dim=-1)  # [B, L]
+            pred_future_y = future_y_logits.argmax(dim=-1)  # [B, L]
+
+            valid_mask = future_valid > 0.5
+            if valid_mask.any():
+                # Accuracy
+                future_x_correct = ((pred_future_x == future_x_targets) & valid_mask).sum().item()
+                future_y_correct = ((pred_future_y == future_y_targets) & valid_mask).sum().item()
+                valid_count = valid_mask.sum().item()
+
+                enhanced.future_x_correct += future_x_correct
+                enhanced.future_y_correct += future_y_correct
+                enhanced.future_valid_frames += valid_count
+
+                # Bucket distance error (how many buckets off was the prediction?)
+                x_error = (pred_future_x - future_x_targets).abs()[valid_mask].sum().item()
+                y_error = (pred_future_y - future_y_targets).abs()[valid_mask].sum().item()
+
+                enhanced.future_x_total_error += x_error
+                enhanced.future_y_total_error += y_error
+
     # Return last coordinates for next batch
     last_pred_main = main_pred_coords[:, -1]
     last_pred_c = c_pred_coords[:, -1]
@@ -1923,6 +1963,22 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
                     print(
                         f"    {label:<25} MAE: {range_mae:.4f}, MSE: {range_mse:.6f}, Count: {count:,}"
                     )
+
+    # 12. Future Position Prediction Metrics
+    if enhanced.future_valid_frames > 0:
+        print("\n12. Future Position Prediction (1-60 frames ahead):")
+
+        future_x_acc = _safe_div(enhanced.future_x_correct, enhanced.future_valid_frames)
+        future_y_acc = _safe_div(enhanced.future_y_correct, enhanced.future_valid_frames)
+        avg_x_error = _safe_div(enhanced.future_x_total_error, enhanced.future_valid_frames)
+        avg_y_error = _safe_div(enhanced.future_y_total_error, enhanced.future_valid_frames)
+
+        print(f"  Valid Frames (with future data): {int(enhanced.future_valid_frames):,}")
+        print(f"  X Position Accuracy:              {future_x_acc:.4f} ({future_x_acc * 100:.2f}%)")
+        print(f"  Y Position Accuracy:              {future_y_acc:.4f} ({future_y_acc * 100:.2f}%)")
+        print(f"  Avg X Bucket Distance Error:      {avg_x_error:.2f} buckets")
+        print(f"  Avg Y Bucket Distance Error:      {avg_y_error:.2f} buckets")
+        print(f"  Note: Predictions averaged over random horizons 1-60 frames")
 
     print("===== End Enhanced Metrics =====")
 

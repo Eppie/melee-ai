@@ -22,6 +22,72 @@ from controller_utils import (
     SHOULDER_QUANTIZED,
 )
 
+# Future position quantization buckets (32 buckets each)
+# X-axis: covers [-240, 240] with higher density in typical gameplay range [-95, 95]
+FUTURE_X_BUCKETS = torch.tensor(
+    [
+        -240.0, -180.0, -140.0, -110.0, -95.0,  # Blastzone left (5)
+        -85.0, -75.0, -65.0, -55.0, -45.0, -35.0, -25.0, -15.0, -5.0,  # Left stage (9)
+        5.0, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0, 75.0, 85.0,  # Right stage (9)
+        95.0, 110.0, 140.0, 180.0, 240.0  # Blastzone right (5)
+    ],
+    dtype=torch.float32,
+)  # 28 boundaries → 32 buckets (including edges and OOB)
+
+# Y-axis: covers [-150, 260] with higher density in typical gameplay range [-20, 60]
+FUTURE_Y_BUCKETS = torch.tensor(
+    [
+        -150.0, -130.0, -110.0, -90.0, -70.0, -50.0, -30.0, -20.0,  # Below stage (8)
+        -10.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0,  # Stage level (8)
+        70.0, 85.0, 100.0, 115.0, 130.0, 145.0, 160.0, 180.0, 200.0, 220.0, 240.0, 260.0  # Air (8)
+    ],
+    dtype=torch.float32,
+)  # 28 boundaries → 32 buckets (including edges and OOB)
+
+# Cache for device-specific future position buckets
+_FUTURE_X_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+_FUTURE_Y_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+
+
+def quantize_future_position(pos: torch.Tensor, axis: str) -> torch.Tensor:
+    """Quantize continuous future positions to discrete bucket indices.
+
+    Args:
+        pos: Continuous position values, any shape (...,)
+        axis: Either 'x' or 'y' to select the appropriate bucket boundaries
+
+    Returns:
+        Discrete indices in [0, 31], same shape as input
+
+    Example:
+        >>> pos_x = torch.tensor([[50.0, -100.0], [0.0, 200.0]])  # [B=2, L=2]
+        >>> indices = quantize_future_position(pos_x, 'x')
+        >>> # pos_x[0,0]=50.0 falls in bucket for [45.0, 55.0] → index ~19
+        >>> # pos_x[0,1]=-100.0 falls in blastzone left → index ~3
+    """
+    original_shape = pos.shape
+    device = pos.device
+
+    # Get appropriate bucket boundaries
+    if axis == 'x':
+        boundaries = _palette_for_device(FUTURE_X_BUCKETS, _FUTURE_X_CACHE, device)
+    elif axis == 'y':
+        boundaries = _palette_for_device(FUTURE_Y_BUCKETS, _FUTURE_Y_CACHE, device)
+    else:
+        raise ValueError(f"axis must be 'x' or 'y', got {axis}")
+
+    # Flatten for searchsorted, then reshape
+    pos_flat = pos.reshape(-1).to(dtype=boundaries.dtype).contiguous()
+
+    # Find bucket indices using searchsorted
+    # right=True means values equal to boundary go in higher bucket
+    idx = torch.searchsorted(boundaries, pos_flat, right=True) - 1
+
+    # Clamp to valid range [0, 31]
+    idx = torch.clamp(idx, min=0, max=31)
+
+    return idx.view(original_shape)
+
 
 # TODO: Do we need clamp here?
 def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:

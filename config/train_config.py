@@ -78,7 +78,7 @@ class TrainConfig(BaseModel):
         description="Number of dataloader worker processes. More workers = faster data loading but more memory.",
     )
     in_memory_shared: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Preload all episodes into shared CPU memory so workers reuse a single copy. "
             "Improves dataloader throughput at the cost of RAM roughly equal to the dataset. "

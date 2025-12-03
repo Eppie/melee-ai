@@ -240,7 +240,7 @@ def get_raw_target_names() -> list[str]:
 
 def get_target_names() -> list[str]:
     """Quantized controller targets (P1 only) stored in the preprocessed dataset."""
-    return [
+    base_targets = [
         "p1_main_stick_idx",
         "p1_c_stick_idx",
         "p1_shoulder_idx",
@@ -250,6 +250,15 @@ def get_target_names() -> list[str]:
         "p1_button_z",
         "p1_button_lr",
     ]
+
+    # Future position targets: keyframe horizons at [1, 5, 10, 15, 20, 30, 40, 50, 60] frames
+    # Store quantized X and Y positions plus validity masks (27 columns total)
+    keyframe_horizons = [1, 5, 10, 15, 20, 30, 40, 50, 60]
+    future_x = [f"p1_future_x_h{h}" for h in keyframe_horizons]
+    future_y = [f"p1_future_y_h{h}" for h in keyframe_horizons]
+    future_valid = [f"p1_future_valid_h{h}" for h in keyframe_horizons]
+
+    return base_targets + future_x + future_y + future_valid
 
 
 # Build the dataclass dynamically (flattened attributes), with slots for memory/perf

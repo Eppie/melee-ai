@@ -24,7 +24,7 @@ from column_map import ColumnMap
 from config import get_config, init_config
 from constants import BUTTON_TARGET_NAMES
 from data_types import RawNumpyArray
-from controller_quantization import quantize_targets
+from controller_quantization import quantize_targets, quantize_future_position
 from libmelee.melee.console import Console
 from schema import (
     COMMON_SPEC,
@@ -217,7 +217,7 @@ def process_one_episode(raw_path: str) -> List[Row]:
                 continue
     except Exception as e:
         if rows:
-            logger.warning(f"Error processing {raw_path} after {len(rows)} frames: {e}")
+            print(f"Error processing {raw_path} after {len(rows)} frames: {e}")
         else:
             raise ValueError(f"Failed to process {raw_path}: {e}")
 
@@ -358,6 +358,55 @@ class ShardResult:
     target_names: List[str]
 
 
+def _extract_future_positions(
+    rows: Sequence[object], keyframe_horizons: List[int] = [1, 5, 10, 15, 20, 30, 40, 50, 60]
+) -> Tuple[RawNumpyArray, RawNumpyArray, RawNumpyArray]:
+    """Extract future position values at keyframe horizons for each frame.
+
+    Args:
+        rows: Sequence of Row objects from the episode
+        keyframe_horizons: List of future frame offsets to extract
+
+    Returns:
+        Tuple of:
+            - future_x: [num_frames-1, num_keyframes] X positions at future horizons
+            - future_y: [num_frames-1, num_keyframes] Y positions at future horizons
+            - valid_mask: [num_frames-1, num_keyframes] 1.0 if future frame exists, 0.0 otherwise
+
+    Example:
+        For rows representing frames [0..99] (100 frames total):
+        - Frame 0's features come from row 0, targets come from row 1 (due to one-step lookahead)
+        - Frame 0's future_x[:,0] (horizon=1) = row[1].p1_position_x (same as regular target)
+        - Frame 0's future_x[:,1] (horizon=5) = row[5].p1_position_x (5 frames ahead)
+        - Frame 95's future_x at horizon=5 is valid (row 100 doesn't exist but row 99 does)
+        - Frame 96's future_x at horizon=5 is INVALID (would need row 101)
+    """
+    num_raw_frames = len(rows)
+    # We use frames [:-1] for features, so we have num_frames = num_raw_frames - 1
+    num_frames = num_raw_frames - 1
+    num_keyframes = len(keyframe_horizons)
+
+    future_x = np.zeros((num_frames, num_keyframes), dtype=np.float32)
+    future_y = np.zeros((num_frames, num_keyframes), dtype=np.float32)
+    valid_mask = np.zeros((num_frames, num_keyframes), dtype=np.float32)
+
+    # For each training frame t (using row t for features, row t+1 for targets)
+    for t in range(num_frames):
+        for i, horizon in enumerate(keyframe_horizons):
+            # Future position at horizon h is at frame (t+1) + (h-1) = t + h
+            # (t+1 is the target frame, h-1 because horizon=1 means "next frame" which is t+1)
+            # Simpler: horizon=1 means 1 frame into the future from the target frame t+1
+            # So we want row[t + horizon]
+            future_idx = t + horizon
+            if future_idx < num_raw_frames:
+                future_x[t, i] = rows[future_idx].p1_position_x
+                future_y[t, i] = rows[future_idx].p1_position_y
+                valid_mask[t, i] = 1.0
+            # else: leave as 0.0, mask=0.0 (invalid)
+
+    return future_x, future_y, valid_mask
+
+
 def _rows_to_dense(
     rows: Sequence[object], schema: Schema
 ) -> Tuple[RawNumpyArray, RawNumpyArray, List[str], List[str], List[str], List[str]]:
@@ -435,17 +484,38 @@ def _rows_to_episode(
     )
     buttons = target_info["buttons"].squeeze(0).cpu().numpy().astype(np.float32)
 
+    # Extract future positions at keyframe horizons
+    keyframe_horizons = [1, 5, 10, 15, 20, 30, 40, 50, 60]
+    future_x_raw, future_y_raw, future_valid = _extract_future_positions(rows, keyframe_horizons)
+
+    # Quantize future positions to bucket indices [0, 31]
+    future_x_torch = torch.from_numpy(future_x_raw)  # [T, num_keyframes]
+    future_y_torch = torch.from_numpy(future_y_raw)  # [T, num_keyframes]
+
+    future_x_quantized = quantize_future_position(future_x_torch, axis='x')  # [T, num_keyframes]
+    future_y_quantized = quantize_future_position(future_y_torch, axis='y')  # [T, num_keyframes]
+
+    # Convert back to numpy
+    future_x_idx = future_x_quantized.cpu().numpy().astype(np.float32)
+    future_y_idx = future_y_quantized.cpu().numpy().astype(np.float32)
+
+    # Build final target array with future positions
     Y = np.concatenate(
         [
             main_idx.reshape(-1, 1),
             c_idx.reshape(-1, 1),
             shoulder_idx.reshape(-1, 1),
             buttons,
+            future_x_idx,  # [T, 9]
+            future_y_idx,  # [T, 9]
+            future_valid,  # [T, 9]
         ],
         axis=1,
     ).astype(np.float32, copy=False)
     targ_dtypes = ["float32"] * Y.shape[1]
-    target_names = [
+
+    # Build target names including future positions
+    base_target_names = [
         "p1_main_stick_idx",
         "p1_c_stick_idx",
         "p1_shoulder_idx",
@@ -455,6 +525,11 @@ def _rows_to_episode(
         "p1_button_z",
         "p1_button_lr",
     ]
+    future_x_names = [f"p1_future_x_h{h}" for h in keyframe_horizons]
+    future_y_names = [f"p1_future_y_h{h}" for h in keyframe_horizons]
+    future_valid_names = [f"p1_future_valid_h{h}" for h in keyframe_horizons]
+
+    target_names = base_target_names + future_x_names + future_y_names + future_valid_names
 
     derived_features = [name for name in schema.features if name in DERIVED_FEATURES]
     if derived_features:

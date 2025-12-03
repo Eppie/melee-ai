@@ -165,3 +165,37 @@ class LossConfig(BaseModel):
             "Reasonable range: [0.5, 2.0]."
         ),
     )
+
+    # Future position prediction weights
+    future_x_weight: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Weight for future X position prediction loss. Controls importance of predicting "
+            "horizontal position 1-60 frames in the future. Effect: Higher values (2.0-5.0) "
+            "emphasize spatial prediction; lower values (0.5-1.0) de-emphasize. "
+            "Reasonable range: [0.5, 5.0]. Interacts with: future_y_weight."
+        ),
+    )
+    future_y_weight: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Weight for future Y position prediction loss. Controls importance of predicting "
+            "vertical position 1-60 frames in the future. Effect: Higher values (2.0-5.0) "
+            "emphasize spatial prediction; lower values (0.5-1.0) de-emphasize. "
+            "Reasonable range: [0.5, 5.0]. Interacts with: future_x_weight."
+        ),
+    )
+    future_horizon_decay: float = Field(
+        default=1.0,
+        gt=0,
+        le=1,
+        description=(
+            "Exponential decay for future position loss by horizon distance. "
+            "1.0 = no decay (all horizons weighted equally), <1.0 = prioritize near future. "
+            "Effect: 0.95 means 60-frame horizon has weight 0.95^60 ≈ 0.05 (95%% decay); "
+            "0.99 means 60-frame horizon has weight 0.99^60 ≈ 0.55 (45%% decay). "
+            "Reasonable range: [0.90, 1.0]. Set to 1.0 to treat all horizons equally."
+        ),
+    )

@@ -117,9 +117,18 @@ def extract_loss_breakdown(
 ) -> Dict[str, float]:
     keys = ["main", "c", "buttons", "shoulder", "value"]
     # Batch the loss component transfers
-    loss_tensor = torch.stack([loss_components[k] for k in keys])
+    available_keys = [k for k in keys if k in loss_components]
+    loss_tensor = torch.stack([loss_components[k] for k in available_keys])
     loss_values = loss_tensor.cpu().tolist()
-    return {key: loss_values[i] for i, key in enumerate(keys)}
+    result = {key: loss_values[i] for i, key in enumerate(available_keys)}
+
+    # Add future position losses if present
+    if "future_x" in loss_components:
+        result["future_x"] = loss_components["future_x"].cpu().item()
+    if "future_y" in loss_components:
+        result["future_y"] = loss_components["future_y"].cpu().item()
+
+    return result
 
 
 def _compute_masked_accuracy(

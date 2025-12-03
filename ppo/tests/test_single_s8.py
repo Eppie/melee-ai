@@ -26,6 +26,7 @@ from config import Config
 from ppo.config import PPOConfig
 from ppo.env_worker import EnvWorker
 from ppo.shared_memory import ActionData, SharedMemorySlab
+from schema import get_feature_names, get_target_names
 
 
 def test_single_env():
@@ -53,7 +54,7 @@ def test_single_env():
     )
 
     # Create column map
-    column_map = ColumnMap(config)
+    column_map = ColumnMap(get_feature_names(), get_target_names())
 
     # Create shared memory slab
     print("\n[TEST] Creating shared memory slab...")
@@ -61,6 +62,7 @@ def test_single_env():
         shard_id=0,
         envs_per_shard=1,
         context_length=ppo_config.context_length,
+        feature_dim=ppo_config.feature_dim,
         create=True,
     )
 

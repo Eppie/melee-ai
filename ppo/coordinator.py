@@ -59,6 +59,11 @@ class Coordinator:
         feature_names = get_feature_names()
         target_names = get_target_names()
         self.column_map = ColumnMap(feature_names, target_names)
+        self.feature_dim = len(feature_names)
+        if self.ppo_config.feature_dim != self.feature_dim:
+            # Keep config/state aligned with schema-derived dimension.
+            self.ppo_config.feature_dim = self.feature_dim
+        print(f"[CRD] Feature dim: {self.feature_dim}")
 
         # Spawn S8 processes FIRST (before CUDA allocation)
         self.shards: List[mp.Process] = []
@@ -75,7 +80,7 @@ class Coordinator:
         # GPU ring buffer
         print(f"[CRD] Allocating GPU ring buffer")
         self.X_gpu = torch.zeros(
-            (ppo_config.total_envs, ppo_config.context_length, 908),
+            (ppo_config.total_envs, ppo_config.context_length, self.feature_dim),
             dtype=torch.bfloat16,
             device=self.device,
         )
@@ -83,7 +88,7 @@ class Coordinator:
         # Pinned staging buffer for H2D transfer
         self.staging = PinnedStagingBuffer(
             num_envs=ppo_config.total_envs,
-            feature_dim=908,
+            feature_dim=self.feature_dim,
         )
 
         # Barrier for synchronization
@@ -190,19 +195,33 @@ class Coordinator:
             self.shards.append(p)
             self.pipes.append(coordinator_pipe)
 
-        # Wait briefly for shards to create shared memory
+        # Wait for shards to create shared memory (retry to avoid races)
         import time
 
-        time.sleep(1.0)
-
-        # Now attach to shared memory slabs created by shards
         for shard_id in range(self.ppo_config.num_shards):
-            slab = SharedMemorySlab(
-                shard_id=shard_id,
-                envs_per_shard=self.ppo_config.envs_per_shard,
-                context_length=self.ppo_config.context_length,
-                create=False,  # Attach to existing
-            )
+            slab = None
+            for attempt in range(50):  # 5s total at 0.1s per attempt
+                try:
+                    slab = SharedMemorySlab(
+                        shard_id=shard_id,
+                        envs_per_shard=self.ppo_config.envs_per_shard,
+                        context_length=self.ppo_config.context_length,
+                        feature_dim=self.feature_dim,
+                        create=False,  # Attach to existing
+                    )
+                    break
+                except FileNotFoundError:
+                    if attempt == 0:
+                        print(
+                            f"[CRD] Waiting for shard {shard_id} shared memory to appear..."
+                        )
+                    time.sleep(0.1)
+
+            if slab is None:
+                raise FileNotFoundError(
+                    f"Shared memory slab for shard {shard_id} not available after retrying"
+                )
+
             self.shard_slabs.append(slab)
 
         print(f"[CRD] All {len(self.shards)} shards spawned successfully")
@@ -332,7 +351,7 @@ class Coordinator:
                 # Extract features for this group
                 group_features = self.X_gpu[
                     env_ids
-                ]  # [len(env_ids), context_length, 908]
+                ]  # [len(env_ids), context_length, feature_dim]
 
                 if opponent_model is None:
                     # Self-play: use ego actions

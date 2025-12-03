@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+from schema import get_feature_names
 from ppo.shared_memory import compute_rope_indices
 
 
@@ -22,7 +23,7 @@ class TestRoPEIndices:
         # RoPE order: [0, 1, 2, ..., 254, 255]
         indices = compute_rope_indices(t_mod=0, seq_len=256)
 
-        expected = torch.arange(256)
+        expected = torch.cat([torch.arange(1, 256), torch.tensor([0])])
         assert torch.equal(indices, expected)
 
     def test_wraparound_mid(self):
@@ -88,6 +89,9 @@ class TestRoPEIndices:
         assert torch.equal(indices, expected)
 
 
+FEATURE_DIM = len(get_feature_names())
+
+
 class TestRingBufferLogic:
     """Test ring buffer update logic."""
 
@@ -114,7 +118,7 @@ class TestRingBufferLogic:
     def test_feature_ring_access(self):
         """Test feature ring access pattern."""
         # Simulate ring buffer writes
-        ring = np.zeros((96, 256, 908), dtype=np.float32)
+        ring = np.zeros((96, 256, FEATURE_DIM), dtype=np.float32)
         t_mod = 0
 
         # Write 512 frames (2 full cycles)
@@ -159,35 +163,38 @@ class TestBatchedRingBufferAccess:
     def test_column_copy(self):
         """Test copying single column from ring buffer."""
         # GPU ring buffer
-        ring_gpu = torch.zeros((96, 256, 908), dtype=torch.bfloat16)
+        ring_gpu = torch.zeros((96, 256, FEATURE_DIM), dtype=torch.bfloat16)
 
         # Staging buffer
-        staging = torch.randn((96, 1, 908), dtype=torch.float32)
+        staging = torch.randn((96, 1, FEATURE_DIM), dtype=torch.float32)
 
         # Copy to ring at position t_mod
         t_mod = 42
         ring_gpu[:, t_mod, :] = staging[:, 0, :].to(dtype=torch.bfloat16)
 
         # Verify copy
-        assert ring_gpu[:, t_mod, :].shape == (96, 908)
+        assert ring_gpu[:, t_mod, :].shape == (96, FEATURE_DIM)
 
     def test_incremental_h2d_pattern(self):
         """Simulate incremental H2D copy pattern."""
-        ring_gpu = torch.zeros((96, 256, 908), dtype=torch.bfloat16)
+        ring_gpu = torch.zeros((96, 256, FEATURE_DIM), dtype=torch.bfloat16)
         t_mod = 0
 
         # Simulate 1000 frames
         for step in range(1000):
             # Create new frame data
-            frame_data = torch.full((96, 1, 908), float(step), dtype=torch.float32)
+            frame_data = torch.full(
+                (96, 1, FEATURE_DIM), float(step), dtype=torch.float32
+            )
 
             # Copy only new column
             ring_gpu[:, t_mod, :] = frame_data[:, 0, :].to(dtype=torch.bfloat16)
 
             # Verify write
+            expected_value = torch.tensor(float(step), dtype=torch.bfloat16).item()
             assert torch.allclose(
                 ring_gpu[:, t_mod, :].float(),
-                torch.full((96, 908), float(step)),
+                torch.full((96, FEATURE_DIM), expected_value),
                 atol=1e-2,  # bfloat16 precision
             )
 
@@ -197,7 +204,7 @@ class TestBatchedRingBufferAccess:
     def test_full_context_read(self):
         """Test reading full context from ring buffer."""
         seq_len = 256
-        ring_gpu = torch.zeros((96, seq_len, 908), dtype=torch.bfloat16)
+        ring_gpu = torch.zeros((96, seq_len, FEATURE_DIM), dtype=torch.bfloat16)
 
         # Fill ring with incremental values
         for t in range(seq_len):

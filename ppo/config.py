@@ -5,6 +5,7 @@ from typing import List
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
+from schema import get_feature_names
 
 
 class PPOConfig(BaseModel):
@@ -68,6 +69,14 @@ class PPOConfig(BaseModel):
         default=256,
         ge=1,
         description="Model context window (ring buffer size)",
+    )
+    feature_dim: int = Field(
+        default_factory=lambda: len(get_feature_names()),
+        ge=1,
+        description=(
+            "Per-frame feature dimension for shared memory/ring buffers. "
+            "Coordinator will overwrite this with the schema-derived size."
+        ),
     )
     warmup_frames: int = Field(
         default=256,

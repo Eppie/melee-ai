@@ -43,6 +43,7 @@ class ArenaShard:
             shard_id=shard_id,
             envs_per_shard=config.envs_per_shard,
             context_length=config.context_length,
+            feature_dim=config.feature_dim,
             create=True,
         )
 

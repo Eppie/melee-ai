@@ -85,7 +85,7 @@ class EnvWorker:
         # Rollout buffer (1024 frames)
         self.rollout = RolloutBuffer(
             rollout_length=config.rollout_length,
-            feature_dim=908,
+            feature_dim=config.feature_dim,
         )
 
         # Restart tracking
@@ -173,7 +173,7 @@ class EnvWorker:
 
     def _featurize(self, gamestate: GameState) -> np.ndarray:
         """
-        Extract 908-float feature vector from gamestate.
+        Extract feature_dim-float feature vector from gamestate.
 
         Reuses existing model_interface infrastructure.
         """

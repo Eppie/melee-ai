@@ -132,8 +132,8 @@ Bottleneck is typically Dolphin emulation, not inference.
 
 ### Memory Usage
 
-- **Shared Memory**: ~7.4 MiB per shard × 12 = ~90 MiB
-- **GPU Ring Buffer**: 96 × 256 × 908 × 2 bytes (bf16) = ~44 MiB
+- **Shared Memory**: scales with feature_dim (schema-driven, currently 64); ~0.5 MiB per shard with defaults
+- **GPU Ring Buffer**: 96 × 256 × feature_dim × 2 bytes (bf16) ≈ 3 MiB with feature_dim=64
 - **Model**: ~50-200 MiB depending on size
 - **Total**: ~200-400 MiB (very efficient!)
 

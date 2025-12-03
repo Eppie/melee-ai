@@ -9,6 +9,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+from schema import get_feature_names
 
 
 # ActionData structured numpy dtype
@@ -29,18 +30,22 @@ ActionData_dtype = np.dtype(
 class FrameData:
     """Single frame worth of data for one environment."""
 
-    features: np.ndarray  # [908] float32
+    features: np.ndarray  # [feature_dim] float32
     reward: float
     done: bool
     mask: bool  # False if warmup, True if valid for training
+    feature_dim: Optional[int] = None
 
     def __post_init__(self):
-        assert self.features.shape == (
-            908,
-        ), f"Expected (908,), got {self.features.shape}"
+        expected_dim = self.feature_dim or self.features.shape[0]
+        assert (
+            self.features.shape == (expected_dim,)
+        ), f"Expected ({expected_dim},), got {self.features.shape}"
+        assert self.features.ndim == 1, f"Expected 1D features, got {self.features.ndim}D"
         assert (
             self.features.dtype == np.float32
         ), f"Expected float32, got {self.features.dtype}"
+        self.feature_dim = expected_dim
 
 
 @dataclass
@@ -83,7 +88,7 @@ class SharedMemorySlab:
     Single contiguous shared memory slab for zero-copy S8→CRD communication.
 
     Memory layout:
-    - Feature ring: [envs_per_shard, 256, 908] float32
+    - Feature ring: [envs_per_shard, context_length, feature_dim] float32
     - Action slots: [envs_per_shard] ActionData structs
     - Ready flags: [envs_per_shard] uint8
     - Metadata: step_id (uint64), t_mod (uint16)
@@ -94,13 +99,13 @@ class SharedMemorySlab:
         shard_id: int,
         envs_per_shard: int = 8,
         context_length: int = 256,
-        feature_dim: int = 908,
+        feature_dim: Optional[int] = None,
         create: bool = True,
     ):
         self.shard_id = shard_id
         self.envs_per_shard = envs_per_shard
         self.context_length = context_length
-        self.feature_dim = feature_dim
+        self.feature_dim = feature_dim or len(get_feature_names())
         self.name = f"ppo_shard_{shard_id}"
 
         # Calculate sizes
@@ -247,10 +252,10 @@ class PinnedStagingBuffer:
     def __init__(
         self,
         num_envs: int = 96,
-        feature_dim: int = 908,
+        feature_dim: Optional[int] = None,
     ):
         self.num_envs = num_envs
-        self.feature_dim = feature_dim
+        self.feature_dim = feature_dim or len(get_feature_names())
 
         # Allocate pinned memory for one column of the ring
         # Shape: [num_envs, 1, feature_dim]

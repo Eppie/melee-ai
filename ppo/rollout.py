@@ -10,6 +10,8 @@ import numpy as np
 import torch
 from numpy.lib.stride_tricks import as_strided
 
+from schema import get_feature_names
+
 
 @dataclass
 class RolloutBuffer:
@@ -21,12 +23,17 @@ class RolloutBuffer:
     """
 
     rollout_length: int
-    feature_dim: int = 908
+    feature_dim: Optional[int] = None
 
     def __post_init__(self):
         """Allocate arrays."""
+        feature_dim = self.feature_dim or len(get_feature_names())
+        if feature_dim <= 0:
+            raise ValueError(f"feature_dim must be positive, got {feature_dim}")
+        self.feature_dim = feature_dim
+
         # Features: [rollout_length, feature_dim] float32
-        self.X = np.zeros((self.rollout_length, self.feature_dim), dtype=np.float32)
+        self.X = np.zeros((self.rollout_length, feature_dim), dtype=np.float32)
 
         # Actions: [rollout_length] structured array
         from .shared_memory import ActionData_dtype

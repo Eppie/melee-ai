@@ -120,12 +120,13 @@ class Barrier:
         self.num_shards = len(pipes)
         self.timeout = timeout
 
-    def wait_all_ready(self, step_id: int) -> dict[int, Message]:
+    def wait_all_ready(self, step_id: int, timeout: float = None) -> dict[int, Message]:
         """
         Wait for all shards to signal READY.
 
         Args:
             step_id: Current step ID (for verification)
+            timeout: Optional timeout override (uses self.timeout if None)
 
         Returns:
             Dict mapping shard_id → Message
@@ -136,10 +137,11 @@ class Barrier:
         """
         ready_messages = {}
         start_time = time.time()
+        timeout_val = timeout if timeout is not None else self.timeout
 
         for pipe in self.pipes:
             elapsed = time.time() - start_time
-            remaining = max(0.0, self.timeout - elapsed)
+            remaining = max(0.0, timeout_val - elapsed)
 
             try:
                 msg = pipe.recv(timeout=remaining)

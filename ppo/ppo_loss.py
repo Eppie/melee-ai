@@ -107,6 +107,7 @@ def compute_ppo_loss(
     old_logps: torch.Tensor,
     advantages: torch.Tensor,
     returns: torch.Tensor,
+    column_map,
     clip_epsilon: float = 0.2,
     value_coef: float = 0.5,
     entropy_coef: float = 0.01,
@@ -117,10 +118,15 @@ def compute_ppo_loss(
     Args:
         policy: Current policy network
         batch_features: [B, T, F] feature tensor
-        batch_actions: Dict with action tensors
+        batch_actions: Dict with action tensors:
+            - main_idx: [B] int (0-63)
+            - c_idx: [B] int (0-8)
+            - shoulder_idx: [B] int (0-4)
+            - buttons: [B, 5] bool
         old_logps: [B] old policy log probs
         advantages: [B] GAE advantages (normalized)
         returns: [B] discounted returns
+        column_map: ColumnMap for feature indexing
         clip_epsilon: PPO clipping parameter (default 0.2)
         value_coef: Value loss coefficient (default 0.5)
         entropy_coef: Entropy bonus coefficient (default 0.01)
@@ -136,46 +142,17 @@ def compute_ppo_loss(
             - approx_kl: Approximate KL divergence
     """
     from train.batch_utils import build_model_inputs
-    from column_map import ColumnMap
 
-    # Forward pass
-    # TODO: Pass proper column_map (for now, assume it's available globally)
-    # In production, this should be passed as argument
-    batch_td = {
-        "features": batch_features,
-    }
-
-    # Simple forward (assuming batch_features are already in the right format)
-    # In production, use build_model_inputs properly
-    # For now, treat batch_features as raw input
-    # outputs = policy(batch_td)
-
-    # HACK: For now, create a simple TensorDict
-    # In production, this needs proper integration with existing batch_utils
-    from tensordict import TensorDict
-
-    # Split features into components (this is a simplified version)
-    # Real implementation should use build_model_inputs
-    # For now, pass features as-is and let model handle it
-
-    # Create minimal input (model expects specific format)
-    # This is a placeholder - real implementation needs proper featurization
     B, T, F = batch_features.shape
 
-    # Forward through model
-    # Note: This is simplified; real code needs proper input construction
-    # outputs = policy(batch_features)  # This won't work without proper input format
+    # Convert raw features to model inputs using existing infrastructure
+    model_inputs = build_model_inputs(batch_features, column_map)
 
-    # SIMPLIFIED: For MVP, we'll compute loss on a subset
-    # Real implementation requires proper batch construction
-    # For now, return dummy loss to complete the structure
+    # Forward pass through policy network
+    outputs = policy(model_inputs)
 
     # Recompute action log probs under current policy
-    # new_logps = compute_action_logprob(outputs, batch_actions)
-
-    # PLACEHOLDER IMPLEMENTATION
-    # TODO: Integrate with existing train/batch_utils.py properly
-    new_logps = old_logps.clone()  # Placeholder
+    new_logps = compute_action_logprob(outputs, batch_actions)
 
     # Compute importance sampling ratio
     ratio = torch.exp(new_logps - old_logps)
@@ -188,15 +165,12 @@ def compute_ppo_loss(
     ).mean()
 
     # Value loss (MSE to returns)
-    # values = outputs["value"][:, -1, 0]  # [B]
-    # PLACEHOLDER: Use returns as "predicted" values for now
-    values = returns.clone()  # Placeholder
+    # Extract value predictions from final frame
+    values = outputs["value"][:, -1, 0]  # [B]
     value_loss = F.mse_loss(values, returns)
 
-    # Entropy bonus
-    # entropy = compute_action_entropy(outputs)
-    # PLACEHOLDER
-    entropy = torch.zeros_like(old_logps)
+    # Entropy bonus (encourages exploration)
+    entropy = compute_action_entropy(outputs)
     entropy_loss = -entropy.mean()
 
     # Total loss

@@ -153,7 +153,7 @@ class Coordinator:
             config = self.config
 
         # Create model
-        model = GPT(config.model)
+        model = GPT(config)
 
         # Load weights
         if "model" in ckpt:
@@ -164,7 +164,7 @@ class Coordinator:
         # Handle torch.compile prefix mismatch
         from utils import match_state_dict_keys
 
-        state_dict = match_state_dict_keys(model.state_dict(), state_dict)
+        state_dict = match_state_dict_keys(state_dict, model)
 
         model.load_state_dict(state_dict, strict=False)
 
@@ -439,13 +439,27 @@ class Coordinator:
 
     def run(self):
         """Main CRD loop."""
-        print(f"[CRD] Starting main inference loop")
+        print(f"[CRD] Waiting for all ENVs to finish menu navigation and enter matches...")
+        print(f"[CRD] This may take 30-60 seconds...")
+
+        # Wait for first READY signal with extended timeout (menu navigation)
+        try:
+            self.barrier.wait_all_ready(self.step_id, timeout=120.0)  # 2 minute timeout
+            print(f"[CRD] All ENVs ready! Starting main inference loop")
+        except TimeoutError:
+            print(f"[CRD] ERROR: ENVs failed to enter matches within 2 minutes")
+            print(f"[CRD] Check ENV logs for menu navigation issues")
+            raise
+
         self.start_time = time.time()
 
         try:
             while True:
-                # 1. Wait for all S8s to signal READY
-                self.barrier.wait_all_ready(self.step_id)
+                # NOTE: Shards already sent READY before entering this loop
+                # So we skip the wait on step 0
+                if self.step_id > 0:
+                    # 1. Wait for all S8s to signal READY
+                    self.barrier.wait_all_ready(self.step_id)
 
                 # 2. Gather features from all S8 slabs → staging buffer
                 self._gather_features_to_staging()
@@ -471,29 +485,65 @@ class Coordinator:
 
                 # Periodic logging and health check
                 if self.step_id % 100 == 0:
+                    ego_main_idx = ego_actions[0]  # main stick indices
+                    ego_c_idx = ego_actions[1]  # c stick indices
+                    ego_buttons = ego_actions[3]  # button presses
                     ego_values = ego_actions[5]  # values are at index 5
                     fps = (
                         self.total_frames / (time.time() - self.start_time)
                         if hasattr(self, "start_time")
                         else 0
                     )
+
+                    # Sample env 0 to check game state (use staging buffer for raw features)
+                    env0_raw = self.staging.staging[0, 0, :].cpu().numpy()
+
+                    # Use column_map to extract meaningful features
+                    # Note: column_map has x_* for input features
+                    try:
+                        # Find indices for key features
+                        from schema import get_feature_names
+                        feature_names = get_feature_names()
+
+                        # Create a feature dict for easier access
+                        feat_dict = {name: env0_raw[i] for i, name in enumerate(feature_names)}
+
+                        # Extract key game state info
+                        ego_pos_x = feat_dict.get('p1_position_x', 0.0)
+                        ego_pos_y = feat_dict.get('p1_position_y', 0.0)
+                        ego_pct = feat_dict.get('p1_percent', 0.0)
+                        ego_stock = feat_dict.get('p1_stock', 0.0)
+                        opp_pos_x = feat_dict.get('p2_position_x', 0.0)
+                        opp_pos_y = feat_dict.get('p2_position_y', 0.0)
+                        opp_pct = feat_dict.get('p2_percent', 0.0)
+                        opp_stock = feat_dict.get('p2_stock', 0.0)
+
+                        gamestate_str = (
+                            f"Ego: pos=({ego_pos_x:.1f},{ego_pos_y:.1f}) "
+                            f"pct={ego_pct:.0f}% stock={ego_stock:.0f} | "
+                            f"Opp: pos=({opp_pos_x:.1f},{opp_pos_y:.1f}) "
+                            f"pct={opp_pct:.0f}% stock={opp_stock:.0f}"
+                        )
+                    except Exception as e:
+                        gamestate_str = f"Error extracting features: {e}"
+
                     print(
                         f"[CRD] Step {self.step_id}, t_mod={self.t_mod}, "
                         f"frames={self.total_frames:,}, "
                         f"fps={fps:.1f}, "
-                        f"ego_values mean={ego_values.mean():.3f}"
+                        f"ego_values mean={ego_values.mean():.3f}, "
+                        f"main_stick unique={len(set(ego_main_idx))}, "
+                        f"c_stick unique={len(set(ego_c_idx))}, "
+                        f"buttons any={ego_buttons.any()}"
                     )
+                    print(f"[CRD]   ENV0: {gamestate_str}")
 
                 # Health check every 1000 steps
                 if self.step_id % 1000 == 0:
                     self._health_check()
 
-                # Check if rollouts completed (every rollout_length frames)
-                if (
-                    self.step_id % self.ppo_config.rollout_length == 0
-                    and self.step_id > 0
-                ):
-                    self._collect_completed_rollouts()
+                # Check for completed rollouts from shards (non-blocking)
+                self._collect_completed_rollouts()
 
                 # Launch PPO training when enough rollouts accumulated
                 if len(self.rollouts_ready) >= self.ppo_config.rollouts_per_batch:
@@ -510,16 +560,47 @@ class Coordinator:
             self._cleanup()
 
     def _health_check(self):
-        """Check health of all shard processes."""
-        dead_shards = []
+        """Check health of all shard processes.
+
+        If shards die, remove them from the barrier to continue with fewer workers.
+        Terminate training if too many shards are lost (>50%).
+        """
+        dead_shard_indices = []
         for i, shard in enumerate(self.shards):
             if not shard.is_alive():
-                dead_shards.append(i)
+                dead_shard_indices.append(i)
 
-        if dead_shards:
-            print(f"[CRD] WARNING: Dead shards detected: {dead_shards}")
-            # TODO: Implement shard restart logic
-            # For now, just log and continue
+        if dead_shard_indices:
+            print(f"[CRD] WARNING: Dead shards detected: {dead_shard_indices}")
+
+            # Remove dead shards from barrier
+            remaining_pipes = []
+            for i, pipe in enumerate(self.barrier.pipes):
+                if i not in dead_shard_indices:
+                    remaining_pipes.append(pipe)
+                else:
+                    # Close pipe to dead shard
+                    try:
+                        pipe.close()
+                    except Exception as e:
+                        print(f"[CRD] Error closing pipe to dead shard {i}: {e}")
+
+            # Update barrier with remaining pipes
+            self.barrier.pipes = remaining_pipes
+            self.barrier.num_shards = len(remaining_pipes)
+
+            # Check if we have enough shards left to continue
+            survival_rate = len(remaining_pipes) / len(self.shards)
+            print(
+                f"[CRD] Continuing with {len(remaining_pipes)}/{len(self.shards)} "
+                f"shards ({survival_rate*100:.1f}% alive)"
+            )
+
+            if survival_rate < 0.5:
+                raise RuntimeError(
+                    f"Too many shards died ({len(dead_shard_indices)}/{len(self.shards)}). "
+                    "Terminating training for safety."
+                )
         else:
             print(f"[CRD] Health check: All {len(self.shards)} shards alive")
 
@@ -576,27 +657,30 @@ class Coordinator:
 
     def _collect_completed_rollouts(self):
         """
-        Collect completed rollouts from S8 shards.
+        Collect completed rollouts from S8 shards (non-blocking).
 
-        This is called every rollout_length frames.
-        In production, ENVs would signal completion via IPC.
-        For now, we'll implement a simplified version.
+        Checks all shard pipes for ROLLOUT_COMPLETE messages and
+        adds rollouts to the ready queue for PPO training.
         """
-        print(f"[CRD] Collecting completed rollouts (step {self.step_id})")
+        # Non-blocking: check all shard pipes for rollout messages
+        for pipe in self.barrier.pipes:
+            if pipe.poll():  # Check if message available
+                try:
+                    msg = pipe.recv(timeout=0.001)  # Non-blocking read
+                    if msg.msg_type == MessageType.ROLLOUT_COMPLETE:
+                        rollouts = msg.payload.get("rollouts", [])
+                        if rollouts:
+                            self.rollouts_ready.extend(rollouts)
+                            print(
+                                f"[CRD] Received {len(rollouts)} rollouts from shard {msg.shard_id} "
+                                f"(total ready: {len(self.rollouts_ready)})"
+                            )
 
-        # Reassign opponents for next rollout
-        self.matchmaker.reassign_all()
-
-        # Clear loaded opponents to free memory
-        self.matchmaker.clear_loaded_opponents()
-
-        # TODO: Implement proper rollout collection from ENVs
-        # For now, just log
-        # In full implementation:
-        # 1. ENVs signal rollout complete via IPC
-        # 2. CRD reads rollout buffers from shared memory or separate channel
-        # 3. Compute advantages/returns on GPU
-        # 4. Add to rollouts_ready queue
+                            # Reassign opponents when rollouts complete
+                            self.matchmaker.reassign_all()
+                            self.matchmaker.clear_loaded_opponents()
+                except TimeoutError:
+                    pass  # No message available
 
     def _run_ppo_training(self):
         """Execute PPO training on accumulated rollouts."""
@@ -659,6 +743,7 @@ class Coordinator:
                         old_logps=old_logp,
                         advantages=advantages,
                         returns=returns,
+                        column_map=self.column_map,
                         clip_epsilon=self.ppo_config.clip_epsilon,
                         value_coef=self.ppo_config.value_coef,
                         entropy_coef=self.ppo_config.entropy_coef,

@@ -3,3 +3,8 @@
 __pycache__
 FOX_vs_FOX_parquet/
 .coverage
+death_logs
+checkpoints*
+validation_set
+processed_data*
+*.pstats

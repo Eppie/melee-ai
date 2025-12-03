@@ -16,6 +16,7 @@ from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
 from libmelee.melee.enums import (
     Character,
+    ControllerStatus,
     ControllerType,
     Menu,
     Stage,
@@ -193,6 +194,11 @@ if __name__ == "__main__":
     bot_char = random.choice(SUPPORTED_CHARS)
     opp_char = random.choice(SUPPORTED_CHARS)
 
+    # Ensure CPU doesn't pick Sheik. If Sheik is chosen, change to Zelda.
+    if not args.self_play and opp_char is Character.SHEIK:
+        print("WARNING: CPU cannot pick Sheik. Changing opponent to Zelda.")
+        opp_char = Character.ZELDA
+
     BOT_PORT = 1
     OPP_PORT = 2
     # Main loop
@@ -307,13 +313,39 @@ if __name__ == "__main__":
                     f"Picking stage: {current_stage}, bot: {bot_char}, opp: {opp_char}"
                 )
 
+            # Check if we are ready to start
+            autostart = False
+            if 1 in gamestate.players and 2 in gamestate.players:
+                # Port 1
+                p1_state = gamestate.players[1]
+                p1_ready = (p1_state.character == bot_char) and p1_state.coin_down
+
+                # Port 2
+                p2_state = gamestate.players[2]
+                if args.self_play:
+                    p2_ready = (p2_state.character == opp_char) and p2_state.coin_down
+                else:
+                    # CPU Check
+                    p2_ready = (
+                        (p2_state.character == opp_char)
+                        and (p2_state.controller_status == ControllerStatus.CONTROLLER_CPU)
+                        and (p2_state.cpu_level == 9)
+                    )
+
+                autostart = p1_ready and p2_ready
+                if gamestate.frame % 60 == 0:  # Print once per second
+                    print(f"Frame: {gamestate.frame}, Menu: {gamestate.menu_state}")
+                    print(f"P1 ({bot_char}): {p1_state.character}, Coin: {p1_state.coin_down} -> Ready: {p1_ready}")
+                    print(f"P2 ({opp_char}): {p2_state.character}, Status: {p2_state.controller_status}, Level: {p2_state.cpu_level} -> Ready: {p2_ready}")
+                    print(f"Autostart: {autostart}")
+
             menu_helper.menu_helper_simple(
                 gamestate,
                 controllers[1],
                 bot_char,
                 current_stage,
                 costume=1,
-                autostart=False,
+                autostart=autostart,
                 swag=False,
             )
             # Configure port 2: model in self-play mode, CPU otherwise

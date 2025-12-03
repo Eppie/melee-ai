@@ -54,7 +54,10 @@ class Coordinator:
         print(f"[CRD] Total envs: {ppo_config.total_envs}")
 
         # Column map for feature indexing
-        self.column_map = ColumnMap(config)
+        from schema import get_feature_names, get_target_names
+        feature_names = get_feature_names()
+        target_names = get_target_names()
+        self.column_map = ColumnMap(feature_names, target_names)
 
         # Spawn S8 processes FIRST (before CUDA allocation)
         self.shards: List[mp.Process] = []

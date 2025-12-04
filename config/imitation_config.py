@@ -24,7 +24,7 @@ class ImitationConfig(BaseModel):
         ),
     )
     value_k: float = Field(
-        default=1.0,
+        default=1.2,
         gt=0,
         description=(
             "Scaling factor for value-based weighting. Controls strength of value-based prioritization. "
@@ -35,7 +35,7 @@ class ImitationConfig(BaseModel):
         ),
     )
     value_temperature: float = Field(
-        default=1.0,
+        default=0.9,
         gt=0,
         description=(
             "Temperature for value-based sampling. Controls sharpness of value distribution. "

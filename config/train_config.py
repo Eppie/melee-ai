@@ -16,7 +16,7 @@ class TrainConfig(BaseModel):
     )
 
     batch_size: int = Field(
-        default=256,
+        default=128,
         ge=1,
         description=(
             "Training batch size. Number of sequences per gradient update. "
@@ -291,7 +291,7 @@ class TrainConfig(BaseModel):
         ),
     )
     torch_compile_mode: Optional[str] = Field(
-        default="max-autotune",
+        default="reduce-overhead",
         description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune'",
     )
     cudnn_benchmark: bool = Field(

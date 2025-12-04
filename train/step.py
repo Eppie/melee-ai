@@ -190,8 +190,8 @@ def perform_forward_pass(
         # Compute value-based weights (focus on high-value states)
         # This weights frames by their value_target to emphasize learning from winning play
         imitation_weights_tensor = compute_imitation_weights(
-            X, components.value_idx, config.imitation
-        )  # [B, L]
+            X_aug, components.value_idx, config.imitation
+        )  # [B*num_horizons, L]
 
         # Combine change-based and value-based weights
         # Apply value weights to all components
@@ -223,7 +223,7 @@ def perform_forward_pass(
 
         value_pred = pred["value"]
         value_target = compute_value_targets(
-            X,
+            X_aug,
             components.column_map,
             gamma=config.rl.gamma,
             reward_idx=components.value_idx,

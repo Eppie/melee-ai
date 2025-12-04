@@ -8,6 +8,50 @@ import numpy as np
 import torch
 
 
+class StickMetrics:
+    def __init__(self, K: int, device: torch.device):
+        self.correct = torch.tensor(0, dtype=torch.long, device=device)
+        self.total = torch.tensor(0, dtype=torch.long, device=device)
+        self.label_counts = torch.zeros(K, dtype=torch.long, device=device)
+        self.maj_correct = torch.tensor(0, dtype=torch.long, device=device)
+
+    def update(self, pred_idx: torch.Tensor, true_idx: torch.Tensor, majority_baseline: int):
+        self.correct += (pred_idx == true_idx).sum()
+        self.total += true_idx.numel()
+        bincount = torch.bincount(true_idx, minlength=self.label_counts.shape[0])
+        self.label_counts += bincount[: self.label_counts.shape[0]]
+        self.maj_correct += (true_idx == majority_baseline).sum()
+
+    def reset(self):
+        self.correct.zero_()
+        self.total.zero_()
+        self.label_counts.zero_()
+        self.maj_correct.zero_()
+
+class PositionMetrics:
+    def __init__(self, K: int, device: torch.device):
+        self.correct = torch.tensor(0, dtype=torch.long, device=device)
+        self.total = torch.tensor(0, dtype=torch.long, device=device)
+        self.label_counts = torch.zeros(K, dtype=torch.long, device=device)
+        self.maj_correct = torch.tensor(0, dtype=torch.long, device=device)
+        self.spatial_error_sum = torch.tensor(0.0, dtype=torch.float32, device=device)
+
+    def update(self, pred_idx: torch.Tensor, true_idx: torch.Tensor, majority_baseline: int, spatial_error_sum: torch.Tensor):
+        self.correct += (pred_idx == true_idx).sum()
+        self.total += true_idx.numel()
+        bincount = torch.bincount(true_idx, minlength=self.label_counts.shape[0])
+        self.label_counts += bincount[: self.label_counts.shape[0]]
+        self.maj_correct += (true_idx == majority_baseline).sum()
+        self.spatial_error_sum += spatial_error_sum
+
+    def reset(self):
+        self.correct.zero_()
+        self.total.zero_()
+        self.label_counts.zero_()
+        self.maj_correct.zero_()
+        self.spatial_error_sum.zero_()
+
+
 # TODO: Do we really need this? Check sweep.py.
 class MetricsAccumulator:
     """Stateful metrics tracker for training/validation.
@@ -21,6 +65,8 @@ class MetricsAccumulator:
     K_c: int
     K_buttons: int
     K_shoulder: int
+    K_future_x: int
+    K_future_y: int
 
     # Main stick metrics
     main_correct: torch.Tensor
@@ -49,6 +95,19 @@ class MetricsAccumulator:
     shoulder_label_counts: torch.Tensor
     shoulder_maj_correct: torch.Tensor
 
+    # Future position metrics
+    future_x_correct: torch.Tensor
+    future_x_total: torch.Tensor
+    future_x_label_counts: torch.Tensor
+    future_x_maj_correct: torch.Tensor
+    future_x_spatial_error_sum: torch.Tensor  # Sum of spatial errors for MAE
+
+    future_y_correct: torch.Tensor
+    future_y_total: torch.Tensor
+    future_y_label_counts: torch.Tensor
+    future_y_maj_correct: torch.Tensor
+    future_y_spatial_error_sum: torch.Tensor  # Sum of spatial errors for MAE
+
     def __init__(
         self,
         K_main: int,
@@ -56,6 +115,8 @@ class MetricsAccumulator:
         K_buttons: int,
         K_shoulder: int,
         device: torch.device,
+        K_future_x: int = 32,
+        K_future_y: int = 32,
     ):
         """Initialize tensors that accumulate accuracy-style statistics.
 
@@ -73,24 +134,22 @@ class MetricsAccumulator:
             K_buttons: Number of button outputs.
             K_shoulder: Number of shoulder quantization bins.
             device: Device on which running totals should be stored.
+            K_future_x: Number of future X position quantization bins (default: 32).
+            K_future_y: Number of future Y position quantization bins (default: 32).
         """
         self.device = device
         self.K_main = K_main
         self.K_c = K_c
         self.K_buttons = K_buttons
         self.K_shoulder = K_shoulder
+        self.K_future_x = K_future_x
+        self.K_future_y = K_future_y
 
-        # Main stick metrics
-        self.main_correct = torch.tensor(0, dtype=torch.long, device=device)
-        self.main_total = torch.tensor(0, dtype=torch.long, device=device)
-        self.main_label_counts = torch.zeros(K_main, dtype=torch.long, device=device)
-        self.main_maj_correct = torch.tensor(0, dtype=torch.long, device=device)
-
-        # C-stick metrics
-        self.c_correct = torch.tensor(0, dtype=torch.long, device=device)
-        self.c_total = torch.tensor(0, dtype=torch.long, device=device)
-        self.c_label_counts = torch.zeros(K_c, dtype=torch.long, device=device)
-        self.c_maj_correct = torch.tensor(0, dtype=torch.long, device=device)
+        self.main = StickMetrics(K_main, device)
+        self.c = StickMetrics(K_c, device)
+        self.shoulder = StickMetrics(K_shoulder, device)
+        self.future_x = PositionMetrics(K_future_x, device)
+        self.future_y = PositionMetrics(K_future_y, device)
 
         # Button metrics
         self.btn_true_positives = torch.zeros(
@@ -106,14 +165,6 @@ class MetricsAccumulator:
         self.btn_total = torch.tensor(0, dtype=torch.long, device=device)
         self.btn_em_correct = torch.tensor(0, dtype=torch.long, device=device)
         self.btn_maj_em_correct = torch.tensor(0, dtype=torch.long, device=device)
-
-        # Shoulder metrics
-        self.shoulder_correct = torch.tensor(0, dtype=torch.long, device=device)
-        self.shoulder_total = torch.tensor(0, dtype=torch.long, device=device)
-        self.shoulder_label_counts = torch.zeros(
-            K_shoulder, dtype=torch.long, device=device
-        )
-        self.shoulder_maj_correct = torch.tensor(0, dtype=torch.long, device=device)
 
     def _majority_label(self, label_counts: torch.Tensor) -> int:
         """Return the index of the largest count, defaulting to zero for empty tensors.
@@ -164,27 +215,11 @@ class MetricsAccumulator:
             repeat_mask: Boolean mask ``[N]`` for frames eligible for repeat accuracy.
         """
         if stick_type == "main":
-            correct_attr = "main_correct"
-            total_attr = "main_total"
-            counts_attr = "main_label_counts"
-            maj_attr = "main_maj_correct"
-
+            self.main.update(pred_idx, true_idx, majority_baseline)
+        elif stick_type == "c":
+            self.c.update(pred_idx, true_idx, majority_baseline)
         else:
             raise ValueError(f"Unknown stick type: {stick_type}")
-
-        # Accuracy
-        correct = (pred_idx == true_idx).sum()
-        setattr(self, correct_attr, getattr(self, correct_attr) + correct)
-        setattr(self, total_attr, getattr(self, total_attr) + true_idx.numel())
-
-        # Label counts
-        label_counts = getattr(self, counts_attr)
-        bincount = torch.bincount(true_idx, minlength=label_counts.shape[0])
-        setattr(self, counts_attr, label_counts + bincount[: label_counts.shape[0]])
-
-        # Majority baseline
-        maj_correct = (true_idx == majority_baseline).sum()
-        setattr(self, maj_attr, getattr(self, maj_attr) + maj_correct)
 
     def update_button_metrics(
         self,
@@ -265,18 +300,46 @@ class MetricsAccumulator:
         pred_flat = pred_idx.reshape(-1)
         true_flat = true_idx.reshape(-1)
 
-        # Accuracy
-        correct = (pred_flat == true_flat).sum()
-        self.shoulder_correct += correct
-        self.shoulder_total += true_flat.numel()
+        self.shoulder.update(pred_flat, true_flat, majority_baseline)
 
-        # Label counts
-        bincount = torch.bincount(true_flat, minlength=self.K_shoulder)
-        self.shoulder_label_counts += bincount[: self.K_shoulder]
+    def update_future_position_metrics(
+        self,
+        pred_idx: torch.Tensor,
+        true_idx: torch.Tensor,
+        future_valid: torch.Tensor,
+        spatial_error: torch.Tensor,
+        position_type: str,
+        majority_baseline: int,
+    ) -> None:
+        """Track accuracy and spatial error for future position predictions (X or Y).
 
-        # Majority baseline
-        maj_correct = (true_flat == majority_baseline).sum()
-        self.shoulder_maj_correct += maj_correct
+        Example:
+            For ``position_type="x"``, if ``pred_idx`` equals ``tensor([5, 10, 15])`` and
+            ``true_idx`` equals ``tensor([5, 11, 15])`` with ``future_valid`` of ``tensor([1, 1, 0])``,
+            the method only considers the first two frames (valid=1). It increments
+            ``self.future_x_correct`` by ``1`` (first frame matches), ``self.future_x_total`` by ``2``,
+            and accumulates spatial errors for MAE computation.
+
+        Args:
+            pred_idx: Predicted quantized indices ``[B*L]``.
+            true_idx: True quantized indices ``[B*L]``.
+            future_valid: Validity mask ``[B*L]`` (1.0 for valid frames, 0.0 for invalid).
+            spatial_error: Absolute spatial error in game units ``[B*L]``.
+            position_type: Either ``"x"`` or ``"y"`` to select which counters to update.
+            majority_baseline: Majority label accuracy baseline.
+        """
+        # Only count valid frames (not near episode boundaries)
+        valid_mask = future_valid.bool()
+        pred_valid = pred_idx[valid_mask]
+        true_valid = true_idx[valid_mask]
+        error_valid = spatial_error[valid_mask]
+
+        if position_type == "x":
+            self.future_x.update(pred_valid, true_valid, majority_baseline, error_valid.sum())
+        elif position_type == "y":
+            self.future_y.update(pred_valid, true_valid, majority_baseline, error_valid.sum())
+        else:
+            raise ValueError(f"Unknown position type: {position_type}")
 
     def get_summary(self) -> Dict[str, float]:
         """Convert accumulated counters into scalar metrics ready for logging.
@@ -292,20 +355,18 @@ class MetricsAccumulator:
             Dictionary of scalar metrics such as ``acc_main`` and ``btn_f1_micro``.
         """
         summary = {
-            "acc_main": float(self.main_correct.item())
-            / max(1.0, float(self.main_total.item())),
-            "acc_main_maj": float(self.main_maj_correct.item())
-            / max(1.0, float(self.main_total.item())),
+            "acc_main": float(self.main.correct.item())
+            / max(1.0, float(self.main.total.item())),
+            "acc_main_maj": float(self.main.maj_correct.item())
+            / max(1.0, float(self.main.total.item())),
         }
 
-        # Main stick
-
         # C-stick
-        summary["acc_c"] = float(self.c_correct.item()) / max(
-            1.0, float(self.c_total.item())
+        summary["acc_c"] = float(self.c.correct.item()) / max(
+            1.0, float(self.c.total.item())
         )
-        summary["acc_c_maj"] = float(self.c_maj_correct.item()) / max(
-            1.0, float(self.c_total.item())
+        summary["acc_c_maj"] = float(self.c.maj_correct.item()) / max(
+            1.0, float(self.c.total.item())
         )
 
         # Buttons
@@ -354,12 +415,26 @@ class MetricsAccumulator:
 
         # Shoulder
         if self.K_shoulder > 0:
-            summary["acc_shoulder"] = float(self.shoulder_correct.item()) / max(
-                1.0, float(self.shoulder_total.item())
+            summary["acc_shoulder"] = float(self.shoulder.correct.item()) / max(
+                1.0, float(self.shoulder.total.item())
             )
-            summary["acc_shoulder_maj"] = float(self.shoulder_maj_correct.item()) / max(
-                1.0, float(self.shoulder_total.item())
+            summary["acc_shoulder_maj"] = float(self.shoulder.maj_correct.item()) / max(
+                1.0, float(self.shoulder.total.item())
             )
+
+        # Future position X
+        if self.K_future_x > 0:
+            future_x_total = max(1.0, float(self.future_x.total.item()))
+            summary["acc_future_x"] = float(self.future_x.correct.item()) / future_x_total
+            summary["acc_future_x_maj"] = float(self.future_x.maj_correct.item()) / future_x_total
+            summary["mae_future_x"] = float(self.future_x.spatial_error_sum.item()) / future_x_total
+
+        # Future position Y
+        if self.K_future_y > 0:
+            future_y_total = max(1.0, float(self.future_y.total.item()))
+            summary["acc_future_y"] = float(self.future_y.correct.item()) / future_y_total
+            summary["acc_future_y_maj"] = float(self.future_y.maj_correct.item()) / future_y_total
+            summary["mae_future_y"] = float(self.future_y.spatial_error_sum.item()) / future_y_total
 
         return summary
 
@@ -372,17 +447,11 @@ class MetricsAccumulator:
             every field, including nested tensors such as ``self.btn_tp``. The example highlights how
             the method prepares the accumulator for the next round of tracking.
         """
-        # Main stick
-        self.main_correct.zero_()
-        self.main_total.zero_()
-        self.main_label_counts.zero_()
-        self.main_maj_correct.zero_()
-
-        # C-stick
-        self.c_correct.zero_()
-        self.c_total.zero_()
-        self.c_label_counts.zero_()
-        self.c_maj_correct.zero_()
+        self.main.reset()
+        self.c.reset()
+        self.shoulder.reset()
+        self.future_x.reset()
+        self.future_y.reset()
 
         # Buttons
         self.btn_true_positives.zero_()
@@ -392,12 +461,6 @@ class MetricsAccumulator:
         self.btn_total.zero_()
         self.btn_em_correct.zero_()
         self.btn_maj_em_correct.zero_()
-
-        # Shoulder
-        self.shoulder_correct.zero_()
-        self.shoulder_total.zero_()
-        self.shoulder_label_counts.zero_()
-        self.shoulder_maj_correct.zero_()
 
 
 def compute_confusion_matrix(

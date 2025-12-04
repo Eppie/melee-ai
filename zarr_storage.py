@@ -240,7 +240,7 @@ def _choose_chunk_t(num_features: int, elem_bytes: int) -> int:
     ``config.seq_len`` so sliding windows rarely straddle chunk boundaries.
     """
     config = get_config()
-    chunk_frames = getattr(config.zarr, "chunk_frames", None)
+    chunk_frames = config.zarr.chunk_frames
     if chunk_frames and chunk_frames > 0:
         approx_t = int(chunk_frames)
     else:

@@ -782,10 +782,10 @@ class GameLab:
             state.frames_remaining -= 1
             return
 
-        current_action = getattr(player, "action", None)
+        current_action = player.action
         if (
             getattr(player, "is_inactive", False)
-            or getattr(player, "is_dead", False)
+            or player.is_dead
             or current_action in SPAWN_ACTIONS
         ):
             state.frames_remaining = max(state.frames_remaining, state.settle_frames)
@@ -1007,8 +1007,8 @@ class GameLab:
         ):
             return
         player = self.current_gamestate.players[state.port]
-        strength = float(getattr(player, "shield_strength", SHIELD_FULL_VALUE))
-        shield_active = bool(getattr(player, "is_shield_active", False))
+        strength = float(player.shield_strength)
+        shield_active = bool(player.is_shield_active)
 
         if state.stage == "refill":
             self._apply_trigger_raw(state.port, 0)
@@ -1263,15 +1263,15 @@ class GameLab:
         if not self._player_present(port):
             return False
         player = self.current_gamestate.players[port]
-        if getattr(player, "is_dead", False) or getattr(player, "is_inactive", False):
+        if player.is_dead or getattr(player, "is_inactive", False):
             return False
-        return getattr(player, "action", None) not in SPAWN_ACTIONS
+        return player.action not in SPAWN_ACTIONS
 
     def _move_is_complete(self, player) -> bool:
-        action = getattr(player, "action", None)
+        action = player.action
         if action is None:
             return False
-        if getattr(player, "is_dead", False) or getattr(player, "is_inactive", False):
+        if player.is_dead or getattr(player, "is_inactive", False):
             return True
         if action in NEUTRAL_COMPLETE_ACTIONS:
             return True

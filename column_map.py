@@ -89,10 +89,8 @@ class ColumnMap:
     def from_dataset(
         cls, dataset
     ) -> "ColumnMap":  # dataset typing kept loose to avoid import cycle
-        feature_names = getattr(
-            dataset, "_feature_names_sel", dataset.index.feature_names
-        )
-        target_names = getattr(dataset, "_target_names_sel", dataset.index.target_names)
+        feature_names = dataset._feature_names_sel
+        target_names = dataset._target_names_sel
         return cls(feature_names, target_names)
 
 

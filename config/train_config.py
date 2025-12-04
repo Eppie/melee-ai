@@ -16,7 +16,7 @@ class TrainConfig(BaseModel):
     )
 
     batch_size: int = Field(
-        default=128,
+        default=256,
         ge=1,
         description=(
             "Training batch size. Number of sequences per gradient update. "
@@ -76,6 +76,22 @@ class TrainConfig(BaseModel):
         default=16,
         ge=0,
         description="Number of dataloader worker processes. More workers = faster data loading but more memory.",
+    )
+    window_bucket_size: int | None = Field(
+        default=32,
+        ge=1,
+        description=(
+            "Group episodes into contiguous buckets of this size and shuffle buckets per epoch. "
+            "Within each bucket, window indices are shuffled. Set to None to disable bucketing."
+        ),
+    )
+    worker_episode_cache_size: int = Field(
+        default=32,
+        ge=0,
+        description=(
+            "Number of episodes each worker caches in RAM (per-process LRU). "
+            "Set to 0 to disable the cache."
+        ),
     )
     in_memory_shared: bool = Field(
         default=False,
@@ -282,6 +298,21 @@ class TrainConfig(BaseModel):
         ),
     )
 
+    # Wandb
+    wandb_project: str = Field(
+        default="melee-ai",
+        description="Wandb project name.",
+    )
+    run_name: Optional[str] = Field(
+        default=None,
+        description="Wandb run name.",
+    )
+    wandb_mode: str = Field(
+        default="online",
+        description="Wandb mode. Can be 'online', 'offline', or 'disabled'.",
+    )
+
+
     # Performance optimizations
     torch_compile: bool = Field(
         default_factory=lambda: _should_enable_torch_compile(),
@@ -291,7 +322,7 @@ class TrainConfig(BaseModel):
         ),
     )
     torch_compile_mode: Optional[str] = Field(
-        default="reduce-overhead",
+        default="max-autotune",
         description="torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune'",
     )
     cudnn_benchmark: bool = Field(

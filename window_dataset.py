@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
@@ -9,6 +10,7 @@ import numpy as np
 import torch
 import zarr
 from torch.utils.data import Dataset, Sampler
+from loguru import logger
 
 from data_loading.chunk_manager import ChunkManager
 from data_loading.dataloader_factory import DataLoaderFactory
@@ -202,6 +204,8 @@ class WindowDataset(Dataset):
         num_overlapping_chunks: int = 2,
         chunk_size_ram_budget_mb: Optional[int] = None,
         background_chunk_preload: bool = False,
+        episode_cache_size: int = 0,
+        cache_log_interval: int = 20000,
     ) -> None:
         """Prepare the dataset by indexing shards.
 
@@ -249,6 +253,36 @@ class WindowDataset(Dataset):
         self._active_chunk_idx: Optional[int] = None
         self._active_episode_indices: Optional[np.ndarray] = None
         self._chunk_manager: Optional["ChunkManager"] = None
+
+        # Per-worker bounded cache for decoded episode tensors (LRU)
+        self._episode_cache_capacity = max(0, int(episode_cache_size))
+        self._episode_tensor_cache: OrderedDict[
+            Tuple[int, int], Tuple[torch.Tensor, torch.Tensor]
+        ] = OrderedDict()
+        self._cache_hits: int = 0
+        self._cache_misses: int = 0
+        self._cache_log_interval = max(0, int(cache_log_interval))
+
+        # Clamp cache capacity to avoid runaway per-worker memory.
+        if self._episode_cache_capacity > 0:
+            try:
+                est_bytes = estimate_episode_memory(self.index, sample_size=64)
+                # Hard budget per worker: ~256 MiB to stay under OOM with many workers.
+                max_capacity = max(
+                    1, int((256 * 1024 * 1024) // max(1, est_bytes))
+                )
+                if self._episode_cache_capacity > max_capacity:
+                    logger.warning(
+                        "[dataset cache] Reducing cache capacity from %d to %d "
+                        "based on ~256MiB per-worker budget (est %.1f MiB/episode).",
+                        self._episode_cache_capacity,
+                        max_capacity,
+                        est_bytes / (1024**2),
+                    )
+                    self._episode_cache_capacity = max_capacity
+            except Exception:
+                # If estimation fails, proceed with requested capacity.
+                pass
 
         # Enforce preprocessed data presence
         preprocessed = self.index.meta.get("preprocessed", {})
@@ -340,8 +374,17 @@ class WindowDataset(Dataset):
         ep_idx, offset = self.index.window_to_episode(i)
         ep = self.index.episodes[ep_idx]
         start = offset  # within episode, window starts at this index
+        cache_enabled = (
+            not self._in_memory_shared
+            and not self._in_memory
+            and self._episode_cache_capacity > 0
+        )
+        cache_hit: Optional[bool] = None
 
-        feature_array, target_array = self._get_episode_arrays(ep)
+        if cache_enabled:
+            feature_array, target_array, cache_hit = self._get_cached_episode_tensors(ep)
+        else:
+            feature_array, target_array = self._get_episode_arrays(ep)
         # Slice contiguous window; arrays are (T, F) and (T, Yd)
         if isinstance(feature_array, torch.Tensor):
             features_out = feature_array[
@@ -356,13 +399,18 @@ class WindowDataset(Dataset):
                 start : start + self.seq_len, :
             ]  # (seq_len, num_targets)
 
+            # Zarr slices are already float32 - no type conversion needed
+            # np.ascontiguousarray is a no-op if already contiguous (returns same object)
+            # but ensures torch.from_numpy works correctly
             features_out: ProcessedTorchTensor = torch.from_numpy(
-                np.ascontiguousarray(feature_window).astype(np.float32, copy=False)
+                np.ascontiguousarray(feature_window)
             )
-            targets_as_numpy: RawNumpyArray = np.ascontiguousarray(target_window)
             targets_out = torch.from_numpy(
-                targets_as_numpy.astype(np.float32, copy=False)
+                np.ascontiguousarray(target_window)
             )
+
+        if cache_hit is not None:
+            self._maybe_log_cache_stats()
 
         return {
             "X": features_out,
@@ -370,6 +418,59 @@ class WindowDataset(Dataset):
             "episode_id": ep.episode_id,
             "start": start,
         }
+
+    def _get_cached_episode_tensors(
+        self, ep: EpisodeInfo
+    ) -> Tuple[torch.Tensor, torch.Tensor, bool]:
+        """Return episode tensors with a bounded per-worker cache."""
+        cache_key = (ep.shard_id, ep.episode_id)
+        cached = self._episode_tensor_cache.get(cache_key)
+        if cached is not None:
+            self._episode_tensor_cache.move_to_end(cache_key)
+            self._cache_hits += 1
+            return cached[0], cached[1], True
+
+        feature_array, target_array = self.index.open_episode_arrays(ep)
+        features_np = np.asarray(feature_array[:], dtype=np.float32, order="C")
+        features_np = np.ascontiguousarray(features_np.astype(np.float32, copy=False))
+        targets_np = np.asarray(target_array[:], dtype=np.float32, order="C")
+        targets_np = np.ascontiguousarray(targets_np.astype(np.float32, copy=False))
+
+        f_tensor = torch.from_numpy(features_np)
+        t_tensor = torch.from_numpy(targets_np)
+
+        self._episode_tensor_cache[cache_key] = (f_tensor, t_tensor)
+        self._cache_misses += 1
+
+        if len(self._episode_tensor_cache) > self._episode_cache_capacity:
+            self._episode_tensor_cache.popitem(last=False)
+
+        return f_tensor, t_tensor, False
+
+    def _maybe_log_cache_stats(self) -> None:
+        """Occasionally log cache effectiveness to console without spamming."""
+        if self._cache_log_interval <= 0:
+            return
+        total = self._cache_hits + self._cache_misses
+        if total == 0 or total % self._cache_log_interval != 0:
+            return
+        worker_id = None
+        try:
+            info = torch.utils.data.get_worker_info()
+            if info is not None:
+                worker_id = info.id
+        except Exception:
+            worker_id = None
+        if worker_id not in (None, 0):
+            return
+        hit_rate = self._cache_hits / float(total)
+        logger.info(
+            "[dataset cache] hits={} misses={} hit_rate={:.3f} capacity={}",
+            self._cache_hits,
+            self._cache_misses,
+            hit_rate,
+            self._episode_cache_capacity,
+        )
 
     def _get_episode_arrays(
         self, ep: EpisodeInfo
@@ -563,7 +664,7 @@ class WindowDataset(Dataset):
         stride = max(1, int(stride))
         chunk_idx = int(epoch // stride)
         self.set_active_chunk(chunk_idx)
-        if sampler is not None and hasattr(sampler, "set_active_episodes"):
+        if sampler is not None:
             sampler.set_active_episodes(self._active_episode_indices.tolist())
 
 
@@ -588,6 +689,8 @@ class RandomWindowSampler(Sampler[int]):
         stride: int = 1,
         generator: Optional[torch.Generator] = None,
         active_episode_indices: Optional[Sequence[int]] = None,
+        bucket_size: Optional[int] = None,
+        lane_count: Optional[int] = None,
     ) -> None:
         """Create a sampler that enforces a stride across episode windows."""
         super().__init__()
@@ -598,6 +701,8 @@ class RandomWindowSampler(Sampler[int]):
         self.generator = generator
         self.epoch = 0
         self._start_offset = 0
+        self._bucket_size = bucket_size if bucket_size and bucket_size > 0 else None
+        self._lane_count = lane_count if lane_count and lane_count > 0 else None
         if active_episode_indices is None:
             self._active_episode_indices = np.arange(
                 len(self.index.episodes), dtype=np.int32
@@ -641,39 +746,130 @@ class RandomWindowSampler(Sampler[int]):
         s = self.stride
         m = self.epoch % s
 
-        # Build the list of global indices that satisfy the stride condition for this epoch.
         total = self._count_for_epoch(self.epoch)
         if total == 0:
             return
-        buffer = np.empty(total, dtype=np.int32)
-        cursor = 0
-        for epi in self._active_episode_indices:
-            ep = self.index.episodes[int(epi)]
-            w = ep.num_windows
-            if w <= m:
-                continue
-            local_offsets = np.arange(m, w, s, dtype=np.int32)
-            if local_offsets.size == 0:
-                continue
-            base = self.index.episode_start_global_index(epi)
-            buffer[cursor : cursor + local_offsets.size] = base + local_offsets
-            cursor += local_offsets.size
-        if cursor != total:
-            buffer = buffer[:cursor]
-        if self._start_offset:
-            start_offset = min(self._start_offset, buffer.size)
-            buffer = buffer[start_offset:]
-            self._start_offset = 0
-        else:
-            self._start_offset = 0
-        if buffer.size == 0:
+
+        seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) % (2**63 - 1)
+        rng = np.random.default_rng(seed)
+
+        # No bucketing: preserve existing behavior.
+        if self._bucket_size is None:
+            buffer = np.empty(total, dtype=np.int32)
+            cursor = 0
+            for epi in self._active_episode_indices:
+                ep = self.index.episodes[int(epi)]
+                w = ep.num_windows
+                if w <= m:
+                    continue
+                local_offsets = np.arange(m, w, s, dtype=np.int32)
+                if local_offsets.size == 0:
+                    continue
+                base = self.index.episode_start_global_index(epi)
+                buffer[cursor : cursor + local_offsets.size] = base + local_offsets
+                cursor += local_offsets.size
+            if cursor != total:
+                buffer = buffer[:cursor]
+            if self._start_offset:
+                start_offset = min(self._start_offset, buffer.size)
+                buffer = buffer[start_offset:]
+                self._start_offset = 0
+            else:
+                self._start_offset = 0
+            if buffer.size == 0:
+                return
+            if buffer.size > 1:
+                rng.shuffle(buffer)
+            for value in buffer:
+                yield int(value)
             return
-        if buffer.size > 1:
-            seed = (self.epoch * 0x9E3779B97F4A7C15 + 4242) % (2**63 - 1)
-            rng = np.random.default_rng(seed)
-            rng.shuffle(buffer)
-        for value in buffer:
-            yield int(value)
+
+        # Bucketed path: shuffle buckets, shuffle within each bucket.
+        episodes = np.array(self._active_episode_indices, dtype=np.int32)
+        if episodes.size == 0:
+            return
+        buckets: List[np.ndarray] = []
+        for i in range(0, episodes.size, self._bucket_size):
+            buckets.append(episodes[i : i + self._bucket_size])
+
+        rng.shuffle(buckets)
+
+        buffers: List[np.ndarray] = []
+        for bucket in buckets:
+            bucket_parts: List[np.ndarray] = []
+            for epi in bucket:
+                ep = self.index.episodes[int(epi)]
+                w = ep.num_windows
+                if w <= m:
+                    continue
+                local_offsets = np.arange(m, w, s, dtype=np.int32)
+                if local_offsets.size == 0:
+                    continue
+                base = self.index.episode_start_global_index(epi)
+                bucket_parts.append(base + local_offsets)
+            if not bucket_parts:
+                continue
+            bucket_buffer = np.concatenate(bucket_parts)
+            if bucket_buffer.size > 1:
+                rng.shuffle(bucket_buffer)
+            buffers.append(bucket_buffer)
+
+        if not buffers:
+            return
+
+        lane_count = self._lane_count or 1
+        if lane_count <= 1:
+            buffer = np.concatenate(buffers)
+            if self._start_offset:
+                start_offset = min(self._start_offset, buffer.size)
+                buffer = buffer[start_offset:]
+                self._start_offset = 0
+            else:
+                self._start_offset = 0
+            if buffer.size == 0:
+                return
+            for value in buffer:
+                yield int(value)
+            return
+
+        # Partition buckets into lanes to stagger starts across workers.
+        lanes: List[List[np.ndarray]] = [[] for _ in range(lane_count)]
+        for idx, buff in enumerate(buffers):
+            lanes[idx % lane_count].append(buff)
+
+        lane_states: List[Tuple[int, int]] = [(0, 0) for _ in range(lane_count)]
+        skipped = 0
+
+        while True:
+            emitted = False
+            for lane_idx in range(lane_count):
+                lane_buckets = lanes[lane_idx]
+                bidx, offset = lane_states[lane_idx]
+
+                # Advance past exhausted buckets.
+                while bidx < len(lane_buckets) and offset >= lane_buckets[bidx].size:
+                    bidx += 1
+                    offset = 0
+
+                if bidx >= len(lane_buckets):
+                    lane_states[lane_idx] = (bidx, offset)
+                    continue
+
+                value = int(lane_buckets[bidx][offset])
+                offset += 1
+                lane_states[lane_idx] = (bidx, offset)
+                emitted = True
+
+                if skipped < self._start_offset:
+                    skipped += 1
+                    continue
+
+                yield value
+
+            if not emitted:
+                break
+
+        self._start_offset = 0
         return
 
 
@@ -690,21 +886,20 @@ def make_dataloader(
     """Construct the dataset, sampler, and DataLoader."""
     ds = WindowDataset(
         config.zarr.out_root,
-        in_memory_shared=getattr(config.train, "in_memory_shared", False),
-        shared_chunk_size=getattr(config.train, "in_memory_shared_chunk_size", None),
-        num_overlapping_chunks=getattr(config.train, "num_overlapping_chunks", 2),
-        chunk_size_ram_budget_mb=getattr(
-            config.train, "chunk_size_ram_budget_mb", None
-        ),
-        background_chunk_preload=getattr(
-            config.train, "background_chunk_preload", False
-        ),
+        in_memory_shared=config.train.in_memory_shared,
+        shared_chunk_size=config.train.in_memory_shared_chunk_size,
+        num_overlapping_chunks=config.train.num_overlapping_chunks,
+        chunk_size_ram_budget_mb=config.train.chunk_size_ram_budget_mb,
+        background_chunk_preload=config.train.background_chunk_preload,
+        episode_cache_size=config.train.worker_episode_cache_size,
     )
 
     stride = config.train.stride
     sampler = RandomWindowSampler(
         index=ds.index,
         stride=stride,
+        bucket_size=config.train.window_bucket_size,
+        lane_count=max(1, config.train.num_workers),
     )
     if getattr(ds, "_active_episode_indices", None) is not None:
         sampler.set_active_episodes(ds._active_episode_indices.tolist())

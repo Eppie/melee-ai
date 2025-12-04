@@ -91,10 +91,10 @@ def perform_forward_pass(
     config = components.config
     amp = components.amp
 
-    # Augment batch with multiple future position horizons
-    # This replicates the batch 4x with different horizon features
+    # Augment batch with per-window random horizon features
+    # Each window in the batch gets its own random horizon [1-60]
     X_aug, future_x_targets, future_y_targets, future_valid = augment_batch_with_horizons(
-        X, Y, components.column_map, num_horizons=4, max_horizon=60
+        X, Y, components.column_map, num_horizons=1, max_horizon=60
     )
 
     with autocast(
@@ -114,8 +114,8 @@ def perform_forward_pass(
             )
         head_dims = components.config.model.target_shapes_by_head
 
-        # Also need to replicate the regular targets 4x to match augmented batch size
-        Y_rep = Y.repeat(4, 1, 1)  # [B*4, L, Yd]
+        # No replication needed - batch size unchanged (each window has different horizon)
+        Y_rep = Y  # [B, L, Yd]
 
         target_info = {
             "main_idx": Y_rep[..., components.column_map.y_main_idx].to(torch.long),

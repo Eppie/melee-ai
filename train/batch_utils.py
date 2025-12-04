@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Mapping, Sequence
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
 from tensordict import TensorDict
@@ -267,6 +267,10 @@ def compute_component_sample_weights(
     }
 
 
+# Cache for keyframe horizon tensors (avoid recreating every batch)
+_KEYFRAME_HORIZONS_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+
+
 def interpolate_keyframes(
     Y: Tensor, keyframe_indices: Sequence[int], target_horizon: int, keyframe_horizons: Sequence[int]
 ) -> Tensor:
@@ -317,35 +321,35 @@ def augment_batch_with_horizons(
     X: Tensor,
     Y: Tensor,
     column_map: ColumnMap,
-    num_horizons: int = 4,
+    num_horizons: int = 1,
     max_horizon: int = 60,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Augment batch by sampling multiple future position horizons.
+    """Augment batch by sampling different future position horizons per window.
 
-    Takes a batch and replicates it `num_horizons` times, each with a different
-    randomly sampled horizon distance. Adds the horizon distance as a feature and
+    Each window in the batch gets its own randomly sampled horizon distance,
+    maximizing training diversity. Adds the horizon distance as a feature and
     extracts corresponding future position targets.
 
     Args:
         X: Feature tensor [B, L, F]
         Y: Target tensor [B, L, Yd] with keyframe future positions
         column_map: Column mapping with y_future_x_keyframes, y_future_y_keyframes, y_future_valid_mask
-        num_horizons: Number of different horizons to sample per batch (default: 4)
+        num_horizons: Unused (kept for backward compatibility, always 1)
         max_horizon: Maximum horizon value to sample (default: 60)
 
     Returns:
         Tuple of:
-            - X_aug: Augmented features [B*num_horizons, L, F+1] with horizon feature appended
-            - future_x_targets: X position targets [B*num_horizons, L]
-            - future_y_targets: Y position targets [B*num_horizons, L]
-            - valid_mask: Validity mask [B*num_horizons, L]
+            - X_aug: Augmented features [B, L, F+1] with horizon feature appended
+            - future_x_targets: X position targets [B, L]
+            - future_y_targets: Y position targets [B, L]
+            - valid_mask: Validity mask [B, L]
 
     Example:
-        With B=2, L=64, num_horizons=4:
-        - Sample 4 random horizons: [7, 23, 41, 15]
-        - Replicate X 4 times, append horizon/60.0 as feature
-        - Interpolate future positions from keyframes for each horizon
-        - Return tensors shaped [8, 64, F+1], [8, 64], [8, 64], [8, 64]
+        With B=4, L=64:
+        - Sample 4 random horizons (one per window): [23, 41, 8, 57]
+        - Append per-window horizon/60.0 as feature
+        - Interpolate future positions from keyframes for each window's horizon
+        - Return tensors shaped [4, 64, F+1], [4, 64], [4, 64], [4, 64]
     """
     B, L, F = X.shape
     device = X.device
@@ -355,46 +359,70 @@ def augment_batch_with_horizons(
     # Check if future position columns are present
     if not column_map.y_future_x_keyframes:
         # Old dataset without future positions - return dummy data
-        X_aug = X.repeat(num_horizons, 1, 1)  # Replicate without adding horizon feature
-        dummy_targets = torch.zeros(B * num_horizons, L, device=device, dtype=torch.long)
-        dummy_valid = torch.zeros(B * num_horizons, L, device=device, dtype=torch.float32)
+        X_aug = X  # No modification needed
+        dummy_targets = torch.zeros(B, L, device=device, dtype=torch.long)
+        dummy_valid = torch.zeros(B, L, device=device, dtype=torch.float32)
         return X_aug, dummy_targets, dummy_targets, dummy_valid
 
-    X_list = []
-    future_x_list = []
-    future_y_list = []
-    valid_list = []
+    # Sample random horizon for EACH window in batch [B]
+    horizons = torch.randint(1, max_horizon + 1, (B,), device=device)
 
-    for _ in range(num_horizons):
-        # Sample random horizon (1 to max_horizon inclusive)
-        h = torch.randint(1, max_horizon + 1, (1,), device=device).item()
+    # Normalized horizon features [B, 1] -> [B, L, 1]
+    horizons_norm = (horizons.float() / 60.0).view(B, 1, 1).expand(B, L, 1)
 
-        # Normalized horizon feature [0, 1]
-        h_norm = h / 60.0
+    # Add horizon feature to X
+    X_with_horizon = torch.cat([X, horizons_norm], dim=-1)  # [B, L, F+1]
 
-        # Add horizon feature to X
-        horizon_feature = torch.full((B, L, 1), h_norm, dtype=X.dtype, device=device)
-        X_with_horizon = torch.cat([X, horizon_feature], dim=-1)
-        X_list.append(X_with_horizon)
-
-        # Interpolate future position from keyframes
-        future_x_interp = interpolate_keyframes(
-            Y, column_map.y_future_x_keyframes, h, keyframe_horizons
+    # Get or create cached keyframe horizon tensor
+    cache_key = (device.type, device.index if device.type == 'cuda' else None)
+    if cache_key not in _KEYFRAME_HORIZONS_CACHE:
+        _KEYFRAME_HORIZONS_CACHE[cache_key] = torch.tensor(
+            keyframe_horizons, device=device, dtype=torch.float32
         )
-        future_y_interp = interpolate_keyframes(
-            Y, column_map.y_future_y_keyframes, h, keyframe_horizons
-        )
-        valid_interp = interpolate_keyframes(
-            Y, column_map.y_future_valid_mask, h, keyframe_horizons
-        )
+    keyframe_horizons_tensor = _KEYFRAME_HORIZONS_CACHE[cache_key]
 
-        future_x_list.append(future_x_interp)
-        future_y_list.append(future_y_interp)
-        valid_list.append(valid_interp)
+    # Find bracketing keyframe indices for each horizon [B]
+    indices = torch.searchsorted(keyframe_horizons_tensor, horizons.float()).clamp(1, len(keyframe_horizons) - 1)
+    h_low_idx = indices - 1  # [B]
+    h_high_idx = indices  # [B]
+
+    # Compute interpolation weights [B, 1] (fused operations)
+    h_low = keyframe_horizons_tensor[h_low_idx]
+    h_high = keyframe_horizons_tensor[h_high_idx]
+    alpha = ((horizons.float() - h_low) / (h_high - h_low + 1e-8)).view(B, 1)
+
+    # Direct indexing approach: use advanced indexing to select keyframes
+    # Extract keyframe arrays [B, L, 9]
+    future_x_keyframes = Y[..., column_map.y_future_x_keyframes]
+    future_y_keyframes = Y[..., column_map.y_future_y_keyframes]
+    valid_keyframes = Y[..., column_map.y_future_valid_mask]
+
+    # Use fancy indexing: create index arrays for batch and sequence dimensions
+    # Then use h_low_idx and h_high_idx to select from keyframe dimension
+    batch_range = torch.arange(B, device=device).view(B, 1, 1)  # [B, 1, 1]
+    seq_range = torch.arange(L, device=device).view(1, L, 1)    # [1, L, 1]
+
+    # Expand indices for 3D indexing
+    h_low_idx_3d = h_low_idx.view(B, 1, 1).expand(B, L, 1)  # [B, L, 1]
+    h_high_idx_3d = h_high_idx.view(B, 1, 1).expand(B, L, 1)  # [B, L, 1]
+
+    # Gather in one operation (fused)
+    future_x_low = future_x_keyframes.gather(2, h_low_idx_3d).squeeze(2)   # [B, L]
+    future_x_high = future_x_keyframes.gather(2, h_high_idx_3d).squeeze(2) # [B, L]
+    future_y_low = future_y_keyframes.gather(2, h_low_idx_3d).squeeze(2)   # [B, L]
+    future_y_high = future_y_keyframes.gather(2, h_high_idx_3d).squeeze(2) # [B, L]
+    valid_low = valid_keyframes.gather(2, h_low_idx_3d).squeeze(2)         # [B, L]
+    valid_high = valid_keyframes.gather(2, h_high_idx_3d).squeeze(2)       # [B, L]
+
+    # Linear interpolation (fused computation)
+    alpha_inv = 1 - alpha
+    future_x_interp = future_x_low * alpha_inv + future_x_high * alpha
+    future_y_interp = future_y_low * alpha_inv + future_y_high * alpha
+    valid_interp = valid_low * alpha_inv + valid_high * alpha
 
     return (
-        torch.cat(X_list, dim=0),  # [B*num_horizons, L, F+1]
-        torch.cat(future_x_list, dim=0),  # [B*num_horizons, L]
-        torch.cat(future_y_list, dim=0),  # [B*num_horizons, L]
-        torch.cat(valid_list, dim=0),  # [B*num_horizons, L]
+        X_with_horizon,  # [B, L, F+1]
+        future_x_interp,  # [B, L]
+        future_y_interp,  # [B, L]
+        valid_interp,  # [B, L]
     )

@@ -97,9 +97,28 @@ def _compute_player_rewards(
     prev_slice = slice(None, -1)  # indices 0 .. L-2
     curr_slice = slice(1, None)  # indices 1 .. L-1
 
-    # --- Damage deltas (current player deals damage to opponent/opponent to player) ---
-    opp_percent_idx = getattr(idx, f"{opponent}_percent")
+    if player == "p1":
+        # Current player deals damage to opponent
+        opp_percent_idx = idx.p2_percent
+        # Opponent dying
+        opp_action_idx = idx.p2_action
+        # Hitlag rewards/penalties
+        opp_hitlag_idx = idx.p2_is_in_hitlag
+        opp_def_hitlag_idx = idx.p2_is_defender_in_hitlag
+        # Shield penalty
+        shield_idx = idx.p1_shield_strength
+    else:  # player == "p2"
+        # Current player deals damage to opponent
+        opp_percent_idx = idx.p1_percent
+        # Opponent dying
+        opp_action_idx = idx.p1_action
+        # Hitlag rewards/penalties
+        opp_hitlag_idx = idx.p1_is_in_hitlag
+        opp_def_hitlag_idx = idx.p1_is_defender_in_hitlag
+        # Shield penalty
+        shield_idx = idx.p2_shield_strength
 
+    # --- Damage deltas (current player deals damage to opponent/opponent to player) ---
     d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
     d_opp.clamp_min_(0.0)
     rewards[:, prev_slice].add_(d_opp.mul_(cfg.reward_damage_dealt))

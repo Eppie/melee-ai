@@ -211,7 +211,7 @@ def initialize_training_components(
     scaler_device = amp.device_type if use_grad_scaler else "cpu"
     scaler = GradScaler(device=scaler_device, enabled=use_grad_scaler)
 
-    if hasattr(ds, "total_batches_for_epoch") and getattr(ds, "_total_chunks", None):
+    if ds._total_chunks:
         stride = config.train.stride
         batch_size = config.train.batch_size
         steps_per_epoch = 0
@@ -233,9 +233,9 @@ def initialize_training_components(
     wandb_run = None
     if not debug:
         wandb_cfg = WandbConfig(
-            project=getattr(config.train, "wandb_project", "melee-ai"),
-            name=getattr(config.train, "run_name", None),
-            mode=getattr(config.train, "wandb_mode", "online"),
+            project=config.train.wandb_project,
+            name=config.train.run_name,
+            mode=config.train.wandb_mode,
         )
         wandb_run = init_wandb(
             config=wandb_cfg,
@@ -248,7 +248,7 @@ def initialize_training_components(
         )
     logger = WandbLogger(wandb_run, enabled=not debug and wandb_run is not None)
 
-    allow_partial_load = getattr(config.train, "allow_partial_checkpoint_load", False)
+    allow_partial_load = config.train.allow_partial_checkpoint_load
     start_epoch, global_step, start_iter = _load_latest_checkpoint(
         out_dir,
         model,

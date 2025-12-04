@@ -70,14 +70,13 @@ def _update_epoch_statistics(epoch_ctx: EpochContext, forward_result) -> None:
 def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
     components = state.components
     config = components.config
-    dataset = getattr(components, "dataset", None)
+    dataset = components.dataset
     chunked = (
         dataset is not None
-        and getattr(dataset, "_total_chunks", None) is not None
-        and getattr(dataset, "_total_chunks") > 1
+        and dataset._total_chunks is not None
+        and dataset._total_chunks > 1
     )
-    if hasattr(components.sampler, "set_epoch"):
-        components.sampler.set_epoch(epoch)
+    components.sampler.set_epoch(epoch)
     components.model.train()
 
     if chunked:
@@ -101,7 +100,6 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
         if (
             not chunked
             and state.resume_iter
-            and hasattr(components.sampler, "set_start_offset")
         ):
             try:
                 components.sampler.set_start_offset(state.resume_iter)
@@ -122,7 +120,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
 
     def _build_loader_for_chunk():
         mp_ctx = None
-        start_method = getattr(config.train, "worker_start_method", None)
+        start_method = config.train.worker_start_method
         if config.train.num_workers and config.train.num_workers > 0 and start_method:
             try:
                 mp_ctx = torch.multiprocessing.get_context(start_method)
@@ -137,7 +135,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
         prefetch_factor = None
         if num_workers and num_workers > 0:
             prefetch_factor = config.train.prefetch_factor
-            max_prefetch_mb = getattr(config.train, "max_loader_prefetch_mb", None)
+            max_prefetch_mb = config.train.max_loader_prefetch_mb
             if max_prefetch_mb:
                 batch_bytes = max(
                     1, dataset.estimate_batch_bytes(config.train.batch_size)
@@ -186,14 +184,14 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
     else:
         loaders = None  # not used; chunk loop below
 
-    if chunked and hasattr(dataset, "_total_chunks"):
+    if chunked:
         stride = config.train.stride
         batch_size = config.train.batch_size
         epoch_mod = epoch % max(1, stride)
         skip_batches = epoch_ctx.skip_remaining
 
         # Multi-chunk overlap: determine number of overlapping chunks
-        num_overlapping = getattr(dataset, "_num_overlapping_chunks", 1)
+        num_overlapping = dataset._num_overlapping_chunks
         total_chunks = int(dataset._total_chunks)
 
         # Calculate number of iterations needed to cover all chunks with overlap
@@ -236,11 +234,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
             try:
                 # Load chunks (supports multi-chunk overlap) with timing
                 chunk_load_start = time.time()
-                if hasattr(dataset, "load_chunks"):
-                    dataset.load_chunks(chunk_indices)
-                else:
-                    # Fallback for old API
-                    dataset.set_active_chunk(chunk_indices[0])
+                dataset.load_chunks(chunk_indices)
                 chunk_load_duration = time.time() - chunk_load_start
 
                 # Record chunk load time
@@ -249,13 +243,11 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 )
 
                 # Update sampler with active episodes
-                if hasattr(components.sampler, "set_active_episodes"):
-                    components.sampler.set_active_episodes(
-                        dataset._active_episode_indices.tolist()
-                    )
-                if hasattr(components.sampler, "set_epoch"):
-                    components.sampler.set_epoch(epoch)
-                if skip_batches > 0 and hasattr(components.sampler, "set_start_offset"):
+                components.sampler.set_active_episodes(
+                    dataset._active_episode_indices.tolist()
+                )
+                components.sampler.set_epoch(epoch)
+                if skip_batches > 0:
                     components.sampler.set_start_offset(skip_batches * batch_size)
                     skip_batches = 0
                 epoch_ctx.skip_remaining = 0
@@ -553,11 +545,11 @@ def train_loop(
     config = components.config
 
     def _total_batches_for_epoch(epoch: int) -> int:
-        dataset = getattr(components, "dataset", None)
+        dataset = components.dataset
         chunked = (
             dataset is not None
-            and getattr(dataset, "_total_chunks", None) is not None
-            and getattr(dataset, "_total_chunks") > 1
+            and dataset._total_chunks is not None
+            and dataset._total_chunks > 1
         )
         if chunked:
             return max(

@@ -402,6 +402,52 @@ def prepare_logging_bundle(
     sh_true_idx = target_info["shoulder_idx"]
     sh_pred_idx = sh_logits.argmax(dim=-1)
 
+    # Future position predictions
+    future_x_logits = pred.get("future_x")
+    future_y_logits = pred.get("future_y")
+    has_future = future_x_logits is not None and future_y_logits is not None
+
+    if has_future:
+        # Import dequantization function
+        from controller_quantization import dequantize_future_position
+
+        future_x_true_idx = target_info.get("future_x_idx", torch.zeros_like(future_x_logits[..., 0].long()))
+        future_y_true_idx = target_info.get("future_y_idx", torch.zeros_like(future_y_logits[..., 0].long()))
+        future_valid = target_info.get("future_valid", torch.ones_like(future_x_true_idx, dtype=torch.float32))
+
+        future_x_pred_idx = future_x_logits.argmax(dim=-1)  # [B, L]
+        future_y_pred_idx = future_y_logits.argmax(dim=-1)  # [B, L]
+
+        # Compute spatial error in game units (for MAE)
+        future_x_pred_pos = dequantize_future_position(future_x_pred_idx, axis='x')
+        future_x_true_pos = dequantize_future_position(future_x_true_idx, axis='x')
+        future_y_pred_pos = dequantize_future_position(future_y_pred_idx, axis='y')
+        future_y_true_pos = dequantize_future_position(future_y_true_idx, axis='y')
+
+        future_x_error = (future_x_pred_pos - future_x_true_pos).abs()  # [B, L]
+        future_y_error = (future_y_pred_pos - future_y_true_pos).abs()  # [B, L]
+
+        # Mask out invalid positions
+        future_x_error_masked = future_x_error * future_valid
+        future_y_error_masked = future_y_error * future_valid
+
+        # Accuracy (exact bucket match)
+        future_x_acc = (future_x_pred_idx == future_x_true_idx).float() * future_valid
+        future_y_acc = (future_y_pred_idx == future_y_true_idx).float() * future_valid
+
+        # Mean across valid frames only
+        num_valid = future_valid.sum().clamp_min(1.0)
+        future_x_acc_mean = future_x_acc.sum() / num_valid
+        future_y_acc_mean = future_y_acc.sum() / num_valid
+        future_x_mae = future_x_error_masked.sum() / num_valid
+        future_y_mae = future_y_error_masked.sum() / num_valid
+    else:
+        # Dummy values if future heads not present
+        future_x_acc_mean = torch.tensor(0.0, device=device)
+        future_y_acc_mean = torch.tensor(0.0, device=device)
+        future_x_mae = torch.tensor(0.0, device=device)
+        future_y_mae = torch.tensor(0.0, device=device)
+
     # Compute all accuracy metrics on GPU and batch them
     acc_metrics = torch.stack(
         [
@@ -426,6 +472,12 @@ def prepare_logging_bundle(
             ),
             # Shoulder accuracies
             (sh_pred_idx == sh_true_idx).float().mean(),
+            # Future position accuracies
+            future_x_acc_mean,
+            future_y_acc_mean,
+            # Future position MAE
+            future_x_mae,
+            future_y_mae,
         ]
     )
 
@@ -513,6 +565,8 @@ def prepare_logging_bundle(
     idx += 2
     acc_sh = all_scalars_cpu[idx]
     idx += 1
+    acc_future_x, acc_future_y, mae_future_x, mae_future_y = all_scalars_cpu[idx : idx + 4]
+    idx += 4
     (
         value_pred_mean,
         value_target_mean,
@@ -590,6 +644,13 @@ def prepare_logging_bundle(
         f"  VALUE:    pred {value_pred_mean:.3f} | targ {value_target_mean:.3f} | "
         f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation:.3f}"
     )
+    if has_future:
+        log_lines.append(
+            f"  FUTURE_X: acc {acc_future_x:.3f} | MAE {mae_future_x:.2f} units"
+        )
+        log_lines.append(
+            f"  FUTURE_Y: acc {acc_future_y:.3f} | MAE {mae_future_y:.2f} units"
+        )
 
     # Build payload
     log_payload: Dict[str, float] = {
@@ -603,6 +664,8 @@ def prepare_logging_bundle(
         "loss/buttons": loss_summary["buttons"],
         "loss/shoulder": loss_summary["shoulder"],
         "loss/value": loss_summary["value"],
+        "loss/future_x": loss_summary.get("future_x", 0.0),
+        "loss/future_y": loss_summary.get("future_y", 0.0),
         "metrics/acc_main_batch": acc_main_b,
         "metrics/acc_main_change": acc_main_chg,
         "metrics/acc_main_hold": acc_main_hold,
@@ -650,6 +713,17 @@ def prepare_logging_bundle(
         }
     )
 
+    # Future position metrics
+    if has_future:
+        log_payload.update(
+            {
+                "metrics/acc_future_x": acc_future_x,
+                "metrics/acc_future_y": acc_future_y,
+                "metrics/mae_future_x": mae_future_x,
+                "metrics/mae_future_y": mae_future_y,
+            }
+        )
+
     # === NEW METRICS ===
 
     # 1. Confidence and entropy metrics for stick heads
@@ -666,6 +740,19 @@ def prepare_logging_bundle(
         )
     )
     log_payload.update(compute_confidence_metrics(sh_logits, sh_true_idx, "shoulder"))
+
+    # Future position heads
+    if has_future:
+        log_payload.update(
+            compute_confidence_metrics(
+                future_x_logits, future_x_true_idx, "future_x"
+            )
+        )
+        log_payload.update(
+            compute_confidence_metrics(
+                future_y_logits, future_y_true_idx, "future_y"
+            )
+        )
 
     # 2. Top-K accuracy for stick heads
     log_payload.update(
@@ -687,6 +774,15 @@ def prepare_logging_bundle(
     log_payload.update(
         compute_topk_accuracy(sh_logits, sh_true_idx, "shoulder", k_values=[1, 3, 5])
     )
+
+    # Future position heads
+    if has_future:
+        log_payload.update(
+            compute_topk_accuracy(future_x_logits, future_x_true_idx, "future_x", k_values=[1, 3, 5])
+        )
+        log_payload.update(
+            compute_topk_accuracy(future_y_logits, future_y_true_idx, "future_y", k_values=[1, 3, 5])
+        )
 
     # 3. Frequency statistics (mode collapse detection)
     # For predictions
@@ -712,6 +808,25 @@ def prepare_logging_bundle(
         )
     )
 
+    # Future position heads
+    if has_future:
+        log_payload.update(
+            compute_frequency_stats(
+                future_x_pred_idx,
+                int(target_info.get("future_x_K", future_x_logits.shape[-1])),
+                "future_x",
+                prefix="freq",
+            )
+        )
+        log_payload.update(
+            compute_frequency_stats(
+                future_y_pred_idx,
+                int(target_info.get("future_y_K", future_y_logits.shape[-1])),
+                "future_y",
+                prefix="freq",
+            )
+        )
+
     # For targets (ground truth distribution)
     log_payload.update(
         compute_frequency_stats(
@@ -735,6 +850,25 @@ def prepare_logging_bundle(
         )
     )
 
+    # Future position heads
+    if has_future:
+        log_payload.update(
+            compute_frequency_stats(
+                future_x_true_idx,
+                int(target_info.get("future_x_K", future_x_logits.shape[-1])),
+                "future_x",
+                prefix="tgt_freq",
+            )
+        )
+        log_payload.update(
+            compute_frequency_stats(
+                future_y_true_idx,
+                int(target_info.get("future_y_K", future_y_logits.shape[-1])),
+                "future_y",
+                prefix="tgt_freq",
+            )
+        )
+
     # 4. Temporal consistency
     log_payload.update(
         compute_temporal_consistency(main_pred, target_main_2d, "main_stick")
@@ -743,6 +877,15 @@ def prepare_logging_bundle(
     log_payload.update(
         compute_temporal_consistency(sh_pred_idx, sh_true_idx, "shoulder")
     )
+
+    # Future position heads
+    if has_future:
+        log_payload.update(
+            compute_temporal_consistency(future_x_pred_idx, future_x_true_idx, "future_x")
+        )
+        log_payload.update(
+            compute_temporal_consistency(future_y_pred_idx, future_y_true_idx, "future_y")
+        )
 
     # Button temporal consistency (use exact match as binary signal)
     log_payload.update(

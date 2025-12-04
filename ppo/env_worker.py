@@ -112,6 +112,7 @@ class EnvWorker:
         # Menu navigation
         self.menu_helper = MenuHelper()
         self.was_in_menu = True  # Track menu state transitions
+        self._menu_frame_counter = 0
 
     def _select_stage(self) -> enums.Stage:
         """Select random stage from tournament legal pool."""
@@ -379,16 +380,15 @@ class EnvWorker:
                 # 2. Handle menu navigation (if not in game)
                 if gamestate.menu_state not in [enums.Menu.IN_GAME, enums.Menu.SUDDEN_DEATH]:
                     # Log menu state periodically to debug
-                    menu_frame_counter = getattr(self, '_menu_frame_counter', 0)
-                    if menu_frame_counter % 120 == 0:  # Every 2 seconds at 60fps
+                    if self._menu_frame_counter % 120 == 0:  # Every 2 seconds at 60fps
                         print(
-                            f"[ENV {self.env_id}] Still in menus (frame {menu_frame_counter}): "
+                            f"[ENV {self.env_id}] Still in menus (frame {self._menu_frame_counter}): "
                             f"menu_state={gamestate.menu_state}, "
                             f"submenu={gamestate.submenu}, "
                             f"menu_selection={gamestate.menu_selection}, "
                             f"frame={gamestate.frame}"
                         )
-                    self._menu_frame_counter = menu_frame_counter + 1
+                    self._menu_frame_counter += 1
 
                     # Handle PRESS_START screen explicitly (menu_helper_simple doesn't handle it)
                     if gamestate.menu_state == enums.Menu.PRESS_START:

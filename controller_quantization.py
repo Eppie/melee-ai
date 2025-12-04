@@ -48,6 +48,10 @@ FUTURE_Y_BUCKETS = torch.tensor(
 _FUTURE_X_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 _FUTURE_Y_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 
+# Cache for precomputed midpoints (for dequantization)
+_FUTURE_X_MIDPOINTS_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+_FUTURE_Y_MIDPOINTS_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
+
 
 def quantize_future_position(pos: torch.Tensor, axis: str) -> torch.Tensor:
     """Quantize continuous future positions to discrete bucket indices.
@@ -87,6 +91,75 @@ def quantize_future_position(pos: torch.Tensor, axis: str) -> torch.Tensor:
     idx = torch.clamp(idx, min=0, max=31)
 
     return idx.view(original_shape)
+
+
+def _compute_midpoints(boundaries: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Compute bucket midpoints from boundaries (vectorized, cached helper)."""
+    num_boundaries = boundaries.shape[0]
+    midpoints = torch.zeros(32, dtype=boundaries.dtype, device=device)
+
+    # Bucket 0: extrapolate left
+    midpoints[0] = boundaries[0] - (boundaries[1] - boundaries[0]) / 2
+
+    # Buckets 1 to num_boundaries-1: midpoints between boundaries
+    if num_boundaries > 1:
+        midpoints[1:num_boundaries] = (boundaries[:-1] + boundaries[1:]) / 2
+
+    # Last bucket (31): extrapolate right
+    if num_boundaries >= 2:
+        if num_boundaries < 32:
+            midpoints[num_boundaries:] = boundaries[-1] + (boundaries[-1] - boundaries[-2]) / 2
+        else:
+            midpoints[31] = boundaries[-1] + (boundaries[-1] - boundaries[-2]) / 2
+
+    return midpoints
+
+
+def dequantize_future_position(idx: torch.Tensor, axis: str) -> torch.Tensor:
+    """Convert quantized bucket indices back to continuous position values.
+
+    Uses bucket midpoints as the representative value for each bucket.
+    Midpoints are cached per device for efficiency.
+
+    Args:
+        idx: Bucket indices in [0, 31], any shape (...,)
+        axis: Either 'x' or 'y' to select the appropriate bucket boundaries
+
+    Returns:
+        Continuous position values, same shape as input
+
+    Example:
+        >>> idx = torch.tensor([[19, 3], [16, 25]])  # [B=2, L=2]
+        >>> pos_x = dequantize_future_position(idx, 'x')
+        >>> # idx[0,0]=19 → midpoint of bucket 19 ≈ 50.0
+        >>> # idx[0,1]=3 → midpoint of bucket 3 ≈ -110.0
+    """
+    original_shape = idx.shape
+    device = idx.device
+
+    # Get appropriate bucket boundaries and midpoint cache
+    if axis == 'x':
+        boundaries = _palette_for_device(FUTURE_X_BUCKETS, _FUTURE_X_CACHE, device)
+        midpoints_cache = _FUTURE_X_MIDPOINTS_CACHE
+    elif axis == 'y':
+        boundaries = _palette_for_device(FUTURE_Y_BUCKETS, _FUTURE_Y_CACHE, device)
+        midpoints_cache = _FUTURE_Y_MIDPOINTS_CACHE
+    else:
+        raise ValueError(f"axis must be 'x' or 'y', got {axis}")
+
+    # Check cache for precomputed midpoints
+    cache_key = (device.type, device.index if device.type == 'cuda' else None)
+    if cache_key not in midpoints_cache:
+        # Compute and cache midpoints once per device
+        midpoints_cache[cache_key] = _compute_midpoints(boundaries, device)
+
+    midpoints = midpoints_cache[cache_key]
+
+    # Lookup midpoints (vectorized)
+    idx_flat = idx.reshape(-1).to(torch.long)
+    pos_flat = midpoints[idx_flat.clamp(0, 31)]
+
+    return pos_flat.view(original_shape)
 
 
 # TODO: Do we need clamp here?

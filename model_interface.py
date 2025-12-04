@@ -200,8 +200,13 @@ def _zero_player_fields(prefix: str) -> Dict[str, float]:
 
 def _prefixed_player_fields(player, prefix: str) -> Dict[str, float]:
     """Extract prefixed player fields or fall back to zeros."""
-    if player is None or getattr(player, "controller_state", None) is None:
-        return _zero_player_fields(prefix)
+    # Grab the features for the current frame
+    if player is None or player.controller_state is None:
+        # If the player is not in the game (e.g. has already lost), then
+        # there is no controller state. We can return a neutral state.
+        # This can happen when the bot is playing against a human and the
+        # human quits or loses all their stock.
+        return neutral_controller_state()
 
     try:
         extracted = extract_player_fields(player)

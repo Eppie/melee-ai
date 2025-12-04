@@ -390,16 +390,24 @@ class RunStats:
 
 
 @dataclass
+class StickErrorMetrics:
+    total_error: float = 0.0
+    error_change: float = 0.0
+    error_hold: float = 0.0
+
+    def update(self, errors: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor):
+        self.total_error += errors.sum().item()
+        if change_mask.any():
+            self.error_change += errors[change_mask].sum().item()
+        if hold_mask.any():
+            self.error_hold += errors[hold_mask].sum().item()
+
+@dataclass
 class EnhancedMetrics:
     """Additional validation metrics beyond basic accuracy."""
 
-    # Stick error metrics (Euclidean distance)
-    total_main_stick_error: float = 0.0
-    total_c_stick_error: float = 0.0
-    total_main_stick_error_change: float = 0.0
-    total_main_stick_error_hold: float = 0.0
-    total_c_stick_error_change: float = 0.0
-    total_c_stick_error_hold: float = 0.0
+    main_stick_error: StickErrorMetrics = field(default_factory=StickErrorMetrics)
+    c_stick_error: StickErrorMetrics = field(default_factory=StickErrorMetrics)
 
     # New: Stick error by component
     total_main_stick_magnitude_error: float = 0.0
@@ -587,10 +595,20 @@ def _print_extreme_value_frames(
 
     reward_idx = reward_features or build_reward_feature_index(colmap)
     reward_columns: List[Tuple[str, int]] = []
-    for field_info in fields(RewardFeatureIdx):
-        col_idx = getattr(reward_idx, field_info.name)
-        if col_idx is not None:
-            reward_columns.append((field_info.name, col_idx))
+    if reward_idx:
+        reward_columns = [
+            ("p1_action", reward_idx.p1_action),
+            ("p2_action", reward_idx.p2_action),
+            ("p1_percent", reward_idx.p1_percent),
+            ("p2_percent", reward_idx.p2_percent),
+            ("p1_is_in_hitlag", reward_idx.p1_is_in_hitlag),
+            ("p2_is_in_hitlag", reward_idx.p2_is_in_hitlag),
+            ("p1_is_defender_in_hitlag", reward_idx.p1_is_defender_in_hitlag),
+            ("p2_is_defender_in_hitlag", reward_idx.p2_is_defender_in_hitlag),
+            ("p1_shield_strength", reward_idx.p1_shield_strength),
+            ("p2_shield_strength", reward_idx.p2_shield_strength),
+        ]
+        reward_columns = [(name, idx) for name, idx in reward_columns if idx is not None]
 
     if reward_columns:
         selected_headers = [name for name, _ in reward_columns]
@@ -831,33 +849,6 @@ def _change_hold_masks(sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tens
     if sequence.shape[1] > 1:
         change_mask[:, 1:] = sequence[:, 1:] != sequence[:, :-1]
     return change_mask, ~change_mask
-
-
-def _accumulate_stick_errors(
-    enhanced: EnhancedMetrics,
-    errors: torch.Tensor,
-    change_mask: torch.Tensor,
-    hold_mask: torch.Tensor,
-    prefix: str,
-) -> None:
-    """Update stick error totals for either main or c stick."""
-    total_attr = f"total_{prefix}_stick_error"
-    change_attr = f"total_{prefix}_stick_error_change"
-    hold_attr = f"total_{prefix}_stick_error_hold"
-
-    setattr(enhanced, total_attr, getattr(enhanced, total_attr) + errors.sum().item())
-    if change_mask.any():
-        setattr(
-            enhanced,
-            change_attr,
-            getattr(enhanced, change_attr) + errors[change_mask].sum().item(),
-        )
-    if hold_mask.any():
-        setattr(
-            enhanced,
-            hold_attr,
-            getattr(enhanced, hold_attr) + errors[hold_mask].sum().item(),
-        )
 
 
 def _accumulate_jitter(
@@ -1162,10 +1153,8 @@ def _update_enhanced_metrics(
     main_change_mask, main_hold_mask = _change_hold_masks(target_main)
     c_change_mask, c_hold_mask = _change_hold_masks(target_c)
 
-    _accumulate_stick_errors(
-        enhanced, main_errors, main_change_mask, main_hold_mask, "main"
-    )
-    _accumulate_stick_errors(enhanced, c_errors, c_change_mask, c_hold_mask, "c")
+    enhanced.main_stick_error.update(main_errors, main_change_mask, main_hold_mask)
+    enhanced.c_stick_error.update(c_errors, c_change_mask, c_hold_mask)
 
     # New: Stick Error by Vector Components
     # Magnitudes
@@ -1676,8 +1665,8 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
 
     # 1. Mean Stick Error
     print("\n1. Mean Stick Error:")
-    avg_main_error = _safe_div(enhanced.total_main_stick_error, enhanced.total_frames)
-    avg_c_error = _safe_div(enhanced.total_c_stick_error, enhanced.total_frames)
+    avg_main_error = _safe_div(enhanced.main_stick_error.total_error, enhanced.total_frames)
+    avg_c_error = _safe_div(enhanced.c_stick_error.total_error, enhanced.total_frames)
     print(f"  Main Stick (Euclidean): {avg_main_error:.4f}")
     print(f"  C-Stick (Euclidean):    {avg_c_error:.4f}")
 

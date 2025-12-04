@@ -102,7 +102,7 @@ class DataLoaderFactory:
         Returns:
             Multiprocessing context or None for default
         """
-        start_method = getattr(config.train, "worker_start_method", None)
+        start_method = config.train.worker_start_method
 
         if not config.train.num_workers or config.train.num_workers <= 0:
             return None
@@ -151,7 +151,7 @@ class DataLoaderFactory:
             return None
 
         prefetch_factor = config.train.prefetch_factor
-        max_prefetch_mb = getattr(config.train, "max_loader_prefetch_mb", None)
+        max_prefetch_mb = config.train.max_loader_prefetch_mb
 
         if not max_prefetch_mb:
             return prefetch_factor
@@ -204,17 +204,5 @@ class DataLoaderFactory:
         Returns:
             Estimated bytes per batch
         """
-        # Try to use dataset's estimate_batch_bytes method if available
-        if hasattr(dataset, "estimate_batch_bytes"):
-            return max(1, dataset.estimate_batch_bytes(config.train.batch_size))
-
-        # Fallback: rough estimate based on typical sizes
-        # This is a conservative estimate for typical sequence data
-        # Adjust based on your data characteristics
-        seq_len = getattr(dataset, "seq_len", 256)
-        num_features = 300  # Typical feature count
-        bytes_per_float = 4
-        batch_size = config.train.batch_size
-
-        estimated_bytes = batch_size * seq_len * num_features * bytes_per_float
-        return estimated_bytes
+        # The dataset is always a WindowDataset, which implements estimate_batch_bytes.
+        return max(1, dataset.estimate_batch_bytes(config.train.batch_size))

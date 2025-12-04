@@ -45,11 +45,7 @@ def log_player_snapshot(gamestate, ports, death_counts, death_percents, fps=None
     snapshot = []
     for port in ports:
         player_state = gamestate.players.get(port)
-        if player_state is None:
-            snapshot.append(f"P{port}: no data")
-            continue
-        percent = getattr(player_state, "percent", None)
-        percent_str = percent if percent is not None else "?"
+        percent = player_state.percent if player_state else None
         deaths = death_counts.get(port, 0)
         ko_window = _format_ko_window(death_percents.get(port))
         snapshot.append(

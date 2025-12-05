@@ -11,6 +11,7 @@ from train.gradients import _move_optimizer_state_to_device
 from train.components import TrainingComponents
 from train.validation import maybe_run_validation
 from utils import match_state_dict_keys
+import torch.nn as nn
 
 
 def _sorted_checkpoint_paths(directory: Path) -> List[Path]:
@@ -81,6 +82,82 @@ def _latest_checkpoint(directory: Path) -> Optional[Path]:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def _expand_projection_down_for_horizon(
+    state_dict: Dict[str, torch.Tensor], model: torch.nn.Module
+) -> Dict[str, torch.Tensor]:
+    """Expand projection_down layer to accept horizon feature if checkpoint is from old model.
+
+    Old checkpoints have projection_down with input_size=908. New models expect input_size=909
+    to account for the horizon feature added by augment_batch_with_horizons. This function
+    detects the mismatch and expands the weights/bias with small random initialization for
+    the new column.
+
+    Args:
+        state_dict: Checkpoint state dict that may have old dimensions
+        model: Current model with potentially larger dimensions
+
+    Returns:
+        Updated state dict with expanded projection_down layer if needed
+    """
+    # Find the projection_down weight key (handle both compiled and non-compiled models)
+    proj_key = None
+    proj_bias_key = None
+
+    for key in state_dict.keys():
+        if "projection_down.weight" in key:
+            proj_key = key
+        if "projection_down.bias" in key:
+            proj_bias_key = key
+
+    if proj_key is None:
+        return state_dict  # No projection_down found, nothing to do
+
+    # Get checkpoint and model dimensions
+    ckpt_weight = state_dict[proj_key]
+    ckpt_in_features = ckpt_weight.shape[1]  # [out_features, in_features]
+
+    # Get current model's projection_down layer
+    model_proj = model.projection_down if hasattr(model, "projection_down") else None
+    if model_proj is None:
+        # Handle compiled models
+        if hasattr(model, "_orig_mod") and hasattr(model._orig_mod, "projection_down"):
+            model_proj = model._orig_mod.projection_down
+
+    if model_proj is None:
+        return state_dict  # Can't find model projection layer
+
+    model_in_features = model_proj.weight.shape[1]
+
+    # Check if we need to expand (old checkpoint: 908, new model: 909)
+    if ckpt_in_features == model_in_features:
+        return state_dict  # No expansion needed
+
+    if ckpt_in_features == model_in_features - 1:
+        # Old checkpoint missing horizon feature - expand it
+        print(
+            f"Expanding projection_down from {ckpt_in_features} to {model_in_features} "
+            f"input features to accommodate horizon conditioning"
+        )
+
+        # Expand weight: add one column with small random values
+        out_features = ckpt_weight.shape[0]
+        new_col = torch.randn(out_features, 1, dtype=ckpt_weight.dtype) * 0.01
+        expanded_weight = torch.cat([ckpt_weight, new_col], dim=1)
+        state_dict[proj_key] = expanded_weight
+
+        # Bias doesn't need expansion (output dimension unchanged)
+
+        return state_dict
+
+    # Dimension mismatch that we can't handle
+    print(
+        f"Warning: projection_down dimension mismatch: checkpoint has {ckpt_in_features} "
+        f"input features, model expects {model_in_features}. This mismatch is not "
+        f"automatically handled."
+    )
+    return state_dict
 
 
 def load_config_from_checkpoint(
@@ -179,9 +256,21 @@ def _load_latest_checkpoint(
     ckpt = torch.load(latest, map_location="cpu")
 
     model_state = ckpt.get("model")
+    model_was_expanded = False
     if model_state:
         # Handle torch.compile() prefix mismatch (both directions)
         model_state = match_state_dict_keys(model_state, model)
+
+        # Expand projection_down if checkpoint is from old model (908 -> 909 inputs)
+        original_state = model_state.copy()
+        model_state = _expand_projection_down_for_horizon(model_state, model)
+
+        # Check if expansion occurred by comparing state dicts
+        model_was_expanded = any(
+            not torch.equal(model_state[k], original_state[k])
+            for k in model_state.keys()
+            if k in original_state and isinstance(model_state[k], torch.Tensor)
+        )
 
         try:
             if allow_partial_load:
@@ -211,8 +300,14 @@ def _load_latest_checkpoint(
 
     opt_state = ckpt.get("optimizer")
     if opt_state:
-        optimizer.load_state_dict(opt_state)
-        _move_optimizer_state_to_device(optimizer, device)
+        if model_was_expanded:
+            print(
+                "Skipping optimizer state loading because model was expanded. "
+                "Optimizer will be reinitialized from scratch."
+            )
+        else:
+            optimizer.load_state_dict(opt_state)
+            _move_optimizer_state_to_device(optimizer, device)
 
     scaler_state = ckpt.get("scaler")
     if scaler_state:

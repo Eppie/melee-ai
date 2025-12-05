@@ -101,7 +101,7 @@ class ZarrConfig(BaseModel):
         ),
     )
     chunk_frames: int = Field(
-        default=32768,
+        default=512,
         ge=1,
         description=(
             "Number of frames per Zarr chunk along the time axis. Larger chunks reduce __setitem__/sync "

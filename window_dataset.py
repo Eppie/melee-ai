@@ -263,27 +263,6 @@ class WindowDataset(Dataset):
         self._cache_misses: int = 0
         self._cache_log_interval = max(0, int(cache_log_interval))
 
-        # Clamp cache capacity to avoid runaway per-worker memory.
-        if self._episode_cache_capacity > 0:
-            try:
-                est_bytes = estimate_episode_memory(self.index, sample_size=64)
-                # Hard budget per worker: ~256 MiB to stay under OOM with many workers.
-                max_capacity = max(
-                    1, int((256 * 1024 * 1024) // max(1, est_bytes))
-                )
-                if self._episode_cache_capacity > max_capacity:
-                    logger.warning(
-                        "[dataset cache] Reducing cache capacity from %d to %d "
-                        "based on ~256MiB per-worker budget (est %.1f MiB/episode).",
-                        self._episode_cache_capacity,
-                        max_capacity,
-                        est_bytes / (1024**2),
-                    )
-                    self._episode_cache_capacity = max_capacity
-            except Exception:
-                # If estimation fails, proceed with requested capacity.
-                pass
-
         # Enforce preprocessed data presence
         preprocessed = self.index.meta.get("preprocessed", {})
         if not (preprocessed.get("features") and preprocessed.get("targets")):
@@ -832,44 +811,35 @@ class RandomWindowSampler(Sampler[int]):
                 yield int(value)
             return
 
-        # Partition buckets into lanes to stagger starts across workers.
+        # Partition buckets into lanes to stagger starting buckets, but emit lanes sequentially
+        # (no per-window interleaving) to improve locality and cache hit rate.
         lanes: List[List[np.ndarray]] = [[] for _ in range(lane_count)]
         for idx, buff in enumerate(buffers):
             lanes[idx % lane_count].append(buff)
 
-        lane_states: List[Tuple[int, int]] = [(0, 0) for _ in range(lane_count)]
-        skipped = 0
+        lane_indices = list(range(lane_count))
+        rng.shuffle(lane_indices)
 
-        while True:
-            emitted = False
-            for lane_idx in range(lane_count):
-                lane_buckets = lanes[lane_idx]
-                bidx, offset = lane_states[lane_idx]
+        flat_buffers: List[np.ndarray] = []
+        for lane_idx in lane_indices:
+            flat_buffers.extend(lanes[lane_idx])
 
-                # Advance past exhausted buckets.
-                while bidx < len(lane_buckets) and offset >= lane_buckets[bidx].size:
-                    bidx += 1
-                    offset = 0
+        if not flat_buffers:
+            return
 
-                if bidx >= len(lane_buckets):
-                    lane_states[lane_idx] = (bidx, offset)
-                    continue
+        buffer = np.concatenate(flat_buffers)
+        if self._start_offset:
+            start_offset = min(self._start_offset, buffer.size)
+            buffer = buffer[start_offset:]
+            self._start_offset = 0
+        else:
+            self._start_offset = 0
 
-                value = int(lane_buckets[bidx][offset])
-                offset += 1
-                lane_states[lane_idx] = (bidx, offset)
-                emitted = True
+        if buffer.size == 0:
+            return
 
-                if skipped < self._start_offset:
-                    skipped += 1
-                    continue
-
-                yield value
-
-            if not emitted:
-                break
-
-        self._start_offset = 0
+        for value in buffer:
+            yield int(value)
         return
 
 
@@ -899,7 +869,6 @@ def make_dataloader(
         index=ds.index,
         stride=stride,
         bucket_size=config.train.window_bucket_size,
-        lane_count=max(1, config.train.num_workers),
     )
     if getattr(ds, "_active_episode_indices", None) is not None:
         sampler.set_active_episodes(ds._active_episode_indices.tolist())

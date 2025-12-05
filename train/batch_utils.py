@@ -21,6 +21,9 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
     wrapped in a ``TensorDict`` with the same batch shape as the input so downstream code can rely
     on consistent key names.
 
+    If the input has one extra feature beyond what's in the column_map (added by
+    ``augment_batch_with_horizons``), it's detected as a horizon feature and appended to gamestate.
+
     Example:
         Suppose ``features_batch`` is shaped ``[2, 3, 6]`` and the column map encodes indices such that
         stage is at column 0, ego character at column 1, opponent character at column 2, ego action
@@ -44,6 +47,7 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
 
     Args:
         features_batch: ``[batch_size, sequence_length, F]`` float32 features of the current frame sequence.
+                       May have F = base_features or F = base_features + 1 (with horizon appended).
         column_map: Column mapping for feature indices.
 
     Returns:
@@ -51,7 +55,7 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
         ``opponent_character``, ``ego_action``, ``opponent_action``, ``gamestate``, and
         ``controller``.
     """
-    batch_size, sequence_length, _ = features_batch.shape
+    batch_size, sequence_length, num_features = features_batch.shape
 
     # Categoricals back to long indices
     stage = (
@@ -76,6 +80,21 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
     controller = features_batch[
         ..., column_map.controller_idxs
     ]  # [batch_size,sequence_length,Gc]
+
+    # Check if there's an extra feature (horizon) appended by augment_batch_with_horizons
+    # Expected features: stage(1) + ego_char(1) + opp_char(1) + ego_action(1) + opp_action(1) +
+    #                    value(1 if present) + gamestate + controller
+    expected_features = (
+        5  # stage, ego_char, opp_char, ego_action, opp_action
+        + (1 if column_map.value_idx is not None else 0)
+        + len(column_map.gamestate_idxs)
+        + len(column_map.controller_idxs)
+    )
+
+    if num_features == expected_features + 1:
+        # Horizon feature was appended at the end - include it in gamestate
+        horizon = features_batch[..., -1:].to(torch.float32)  # [batch_size, sequence_length, 1]
+        gamestate = torch.cat([gamestate, horizon], dim=-1)
 
     return TensorDict(
         {

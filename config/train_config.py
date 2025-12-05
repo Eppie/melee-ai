@@ -78,7 +78,7 @@ class TrainConfig(BaseModel):
         description="Number of dataloader worker processes. More workers = faster data loading but more memory.",
     )
     window_bucket_size: int | None = Field(
-        default=32,
+        default=None,
         ge=1,
         description=(
             "Group episodes into contiguous buckets of this size and shuffle buckets per epoch. "
@@ -86,7 +86,7 @@ class TrainConfig(BaseModel):
         ),
     )
     worker_episode_cache_size: int = Field(
-        default=32,
+        default=0,
         ge=0,
         description=(
             "Number of episodes each worker caches in RAM (per-process LRU). "

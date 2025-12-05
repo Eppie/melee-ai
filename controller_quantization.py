@@ -66,8 +66,9 @@ def quantize_future_position(pos: torch.Tensor, axis: str) -> torch.Tensor:
     Example:
         >>> pos_x = torch.tensor([[50.0, -100.0], [0.0, 200.0]])  # [B=2, L=2]
         >>> indices = quantize_future_position(pos_x, 'x')
-        >>> # pos_x[0,0]=50.0 falls in bucket for [45.0, 55.0] → index ~19
-        >>> # pos_x[0,1]=-100.0 falls in blastzone left → index ~3
+        >>> # pos_x[0,0]=50.0 falls in bucket [45.0, 55.0) → index 19
+        >>> # pos_x[0,1]=-100.0 falls in bucket [-110.0, -95.0) → index 4
+        >>> # Dequantizes to bucket midpoints: 50.0, -102.5, 0.0, 210.0
     """
     original_shape = pos.shape
     device = pos.device
@@ -84,8 +85,10 @@ def quantize_future_position(pos: torch.Tensor, axis: str) -> torch.Tensor:
     pos_flat = pos.reshape(-1).to(dtype=boundaries.dtype).contiguous()
 
     # Find bucket indices using searchsorted
-    # right=True means values equal to boundary go in higher bucket
-    idx = torch.searchsorted(boundaries, pos_flat, right=True) - 1
+    # right=False means values equal to boundary go in current bucket (not next)
+    # Bucket i represents range [boundaries[i-1], boundaries[i])
+    # searchsorted(right=False) returns i such that boundaries[i-1] <= value < boundaries[i]
+    idx = torch.searchsorted(boundaries, pos_flat, right=False)
 
     # Clamp to valid range [0, 31]
     idx = torch.clamp(idx, min=0, max=31)
@@ -129,10 +132,12 @@ def dequantize_future_position(idx: torch.Tensor, axis: str) -> torch.Tensor:
         Continuous position values, same shape as input
 
     Example:
-        >>> idx = torch.tensor([[19, 3], [16, 25]])  # [B=2, L=2]
+        >>> idx = torch.tensor([[19, 4], [14, 27]])  # [B=2, L=2]
         >>> pos_x = dequantize_future_position(idx, 'x')
-        >>> # idx[0,0]=19 → midpoint of bucket 19 ≈ 50.0
-        >>> # idx[0,1]=3 → midpoint of bucket 3 ≈ -110.0
+        >>> # idx[0,0]=19 → bucket [45.0, 55.0) → midpoint 50.0
+        >>> # idx[0,1]=4 → bucket [-110.0, -95.0) → midpoint -102.5
+        >>> # idx[1,0]=14 → bucket [-5.0, 5.0) → midpoint 0.0
+        >>> # idx[1,1]=27 → bucket [180.0, 240.0) → midpoint 210.0
     """
     original_shape = idx.shape
     device = idx.device

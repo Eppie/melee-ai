@@ -183,6 +183,7 @@ class GPTConfig(BaseModel):
             + num_actions * 2
             + gamestate_dim
             + controller_dim
+            + 1  # +1 for horizon feature added by augment_batch_with_horizons
         )
         return data
 

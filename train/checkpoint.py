@@ -313,6 +313,7 @@ def _load_latest_checkpoint(
 
     model_state = ckpt.get("model")
     model_was_expanded = False
+    future_heads_reinitialized = False
     if model_state:
         # Handle torch.compile() prefix mismatch (both directions)
         model_state = match_state_dict_keys(model_state, model)
@@ -360,6 +361,9 @@ def _load_latest_checkpoint(
                 # Filter out future head keys from checkpoint
                 filtered_state = {k: v for k, v in model_state.items() if not is_future_key(k)}
 
+                # Mark that future heads were reinitialized (skip optimizer loading)
+                future_heads_reinitialized = True
+
                 # Load filtered state (allowing missing future head params)
                 incompatible = model.load_state_dict(filtered_state, strict=False)
                 missing = list(getattr(incompatible, "missing_keys", ()))
@@ -400,10 +404,11 @@ def _load_latest_checkpoint(
 
     opt_state = ckpt.get("optimizer")
     if opt_state:
-        if model_was_expanded:
+        if model_was_expanded or future_heads_reinitialized:
+            reason = "model was expanded" if model_was_expanded else "future heads were reinitialized"
             print(
-                "Skipping optimizer state loading because model was expanded. "
-                "Optimizer will be reinitialized from scratch."
+                f"Skipping optimizer state loading because {reason}. "
+                f"Optimizer will be reinitialized from scratch."
             )
         else:
             optimizer.load_state_dict(opt_state)

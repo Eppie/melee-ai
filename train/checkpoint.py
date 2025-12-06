@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import torch
 from torch.amp import GradScaler
@@ -12,6 +12,62 @@ from train.components import TrainingComponents
 from train.validation import maybe_run_validation
 from utils import match_state_dict_keys
 import torch.nn as nn
+
+
+def _validate_future_head_only_mismatch(
+    missing_keys: List[str], unexpected_keys: List[str]
+) -> None:
+    """Validate that only future head parameters are mismatched during checkpoint loading.
+
+    This allows safe architectural changes to future_x and future_y heads while ensuring
+    all controller heads (main_stick, c_stick, buttons, shoulder) load correctly.
+
+    Args:
+        missing_keys: List of parameters missing from checkpoint
+        unexpected_keys: List of parameters in checkpoint but not in model
+
+    Raises:
+        RuntimeError: If any non-future-head parameters are mismatched
+    """
+    # Define allowed future head parameter prefixes
+    future_head_prefixes = {
+        "future_x_head.",
+        "future_y_head.",
+        "_orig_mod.future_x_head.",  # torch.compile prefix
+        "_orig_mod.future_y_head.",
+    }
+
+    def is_future_head_key(key: str) -> bool:
+        """Check if a key belongs to a future head."""
+        return any(key.startswith(prefix) for prefix in future_head_prefixes)
+
+    # Check missing keys (in model but not in checkpoint)
+    non_future_missing = [k for k in missing_keys if not is_future_head_key(k)]
+    if non_future_missing:
+        raise RuntimeError(
+            f"Checkpoint is missing critical parameters (not future heads): "
+            f"{non_future_missing[:5]}{'...' if len(non_future_missing) > 5 else ''}. "
+            f"This indicates an incompatible model architecture change. "
+            f"Only future_x_head and future_y_head parameters are allowed to mismatch."
+        )
+
+    # Check unexpected keys (in checkpoint but not in model)
+    non_future_unexpected = [k for k in unexpected_keys if not is_future_head_key(k)]
+    if non_future_unexpected:
+        raise RuntimeError(
+            f"Checkpoint contains unexpected critical parameters (not future heads): "
+            f"{non_future_unexpected[:5]}{'...' if len(non_future_unexpected) > 5 else ''}. "
+            f"This indicates an incompatible model architecture change. "
+            f"Only future_x_head and future_y_head parameters are allowed to mismatch."
+        )
+
+    # If we get here, all mismatches are future head related - this is expected and OK
+    if missing_keys or unexpected_keys:
+        print(
+            f"Future head architecture changed: "
+            f"{len(missing_keys)} new parameters, {len(unexpected_keys)} old parameters dropped. "
+            f"This is expected and safe - future heads will be reinitialized."
+        )
 
 
 def _sorted_checkpoint_paths(directory: Path) -> List[Path]:
@@ -273,30 +329,74 @@ def _load_latest_checkpoint(
         )
 
         try:
-            if allow_partial_load:
-                incompatible = model.load_state_dict(model_state, strict=False)
+            # Always try strict loading first
+            try:
+                model.load_state_dict(model_state, strict=True)
+            except RuntimeError as e:
+                # If strict loading fails, check if it's only future heads
+                future_head_prefixes = ("future_x_head.", "future_y_head.", "_orig_mod.future_x_head.", "_orig_mod.future_y_head.")
+                is_future_key = lambda k: any(k.startswith(p) for p in future_head_prefixes)
+
+                # Get expected keys
+                model_keys = set(model.state_dict().keys())
+                ckpt_keys = set(model_state.keys())
+                missing_keys = list(model_keys - ckpt_keys)
+                unexpected_keys = list(ckpt_keys - model_keys)
+
+                # Check for shape mismatches in error message
+                error_msg = str(e)
+                has_future_shape_mismatch = any(
+                    f"future_{axis}_head" in error_msg for axis in ["x", "y"]
+                )
+
+                # Validate that only future heads are mismatched
+                try:
+                    _validate_future_head_only_mismatch(missing_keys, unexpected_keys)
+                except RuntimeError as validation_err:
+                    # If validation fails and shape mismatch is in future heads, filter and retry
+                    if not has_future_shape_mismatch:
+                        raise validation_err from e
+
+                # Filter out future head keys from checkpoint
+                filtered_state = {k: v for k, v in model_state.items() if not is_future_key(k)}
+
+                # Load filtered state (allowing missing future head params)
+                incompatible = model.load_state_dict(filtered_state, strict=False)
                 missing = list(getattr(incompatible, "missing_keys", ()))
                 unexpected = list(getattr(incompatible, "unexpected_keys", ()))
-                if missing:
-                    preview = ", ".join(missing[:5])
-                    more = "..." if len(missing) > 5 else ""
-                    print(
-                        f"Checkpoint is missing {len(missing)} parameter(s); "
-                        f"initialising from current model weights: {preview}{more}"
+
+                # Validate again after filtering
+                _validate_future_head_only_mismatch(missing, unexpected)
+
+                # If validation passed, show what was loaded
+                if allow_partial_load:
+                    if missing:
+                        preview = ", ".join(missing[:5])
+                        more = "..." if len(missing) > 5 else ""
+                        print(
+                            f"Checkpoint is missing {len(missing)} parameter(s); "
+                            f"initialising from current model weights: {preview}{more}"
+                        )
+                    if unexpected:
+                        preview = ", ".join(unexpected[:5])
+                        more = "..." if len(unexpected) > 5 else ""
+                        print(
+                            f"Checkpoint has {len(unexpected)} unexpected parameter(s); ignoring: {preview}{more}"
+                        )
+                else:
+                    # Even though only future heads mismatch, user didn't allow partial load
+                    raise RuntimeError(
+                        "Checkpoint has future head architecture changes. "
+                        "Set train.allow_partial_checkpoint_load=True to allow future head reinitialization."
                     )
-                if unexpected:
-                    preview = ", ".join(unexpected[:5])
-                    more = "..." if len(unexpected) > 5 else ""
-                    print(
-                        f"Checkpoint has {len(unexpected)} unexpected parameter(s); ignoring: {preview}{more}"
-                    )
-            else:
-                model.load_state_dict(model_state, strict=True)
         except RuntimeError as err:
-            raise RuntimeError(
-                "Checkpoint parameters do not match the current model. "
-                "Set train.allow_partial_checkpoint_load=True if this is intentional."
-            ) from err
+            if "future head" not in str(err).lower():
+                raise RuntimeError(
+                    "Checkpoint parameters do not match the current model. "
+                    "Set train.allow_partial_checkpoint_load=True if this is intentional."
+                ) from err
+            else:
+                raise
 
     opt_state = ckpt.get("optimizer")
     if opt_state:

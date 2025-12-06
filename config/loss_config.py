@@ -65,7 +65,7 @@ class LossConfig(BaseModel):
 
     # Change-based loss weights (multiplied by sample_weights from change detection)
     main_change: float = Field(
-        default=5.0,
+        default=10.0,
         gt=0,
         description=(
             "Weight multiplier for main stick when it changes. Encourages model to predict stick movements. "

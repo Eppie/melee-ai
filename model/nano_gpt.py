@@ -95,7 +95,8 @@ class GPT(nn.Module):
 
         if self.head_flow == "sequential":
             # Sequential mode: each head receives concatenated outputs from previous heads
-            # Order: buttons → main_stick → c_stick → shoulder → future_x → future_y
+            # Order: buttons → main_stick → c_stick → shoulder
+            # Note: future_x and future_y are independent (like value head) for better modularity
             button_input_size = self.embedding_dim
             main_stick_input_size = self.embedding_dim + self.button_output_size
             c_stick_input_size = (
@@ -109,22 +110,17 @@ class GPT(nn.Module):
                 + self.main_stick_output_size
                 + self.c_stick_output_size
             )
-            future_x_input_size = (
-                self.embedding_dim
-                + self.button_output_size
-                + self.main_stick_output_size
-                + self.c_stick_output_size
-                + self.shoulder_output_size
-            )
-            future_y_input_size = future_x_input_size + self.future_x_output_size
         else:
             # Parallel and mix modes: all heads receive same base features
             button_input_size = self.embedding_dim
             main_stick_input_size = self.embedding_dim
             c_stick_input_size = self.embedding_dim
             shoulder_input_size = self.embedding_dim
-            future_x_input_size = self.embedding_dim
-            future_y_input_size = self.embedding_dim
+
+        # Future position heads are always independent (like value head)
+        # This makes them modular and allows checkpoint compatibility
+        future_x_input_size = self.embedding_dim
+        future_y_input_size = self.embedding_dim
 
         self.button_head = SimpleHead(
             button_input_size, self.button_output_size, hidden=head_hidden_dim
@@ -150,7 +146,7 @@ class GPT(nn.Module):
         if self.head_flow == "mix":
             self.head_cross_attention = HeadCrossAttention(
                 hidden_dim=head_hidden_dim,
-                num_head_types=6,  # buttons, main_stick, c_stick, shoulder, future_x, future_y
+                num_head_types=4,  # buttons, main_stick, c_stick, shoulder (future heads are independent)
                 num_attn_heads=4,
             )
 
@@ -257,12 +253,10 @@ class GPT(nn.Module):
             main_stick = self.main_stick_head(base_hidden_states)
             c_stick = self.c_stick_head(base_hidden_states)
             shoulder = self.shoulder_head(base_hidden_states)
-            future_x = self.future_x_head(base_hidden_states)
-            future_y = self.future_y_head(base_hidden_states)
 
         elif self.head_flow == "mix":
             # Mix mode: cross-attention between head intermediate features
-            # Get intermediate features from each head
+            # Get intermediate features from each head (only for controller heads)
             button_features = self.button_head.forward_intermediate(base_hidden_states)
             main_stick_features = self.main_stick_head.forward_intermediate(
                 base_hidden_states
@@ -273,21 +267,15 @@ class GPT(nn.Module):
             shoulder_features = self.shoulder_head.forward_intermediate(
                 base_hidden_states
             )
-            future_x_features = self.future_x_head.forward_intermediate(
-                base_hidden_states
-            )
-            future_y_features = self.future_y_head.forward_intermediate(
-                base_hidden_states
-            )
+            # Note: future heads removed from cross-attention for modularity
+            # They will be computed independently below
 
-            # Apply cross-attention across heads
+            # Apply cross-attention across controller heads only
             head_features_list = [
                 button_features,
                 main_stick_features,
                 c_stick_features,
                 shoulder_features,
-                future_x_features,
-                future_y_features,
             ]
             attended_features = self.head_cross_attention(head_features_list)
 
@@ -302,16 +290,10 @@ class GPT(nn.Module):
             shoulder = self.shoulder_head.forward_from_intermediate(
                 attended_features[3]
             )
-            future_x = self.future_x_head.forward_from_intermediate(
-                attended_features[4]
-            )
-            future_y = self.future_y_head.forward_from_intermediate(
-                attended_features[5]
-            )
 
         elif self.head_flow == "sequential":
             # Sequential heads: each head receives concatenated outputs from previous heads
-            # Order: buttons → main_stick → c_stick → shoulder → future_x → future_y
+            # Order: buttons → main_stick → c_stick → shoulder
             button_logits = self.button_head(base_hidden_states)
 
             main_stick = self.main_stick_head(
@@ -337,35 +319,13 @@ class GPT(nn.Module):
                 )
             )
 
-            future_x = self.future_x_head(
-                torch.cat(
-                    (
-                        base_hidden_states,
-                        button_logits.detach(),
-                        main_stick.detach(),
-                        c_stick.detach(),
-                        shoulder.detach(),
-                    ),
-                    dim=-1,
-                )
-            )
-
-            future_y = self.future_y_head(
-                torch.cat(
-                    (
-                        base_hidden_states,
-                        button_logits.detach(),
-                        main_stick.detach(),
-                        c_stick.detach(),
-                        shoulder.detach(),
-                        future_x.detach(),
-                    ),
-                    dim=-1,
-                )
-            )
-
         else:
             raise ValueError(f"Unknown head_flow mode: {self.head_flow}")
+
+        # Future position heads are always computed independently from base hidden states
+        # This ensures they don't affect controller predictions and allows checkpoint compatibility
+        future_x = self.future_x_head(base_hidden_states)
+        future_y = self.future_y_head(base_hidden_states)
 
         outputs = TensorDict(
             {

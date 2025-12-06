@@ -318,6 +318,26 @@ class VisualizationState:
             zorder=11
         )
 
+        # Create predicted trajectory line (current pos -> predicted 30 frames ahead)
+        self.predicted_line, = ax.plot(
+            [], [], '--',
+            color='orange',
+            linewidth=3,
+            alpha=0.8,
+            zorder=8,
+            label='Predicted trajectory (30f)'
+        )
+
+        # Create predicted trajectory endpoint marker
+        self.predicted_endpoint, = ax.plot(
+            [], [], 'D',  # Diamond marker
+            color='orange',
+            markersize=10,
+            markeredgecolor='white',
+            markeredgewidth=1.5,
+            zorder=10
+        )
+
         # Create player markers (initially at origin)
         self.p1_marker, = ax.plot(
             [0], [0], 'go',
@@ -333,6 +353,86 @@ class VisualizationState:
             markeredgewidth=2,
             zorder=10
         )
+
+
+def compute_bucket_centers(boundaries: torch.Tensor) -> torch.Tensor:
+    """Compute centers for all 32 buckets from 28 boundaries.
+
+    Args:
+        boundaries: Tensor of 28 boundary values
+
+    Returns:
+        Tensor of 32 bucket center values
+    """
+    centers = torch.zeros(32, device=boundaries.device, dtype=boundaries.dtype)
+    step = boundaries[-1] - boundaries[-2]
+
+    # Bucket 0: extrapolated left (center between left edge and boundary[0])
+    centers[0] = boundaries[0] - step / 2
+
+    # Buckets 1-27: between consecutive boundaries (vectorized)
+    centers[1:28] = (boundaries[:-1] + boundaries[1:]) / 2
+
+    # Bucket 28: between boundary[27] and first extrapolated right edge
+    centers[28] = boundaries[-1] + step / 2
+
+    # Buckets 29-31: extrapolated right
+    centers[29] = boundaries[-1] + step * 1.5
+    centers[30] = boundaries[-1] + step * 2.5
+    centers[31] = boundaries[-1] + step * 3.5
+
+    return centers
+
+
+# Pre-compute bucket centers once at module load time
+_X_CENTERS: Optional[torch.Tensor] = None
+_Y_CENTERS: Optional[torch.Tensor] = None
+_CENTERS_DEVICE: Optional[torch.device] = None
+
+
+def get_bucket_centers(device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Get pre-computed bucket centers, moving to device if needed.
+
+    Args:
+        device: Target device for the tensors
+
+    Returns:
+        (x_centers, y_centers) tensors on the specified device
+    """
+    global _X_CENTERS, _Y_CENTERS, _CENTERS_DEVICE
+
+    if _CENTERS_DEVICE != device:
+        # Compute once and cache on the target device
+        _X_CENTERS = compute_bucket_centers(FUTURE_X_BUCKETS.to(device))
+        _Y_CENTERS = compute_bucket_centers(FUTURE_Y_BUCKETS.to(device))
+        _CENTERS_DEVICE = device
+
+    return _X_CENTERS, _Y_CENTERS
+
+
+def probs_to_coordinates_batch(
+    x_probs_batch: torch.Tensor,  # [N, 32]
+    y_probs_batch: torch.Tensor,  # [N, 32]
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert batched probability distributions to coordinates via expectation.
+
+    Args:
+        x_probs_batch: Probability distributions over 32 X buckets [N, 32]
+        y_probs_batch: Probability distributions over 32 Y buckets [N, 32]
+        device: Device to use for computation
+
+    Returns:
+        Tuple of (x_coords, y_coords) as numpy arrays of shape [N]
+    """
+    x_centers, y_centers = get_bucket_centers(device)
+
+    # Compute expected values for all horizons at once [N]
+    x_coords = (x_probs_batch * x_centers).sum(dim=1)
+    y_coords = (y_probs_batch * y_centers).sum(dim=1)
+
+    # Transfer to CPU as numpy arrays (faster than .tolist())
+    return x_coords.cpu().numpy(), y_coords.cpu().numpy()
 
 
 def compute_bucket_edges(boundaries: torch.Tensor) -> np.ndarray:
@@ -399,6 +499,8 @@ def visualize_frame(
     future_y_probs: torch.Tensor,  # [32]
     p1_future_x: Optional[list[float]] = None,
     p1_future_y: Optional[list[float]] = None,
+    predicted_x: Optional[list[float]] = None,
+    predicted_y: Optional[list[float]] = None,
 ) -> np.ndarray:
     """Visualize future position probabilities for one frame.
 
@@ -411,6 +513,8 @@ def visualize_frame(
         future_y_probs: Future Y probabilities [32 buckets]
         p1_future_x: List of Player 1 actual X positions for next 60 frames (optional)
         p1_future_y: List of Player 1 actual Y positions for next 60 frames (optional)
+        predicted_x: List of predicted X positions for next 30 frames (optional)
+        predicted_y: List of predicted Y positions for next 30 frames (optional)
 
     Returns:
         RGB image array (H, W, 3) for video encoding
@@ -442,6 +546,17 @@ def visualize_frame(
         # Hide the line if no ground truth available
         viz_state.ground_truth_line.set_data([], [])
         viz_state.ground_truth_endpoint.set_data([], [])
+
+    # Update predicted trajectory if available
+    if predicted_x is not None and predicted_y is not None and len(predicted_x) > 0:
+        # Draw path through predicted positions
+        viz_state.predicted_line.set_data(predicted_x, predicted_y)
+        # Mark the final predicted position
+        viz_state.predicted_endpoint.set_data([predicted_x[-1]], [predicted_y[-1]])
+    else:
+        # Hide the line if no predictions available
+        viz_state.predicted_line.set_data([], [])
+        viz_state.predicted_endpoint.set_data([], [])
 
     # Update figure title with frame number
     stage_name = STAGE_NAMES.get(viz_state.stage, "Unknown Stage")
@@ -607,28 +722,57 @@ def process_replay(
                 inf_start = time.time()
 
                 # Get the stacked frames from the buffer (already on CPU)
-                stacked_frames = torch.stack(list(engine.buffer), dim=0).unsqueeze(0).to(engine.device)  # [B=1, L, F]
+                base_frames = torch.stack(list(engine.buffer), dim=0).unsqueeze(0).to(engine.device)  # [1, L, F]
+                _, L, F = base_frames.shape
 
-                # Add horizon feature (fixed at 30 frames, normalized by 60.0)
-                B, L, F = stacked_frames.shape
-                horizon = 30
-                horizon_norm = torch.full((B, L, 1), horizon / 60.0, device=engine.device)
-                stacked_frames = torch.cat([stacked_frames, horizon_norm], dim=-1)  # [B=1, L, F+1]
+                # Create batch of 30 with different horizons (1-30 frames)
+                batch_size = 30
+                batch_frames = base_frames.repeat(batch_size, 1, 1)  # [30, L, F]
 
-                # Build model inputs with horizon feature
-                model_inputs = build_model_inputs(stacked_frames, engine.colmap)
+                # Add horizon features: 1/60, 2/60, ..., 30/60
+                horizons = torch.arange(1, batch_size + 1, device=engine.device, dtype=torch.float32)
+                horizons = horizons.unsqueeze(1).unsqueeze(2) / 60.0  # [30, 1, 1]
+                horizons = horizons.expand(batch_size, L, 1)  # [30, L, 1]
+                batch_frames = torch.cat([batch_frames, horizons], dim=-1)  # [30, L, F+1]
 
-                # Run inference once - stays on MPS
+                # Build model inputs with horizon features
+                model_inputs = build_model_inputs(batch_frames, engine.colmap)
+
+                # Run inference for all 30 horizons - stays on device
                 with torch.inference_mode():
                     outputs = engine.model(model_inputs)
 
-                    # Extract future position logits for last timestep (still on MPS)
-                    future_x_logits = outputs["future_x"][0, -1]  # [32]
-                    future_y_logits = outputs["future_y"][0, -1]  # [32]
+                    # Extract future position logits for all horizons at last timestep
+                    future_x_logits = outputs["future_x"][:, -1]  # [30, 32]
+                    future_y_logits = outputs["future_y"][:, -1]  # [30, 32]
 
-                    # Convert to probabilities (on MPS)
-                    future_x_probs = F_torch.softmax(future_x_logits, dim=0)  # [32]
-                    future_y_probs = F_torch.softmax(future_y_logits, dim=0)  # [32]
+                    # Convert to probabilities
+                    future_x_probs_batch = F_torch.softmax(future_x_logits, dim=1)  # [30, 32]
+                    future_y_probs_batch = F_torch.softmax(future_y_logits, dim=1)  # [30, 32]
+
+                    # Get bucket centers (cached on device)
+                    x_centers, y_centers = get_bucket_centers(engine.device)
+
+                    # Compute expected coordinates for all horizons at once [30]
+                    predicted_x_coords = (future_x_probs_batch * x_centers).sum(dim=1)
+                    predicted_y_coords = (future_y_probs_batch * y_centers).sum(dim=1)
+
+                    # Batch all GPU->CPU transfers into one operation
+                    # Stack: [predicted_x[30], predicted_y[30], heatmap_x_probs[32], heatmap_y_probs[32]]
+                    # Total: 30 + 30 + 32 + 32 = 124 values
+                    to_transfer = torch.cat([
+                        predicted_x_coords,           # [30]
+                        predicted_y_coords,           # [30]
+                        future_x_probs_batch[29],     # [32] - heatmap probs
+                        future_y_probs_batch[29],     # [32] - heatmap probs
+                    ])
+                    transferred = to_transfer.cpu().numpy()  # Single GPU->CPU sync
+
+                    # Unpack the transferred data
+                    predicted_x_arr = transferred[:30]
+                    predicted_y_arr = transferred[30:60]
+                    future_x_probs = torch.from_numpy(transferred[60:92])
+                    future_y_probs = torch.from_numpy(transferred[92:124])
 
                 inference_times.append(time.time() - inf_start)
 
@@ -639,8 +783,10 @@ def process_replay(
                     'p1_y': p1_y,
                     'p2_x': p2_x,
                     'p2_y': p2_y,
-                    'future_x_probs': future_x_probs.cpu(),  # Move to CPU for storage
-                    'future_y_probs': future_y_probs.cpu(),
+                    'future_x_probs': future_x_probs,
+                    'future_y_probs': future_y_probs,
+                    'predicted_x': predicted_x_arr,  # numpy array [30] of x coordinates
+                    'predicted_y': predicted_y_arr,  # numpy array [30] of y coordinates
                 })
 
                 # Once we have enough buffer, visualize delayed frames with trajectories
@@ -660,6 +806,17 @@ def process_replay(
                     p1_future_x_list = [pos[0] for pos in trajectory_positions]
                     p1_future_y_list = [pos[1] for pos in trajectory_positions]
 
+                    # Extract predicted trajectory from delayed frame (numpy arrays)
+                    pred_x = delayed_frame.get('predicted_x')
+                    pred_y = delayed_frame.get('predicted_y')
+                    if pred_x is not None and pred_y is not None:
+                        # Prepend current position, then add predicted positions
+                        predicted_x_list = np.concatenate([[delayed_frame['p1_x']], pred_x])
+                        predicted_y_list = np.concatenate([[delayed_frame['p1_y']], pred_y])
+                    else:
+                        predicted_x_list = None
+                        predicted_y_list = None
+
                     # Generate visualization frame (transfers to CPU inside visualize_frame)
                     img = visualize_frame(
                         viz_state,
@@ -671,7 +828,9 @@ def process_replay(
                         delayed_frame['future_x_probs'],
                         delayed_frame['future_y_probs'],
                         p1_future_x_list,
-                        p1_future_y_list
+                        p1_future_y_list,
+                        predicted_x_list,
+                        predicted_y_list
                     )
 
                     # Write frame to video

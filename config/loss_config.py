@@ -168,7 +168,7 @@ class LossConfig(BaseModel):
 
     # Future position prediction weights
     future_x_weight: float = Field(
-        default=0.9,
+        default=0.1,
         gt=0,
         description=(
             "Weight for future X position prediction loss. Controls importance of predicting "
@@ -178,7 +178,7 @@ class LossConfig(BaseModel):
         ),
     )
     future_y_weight: float = Field(
-        default=0.8,
+        default=0.1,
         gt=0,
         description=(
             "Weight for future Y position prediction loss. Controls importance of predicting "

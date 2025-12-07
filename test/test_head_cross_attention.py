@@ -6,8 +6,11 @@ import pytest
 import torch
 
 from config import init_config, reset_config, get_config
+from column_map import ColumnMap
 from model.head_cross_attention import HeadCrossAttention
 from model.output_head import SimpleHead
+from schema import get_target_names
+from train.batch_utils import build_model_inputs
 
 
 @pytest.fixture(autouse=True)
@@ -266,36 +269,10 @@ class TestGPTModelCrossAttention:
 
         # Create valid inputs
         B, T = 2, 16
-        feature_names = get_feature_names()
-        feature_dim = len(feature_names)
-
-        # Build input tensors matching expected format
-        from tensordict import TensorDict
-        from column_map import ColumnMap
-        from schema import get_target_names
-
         colmap = ColumnMap(get_feature_names(), get_target_names())
-
-        inputs = TensorDict(
-            {
-                "gamestate": torch.zeros(
-                    B, T, len(colmap.gamestate_idxs), device=device
-                ),
-                "controller": torch.zeros(
-                    B, T, len(colmap.controller_idxs), device=device
-                ),
-                "stage": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "ego_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_character": torch.zeros(
-                    B, T, 1, dtype=torch.long, device=device
-                ),
-                "ego_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_action": torch.zeros(
-                    B, T, 1, dtype=torch.long, device=device
-                ),
-            },
-            batch_size=(B, T),
-        )
+        # Include horizon feature to mirror training inputs
+        X = torch.zeros(B, T, len(colmap.feat_names) + 1, device=device)
+        inputs = build_model_inputs(X, colmap)
 
         with torch.no_grad():
             outputs = model(inputs)
@@ -335,27 +312,8 @@ class TestGPTModelCrossAttention:
         # Create inputs
         B, T = 2, 16
         colmap = ColumnMap(get_feature_names(), get_target_names())
-
-        inputs = TensorDict(
-            {
-                "gamestate": torch.randn(
-                    B, T, len(colmap.gamestate_idxs), device=device
-                ),
-                "controller": torch.randn(
-                    B, T, len(colmap.controller_idxs), device=device
-                ),
-                "stage": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "ego_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_character": torch.zeros(
-                    B, T, 1, dtype=torch.long, device=device
-                ),
-                "ego_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_action": torch.zeros(
-                    B, T, 1, dtype=torch.long, device=device
-                ),
-            },
-            batch_size=(B, T),
-        )
+        X = torch.zeros(B, T, len(colmap.feat_names) + 1, device=device)
+        inputs = build_model_inputs(X, colmap)
 
         model_parallel.eval()
         model_mix.eval()
@@ -386,26 +344,8 @@ class TestGPTModelCrossAttention:
         B, T = 2, 16
         colmap = ColumnMap(get_feature_names(), get_target_names())
 
-        inputs = TensorDict(
-            {
-                "gamestate": torch.randn(
-                    B, T, len(colmap.gamestate_idxs), device=device
-                ),
-                "controller": torch.randn(
-                    B, T, len(colmap.controller_idxs), device=device
-                ),
-                "stage": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "ego_character": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_character": torch.zeros(
-                    B, T, 1, dtype=torch.long, device=device
-                ),
-                "ego_action": torch.zeros(B, T, 1, dtype=torch.long, device=device),
-                "opponent_action": torch.zeros(
-                    B, T, 1, dtype=torch.long, device=device
-                ),
-            },
-            batch_size=(B, T),
-        )
+        X = torch.zeros(B, T, len(colmap.feat_names) + 1, device=device, requires_grad=True)
+        inputs = build_model_inputs(X, colmap)
 
         outputs = model(inputs)
 

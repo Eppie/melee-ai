@@ -202,8 +202,10 @@ def test_update_enhanced_metrics_accumulates_multimodal_statistics(
 
     main_errors = torch.linalg.norm(main_pred_coords - main_true_coords, dim=-1)
     c_errors = torch.linalg.norm(c_pred_coords - c_true_coords, dim=-1)
-    assert enhanced.total_main_stick_error == pytest.approx(main_errors.sum().item())
-    assert enhanced.total_c_stick_error == pytest.approx(c_errors.sum().item())
+    assert enhanced.main_stick_error.total_error == pytest.approx(
+        main_errors.sum().item()
+    )
+    assert enhanced.c_stick_error.total_error == pytest.approx(c_errors.sum().item())
 
     main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
     main_change_mask[:, 1:] = target_main[:, 1:] != target_main[:, :-1]
@@ -211,16 +213,16 @@ def test_update_enhanced_metrics_accumulates_multimodal_statistics(
     c_change_mask = torch.zeros_like(target_c, dtype=torch.bool)
     c_change_mask[:, 1:] = target_c[:, 1:] != target_c[:, :-1]
     c_hold_mask = ~c_change_mask
-    assert enhanced.total_main_stick_error_change == pytest.approx(
+    assert enhanced.main_stick_error.error_change == pytest.approx(
         main_errors[main_change_mask].sum().item()
     )
-    assert enhanced.total_main_stick_error_hold == pytest.approx(
+    assert enhanced.main_stick_error.error_hold == pytest.approx(
         main_errors[main_hold_mask].sum().item()
     )
-    assert enhanced.total_c_stick_error_change == pytest.approx(
+    assert enhanced.c_stick_error.error_change == pytest.approx(
         c_errors[c_change_mask].sum().item()
     )
-    assert enhanced.total_c_stick_error_hold == pytest.approx(
+    assert enhanced.c_stick_error.error_hold == pytest.approx(
         c_errors[c_hold_mask].sum().item()
     )
 
@@ -458,12 +460,10 @@ def test_update_enhanced_metrics_handles_single_frame_batches_and_copies_frame_f
         main_palette[pred_main_idx] - main_palette[target_main], dim=-1
     )
     c_errors = torch.linalg.norm(c_palette[pred_c_idx] - c_palette[target_c], dim=-1)
-    assert enhanced.total_main_stick_error_hold == pytest.approx(
-        main_errors.sum().item()
-    )
-    assert enhanced.total_main_stick_error_change == 0.0
-    assert enhanced.total_c_stick_error_hold == pytest.approx(c_errors.sum().item())
-    assert enhanced.total_c_stick_error_change == 0.0
+    assert enhanced.main_stick_error.error_hold == pytest.approx(main_errors.sum().item())
+    assert enhanced.main_stick_error.error_change == 0.0
+    assert enhanced.c_stick_error.error_hold == pytest.approx(c_errors.sum().item())
+    assert enhanced.c_stick_error.error_change == 0.0
     assert enhanced.jitter_frames == 0
 
     assert enhanced.lr_button_changes_true == []

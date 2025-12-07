@@ -55,11 +55,14 @@ def replay_reward_data():
     reset_config()
     init_config()
     cfg = get_config()
-    schema = Schema(features=get_feature_names(), targets=get_target_names())
+    from schema import get_raw_target_names
+
+    schema = Schema(features=get_feature_names(), targets=get_raw_target_names())
     slp_path = Path(__file__).with_name("test.slp")
     rows = process_one_episode(str(slp_path))
-    X_np, _, _, _, feat_names, targ_names = _rows_to_dense(rows, schema)
-    colmap = ColumnMap(feat_names, targ_names)
+    X_np, _, _, _, feat_names, _ = _rows_to_dense(rows, schema)
+    # Use quantized target layout for reward indexing
+    colmap = ColumnMap(feat_names, get_target_names())
     idx = build_reward_feature_index(colmap)
 
     def transform(arr: np.ndarray) -> np.ndarray:

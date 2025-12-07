@@ -54,6 +54,7 @@ def test_process_episode_task_emits_original_and_flipped_perspectives():
 def test_build_dataset_writes_two_episodes_per_replay(tmp_path, monkeypatch):
     monkeypatch.setenv("ZARR_USE_THREADS", "1")
     config = get_config()
+    config.model_config["frozen"] = False
     config.zarr.shard_size = EPISODES_PER_REPLAY  # one replay per shard
     config.seq_len = 32
 

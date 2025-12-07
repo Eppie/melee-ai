@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Dict, Literal, Optional, Tuple
 
-from pydantic import BaseModel, Field, ValidationInfo, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from column_map import ColumnMap
@@ -21,6 +21,32 @@ def _schema_feature_dims() -> Tuple[int, int]:
     """Return canonical (gamestate_dim, controller_dim) from the schema."""
     colmap = ColumnMap(get_feature_names(), get_target_names())
     return len(colmap.gamestate_idxs), len(colmap.controller_idxs)
+
+
+def _compute_categorical_size(
+    use_learned_embeddings: bool,
+    num_stages: int,
+    num_characters: int,
+    num_actions: int,
+    embedding_dim_stage: int,
+    embedding_dim_character: int,
+    embedding_dim_action: int,
+) -> int:
+    """Helper to compute categorical feature size."""
+    if use_learned_embeddings:
+        # With learned embeddings: stage_emb + char_emb*2 + action_emb*2
+        return (
+            embedding_dim_stage
+            + embedding_dim_character * 2  # ego + opponent
+            + embedding_dim_action * 2      # ego + opponent
+        )
+    else:
+        # With one-hot encoding: num_stages + num_characters*2 + num_actions*2
+        return (
+            num_stages
+            + num_characters * 2
+            + num_actions * 2
+        )
 
 
 class GPTConfig(BaseModel):
@@ -125,6 +151,53 @@ class GPTConfig(BaseModel):
             "Interacts with: n_head (must be divisible by n_kv_head)."
         ),
     )
+    use_alibi: bool = Field(
+        default=False,
+        description=(
+            "Use ALiBi (Attention with Linear Biases) instead of RoPE (Rotary Position Embeddings). "
+            "ALiBi adds position-dependent biases to attention scores, allowing better length extrapolation. "
+            "Effect: When True, disables RoPE and uses ALiBi biases; when False (default), uses RoPE. "
+            "ALiBi may improve performance on sequences longer than training length. "
+            "Cannot be used simultaneously with RoPE - this is a mutually exclusive choice."
+        ),
+    )
+    use_future_heads: bool = Field(
+        default=False,
+        description=(
+            "Enable future position prediction heads (future_x, future_y). "
+            "These heads predict the player's future position on the stage. "
+            "Effect: When True, creates future_x and future_y output heads; when False (default), omits them. "
+            "Disabling reduces model size and training time when future position prediction is not needed. "
+            "When disabled, model outputs will not include 'future_x' and 'future_y' keys."
+        ),
+    )
+    use_learned_embeddings: bool = Field(
+        default=True,
+        description=(
+            "Use learned embeddings for categorical features (stage, ego_character, opponent_character, "
+            "ego_action, opponent_action) instead of one-hot encoding. "
+            "Effect: When True (default), uses compact learned embeddings with embedding_dim dimensions; "
+            "when False, uses one-hot encoding (num_stages + num_characters*2 + num_actions*2 dimensions). "
+            "Learned embeddings are more parameter-efficient and can capture semantic relationships. "
+            "Embedding dimensions: stage=8, character=16, action=32. "
+            "Interacts with: input_size (smaller with embeddings), model capacity."
+        ),
+    )
+    embedding_dim_stage: int = Field(
+        default=8,
+        ge=1,
+        description="Embedding dimension for stage when use_learned_embeddings=True. Default 8 for 6 stages.",
+    )
+    embedding_dim_character: int = Field(
+        default=16,
+        ge=1,
+        description="Embedding dimension for characters when use_learned_embeddings=True. Default 16 for 26 characters.",
+    )
+    embedding_dim_action: int = Field(
+        default=32,
+        ge=1,
+        description="Embedding dimension for action states when use_learned_embeddings=True. Default 32 for 396 actions.",
+    )
     head_flow: Literal["sequential", "parallel", "mix"] = Field(
         default="sequential",
         description=(
@@ -150,16 +223,50 @@ class GPTConfig(BaseModel):
         ),
     )
 
-    # TODO: This wasn't working before, so we might have implemented the same logic elsewhere, find it and remove it
-    @model_validator(mode="before")
-    def compute_input_size(cls, data: Any, info: ValidationInfo):
-        """Dynamically compute input_size if context provides dimensions."""
-        if not isinstance(data, dict):
-            return data
+    def __setattr__(self, name, value):
+        """Override to recalculate input_size when use_learned_embeddings changes."""
+        # Call parent setattr first
+        super().__setattr__(name, value)
 
-        # Allow explicit overrides to take precedence.
-        if "input_size" in data and data["input_size"] not in (-1, None):
-            return data
+        # If use_learned_embeddings or related fields changed, recalculate input_size
+        if name in ("use_learned_embeddings", "embedding_dim_stage", "embedding_dim_character",
+                    "embedding_dim_action", "num_stages", "num_characters", "num_actions"):
+            # Only recalculate if input_size was auto-computed (not explicitly set)
+            # We check if it's been set by seeing if it exists
+            if hasattr(self, "_input_size_auto_computed"):
+                self._recalculate_input_size()
+
+    def _recalculate_input_size(self):
+        """Recalculate input_size based on current settings."""
+        default_gamestate, default_controller = _schema_feature_dims()
+
+        categorical_size = _compute_categorical_size(
+            self.use_learned_embeddings,
+            self.num_stages,
+            self.num_characters,
+            self.num_actions,
+            self.embedding_dim_stage,
+            self.embedding_dim_character,
+            self.embedding_dim_action,
+        )
+
+        new_input_size = (
+            categorical_size
+            + default_gamestate
+            + default_controller
+            + 1  # +1 for horizon feature
+        )
+
+        # Use object.__setattr__ to avoid recursion
+        object.__setattr__(self, "input_size", new_input_size)
+
+    # TODO: This wasn't working before, so we might have implemented the same logic elsewhere, find it and remove it
+    @model_validator(mode="after")
+    def compute_input_size(self, info: ValidationInfo):
+        """Dynamically compute input_size if not explicitly set."""
+        # Allow explicit overrides to take precedence
+        if self.input_size not in (-1, None):
+            return self
 
         context = (info.context or {}) if info is not None else {}
         gamestate_dim = context.get("gamestate_dim")
@@ -170,22 +277,30 @@ class GPTConfig(BaseModel):
             gamestate_dim = gamestate_dim or default_gamestate
             controller_dim = controller_dim or default_controller
 
-        num_stages = data.get("num_stages", cls.model_fields["num_stages"].default)
-        num_characters = data.get(
-            "num_characters", cls.model_fields["num_characters"].default
+        categorical_size = _compute_categorical_size(
+            self.use_learned_embeddings,
+            self.num_stages,
+            self.num_characters,
+            self.num_actions,
+            self.embedding_dim_stage,
+            self.embedding_dim_character,
+            self.embedding_dim_action,
         )
-        num_actions = data.get("num_actions", cls.model_fields["num_actions"].default)
 
-        data = dict(data)
-        data["input_size"] = (
-            num_stages
-            + num_characters * 2
-            + num_actions * 2
+        # Use object.__setattr__ to bypass Pydantic's validation since we're in a validator
+        object.__setattr__(
+            self,
+            "input_size",
+            categorical_size
             + gamestate_dim
             + controller_dim
             + 1  # +1 for horizon feature added by augment_batch_with_horizons
         )
-        return data
+
+        # Mark that input_size was auto-computed so we can recalculate it later
+        object.__setattr__(self, "_input_size_auto_computed", True)
+
+        return self
 
 
 __all__ = ["GPTConfig", "_schema_feature_dims"]

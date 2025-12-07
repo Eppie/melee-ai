@@ -22,6 +22,7 @@ from model.attention import CausalSelfAttention
 from model.head_cross_attention import HeadCrossAttention
 from model.norm import norm
 from model.output_head import SimpleHead
+from model.positional_encoding import get_alibi_biases
 from utils import _resolve_device
 
 
@@ -48,9 +49,15 @@ class Block(nn.Module):
         self.mlp_dropout = nn.Dropout(dropout)
 
     def forward(
-        self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        cos: torch.Tensor = None,
+        sin: torch.Tensor = None,
+        alibi_bias: torch.Tensor = None,
     ) -> torch.Tensor:
-        hidden_states = hidden_states + self.attention(norm(hidden_states), cos, sin)
+        hidden_states = hidden_states + self.attention(
+            norm(hidden_states), cos=cos, sin=sin, alibi_bias=alibi_bias
+        )
         hidden_states = hidden_states + self.mlp_dropout(self.mlp(norm(hidden_states)))
         return hidden_states
 
@@ -63,6 +70,20 @@ class GPT(nn.Module):
         self.block_size = model_config.block_size
         self.embedding_dim: int = model_config.n_embd
         self.input_size: int = model_config.input_size
+
+        # Categorical embeddings: use learned embeddings or one-hot encoding
+        self.use_learned_embeddings = model_config.use_learned_embeddings
+        if self.use_learned_embeddings:
+            # Create embedding layers for categorical features
+            self.stage_embedding = nn.Embedding(
+                model_config.num_stages, model_config.embedding_dim_stage
+            )
+            self.character_embedding = nn.Embedding(
+                model_config.num_characters, model_config.embedding_dim_character
+            )
+            self.action_embedding = nn.Embedding(
+                model_config.num_actions, model_config.embedding_dim_action
+            )
 
         self.projection_down = nn.Linear(self.input_size, self.embedding_dim, bias=True)
         self.dropout = nn.Dropout(model_config.dropout)
@@ -84,8 +105,12 @@ class GPT(nn.Module):
         self.c_stick_output_size = self.target_shapes_by_head["c_stick"]
         self.main_stick_output_size = self.target_shapes_by_head["main_stick"]
         self.button_output_size = self.target_shapes_by_head["buttons"]
-        self.future_x_output_size = self.target_shapes_by_head["future_x"]
-        self.future_y_output_size = self.target_shapes_by_head["future_y"]
+
+        # Future heads are optional
+        self.use_future_heads = model_config.use_future_heads
+        if self.use_future_heads:
+            self.future_x_output_size = self.target_shapes_by_head["future_x"]
+            self.future_y_output_size = self.target_shapes_by_head["future_y"]
 
         # TODO: Move this to config
         head_hidden_dim = 128
@@ -117,11 +142,6 @@ class GPT(nn.Module):
             c_stick_input_size = self.embedding_dim
             shoulder_input_size = self.embedding_dim
 
-        # Future position heads are always independent (like value head)
-        # This makes them modular and allows checkpoint compatibility
-        future_x_input_size = self.embedding_dim
-        future_y_input_size = self.embedding_dim
-
         self.button_head = SimpleHead(
             button_input_size, self.button_output_size, hidden=head_hidden_dim
         )
@@ -134,12 +154,19 @@ class GPT(nn.Module):
         self.shoulder_head = SimpleHead(
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
         )
-        self.future_x_head = SimpleHead(
-            future_x_input_size, self.future_x_output_size, hidden=head_hidden_dim
-        )
-        self.future_y_head = SimpleHead(
-            future_y_input_size, self.future_y_output_size, hidden=head_hidden_dim
-        )
+
+        # Future position heads are optional and always independent (like value head)
+        # This makes them modular and allows checkpoint compatibility
+        if self.use_future_heads:
+            future_x_input_size = self.embedding_dim
+            future_y_input_size = self.embedding_dim
+            self.future_x_head = SimpleHead(
+                future_x_input_size, self.future_x_output_size, hidden=head_hidden_dim
+            )
+            self.future_y_head = SimpleHead(
+                future_y_input_size, self.future_y_output_size, hidden=head_hidden_dim
+            )
+
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
 
         # Cross-attention for heads (only used in "mix" mode)
@@ -150,14 +177,32 @@ class GPT(nn.Module):
                 num_attn_heads=4,
             )
 
-        # TODO: Do we need this multiplier?
-        self.rotary_sequence_length = self.block_size * 2
-        head_dim = model_config.n_embd // model_config.n_head
-        cos, sin = self._precompute_rotary_embeddings(
-            self.rotary_sequence_length, head_dim
-        )
-        self.register_buffer("cos", cos, persistent=False)
-        self.register_buffer("sin", sin, persistent=False)
+        # Precompute positional encodings: either RoPE or ALiBi
+        self.use_alibi = model_config.use_alibi
+        if self.use_alibi:
+            # Use ALiBi instead of RoPE
+            # Precompute ALiBi biases for maximum sequence length
+            alibi_bias = get_alibi_biases(
+                num_heads=model_config.n_head,
+                max_seq_len=self.block_size,
+                device=torch.device("cpu")  # Will be moved to correct device with model.to(device)
+            )
+            self.register_buffer("alibi_bias", alibi_bias, persistent=False)
+            # Still register cos/sin as None for compatibility
+            self.register_buffer("cos", None, persistent=False)
+            self.register_buffer("sin", None, persistent=False)
+        else:
+            # Use RoPE (default)
+            # TODO: Do we need this multiplier?
+            self.rotary_sequence_length = self.block_size * 2
+            head_dim = model_config.n_embd // model_config.n_head
+            cos, sin = self._precompute_rotary_embeddings(
+                self.rotary_sequence_length, head_dim
+            )
+            self.register_buffer("cos", cos, persistent=False)
+            self.register_buffer("sin", sin, persistent=False)
+            # Register alibi_bias as None for compatibility
+            self.register_buffer("alibi_bias", None, persistent=False)
 
         self.apply(self._init_weights)
 
@@ -199,9 +244,19 @@ class GPT(nn.Module):
     # TODO: Is there a way to pre-compute and cache the one-hot results?
     # TODO: Why do we need the `.long()` calls?
     def _embed_inputs(self, inputs: TensorDict) -> torch.Tensor:
-        """Includes categorical embeddings, one-hot encodings, and numerical features."""
-        return torch.cat(
-            [
+        """Includes categorical embeddings (learned or one-hot), and numerical features."""
+        if self.use_learned_embeddings:
+            # Use learned embeddings for categorical features
+            categorical_features = [
+                self.stage_embedding(inputs["stage"].squeeze(-1).long()),
+                self.character_embedding(inputs["ego_character"].squeeze(-1).long()),
+                self.character_embedding(inputs["opponent_character"].squeeze(-1).long()),
+                self.action_embedding(inputs["ego_action"].squeeze(-1).long()),
+                self.action_embedding(inputs["opponent_action"].squeeze(-1).long()),
+            ]
+        else:
+            # Use one-hot encoding for categorical features
+            categorical_features = [
                 F.one_hot(
                     inputs["stage"].squeeze(-1).long(),
                     num_classes=self.config.model.num_stages,
@@ -222,6 +277,10 @@ class GPT(nn.Module):
                     inputs["opponent_action"].squeeze(-1).long(),
                     num_classes=self.config.model.num_actions,
                 ).float(),
+            ]
+
+        return torch.cat(
+            categorical_features + [
                 inputs["gamestate"],
                 inputs["controller"],
             ],
@@ -237,11 +296,21 @@ class GPT(nn.Module):
         combined_inputs = self._embed_inputs(inputs)
         hidden_states = self.projection_down(combined_inputs)
         hidden_states = self.dropout(hidden_states)
-        cos = self.cos[:, :sequence_length]
-        sin = self.sin[:, :sequence_length]
+
+        # Prepare positional encodings based on use_alibi
+        if self.use_alibi:
+            # Use ALiBi - no need to slice, attention layer handles it
+            cos = None
+            sin = None
+            alibi_bias = self.alibi_bias
+        else:
+            # Use RoPE
+            cos = self.cos[:, :sequence_length]
+            sin = self.sin[:, :sequence_length]
+            alibi_bias = None
 
         for block in self.blocks:
-            hidden_states = block(hidden_states, cos, sin)
+            hidden_states = block(hidden_states, cos=cos, sin=sin, alibi_bias=alibi_bias)
 
         hidden_states = norm(hidden_states)
 
@@ -322,20 +391,24 @@ class GPT(nn.Module):
         else:
             raise ValueError(f"Unknown head_flow mode: {self.head_flow}")
 
-        # Future position heads are always computed independently from base hidden states
+        # Build output dict with controller heads
+        outputs_dict = {
+            "buttons": button_logits,
+            "main_stick": main_stick,
+            "c_stick": c_stick,
+            "shoulder": shoulder,
+        }
+
+        # Future position heads are optional and always computed independently from base hidden states
         # This ensures they don't affect controller predictions and allows checkpoint compatibility
-        future_x = self.future_x_head(base_hidden_states)
-        future_y = self.future_y_head(base_hidden_states)
+        if self.use_future_heads:
+            future_x = self.future_x_head(base_hidden_states)
+            future_y = self.future_y_head(base_hidden_states)
+            outputs_dict["future_x"] = future_x
+            outputs_dict["future_y"] = future_y
 
         outputs = TensorDict(
-            {
-                "buttons": button_logits,
-                "main_stick": main_stick,
-                "c_stick": c_stick,
-                "shoulder": shoulder,
-                "future_x": future_x,
-                "future_y": future_y,
-            },
+            outputs_dict,
             batch_size=(batch_size, sequence_length),
         )
 

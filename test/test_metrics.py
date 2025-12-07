@@ -50,18 +50,18 @@ class TestMetricsAccumulator:
         assert acc.K_shoulder == 4
 
         # Check main stick metrics initialized to zero
-        assert acc.main_correct.item() == 0
-        assert acc.main_total.item() == 0
-        assert acc.main_label_counts.shape == (10,)
-        assert acc.main_label_counts.sum().item() == 0
-        assert acc.main_maj_correct.item() == 0
+        assert acc.main.correct.item() == 0
+        assert acc.main.total.item() == 0
+        assert acc.main.label_counts.shape == (10,)
+        assert acc.main.label_counts.sum().item() == 0
+        assert acc.main.maj_correct.item() == 0
 
         # Check c-stick metrics initialized to zero
-        assert acc.c_correct.item() == 0
-        assert acc.c_total.item() == 0
-        assert acc.c_label_counts.shape == (5,)
-        assert acc.c_label_counts.sum().item() == 0
-        assert acc.c_maj_correct.item() == 0
+        assert acc.c.correct.item() == 0
+        assert acc.c.total.item() == 0
+        assert acc.c.label_counts.shape == (5,)
+        assert acc.c.label_counts.sum().item() == 0
+        assert acc.c.maj_correct.item() == 0
 
         # Check button metrics initialized to zero
         assert acc.btn_true_positives.shape == (3,)
@@ -77,11 +77,11 @@ class TestMetricsAccumulator:
         assert acc.btn_maj_em_correct.item() == 0
 
         # Check shoulder metrics initialized to zero
-        assert acc.shoulder_correct.item() == 0
-        assert acc.shoulder_total.item() == 0
-        assert acc.shoulder_label_counts.shape == (4,)
-        assert acc.shoulder_label_counts.sum().item() == 0
-        assert acc.shoulder_maj_correct.item() == 0
+        assert acc.shoulder.correct.item() == 0
+        assert acc.shoulder.total.item() == 0
+        assert acc.shoulder.label_counts.shape == (4,)
+        assert acc.shoulder.label_counts.sum().item() == 0
+        assert acc.shoulder.maj_correct.item() == 0
 
     def test_majority_label_normal(self, accumulator):
         """Test _majority_label returns the argmax of counts."""
@@ -122,8 +122,8 @@ class TestMetricsAccumulator:
         )
 
         # All predictions correct
-        assert accumulator.main_correct.item() == 5
-        assert accumulator.main_total.item() == 5
+        assert accumulator.main.correct.item() == 5
+        assert accumulator.main.total.item() == 5
 
         # Label counts should match true_idx
         expected_counts = torch.zeros(64, dtype=torch.long)
@@ -132,10 +132,10 @@ class TestMetricsAccumulator:
         expected_counts[2] = 1
         expected_counts[3] = 1
         expected_counts[4] = 1
-        assert torch.equal(accumulator.main_label_counts, expected_counts)
+        assert torch.equal(accumulator.main.label_counts, expected_counts)
 
         # Majority baseline (only first element matches baseline of 0)
-        assert accumulator.main_maj_correct.item() == 1
+        assert accumulator.main.maj_correct.item() == 1
 
     def test_update_stick_metrics_partial_prediction(self, accumulator):
         """Test stick metrics with some incorrect predictions."""
@@ -155,11 +155,11 @@ class TestMetricsAccumulator:
         )
 
         # Only indices 0, 2, 4 correct (3 out of 5)
-        assert accumulator.main_correct.item() == 3
-        assert accumulator.main_total.item() == 5
+        assert accumulator.main.correct.item() == 3
+        assert accumulator.main.total.item() == 5
 
         # Majority baseline
-        assert accumulator.main_maj_correct.item() == 1
+        assert accumulator.main.maj_correct.item() == 1
 
     def test_update_stick_metrics_multiple_batches(self, accumulator):
         """Test that stick metrics accumulate across multiple updates."""
@@ -195,8 +195,8 @@ class TestMetricsAccumulator:
         )
 
         # 3 correct from first batch + 1 correct from second = 4 total
-        assert accumulator.main_correct.item() == 4
-        assert accumulator.main_total.item() == 5
+        assert accumulator.main.correct.item() == 4
+        assert accumulator.main.total.item() == 5
 
     def test_update_button_metrics_perfect_prediction(self, accumulator):
         """Test button metrics with perfect predictions."""
@@ -303,15 +303,15 @@ class TestMetricsAccumulator:
 
         accumulator.update_shoulder_metrics(pred_idx, true_idx, majority_baseline)
 
-        assert accumulator.shoulder_correct.item() == 5
-        assert accumulator.shoulder_total.item() == 5
+        assert accumulator.shoulder.correct.item() == 5
+        assert accumulator.shoulder.total.item() == 5
         assert (
-            accumulator.shoulder_maj_correct.item() == 1
+            accumulator.shoulder.maj_correct.item() == 1
         )  # Only first element equals 0
 
         # Label counts
         expected_counts = torch.tensor([1, 1, 1, 1, 1], dtype=torch.long)
-        assert torch.equal(accumulator.shoulder_label_counts, expected_counts)
+        assert torch.equal(accumulator.shoulder.label_counts, expected_counts)
 
     def test_update_shoulder_metrics_partial(self, accumulator):
         """Test shoulder metrics with some errors."""
@@ -322,9 +322,9 @@ class TestMetricsAccumulator:
         accumulator.update_shoulder_metrics(pred_idx, true_idx, majority_baseline)
 
         # Correct: indices 0, 2, 4 (3 out of 5)
-        assert accumulator.shoulder_correct.item() == 3
-        assert accumulator.shoulder_total.item() == 5
-        assert accumulator.shoulder_maj_correct.item() == 1
+        assert accumulator.shoulder.correct.item() == 3
+        assert accumulator.shoulder.total.item() == 5
+        assert accumulator.shoulder.maj_correct.item() == 1
 
     def test_update_shoulder_metrics_accumulation(self, accumulator):
         """Test shoulder metrics accumulate across batches."""
@@ -335,8 +335,8 @@ class TestMetricsAccumulator:
 
         accumulator.update_shoulder_metrics(pred_idx, true_idx, majority_baseline)
 
-        assert accumulator.shoulder_correct.item() == 3
-        assert accumulator.shoulder_total.item() == 3
+        assert accumulator.shoulder.correct.item() == 3
+        assert accumulator.shoulder.total.item() == 3
 
         # Second batch
         pred_idx = torch.tensor([[3, 3]])
@@ -345,8 +345,8 @@ class TestMetricsAccumulator:
         accumulator.update_shoulder_metrics(pred_idx, true_idx, majority_baseline)
 
         # 3 from first + 1 from second = 4 correct
-        assert accumulator.shoulder_correct.item() == 4
-        assert accumulator.shoulder_total.item() == 5
+        assert accumulator.shoulder.correct.item() == 4
+        assert accumulator.shoulder.total.item() == 5
 
     def test_get_summary_perfect_predictions(self, accumulator):
         """Test get_summary with perfect predictions on all components."""
@@ -467,23 +467,23 @@ class TestMetricsAccumulator:
         accumulator.update_shoulder_metrics(pred_shoulder, true_shoulder, 0)
 
         # Verify data was added
-        assert accumulator.main_total.item() > 0
+        assert accumulator.main.total.item() > 0
         assert accumulator.btn_total.item() > 0
-        assert accumulator.shoulder_total.item() > 0
+        assert accumulator.shoulder.total.item() > 0
 
         # Reset
         accumulator.reset()
 
         # Verify everything is zero
-        assert accumulator.main_correct.item() == 0
-        assert accumulator.main_total.item() == 0
-        assert accumulator.main_label_counts.sum().item() == 0
-        assert accumulator.main_maj_correct.item() == 0
+        assert accumulator.main.correct.item() == 0
+        assert accumulator.main.total.item() == 0
+        assert accumulator.main.label_counts.sum().item() == 0
+        assert accumulator.main.maj_correct.item() == 0
 
-        assert accumulator.c_correct.item() == 0
-        assert accumulator.c_total.item() == 0
-        assert accumulator.c_label_counts.sum().item() == 0
-        assert accumulator.c_maj_correct.item() == 0
+        assert accumulator.c.correct.item() == 0
+        assert accumulator.c.total.item() == 0
+        assert accumulator.c.label_counts.sum().item() == 0
+        assert accumulator.c.maj_correct.item() == 0
 
         assert accumulator.btn_true_positives.sum().item() == 0
         assert accumulator.btn_false_positives.sum().item() == 0
@@ -493,10 +493,10 @@ class TestMetricsAccumulator:
         assert accumulator.btn_em_correct.item() == 0
         assert accumulator.btn_maj_em_correct.item() == 0
 
-        assert accumulator.shoulder_correct.item() == 0
-        assert accumulator.shoulder_total.item() == 0
-        assert accumulator.shoulder_label_counts.sum().item() == 0
-        assert accumulator.shoulder_maj_correct.item() == 0
+        assert accumulator.shoulder.correct.item() == 0
+        assert accumulator.shoulder.total.item() == 0
+        assert accumulator.shoulder.label_counts.sum().item() == 0
+        assert accumulator.shoulder.maj_correct.item() == 0
 
     def test_button_majority_baseline(self, device):
         """Test that button majority baseline is computed correctly."""

@@ -7,6 +7,7 @@ from typing import Dict, List, Sequence, TYPE_CHECKING
 import numpy as np
 
 from controller_utils import C_STICK_QUANTIZED, CONTROL_STICK_QUANTIZED
+from controller_quantization_shared import quantize_stick_indices
 
 if TYPE_CHECKING:
     from column_map import ColumnMap
@@ -45,24 +46,7 @@ def _quantize_stick(
     palette_norm: np.ndarray,
 ) -> np.ndarray:
     """Snap (x, y) stick pairs to the nearest palette entry."""
-    values = block.astype(np.float32, copy=False)
-    # Determine if input is in [0,1] or [-1,1] domain
-    if np.any(values < 0.0) or np.any(values > 1.0):
-        # Already in [-1,1] domain, just clamp to unit circle
-        xy11 = np.clip(values, -1.0, 1.0).copy()
-        norms = np.linalg.norm(xy11, axis=1)
-        mask = norms > 1.0
-        if np.any(mask):
-            xy11[mask] /= norms[mask, np.newaxis]
-    else:
-        # Convert from [0,1] to [-1,1]
-        xy11 = _sticks01_to_unit11(values.copy())
-
-    # Find nearest palette entry via squared distance
-    dot = xy11 @ palette.T
-    norm = np.sum(xy11**2, axis=1, keepdims=True)
-    d2 = norm - 2.0 * dot + palette_norm.T
-    idx = np.argmin(d2, axis=1)
+    idx = quantize_stick_indices(block, palette, palette_norm, input_domain="auto")
     return palette[idx]
 
 

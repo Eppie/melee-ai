@@ -2,6 +2,80 @@ import torch
 from torch import Tensor
 
 
+def get_alibi_biases(num_heads: int, max_seq_len: int, device: torch.device = None) -> Tensor:
+    """
+    Compute ALiBi (Attention with Linear Biases) position biases.
+
+    ALiBi adds a static bias to attention scores based on the distance between tokens:
+        bias[i, j] = -slope * |i - j|
+
+    Each attention head gets a different slope, computed as a geometric sequence.
+    This allows the model to extrapolate to longer sequences than seen during training.
+
+    Parameters
+    ----------
+    num_heads : int
+        Number of attention heads
+    max_seq_len : int
+        Maximum sequence length to precompute biases for
+    device : torch.device, optional
+        Device to create the tensor on. If None, uses CPU.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape (1, num_heads, max_seq_len, max_seq_len) containing the biases.
+        The bias at position [b, h, i, j] represents the bias for head h when
+        attending from position i to position j.
+
+    Notes
+    -----
+    - Slopes are computed as 2^(-(8*k/num_heads)) for k in [1, 2, ..., num_heads]
+    - This creates a geometric progression from 2^(-8/num_heads) to 2^(-8)
+    - The biases are negative and proportional to distance, encouraging local attention
+    - Biases are 0 on the diagonal (i=j) and become more negative as distance increases
+
+    Example
+    -------
+    For num_heads=4, max_seq_len=4:
+        slopes = [2^(-2), 2^(-4), 2^(-6), 2^(-8)] ≈ [0.25, 0.0625, 0.0156, 0.0039]
+
+        For head 0 (slope ≈ 0.25):
+            [[0.00, -0.25, -0.50, -0.75],
+             [0.00,  0.00, -0.25, -0.50],
+             [0.00,  0.00,  0.00, -0.25],
+             [0.00,  0.00,  0.00,  0.00]]
+    """
+    if device is None:
+        device = torch.device("cpu")
+
+    # Compute slopes for each head as a geometric sequence
+    # Formula: 2^(-(8*k/num_heads)) for k in [1, 2, ..., num_heads]
+    slopes = torch.pow(
+        2.0,
+        -8.0 * torch.arange(1, num_heads + 1, dtype=torch.float32, device=device) / num_heads
+    )  # Shape: (num_heads,)
+
+    # Create position indices
+    positions = torch.arange(max_seq_len, dtype=torch.float32, device=device)  # Shape: (max_seq_len,)
+
+    # Compute pairwise distances: |i - j|
+    # positions[:, None] creates (max_seq_len, 1), positions[None, :] creates (1, max_seq_len)
+    # Broadcasting gives us (max_seq_len, max_seq_len) matrix of distances
+    distances = torch.abs(positions[:, None] - positions[None, :])  # Shape: (max_seq_len, max_seq_len)
+
+    # Apply slopes: bias[h, i, j] = -slope[h] * distance[i, j]
+    # slopes[:, None, None] creates (num_heads, 1, 1)
+    # distances[None, :, :] creates (1, max_seq_len, max_seq_len)
+    # Broadcasting gives us (num_heads, max_seq_len, max_seq_len)
+    biases = -slopes[:, None, None] * distances[None, :, :]  # Shape: (num_heads, max_seq_len, max_seq_len)
+
+    # Add batch dimension: (1, num_heads, max_seq_len, max_seq_len)
+    biases = biases.unsqueeze(0)
+
+    return biases
+
+
 def apply_rotary_emb(states: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
     """
     Apply Rotary Positional Embeddings (RoPE) to a 4-D multi-head tensor.

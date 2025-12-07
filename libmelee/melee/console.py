@@ -155,6 +155,18 @@ def _f32(mv: memoryview, off: int) -> float:
     return _S_F.unpack_from(mv, off)[0]
 
 
+def _safe_float_to_int(value: float) -> int:
+    """Convert float to int, returning 0 for NaN values.
+
+    Args:
+        value: Float value to convert
+
+    Returns:
+        Integer conversion of value, or 0 if value is NaN
+    """
+    return 0 if math.isnan(value) else int(value)
+
+
 @dataclasses.dataclass
 class DolphinVersion:
     mainline: bool
@@ -1066,7 +1078,7 @@ class Console:
         ps.percent = int(percent_val)
         ps.shield_strength = shield_strength
         ps.stock = mv[0x21]
-        ps.action_frame = int(_S_F.unpack_from(event_bytes, 0x22)[0])
+        ps.action_frame = _safe_float_to_int(_S_F.unpack_from(event_bytes, 0x22)[0])
 
         # Status bytes (read once)
         if len(mv) > 0x2A:
@@ -1089,7 +1101,7 @@ class Console:
         # Scalars with length guards (avoid try/except in hot path)
         blen = len(mv)
         ps.hitstun_frames_left = (
-            int(_S_F.unpack_from(event_bytes, 0x2B)[0]) if blen > 0x2E else 0
+            _safe_float_to_int(_S_F.unpack_from(event_bytes, 0x2B)[0]) if blen > 0x2E else 0
         )
         ps.on_ground = (mv[0x2F] == 0) if blen > 0x2F else True
         if blen > 0x32:
@@ -1115,7 +1127,7 @@ class Console:
             ps.speed_x_attack = x_attack
             ps.speed_y_attack = y_attack
             ps.speed_ground_x_self = ground_x
-            ps.hitlag_left = int(hitlag)
+            ps.hitlag_left = _safe_float_to_int(hitlag)
         else:
             ps.speed_air_x_self = (
                 _S_F.unpack_from(event_bytes, 0x35)[0] if blen > 0x38 else 0.0
@@ -1133,7 +1145,7 @@ class Console:
                 _S_F.unpack_from(event_bytes, 0x45)[0] if blen > 0x48 else 0.0
             )
             ps.hitlag_left = (
-                int(_S_F.unpack_from(event_bytes, 0x49)[0]) if blen > 0x4C else 0
+                _safe_float_to_int(_S_F.unpack_from(event_bytes, 0x49)[0]) if blen > 0x4C else 0
             )
 
         # TODO: Maybe calculate this ourselves in a vectorized way, later?

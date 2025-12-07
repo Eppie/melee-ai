@@ -21,6 +21,7 @@ from constants import (
 from controller_utils import (
     SHOULDER_QUANTIZED,
 )
+from controller_quantization_shared import quantize_stick_indices
 
 # Future position quantization buckets (32 buckets each)
 # X-axis: covers [-240, 240] with higher density in typical gameplay range [-95, 95]
@@ -265,7 +266,6 @@ def _palette_for_device(
     return cached
 
 
-# TODO: clamp needed? Maybe a better way to do this? Remove input_domain param!
 def _quantize_stick(
     xy: torch.Tensor,
     palette: torch.Tensor,
@@ -274,46 +274,9 @@ def _quantize_stick(
     batch_size: int,
     seq_len: int,
 ) -> torch.Tensor:
-    """Convert continuous stick coordinates to palette indices via distance.
-
-    Example
-    -------
-    With ``B=1`` and ``L=2`` the tensor ``xy`` might be
-    ``tensor([[[0.1, 0.9], [1.1, -0.2]]])``. When ``input_domain='auto'`` the
-    helper inspects the values and:
-
-    1. Detects that the second row exceeds ``1``, so the entire block is clamped
-       to ``[-1, 1]`` and projected onto the unit circle, becoming
-       ``[[0.1, 0.9], [0.9806, -0.1961]]`` in ``[-1, 1]`` space.
-    2. Flattens to ``V`` with shape ``(2, 2)`` and computes squared norms
-       ``[0.82, 0.9999]`` and dot products against the palette.
-    3. Uses ``||V||^2 - 2V·P + ||P||^2`` to produce a distance matrix where each
-       row lists the squared distance to every palette entry.
-    4. Applies ``argmin`` per row and reshapes the indices back to ``(B, L)`` so
-       the first frame might map to palette index ``3`` and the second to ``7``.
-
-    The returned index tensor is therefore ready for embedding lookups or
-    cross-entropy training targets while faithfully following the stick geometry.
-    """
-    if input_domain == "unit11":
-        xy11 = _clamp_unit_circle(torch.clamp(xy, -1.0, 1.0))
-    elif input_domain == "unit01":
-        xy11 = sticks01_to_unit11(xy)
-    else:  # auto
-        needs_clamp = torch.any(xy < 0.0) or torch.any(xy > 1.0)
-        xy11 = (
-            _clamp_unit_circle(torch.clamp(xy, -1.0, 1.0))
-            if needs_clamp
-            else sticks01_to_unit11(xy)
-        )
-
-    # Quantize using squared distance (avoids redundant pow/sum calls)
-    V = xy11.reshape(-1, 2)
-    # Compute ||V - P||^2 = ||V||^2 - 2*V·P + ||P||^2 (palette norm is precomputed)
-    v_norm_sq = (V * V).sum(dim=1, keepdim=True)
-    dot = V @ palette.t()
-    d2 = v_norm_sq - 2.0 * dot + palette_norm_sq.unsqueeze(0)
-    return torch.argmin(d2, dim=1).view(batch_size, seq_len)
+    """Convert continuous stick coordinates to palette indices via distance."""
+    idx = quantize_stick_indices(xy, palette, palette_norm_sq, input_domain)
+    return idx.view(batch_size, seq_len)
 
 
 # TODO: auto should not be needed. also we shouldn't have to touch buttons.

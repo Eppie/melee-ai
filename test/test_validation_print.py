@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 # This is a private function, so we have to do this.
-from validation import EnhancedMetrics, RunStats, _print_enhanced_metrics
+from validation import EnhancedMetrics, RunStats, StickErrorMetrics, _print_enhanced_metrics
 
 
 def run_print_and_capture(enhanced: EnhancedMetrics) -> str:
@@ -45,12 +45,16 @@ class TestPrintEnhancedMetrics:
     def test_print_full_metrics(self):
         """Test printing with a fully populated EnhancedMetrics object."""
         enhanced = EnhancedMetrics(
-            total_main_stick_error=10.0,
-            total_c_stick_error=5.0,
-            total_main_stick_error_change=4.0,
-            total_main_stick_error_hold=6.0,
-            total_c_stick_error_change=2.0,
-            total_c_stick_error_hold=3.0,
+            main_stick_error=StickErrorMetrics(
+                total_error=10.0,
+                error_change=4.0,
+                error_hold=6.0,
+            ),
+            c_stick_error=StickErrorMetrics(
+                total_error=5.0,
+                error_change=2.0,
+                error_hold=3.0,
+            ),
             total_pred_main_jitter=20.0,
             total_true_main_jitter=18.0,
             total_pred_c_jitter=15.0,

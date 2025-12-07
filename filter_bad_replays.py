@@ -170,28 +170,40 @@ def quality_reason(game: Game) -> FilterFailure | None:
 
 
 def process_file(
-    path: Path, allowed_chars: set[Character] | None = None
+    path: Path,
+    allowed_chars: set[Character] | None = None,
+    skip_failed_output: bool = False,
 ) -> pa.Table | None:
     """
     Parse one .slp, move it to an appropriate 'failed' folder if it flunks,
     and return a flattened pyarrow.Table (or None).  *All* exceptions are
     swallowed and cause the file to be shunted into replays_failed/corrupt.
+
+    Args:
+        path: Path to the .slp file to process
+        allowed_chars: Optional set of allowed characters
+        skip_failed_output: If True, don't write failed replays to disk (optimization for zip processing)
     """
     try:
-        game = peppi_py.read_slippi(str(path))
+        # First pass: Quick sanity checks without parsing frame data (much faster)
+        game = peppi_py.read_slippi(str(path), skip_frames=True)
 
         reason = sanity_reason(game)
         if reason is not None:
             code, message = reason
             print(f"Skipping {path.name}: {message}")
-            _move_to_failed(path, code)
+            if not skip_failed_output:
+                _move_to_failed(path, code)
             return None
 
+        # Second pass: Parse frames only for replays that passed sanity checks
+        game = peppi_py.read_slippi(str(path), skip_frames=False)
         quality = quality_reason(game)
         if quality is not None:
             code, message = quality
             print(f"Skipping {path.name}: {message}")
-            _move_to_failed(path, code)
+            if not skip_failed_output:
+                _move_to_failed(path, code)
             return None
 
         # print(game)
@@ -204,7 +216,8 @@ def process_file(
                     f"Skipping {path.name}: Characters {p1_char.name}, {p2_char.name}"
                     f" not in allowed list {allowed_chars}"
                 )
-                _move_to_failed(path, "filtered_chars")
+                if not skip_failed_output:
+                    _move_to_failed(path, "filtered_chars")
                 return None
 
         if p1_char.value > p2_char.value:
@@ -227,7 +240,8 @@ def process_file(
 
     except BaseException as exc:  # catch *everything*, even non‑Exception errors
         print(f"❌ {path.name}: {exc!r} – moving to 'corrupt'")
-        _move_to_failed(path, "corrupt")
+        if not skip_failed_output:
+            _move_to_failed(path, "corrupt")
         return None
 
 
@@ -235,6 +249,10 @@ def _iter_zip_members(
     zip_path: Path, filename_filter: str | None = None
 ) -> Iterable[str]:
     """Yield file names from the zip that should be extracted."""
+    # Rough heuristic: ~80 bytes per frame minimum for .slp files
+    # MIN_FRAME_COUNT=3600 → ~288KB minimum uncompressed
+    MIN_FILE_SIZE = 50_000  # 50KB compressed (conservative estimate)
+
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
             if info.is_dir():
@@ -244,6 +262,9 @@ def _iter_zip_members(
                 continue
             if not (name.endswith(".slp") or name.endswith(".gz")):
                 continue
+            # Skip files that are definitely too small to meet minimum frame count
+            if info.file_size < MIN_FILE_SIZE:
+                continue
             yield name
 
 
@@ -252,25 +273,19 @@ def _extract_member(zip_path: Path, member_name: str, dest_dir: Path) -> Path:
     Extract a single member from the archive to dest_dir.
     .gz files are decompressed to their base name to feed into process_file.
     """
-    dest_dir.mkdir(parents=True, exist_ok=True)
     target_name = Path(member_name).name
     dest_path = dest_dir / target_name
     if dest_path.suffix == ".gz":
         dest_path = dest_path.with_suffix("")
 
-    if dest_path.exists():
-        dest_path = dest_path.with_name(
-            f"{dest_path.stem}_{int(time.time() * 1000)}{dest_path.suffix}"
-        )
-
     with zipfile.ZipFile(zip_path) as zf:
         with zf.open(member_name) as src:
             if target_name.endswith(".gz"):
                 with gzip.open(src, "rb") as gz_in, open(dest_path, "wb") as out:
-                    shutil.copyfileobj(gz_in, out)
+                    shutil.copyfileobj(gz_in, out, length=1024 * 1024)  # 1MB buffer
             else:
                 with open(dest_path, "wb") as out:
-                    shutil.copyfileobj(src, out)
+                    shutil.copyfileobj(src, out, length=1024 * 1024)  # 1MB buffer
 
     return dest_path
 
@@ -282,10 +297,13 @@ def _extract_and_process_member(
     Extract a single member into a per-process temp dir and run validation on it.
     Doing this inside the process pool keeps both extraction and parsing parallel,
     avoiding the GIL bottleneck of the previous thread-based extractor.
+
+    Failed replays are not written to disk when processing from zip - they're just
+    skipped and the temp file is cleaned up automatically.
     """
     with tempfile.TemporaryDirectory(prefix="slp_extract_") as tmpdir:
         extracted_path = _extract_member(zip_path, member_name, Path(tmpdir))
-        process_file(extracted_path, allowed_chars)
+        process_file(extracted_path, allowed_chars, skip_failed_output=True)
 
 
 def _process_zip_archive(

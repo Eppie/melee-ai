@@ -46,11 +46,11 @@ LEGAL_TOURNAMENT_STAGES = [
 
 SUPPORTED_CHARS = [
     Character.FOX,
-    Character.FALCO,
-    Character.CPTFALCON,
-    Character.JIGGLYPUFF,
-    Character.MARTH,
-    Character.SHEIK,
+#    Character.FALCO,
+#    Character.CPTFALCON,
+#    Character.JIGGLYPUFF,
+#    Character.MARTH,
+#    Character.SHEIK,
 ]
 
 
@@ -247,9 +247,9 @@ if __name__ == "__main__":
                             [inputs_td1[key], inputs_td2[key]], dim=0
                         )
 
-                    # Single forward pass
+                    # Single forward pass (batched inference doesn't use KV cache)
                     with torch.inference_mode():
-                        outputs = engine.model(batched_td)
+                        outputs, _ = engine.model(batched_td, use_cache=False)
 
                     # Extract outputs for each player
                     outputs1 = TensorDict({}, batch_size=[1])
@@ -306,6 +306,11 @@ if __name__ == "__main__":
                 Menu.IN_GAME,
                 Menu.SUDDEN_DEATH,
             ]:
+                # Game ended - clear KV caches for new game
+                engine.clear_kv_cache()
+                if engine2 is not None:
+                    engine2.clear_kv_cache()
+
                 current_stage = random.choice(LEGAL_TOURNAMENT_STAGES)
                 bot_char = random.choice(SUPPORTED_CHARS)
                 opp_char = random.choice(SUPPORTED_CHARS)

@@ -152,12 +152,12 @@ class GPTConfig(BaseModel):
         ),
     )
     use_alibi: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Use ALiBi (Attention with Linear Biases) instead of RoPE (Rotary Position Embeddings). "
             "ALiBi adds position-dependent biases to attention scores, allowing better length extrapolation. "
-            "Effect: When True, disables RoPE and uses ALiBi biases; when False (default), uses RoPE. "
-            "ALiBi may improve performance on sequences longer than training length. "
+            "Effect: When True (default), uses ALiBi biases; when False, uses RoPE. "
+            "ALiBi may improve performance on sequences longer than training length and enables KV caching for faster inference. "
             "Cannot be used simultaneously with RoPE - this is a mutually exclusive choice."
         ),
     )

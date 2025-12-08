@@ -275,7 +275,7 @@ class TestGPTModelCrossAttention:
         inputs = build_model_inputs(X, colmap)
 
         with torch.no_grad():
-            outputs = model(inputs)
+            outputs, _ = model(inputs, use_cache=False)
 
         # Check output keys and shapes
         assert "buttons" in outputs
@@ -319,8 +319,8 @@ class TestGPTModelCrossAttention:
         model_mix.eval()
 
         with torch.no_grad():
-            out_parallel = model_parallel(inputs)
-            out_mix = model_mix(inputs)
+            out_parallel, _ = model_parallel(inputs, use_cache=False)
+            out_mix, _ = model_mix(inputs, use_cache=False)
 
         # Shapes should be identical
         for key in ["buttons", "main_stick", "c_stick", "shoulder", "value"]:
@@ -347,7 +347,7 @@ class TestGPTModelCrossAttention:
         X = torch.zeros(B, T, len(colmap.feat_names) + 1, device=device, requires_grad=True)
         inputs = build_model_inputs(X, colmap)
 
-        outputs = model(inputs)
+        outputs, _ = model(inputs, use_cache=False)
 
         # Compute a simple loss
         loss = (

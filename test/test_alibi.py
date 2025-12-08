@@ -201,7 +201,7 @@ class TestModelWithAlibi:
         model.eval()
 
         with torch.no_grad():
-            outputs = model(sample_inputs)
+            outputs, _ = model(sample_inputs, use_cache=False)
 
         # Check output shapes
         batch_size, sequence_length = sample_inputs.batch_size
@@ -223,7 +223,7 @@ class TestModelWithAlibi:
         model.eval()
 
         with torch.no_grad():
-            outputs = model(sample_inputs)
+            outputs, _ = model(sample_inputs, use_cache=False)
 
         # Check output shapes
         batch_size, sequence_length = sample_inputs.batch_size
@@ -251,8 +251,8 @@ class TestModelWithAlibi:
         model_alibi.eval()
 
         with torch.no_grad():
-            outputs_rope = model_rope(sample_inputs)
-            outputs_alibi = model_alibi(sample_inputs)
+            outputs_rope, _ = model_rope(sample_inputs, use_cache=False)
+            outputs_alibi, _ = model_alibi(sample_inputs, use_cache=False)
 
         # Both should produce valid outputs (no NaNs or Infs)
         # Note: With zero inputs, outputs may be identical, which is fine
@@ -266,7 +266,7 @@ class TestModelWithAlibi:
         model = GPT(config_alibi)
         model.train()
 
-        outputs = model(sample_inputs)
+        outputs, _ = model(sample_inputs, use_cache=False)
 
         # Create a dummy loss from all outputs to ensure gradients flow everywhere
         loss = (
@@ -305,7 +305,7 @@ class TestModelWithAlibi:
             inputs = build_model_inputs(X, colmap)
 
             with torch.no_grad():
-                outputs = model(inputs)
+                outputs, _ = model(inputs, use_cache=False)
 
             assert outputs["buttons"].shape == (
                 batch_size,
@@ -339,7 +339,7 @@ class TestModelWithAlibi:
         inputs = build_model_inputs(X, colmap)
 
         with torch.no_grad():
-            outputs = model(inputs)
+            outputs, _ = model(inputs, use_cache=False)
 
         # Should work correctly with MQA
         assert outputs["buttons"].shape == (

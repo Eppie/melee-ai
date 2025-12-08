@@ -54,12 +54,30 @@ class Block(nn.Module):
         cos: torch.Tensor = None,
         sin: torch.Tensor = None,
         alibi_bias: torch.Tensor = None,
-    ) -> torch.Tensor:
-        hidden_states = hidden_states + self.attention(
-            norm(hidden_states), cos=cos, sin=sin, alibi_bias=alibi_bias
+        kv_cache: tuple = None,
+        use_cache: bool = False,
+    ) -> tuple:
+        """
+        Forward pass with optional KV caching.
+
+        Returns
+        -------
+        hidden_states : torch.Tensor
+            Output hidden states
+        updated_cache : tuple or None
+            Updated KV cache if use_cache=True, None otherwise
+        """
+        attn_output, updated_cache = self.attention(
+            norm(hidden_states),
+            cos=cos,
+            sin=sin,
+            alibi_bias=alibi_bias,
+            kv_cache=kv_cache,
+            use_cache=use_cache,
         )
+        hidden_states = hidden_states + attn_output
         hidden_states = hidden_states + self.mlp_dropout(self.mlp(norm(hidden_states)))
-        return hidden_states
+        return hidden_states, updated_cache
 
 
 class GPT(nn.Module):
@@ -287,7 +305,32 @@ class GPT(nn.Module):
             dim=-1,
         )
 
-    def forward(self, inputs: TensorDict) -> TensorDict:
+    def forward(
+        self,
+        inputs: TensorDict,
+        kv_cache: list = None,
+        use_cache: bool = False,
+    ) -> tuple:
+        """
+        Forward pass with optional KV caching.
+
+        Parameters
+        ----------
+        inputs : TensorDict
+            Model inputs
+        kv_cache : list of tuples, optional
+            List of (keys, values) tuples, one per layer.
+            Each tuple contains cached keys/values from previous forward passes.
+        use_cache : bool
+            Whether to use and return KV cache. Only works with ALiBi models.
+
+        Returns
+        -------
+        outputs : TensorDict
+            Model outputs
+        updated_cache : list of tuples or None
+            Updated KV cache if use_cache=True, None otherwise
+        """
         batch_size, sequence_length, _ = inputs["gamestate"].shape
         assert (
             sequence_length <= self.block_size
@@ -309,8 +352,25 @@ class GPT(nn.Module):
             sin = self.sin[:, :sequence_length]
             alibi_bias = None
 
-        for block in self.blocks:
-            hidden_states = block(hidden_states, cos=cos, sin=sin, alibi_bias=alibi_bias)
+        # Process through transformer blocks
+        updated_cache = [] if use_cache else None
+        for layer_idx, block in enumerate(self.blocks):
+            # Get cache for this layer
+            layer_cache = kv_cache[layer_idx] if kv_cache is not None else None
+
+            # Forward through block
+            hidden_states, layer_updated_cache = block(
+                hidden_states,
+                cos=cos,
+                sin=sin,
+                alibi_bias=alibi_bias,
+                kv_cache=layer_cache,
+                use_cache=use_cache,
+            )
+
+            # Store updated cache
+            if use_cache:
+                updated_cache.append(layer_updated_cache)
 
         hidden_states = norm(hidden_states)
 
@@ -415,4 +475,4 @@ class GPT(nn.Module):
         value = self.value_head(hidden_states)
         outputs.set("value", value)
 
-        return outputs
+        return outputs, updated_cache

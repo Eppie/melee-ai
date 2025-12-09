@@ -312,7 +312,7 @@ class TestLearnedEmbeddings:
 
     def test_different_head_flow_modes(self, sample_inputs):
         """Test that learned embeddings work with different head_flow modes."""
-        for head_flow in ["sequential", "parallel", "mix"]:
+        for head_flow in ["sequential", "parallel"]:
             reset_config()
             config = init_config(
                 overrides={

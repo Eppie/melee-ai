@@ -19,7 +19,6 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 
 from model.attention import CausalSelfAttention
-from model.head_cross_attention import HeadCrossAttention
 from model.norm import norm
 from model.output_head import SimpleHead
 from model.positional_encoding import get_alibi_biases
@@ -54,30 +53,12 @@ class Block(nn.Module):
         cos: torch.Tensor = None,
         sin: torch.Tensor = None,
         alibi_bias: torch.Tensor = None,
-        kv_cache: tuple = None,
-        use_cache: bool = False,
-    ) -> tuple:
-        """
-        Forward pass with optional KV caching.
-
-        Returns
-        -------
-        hidden_states : torch.Tensor
-            Output hidden states
-        updated_cache : tuple or None
-            Updated KV cache if use_cache=True, None otherwise
-        """
-        attn_output, updated_cache = self.attention(
-            norm(hidden_states),
-            cos=cos,
-            sin=sin,
-            alibi_bias=alibi_bias,
-            kv_cache=kv_cache,
-            use_cache=use_cache,
+    ) -> torch.Tensor:
+        hidden_states = hidden_states + self.attention(
+            norm(hidden_states), cos=cos, sin=sin, alibi_bias=alibi_bias
         )
-        hidden_states = hidden_states + attn_output
         hidden_states = hidden_states + self.mlp_dropout(self.mlp(norm(hidden_states)))
-        return hidden_states, updated_cache
+        return hidden_states
 
 
 class GPT(nn.Module):
@@ -153,12 +134,14 @@ class GPT(nn.Module):
                 + self.main_stick_output_size
                 + self.c_stick_output_size
             )
-        else:
-            # Parallel and mix modes: all heads receive same base features
+        elif self.head_flow == "parallel":
+            # Parallel mode: all heads receive same base features
             button_input_size = self.embedding_dim
             main_stick_input_size = self.embedding_dim
             c_stick_input_size = self.embedding_dim
             shoulder_input_size = self.embedding_dim
+        else:
+            raise ValueError(f"Unknown head_flow mode: {self.head_flow}. Valid options: 'sequential', 'parallel'")
 
         self.button_head = SimpleHead(
             button_input_size, self.button_output_size, hidden=head_hidden_dim
@@ -186,14 +169,6 @@ class GPT(nn.Module):
             )
 
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
-
-        # Cross-attention for heads (only used in "mix" mode)
-        if self.head_flow == "mix":
-            self.head_cross_attention = HeadCrossAttention(
-                hidden_dim=head_hidden_dim,
-                num_head_types=4,  # buttons, main_stick, c_stick, shoulder (future heads are independent)
-                num_attn_heads=4,
-            )
 
         # Precompute positional encodings: either RoPE or ALiBi
         self.use_alibi = model_config.use_alibi
@@ -305,32 +280,7 @@ class GPT(nn.Module):
             dim=-1,
         )
 
-    def forward(
-        self,
-        inputs: TensorDict,
-        kv_cache: list = None,
-        use_cache: bool = False,
-    ) -> tuple:
-        """
-        Forward pass with optional KV caching.
-
-        Parameters
-        ----------
-        inputs : TensorDict
-            Model inputs
-        kv_cache : list of tuples, optional
-            List of (keys, values) tuples, one per layer.
-            Each tuple contains cached keys/values from previous forward passes.
-        use_cache : bool
-            Whether to use and return KV cache. Only works with ALiBi models.
-
-        Returns
-        -------
-        outputs : TensorDict
-            Model outputs
-        updated_cache : list of tuples or None
-            Updated KV cache if use_cache=True, None otherwise
-        """
+    def forward(self, inputs: TensorDict) -> TensorDict:
         batch_size, sequence_length, _ = inputs["gamestate"].shape
         assert (
             sequence_length <= self.block_size
@@ -352,25 +302,8 @@ class GPT(nn.Module):
             sin = self.sin[:, :sequence_length]
             alibi_bias = None
 
-        # Process through transformer blocks
-        updated_cache = [] if use_cache else None
-        for layer_idx, block in enumerate(self.blocks):
-            # Get cache for this layer
-            layer_cache = kv_cache[layer_idx] if kv_cache is not None else None
-
-            # Forward through block
-            hidden_states, layer_updated_cache = block(
-                hidden_states,
-                cos=cos,
-                sin=sin,
-                alibi_bias=alibi_bias,
-                kv_cache=layer_cache,
-                use_cache=use_cache,
-            )
-
-            # Store updated cache
-            if use_cache:
-                updated_cache.append(layer_updated_cache)
+        for block in self.blocks:
+            hidden_states = block(hidden_states, cos=cos, sin=sin, alibi_bias=alibi_bias)
 
         hidden_states = norm(hidden_states)
 
@@ -382,43 +315,6 @@ class GPT(nn.Module):
             main_stick = self.main_stick_head(base_hidden_states)
             c_stick = self.c_stick_head(base_hidden_states)
             shoulder = self.shoulder_head(base_hidden_states)
-
-        elif self.head_flow == "mix":
-            # Mix mode: cross-attention between head intermediate features
-            # Get intermediate features from each head (only for controller heads)
-            button_features = self.button_head.forward_intermediate(base_hidden_states)
-            main_stick_features = self.main_stick_head.forward_intermediate(
-                base_hidden_states
-            )
-            c_stick_features = self.c_stick_head.forward_intermediate(
-                base_hidden_states
-            )
-            shoulder_features = self.shoulder_head.forward_intermediate(
-                base_hidden_states
-            )
-            # Note: future heads removed from cross-attention for modularity
-            # They will be computed independently below
-
-            # Apply cross-attention across controller heads only
-            head_features_list = [
-                button_features,
-                main_stick_features,
-                c_stick_features,
-                shoulder_features,
-            ]
-            attended_features = self.head_cross_attention(head_features_list)
-
-            # Project to final outputs from attended features
-            button_logits = self.button_head.forward_from_intermediate(
-                attended_features[0]
-            )
-            main_stick = self.main_stick_head.forward_from_intermediate(
-                attended_features[1]
-            )
-            c_stick = self.c_stick_head.forward_from_intermediate(attended_features[2])
-            shoulder = self.shoulder_head.forward_from_intermediate(
-                attended_features[3]
-            )
 
         elif self.head_flow == "sequential":
             # Sequential heads: each head receives concatenated outputs from previous heads
@@ -449,7 +345,7 @@ class GPT(nn.Module):
             )
 
         else:
-            raise ValueError(f"Unknown head_flow mode: {self.head_flow}")
+            raise ValueError(f"Unknown head_flow mode: {self.head_flow}. Valid options: 'sequential', 'parallel'")
 
         # Build output dict with controller heads
         outputs_dict = {
@@ -475,4 +371,4 @@ class GPT(nn.Module):
         value = self.value_head(hidden_states)
         outputs.set("value", value)
 
-        return outputs, updated_cache
+        return outputs

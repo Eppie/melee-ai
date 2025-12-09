@@ -195,7 +195,7 @@ def run_validation(
                 change_scale=imbalance_scale,
             )
 
-            pred, _ = model(inputs_td, use_cache=False)  # No KV cache during validation
+            pred = model(inputs_td)
 
             logits_main = pred["main_stick"]
             logits_c = pred["c_stick"]

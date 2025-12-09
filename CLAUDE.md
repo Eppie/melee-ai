@@ -56,7 +56,6 @@ GPT architecture split across modular files:
 - `nano_gpt.py` - Main `GPT` class, `Block`, `MLP`
 - `attention.py` - Causal self-attention with MQA support
 - `output_head.py` - Simple output head implementation
-- `head_cross_attention.py` - Cross-attention between output heads
 - `positional_encoding.py` - Rotary positional embeddings
 - `norm.py` - RMSNorm implementation
 - `compile_utils.py` - torch.compile utilities
@@ -67,7 +66,7 @@ Architecture features:
 - Multi-Query Attention (configurable `n_kv_head`)
 - One-hot encoding for categoricals (stage, character, action)
 - 5 output heads: `main_stick`, `c_stick`, `buttons`, `shoulder`, `value`
-- Optional cross-attention between heads for information sharing
+- Two output head modes: sequential (heads receive concatenated outputs from previous heads) or parallel (independent)
 
 ### Controller Quantization (`controller_quantization.py`)
 - **Main stick**: 64 discrete positions (wavedash angles, DI, Firefox angles, etc.)

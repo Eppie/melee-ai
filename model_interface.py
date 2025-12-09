@@ -420,14 +420,6 @@ class GPTInferenceEngine:
         self._death_counter = 0
         self._prev_action: Optional[int] = None
 
-        # KV cache for inference speedup (only works with ALiBi)
-        self.use_kv_cache = config.model.use_alibi
-        self.kv_cache = None  # Will be initialized on first inference
-        if self.use_kv_cache:
-            print("[INFO] KV cache enabled (model uses ALiBi positional encoding)")
-        else:
-            print("[INFO] KV cache disabled (model uses RoPE positional encoding)")
-
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
         """Convert raw_inputs into an ordered tensor of feature values (optimized)."""
         # Use pre-allocated tensor and vectorized assignment
@@ -576,11 +568,6 @@ class GPTInferenceEngine:
         except Exception:
             pass
 
-    def clear_kv_cache(self) -> None:
-        """Clear the KV cache (e.g., when starting a new game)."""
-        if self.use_kv_cache:
-            self.kv_cache = None
-
     def _maybe_log_death(self, current_action: Optional[float]) -> None:
         """Detect stock loss via action state transition and trigger death logging."""
         if current_action is None:
@@ -673,12 +660,7 @@ class GPTInferenceEngine:
             return controller
 
         with torch.inference_mode():
-            if self.use_kv_cache:
-                # Use KV cache for faster inference (ALiBi models only)
-                outputs, self.kv_cache = self.model(inputs_td, kv_cache=self.kv_cache, use_cache=True)
-            else:
-                # No cache for RoPE models
-                outputs, _ = self.model(inputs_td, use_cache=False)
+            outputs = self.model(inputs_td)
 
         record.logits = self._capture_logits(outputs)
         controller = self._decode_outputs(outputs)

@@ -247,7 +247,7 @@ class TestOptionalFutureHeads:
 
     def test_different_head_flow_modes_without_future_heads(self, sample_inputs):
         """Test that future heads work correctly with different head_flow modes."""
-        for head_flow in ["sequential", "parallel", "mix"]:
+        for head_flow in ["sequential", "parallel"]:
             reset_config()
             config = init_config(
                 overrides={

@@ -152,12 +152,12 @@ class GPTConfig(BaseModel):
         ),
     )
     use_alibi: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Use ALiBi (Attention with Linear Biases) instead of RoPE (Rotary Position Embeddings). "
             "ALiBi adds position-dependent biases to attention scores, allowing better length extrapolation. "
-            "Effect: When True (default), uses ALiBi biases; when False, uses RoPE. "
-            "ALiBi may improve performance on sequences longer than training length and enables KV caching for faster inference. "
+            "Effect: When True, disables RoPE and uses ALiBi biases; when False (default), uses RoPE. "
+            "ALiBi may improve performance on sequences longer than training length. "
             "Cannot be used simultaneously with RoPE - this is a mutually exclusive choice."
         ),
     )
@@ -198,13 +198,14 @@ class GPTConfig(BaseModel):
         ge=1,
         description="Embedding dimension for action states when use_learned_embeddings=True. Default 32 for 396 actions.",
     )
-    head_flow: Literal["sequential", "parallel", "mix"] = Field(
+    head_flow: Literal["sequential", "parallel"] = Field(
         default="sequential",
         description=(
             "Output head computation mode. Controls how output heads (main_stick, c_stick, buttons, shoulder) "
-            "interact. Options: 'sequential' = heads computed in order with cross-attention (allows information flow), "
-            "'parallel' = all heads computed independently (faster but no inter-head communication), "
-            "'mix' = hybrid approach. Reasonable: 'sequential' for better accuracy, 'parallel' for speed."
+            "interact. Options: 'sequential' = heads computed in order, each receiving concatenated outputs from "
+            "previous heads (allows information flow between heads), 'parallel' = all heads computed independently "
+            "on base features (faster but no inter-head communication). Reasonable: 'sequential' for better accuracy, "
+            "'parallel' for speed."
         ),
     )
     target_shapes_by_head: Dict[str, int] = Field(

@@ -303,6 +303,8 @@ class EpisodeWriter:
         Given ``features`` with shape ``(300, num_features)`` and ``targets`` with ``(300, Yd)``, the method
         creates ``ep_000123/X`` and ``ep_000123/Y`` arrays (chunked along time),
         fills them with the provided data, and returns the episode group name.
+
+        Arrays are stored in float16 format to reduce storage and transfer bandwidth by 50%.
         """
         config = get_config()
         assert features.dtype == np.float32 and targets.dtype == np.float32
@@ -311,25 +313,26 @@ class EpisodeWriter:
         for name in ("X", "Y"):
             if name in epg:
                 del epg[name]
-        chunk_t = self._chunk_t(features.shape[1], elem_bytes=4)
+        # Use elem_bytes=2 for fp16 chunk size calculation
+        chunk_t = self._chunk_t(features.shape[1], elem_bytes=2)
         features_array = epg.create_array(
             "X",
             shape=features.shape,
             chunks=(min(chunk_t, features.shape[0]), features.shape[1]),
             compressors=[config.zarr.compressor],
-            dtype="float32",
+            dtype="float16",
             overwrite=True,
         )
-        features_array[:] = features
+        features_array[:] = features.astype(np.float16)
         targets_array = epg.create_array(
             "Y",
             shape=targets.shape,
             chunks=(min(chunk_t, targets.shape[0]), targets.shape[1]),
             compressors=[config.zarr.compressor],
-            dtype="float32",
+            dtype="float16",
             overwrite=True,
         )
-        targets_array[:] = targets
+        targets_array[:] = targets.astype(np.float16)
         return ep_name
 
     def finalize(self) -> None:

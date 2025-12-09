@@ -133,7 +133,7 @@ def perform_forward_pass(
             "future_x_K": int(head_dims["future_x"]),
             "future_y_K": int(head_dims["future_y"]),
         }
-        pred, _ = components.model(inputs_td, use_cache=False)  # No KV cache during training
+        pred = components.model(inputs_td)
         # Clone to prevent CUDA graph overwriting when using torch.compile()
         pred = pred.clone()
 

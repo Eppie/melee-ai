@@ -160,52 +160,13 @@ def compute_loss_components(
     ).reshape(B, L)
     loss_shoulder = _mean_with_weights(sh_vec, w_shoulder, loss_config)
 
-    # --- FUTURE POSITION ---
-    # Only compute if future position targets are present
-    loss_future_x = torch.tensor(0.0, device=logits_main.device, dtype=logits_main.dtype)
-    loss_future_y = torch.tensor(0.0, device=logits_main.device, dtype=logits_main.dtype)
-
-    if "future_x_idx" in target_info and "future_y_idx" in target_info:
-        future_x_logits = pred.get("future_x")  # [B, L, K_future_x]
-        future_y_logits = pred.get("future_y")  # [B, L, K_future_y]
-
-        if future_x_logits is not None and future_y_logits is not None:
-            future_x_targets = target_info["future_x_idx"].reshape(B * L)
-            future_y_targets = target_info["future_y_idx"].reshape(B * L)
-            future_valid = target_info["future_valid"].reshape(B * L)  # [B*L]
-
-            # Cross-entropy loss with validity masking
-            loss_future_x_vec = F.cross_entropy(
-                future_x_logits.reshape(B * L, -1),
-                future_x_targets,
-                reduction="none",
-                label_smoothing=label_smoothing,
-            )  # [B*L]
-            loss_future_y_vec = F.cross_entropy(
-                future_y_logits.reshape(B * L, -1),
-                future_y_targets,
-                reduction="none",
-                label_smoothing=label_smoothing,
-            )  # [B*L]
-
-            # Mask out invalid positions (near episode end)
-            loss_future_x_vec = loss_future_x_vec * future_valid
-            loss_future_y_vec = loss_future_y_vec * future_valid
-
-            # Mean over valid samples only
-            num_valid = future_valid.sum().clamp_min(1.0)
-            loss_future_x = (loss_future_x_vec.sum() / num_valid) * loss_config.future_x_weight
-            loss_future_y = (loss_future_y_vec.sum() / num_valid) * loss_config.future_y_weight
-
-    total_loss = loss_main + loss_c + loss_buttons + loss_shoulder + loss_future_x + loss_future_y
+    total_loss = loss_main + loss_c + loss_buttons + loss_shoulder
     return {
         "total": total_loss,
         "main": loss_main,
         "c": loss_c,
         "buttons": loss_buttons,
         "shoulder": loss_shoulder,
-        "future_x": loss_future_x,
-        "future_y": loss_future_y,
     }
 
 

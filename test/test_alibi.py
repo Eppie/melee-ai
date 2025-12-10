@@ -275,11 +275,6 @@ class TestModelWithAlibi:
             + outputs["shoulder"].sum()
             + outputs["value"].sum()
         )
-        # Add future heads to loss if they exist
-        if "future_x" in outputs:
-            loss = loss + outputs["future_x"].sum()
-        if "future_y" in outputs:
-            loss = loss + outputs["future_y"].sum()
 
         loss.backward()
 

@@ -105,12 +105,6 @@ class GPT(nn.Module):
         self.main_stick_output_size = self.target_shapes_by_head["main_stick"]
         self.button_output_size = self.target_shapes_by_head["buttons"]
 
-        # Future heads are optional
-        self.use_future_heads = model_config.use_future_heads
-        if self.use_future_heads:
-            self.future_x_output_size = self.target_shapes_by_head["future_x"]
-            self.future_y_output_size = self.target_shapes_by_head["future_y"]
-
         # TODO: Move this to config
         head_hidden_dim = 128
 
@@ -120,7 +114,6 @@ class GPT(nn.Module):
         if self.head_flow == "sequential":
             # Sequential mode: each head receives concatenated outputs from previous heads
             # Order: buttons → main_stick → c_stick → shoulder
-            # Note: future_x and future_y are independent (like value head) for better modularity
             button_input_size = self.embedding_dim
             main_stick_input_size = self.embedding_dim + self.button_output_size
             c_stick_input_size = (
@@ -155,18 +148,6 @@ class GPT(nn.Module):
         self.shoulder_head = SimpleHead(
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
         )
-
-        # Future position heads are optional and always independent (like value head)
-        # This makes them modular and allows checkpoint compatibility
-        if self.use_future_heads:
-            future_x_input_size = self.embedding_dim
-            future_y_input_size = self.embedding_dim
-            self.future_x_head = SimpleHead(
-                future_x_input_size, self.future_x_output_size, hidden=head_hidden_dim
-            )
-            self.future_y_head = SimpleHead(
-                future_y_input_size, self.future_y_output_size, hidden=head_hidden_dim
-            )
 
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
 
@@ -354,14 +335,6 @@ class GPT(nn.Module):
             "c_stick": c_stick,
             "shoulder": shoulder,
         }
-
-        # Future position heads are optional and always computed independently from base hidden states
-        # This ensures they don't affect controller predictions and allows checkpoint compatibility
-        if self.use_future_heads:
-            future_x = self.future_x_head(base_hidden_states)
-            future_y = self.future_y_head(base_hidden_states)
-            outputs_dict["future_x"] = future_x
-            outputs_dict["future_y"] = future_y
 
         outputs = TensorDict(
             outputs_dict,

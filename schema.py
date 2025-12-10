@@ -251,14 +251,8 @@ def get_target_names() -> list[str]:
         "p1_button_lr",
     ]
 
-    # Future position targets: keyframe horizons at [1, 5, 10, 15, 20, 30, 40, 50, 60] frames
-    # Store quantized X and Y positions plus validity masks (27 columns total)
-    keyframe_horizons = [1, 5, 10, 15, 20, 30, 40, 50, 60]
-    future_x = [f"p1_future_x_h{h}" for h in keyframe_horizons]
-    future_y = [f"p1_future_y_h{h}" for h in keyframe_horizons]
-    future_valid = [f"p1_future_valid_h{h}" for h in keyframe_horizons]
 
-    return base_targets + future_x + future_y + future_valid
+    return base_targets
 
 
 # Build the dataclass dynamically (flattened attributes), with slots for memory/perf

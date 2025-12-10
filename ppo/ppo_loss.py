@@ -145,13 +145,8 @@ def compute_ppo_loss(
 
     B, T, feat_dim = batch_features.shape
 
-    # Append horizon feature (model was trained with augment_batch_with_horizons)
-    # Use 0.5 as default (30 frames / 60.0)
-    horizon = torch.full((B, T, 1), 0.5, device=batch_features.device, dtype=batch_features.dtype)
-    batch_features_with_horizon = torch.cat([batch_features, horizon], dim=-1)  # [B, T, F+1]
-
     # Convert raw features to model inputs using existing infrastructure
-    model_inputs = build_model_inputs(batch_features_with_horizon, column_map)
+    model_inputs = build_model_inputs(batch_features, column_map)
 
     # Forward pass through policy network
     outputs = policy(model_inputs)

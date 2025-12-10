@@ -261,12 +261,7 @@ class Coordinator:
         Returns:
             Tuple of (main_idx, c_idx, shoulder_idx, buttons, logps, values)
         """
-        # Append horizon feature (model was trained with augment_batch_with_horizons)
-        # Use 0.5 as default (30 frames / 60.0), though it doesn't matter much since
-        # future heads are not used during PPO
         B, T, F = features.shape
-        horizon = torch.full((B, T, 1), 0.5, device=features.device, dtype=features.dtype)
-        features_with_horizon = torch.cat([features, horizon], dim=-1)  # [B, T, F+1]
 
         # Diagnostic logging (every 100 steps, all envs)
         if hasattr(self, 'step_id') and self.step_id % 100 == 0 and B > 0:
@@ -307,7 +302,7 @@ class Coordinator:
             print(f"[CRD] ═══ End Feature Diagnostics ═══\n")
 
         # Build model inputs
-        batch_td = build_model_inputs(features_with_horizon.float(), self.column_map)
+        batch_td = build_model_inputs(features.float(), self.column_map)
 
         # Forward pass
         outputs = policy(batch_td)

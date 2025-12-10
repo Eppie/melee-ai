@@ -21,9 +21,6 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
     wrapped in a ``TensorDict`` with the same batch shape as the input so downstream code can rely
     on consistent key names.
 
-    If the input has one extra feature beyond what's in the column_map (added by
-    ``augment_batch_with_horizons``), it's detected as a horizon feature and appended to gamestate.
-
     Example:
         Suppose ``features_batch`` is shaped ``[2, 3, 6]`` and the column map encodes indices such that
         stage is at column 0, ego character at column 1, opponent character at column 2, ego action
@@ -47,7 +44,6 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
 
     Args:
         features_batch: ``[batch_size, sequence_length, F]`` float32 features of the current frame sequence.
-                       May have F = base_features or F = base_features + 1 (with horizon appended).
         column_map: Column mapping for feature indices.
 
     Returns:
@@ -81,7 +77,6 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
         ..., column_map.controller_idxs
     ]  # [batch_size,sequence_length,Gc]
 
-    # Check if there's an extra feature (horizon) appended by augment_batch_with_horizons
     # Expected features: stage(1) + ego_char(1) + opp_char(1) + ego_action(1) + opp_action(1) +
     #                    value(1 if present) + gamestate + controller
     expected_features = (
@@ -90,11 +85,6 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
         + len(column_map.gamestate_idxs)
         + len(column_map.controller_idxs)
     )
-
-    if num_features == expected_features + 1:
-        # Horizon feature was appended at the end - include it in gamestate
-        horizon = features_batch[..., -1:].to(torch.float32)  # [batch_size, sequence_length, 1]
-        gamestate = torch.cat([gamestate, horizon], dim=-1)
 
     return TensorDict(
         {
@@ -284,164 +274,3 @@ def compute_component_sample_weights(
         "buttons": w_buttons,  # [batch_size, sequence_length, K]
         "global": w_global,  # [batch_size, sequence_length]
     }
-
-
-# Cache for keyframe horizon tensors (avoid recreating every batch)
-_KEYFRAME_HORIZONS_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
-
-
-def interpolate_keyframes(
-    Y: Tensor, keyframe_indices: Sequence[int], target_horizon: int, keyframe_horizons: Sequence[int]
-) -> Tensor:
-    """Interpolate a target horizon value from stored keyframe positions.
-
-    Args:
-        Y: Target tensor [B, L, Yd] containing keyframe data at keyframe_indices
-        keyframe_indices: List of column indices in Y where keyframes are stored
-        target_horizon: Desired horizon value (1-60)
-        keyframe_horizons: List of horizon values corresponding to keyframe_indices
-
-    Returns:
-        Interpolated values [B, L] for the target horizon
-
-    Example:
-        Keyframes at horizons [1, 5, 10, 15, 20, 30, 40, 50, 60]
-        Target horizon = 7 (between 5 and 10)
-        Linear interpolation: value = keyframe[5] * 0.6 + keyframe[10] * 0.4
-    """
-    keyframe_horizons = list(keyframe_horizons)
-    device = Y.device
-
-    # Find bracketing keyframes
-    if target_horizon <= keyframe_horizons[0]:
-        # Use first keyframe
-        return Y[..., keyframe_indices[0]]
-    elif target_horizon >= keyframe_horizons[-1]:
-        # Use last keyframe
-        return Y[..., keyframe_indices[-1]]
-    else:
-        # Find the two keyframes to interpolate between
-        for i in range(len(keyframe_horizons) - 1):
-            if keyframe_horizons[i] <= target_horizon <= keyframe_horizons[i + 1]:
-                h_low = keyframe_horizons[i]
-                h_high = keyframe_horizons[i + 1]
-                val_low = Y[..., keyframe_indices[i]]
-                val_high = Y[..., keyframe_indices[i + 1]]
-
-                # Linear interpolation weight
-                alpha = (target_horizon - h_low) / (h_high - h_low)
-                return val_low * (1 - alpha) + val_high * alpha
-
-    # Fallback (should never reach here)
-    return Y[..., keyframe_indices[0]]
-
-
-def augment_batch_with_horizons(
-    X: Tensor,
-    Y: Tensor,
-    column_map: ColumnMap,
-    num_horizons: int = 1,
-    max_horizon: int = 60,
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Augment batch by sampling different future position horizons per window.
-
-    Each window in the batch gets its own randomly sampled horizon distance,
-    maximizing training diversity. Adds the horizon distance as a feature and
-    extracts corresponding future position targets.
-
-    Args:
-        X: Feature tensor [B, L, F]
-        Y: Target tensor [B, L, Yd] with keyframe future positions
-        column_map: Column mapping with y_future_x_keyframes, y_future_y_keyframes, y_future_valid_mask
-        num_horizons: Unused (kept for backward compatibility, always 1)
-        max_horizon: Maximum horizon value to sample (default: 60)
-
-    Returns:
-        Tuple of:
-            - X_aug: Augmented features [B, L, F+1] with horizon feature appended
-            - future_x_targets: X position targets [B, L]
-            - future_y_targets: Y position targets [B, L]
-            - valid_mask: Validity mask [B, L]
-
-    Example:
-        With B=4, L=64:
-        - Sample 4 random horizons (one per window): [23, 41, 8, 57]
-        - Append per-window horizon/60.0 as feature
-        - Interpolate future positions from keyframes for each window's horizon
-        - Return tensors shaped [4, 64, F+1], [4, 64], [4, 64], [4, 64]
-    """
-    B, L, F = X.shape
-    device = X.device
-
-    keyframe_horizons = [1, 5, 10, 15, 20, 30, 40, 50, 60]
-
-    # Check if future position columns are present
-    if not column_map.y_future_x_keyframes:
-        # Old dataset without future positions - return dummy data
-        X_aug = X  # No modification needed
-        dummy_targets = torch.zeros(B, L, device=device, dtype=torch.long)
-        dummy_valid = torch.zeros(B, L, device=device, dtype=torch.float32)
-        return X_aug, dummy_targets, dummy_targets, dummy_valid
-
-    # Sample random horizon for EACH window in batch [B]
-    horizons = torch.randint(1, max_horizon + 1, (B,), device=device)
-
-    # Normalized horizon features [B, 1] -> [B, L, 1]
-    horizons_norm = (horizons.float() / 60.0).view(B, 1, 1).expand(B, L, 1)
-
-    # Add horizon feature to X
-    X_with_horizon = torch.cat([X, horizons_norm], dim=-1)  # [B, L, F+1]
-
-    # Get or create cached keyframe horizon tensor
-    cache_key = (device.type, device.index if device.type == 'cuda' else None)
-    if cache_key not in _KEYFRAME_HORIZONS_CACHE:
-        _KEYFRAME_HORIZONS_CACHE[cache_key] = torch.tensor(
-            keyframe_horizons, device=device, dtype=torch.float32
-        )
-    keyframe_horizons_tensor = _KEYFRAME_HORIZONS_CACHE[cache_key]
-
-    # Find bracketing keyframe indices for each horizon [B]
-    indices = torch.searchsorted(keyframe_horizons_tensor, horizons.float()).clamp(1, len(keyframe_horizons) - 1)
-    h_low_idx = indices - 1  # [B]
-    h_high_idx = indices  # [B]
-
-    # Compute interpolation weights [B, 1] (fused operations)
-    h_low = keyframe_horizons_tensor[h_low_idx]
-    h_high = keyframe_horizons_tensor[h_high_idx]
-    alpha = ((horizons.float() - h_low) / (h_high - h_low + 1e-8)).view(B, 1)
-
-    # Direct indexing approach: use advanced indexing to select keyframes
-    # Extract keyframe arrays [B, L, 9]
-    future_x_keyframes = Y[..., column_map.y_future_x_keyframes]
-    future_y_keyframes = Y[..., column_map.y_future_y_keyframes]
-    valid_keyframes = Y[..., column_map.y_future_valid_mask]
-
-    # Use fancy indexing: create index arrays for batch and sequence dimensions
-    # Then use h_low_idx and h_high_idx to select from keyframe dimension
-    batch_range = torch.arange(B, device=device).view(B, 1, 1)  # [B, 1, 1]
-    seq_range = torch.arange(L, device=device).view(1, L, 1)    # [1, L, 1]
-
-    # Expand indices for 3D indexing
-    h_low_idx_3d = h_low_idx.view(B, 1, 1).expand(B, L, 1)  # [B, L, 1]
-    h_high_idx_3d = h_high_idx.view(B, 1, 1).expand(B, L, 1)  # [B, L, 1]
-
-    # Gather in one operation (fused)
-    future_x_low = future_x_keyframes.gather(2, h_low_idx_3d).squeeze(2)   # [B, L]
-    future_x_high = future_x_keyframes.gather(2, h_high_idx_3d).squeeze(2) # [B, L]
-    future_y_low = future_y_keyframes.gather(2, h_low_idx_3d).squeeze(2)   # [B, L]
-    future_y_high = future_y_keyframes.gather(2, h_high_idx_3d).squeeze(2) # [B, L]
-    valid_low = valid_keyframes.gather(2, h_low_idx_3d).squeeze(2)         # [B, L]
-    valid_high = valid_keyframes.gather(2, h_high_idx_3d).squeeze(2)       # [B, L]
-
-    # Linear interpolation (fused computation)
-    alpha_inv = 1 - alpha
-    future_x_interp = future_x_low * alpha_inv + future_x_high * alpha
-    future_y_interp = future_y_low * alpha_inv + future_y_high * alpha
-    valid_interp = valid_low * alpha_inv + valid_high * alpha
-
-    return (
-        X_with_horizon,  # [B, L, F+1]
-        future_x_interp,  # [B, L]
-        future_y_interp,  # [B, L]
-        valid_interp,  # [B, L]
-    )

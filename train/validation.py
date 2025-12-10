@@ -15,7 +15,6 @@ from constants import CONTROLLER_KEY_GROUPS
 from loss import compute_loss_components
 from train.batch_utils import (
     SampleWeightRatios,
-    augment_batch_with_horizons,
     build_model_inputs,
     compute_component_sample_weights,
 )
@@ -137,7 +136,7 @@ def run_validation(
 
     metrics = defaultdict(float)
     loss_sums: Dict[str, float] = {
-        key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder", "value", "future_x", "future_y")
+        key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder", "value")
     }
 
     total_frames = 0
@@ -155,12 +154,7 @@ def run_validation(
             X: torch.Tensor = batch["X"].to(device, non_blocking=True)
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
-            # Augment batch with per-window random horizon features (for future position heads)
-            X_aug, future_x_targets, future_y_targets, future_valid = augment_batch_with_horizons(
-                X, Y, colmap, num_horizons=1, max_horizon=60
-            )
-
-            inputs_td = build_model_inputs(X_aug, colmap)
+            inputs_td = build_model_inputs(X, colmap)
             if (
                 colmap.y_main_idx is None
                 or colmap.y_c_idx is None
@@ -180,12 +174,6 @@ def run_validation(
                 "c_K": int(head_dims["c_stick"]),
                 "buttons_K": len(colmap.y_buttons),
                 "shoulder_K": int(head_dims["shoulder"]),
-                # Add future position targets (if available)
-                "future_x_idx": future_x_targets.to(torch.long),
-                "future_y_idx": future_y_targets.to(torch.long),
-                "future_valid": future_valid.to(torch.float32),
-                "future_x_K": int(head_dims["future_x"]),
-                "future_y_K": int(head_dims["future_y"]),
             }
             weights = compute_component_sample_weights(
                 target_info,

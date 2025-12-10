@@ -14,62 +14,6 @@ from utils import match_state_dict_keys
 import torch.nn as nn
 
 
-def _validate_future_head_only_mismatch(
-    missing_keys: List[str], unexpected_keys: List[str]
-) -> None:
-    """Validate that only future head parameters are mismatched during checkpoint loading.
-
-    This allows safe architectural changes to future_x and future_y heads while ensuring
-    all controller heads (main_stick, c_stick, buttons, shoulder) load correctly.
-
-    Args:
-        missing_keys: List of parameters missing from checkpoint
-        unexpected_keys: List of parameters in checkpoint but not in model
-
-    Raises:
-        RuntimeError: If any non-future-head parameters are mismatched
-    """
-    # Define allowed future head parameter prefixes
-    future_head_prefixes = {
-        "future_x_head.",
-        "future_y_head.",
-        "_orig_mod.future_x_head.",  # torch.compile prefix
-        "_orig_mod.future_y_head.",
-    }
-
-    def is_future_head_key(key: str) -> bool:
-        """Check if a key belongs to a future head."""
-        return any(key.startswith(prefix) for prefix in future_head_prefixes)
-
-    # Check missing keys (in model but not in checkpoint)
-    non_future_missing = [k for k in missing_keys if not is_future_head_key(k)]
-    if non_future_missing:
-        raise RuntimeError(
-            f"Checkpoint is missing critical parameters (not future heads): "
-            f"{non_future_missing[:5]}{'...' if len(non_future_missing) > 5 else ''}. "
-            f"This indicates an incompatible model architecture change. "
-            f"Only future_x_head and future_y_head parameters are allowed to mismatch."
-        )
-
-    # Check unexpected keys (in checkpoint but not in model)
-    non_future_unexpected = [k for k in unexpected_keys if not is_future_head_key(k)]
-    if non_future_unexpected:
-        raise RuntimeError(
-            f"Checkpoint contains unexpected critical parameters (not future heads): "
-            f"{non_future_unexpected[:5]}{'...' if len(non_future_unexpected) > 5 else ''}. "
-            f"This indicates an incompatible model architecture change. "
-            f"Only future_x_head and future_y_head parameters are allowed to mismatch."
-        )
-
-    # If we get here, all mismatches are future head related - this is expected and OK
-    if missing_keys or unexpected_keys:
-        print(
-            f"Future head architecture changed: "
-            f"{len(missing_keys)} new parameters, {len(unexpected_keys)} old parameters dropped. "
-            f"This is expected and safe - future heads will be reinitialized."
-        )
-
-
 def _sorted_checkpoint_paths(directory: Path) -> List[Path]:
     """Return checkpoint files ordered from newest to oldest with a concrete example.
 
@@ -138,82 +82,6 @@ def _latest_checkpoint(directory: Path) -> Optional[Path]:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
-
-
-def _expand_projection_down_for_horizon(
-    state_dict: Dict[str, torch.Tensor], model: torch.nn.Module
-) -> Dict[str, torch.Tensor]:
-    """Expand projection_down layer to accept horizon feature if checkpoint is from old model.
-
-    Old checkpoints have projection_down with input_size=908. New models expect input_size=909
-    to account for the horizon feature added by augment_batch_with_horizons. This function
-    detects the mismatch and expands the weights/bias with small random initialization for
-    the new column.
-
-    Args:
-        state_dict: Checkpoint state dict that may have old dimensions
-        model: Current model with potentially larger dimensions
-
-    Returns:
-        Updated state dict with expanded projection_down layer if needed
-    """
-    # Find the projection_down weight key (handle both compiled and non-compiled models)
-    proj_key = None
-    proj_bias_key = None
-
-    for key in state_dict.keys():
-        if "projection_down.weight" in key:
-            proj_key = key
-        if "projection_down.bias" in key:
-            proj_bias_key = key
-
-    if proj_key is None:
-        return state_dict  # No projection_down found, nothing to do
-
-    # Get checkpoint and model dimensions
-    ckpt_weight = state_dict[proj_key]
-    ckpt_in_features = ckpt_weight.shape[1]  # [out_features, in_features]
-
-    # Get current model's projection_down layer
-    model_proj = model.projection_down if hasattr(model, "projection_down") else None
-    if model_proj is None:
-        # Handle compiled models
-        if hasattr(model, "_orig_mod") and hasattr(model._orig_mod, "projection_down"):
-            model_proj = model._orig_mod.projection_down
-
-    if model_proj is None:
-        return state_dict  # Can't find model projection layer
-
-    model_in_features = model_proj.weight.shape[1]
-
-    # Check if we need to expand (old checkpoint: 908, new model: 909)
-    if ckpt_in_features == model_in_features:
-        return state_dict  # No expansion needed
-
-    if ckpt_in_features == model_in_features - 1:
-        # Old checkpoint missing horizon feature - expand it
-        print(
-            f"Expanding projection_down from {ckpt_in_features} to {model_in_features} "
-            f"input features to accommodate horizon conditioning"
-        )
-
-        # Expand weight: add one column with small random values
-        out_features = ckpt_weight.shape[0]
-        new_col = torch.randn(out_features, 1, dtype=ckpt_weight.dtype) * 0.01
-        expanded_weight = torch.cat([ckpt_weight, new_col], dim=1)
-        state_dict[proj_key] = expanded_weight
-
-        # Bias doesn't need expansion (output dimension unchanged)
-
-        return state_dict
-
-    # Dimension mismatch that we can't handle
-    print(
-        f"Warning: projection_down dimension mismatch: checkpoint has {ckpt_in_features} "
-        f"input features, model expects {model_in_features}. This mismatch is not "
-        f"automatically handled."
-    )
-    return state_dict
 
 
 def load_config_from_checkpoint(
@@ -312,32 +180,17 @@ def _load_latest_checkpoint(
     ckpt = torch.load(latest, map_location="cpu")
 
     model_state = ckpt.get("model")
-    model_was_expanded = False
-    future_heads_reinitialized = False
     if model_state:
         # Handle torch.compile() prefix mismatch (both directions)
         model_state = match_state_dict_keys(model_state, model)
 
-        # Expand projection_down if checkpoint is from old model (908 -> 909 inputs)
         original_state = model_state.copy()
-        model_state = _expand_projection_down_for_horizon(model_state, model)
-
-        # Check if expansion occurred by comparing state dicts
-        model_was_expanded = any(
-            not torch.equal(model_state[k], original_state[k])
-            for k in model_state.keys()
-            if k in original_state and isinstance(model_state[k], torch.Tensor)
-        )
 
         try:
             # Always try strict loading first
             try:
                 model.load_state_dict(model_state, strict=True)
             except RuntimeError as e:
-                # If strict loading fails, check if it's only future heads
-                future_head_prefixes = ("future_x_head.", "future_y_head.", "_orig_mod.future_x_head.", "_orig_mod.future_y_head.")
-                is_future_key = lambda k: any(k.startswith(p) for p in future_head_prefixes)
-
                 # Get expected keys
                 model_keys = set(model.state_dict().keys())
                 ckpt_keys = set(model_state.keys())
@@ -346,31 +199,11 @@ def _load_latest_checkpoint(
 
                 # Check for shape mismatches in error message
                 error_msg = str(e)
-                has_future_shape_mismatch = any(
-                    f"future_{axis}_head" in error_msg for axis in ["x", "y"]
-                )
 
-                # Validate that only future heads are mismatched
-                try:
-                    _validate_future_head_only_mismatch(missing_keys, unexpected_keys)
-                except RuntimeError as validation_err:
-                    # If validation fails and shape mismatch is in future heads, filter and retry
-                    if not has_future_shape_mismatch:
-                        raise validation_err from e
 
-                # Filter out future head keys from checkpoint
-                filtered_state = {k: v for k, v in model_state.items() if not is_future_key(k)}
-
-                # Mark that future heads were reinitialized (skip optimizer loading)
-                future_heads_reinitialized = True
-
-                # Load filtered state (allowing missing future head params)
                 incompatible = model.load_state_dict(filtered_state, strict=False)
                 missing = list(getattr(incompatible, "missing_keys", ()))
                 unexpected = list(getattr(incompatible, "unexpected_keys", ()))
-
-                # Validate again after filtering
-                _validate_future_head_only_mismatch(missing, unexpected)
 
                 # If validation passed, show what was loaded
                 if allow_partial_load:
@@ -387,32 +220,16 @@ def _load_latest_checkpoint(
                         print(
                             f"Checkpoint has {len(unexpected)} unexpected parameter(s); ignoring: {preview}{more}"
                         )
-                else:
-                    # Even though only future heads mismatch, user didn't allow partial load
-                    raise RuntimeError(
-                        "Checkpoint has future head architecture changes. "
-                        "Set train.allow_partial_checkpoint_load=True to allow future head reinitialization."
-                    )
         except RuntimeError as err:
-            if "future head" not in str(err).lower():
-                raise RuntimeError(
-                    "Checkpoint parameters do not match the current model. "
-                    "Set train.allow_partial_checkpoint_load=True if this is intentional."
-                ) from err
-            else:
-                raise
+            raise RuntimeError(
+                "Checkpoint parameters do not match the current model. "
+                "Set train.allow_partial_checkpoint_load=True if this is intentional."
+            ) from err
 
     opt_state = ckpt.get("optimizer")
     if opt_state:
-        if model_was_expanded or future_heads_reinitialized:
-            reason = "model was expanded" if model_was_expanded else "future heads were reinitialized"
-            print(
-                f"Skipping optimizer state loading because {reason}. "
-                f"Optimizer will be reinitialized from scratch."
-            )
-        else:
-            optimizer.load_state_dict(opt_state)
-            _move_optimizer_state_to_device(optimizer, device)
+        optimizer.load_state_dict(opt_state)
+        _move_optimizer_state_to_device(optimizer, device)
 
     scaler_state = ckpt.get("scaler")
     if scaler_state:

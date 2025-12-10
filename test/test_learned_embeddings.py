@@ -30,9 +30,7 @@ class TestLearnedEmbeddings:
 
         # Use the actual schema to get proper dimensions
         colmap = ColumnMap(get_feature_names(), get_target_names())
-        # Include horizon feature (+1) to mirror training inputs
-        # Use zeros to avoid negative values in categorical columns
-        X = torch.zeros(batch_size, sequence_length, len(colmap.feat_names) + 1, device=device)
+        X = torch.zeros(batch_size, sequence_length, len(colmap.feat_names), device=device)
         inputs = build_model_inputs(X, colmap)
 
         return inputs

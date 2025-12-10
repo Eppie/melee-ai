@@ -334,58 +334,7 @@ class GPTInferenceEngine:
         # Handle torch.compile() prefix mismatch (both directions)
         model_state = match_state_dict_keys(ckpt["model"], self.model)
 
-        # Try strict loading first
-        try:
-            self.model.load_state_dict(model_state, strict=True)
-        except RuntimeError as e:
-            # If strict fails, check if it's only future heads that are incompatible
-            future_head_prefixes = ("future_x_head.", "future_y_head.", "_orig_mod.future_x_head.", "_orig_mod.future_y_head.")
-            is_future_key = lambda k: any(k.startswith(p) for p in future_head_prefixes)
-
-            # Get model's expected keys
-            model_keys = set(self.model.state_dict().keys())
-            ckpt_keys = set(model_state.keys())
-
-            # Identify mismatches
-            missing_keys = model_keys - ckpt_keys
-            unexpected_keys = ckpt_keys - model_keys
-
-            # Check for shape mismatches in future heads by inspecting error message
-            error_msg = str(e)
-            has_future_shape_mismatch = any(
-                f"future_{axis}_head" in error_msg for axis in ["x", "y"]
-            )
-
-            # Check that all incompatibilities are future head related
-            non_future_missing = [k for k in missing_keys if not is_future_key(k)]
-            non_future_unexpected = [k for k in unexpected_keys if not is_future_key(k)]
-
-            if non_future_missing or (non_future_unexpected and not has_future_shape_mismatch):
-                raise RuntimeError(
-                    f"Checkpoint mismatch in critical parameters (not future heads). "
-                    f"Missing: {list(non_future_missing)[:3]}, Unexpected: {list(non_future_unexpected)[:3]}"
-                ) from e
-
-            # Remove future head keys from checkpoint state dict
-            filtered_state = {k: v for k, v in model_state.items() if not is_future_key(k)}
-
-            # Load without future heads (strict=False to allow missing future head keys)
-            load_result = self.model.load_state_dict(filtered_state, strict=False)
-
-            # Verify only future heads are missing
-            missing = list(load_result.missing_keys) if load_result.missing_keys else []
-            unexpected = list(load_result.unexpected_keys) if load_result.unexpected_keys else []
-
-            non_future_missing = [k for k in missing if not is_future_key(k)]
-            if non_future_missing:
-                raise RuntimeError(
-                    f"Critical parameters missing after filtered load: {non_future_missing[:3]}"
-                )
-
-            # Success - only future heads were incompatible
-            future_missing = [k for k in missing if is_future_key(k)]
-            print(f"[INFO] Future head architecture changed - reinitialized with random weights")
-            print(f"       {len(future_missing)} parameters reinitialized")
+        self.model.load_state_dict(model_state, strict=True)
 
         self.model.eval()
 
@@ -441,12 +390,7 @@ class GPTInferenceEngine:
 
     def _build_inputs(self, batch_X: torch.Tensor) -> TensorDict:
         """Wrap batch_X in the structured TensorDict used by the model."""
-        # Add horizon feature (default to 30 frames, normalized by 60.0)
-        B, L, F = batch_X.shape
-        default_horizon = 30
-        horizon_feature = torch.full((B, L, 1), default_horizon / 60.0, device=batch_X.device, dtype=batch_X.dtype)
-        batch_X_with_horizon = torch.cat([batch_X, horizon_feature], dim=-1)  # [B, L, F+1]
-        return build_model_inputs(batch_X_with_horizon, self.colmap)
+        return build_model_inputs(batch_X, self.colmap)
 
     def _override_controller_features(
         self, features: Mapping[str, float]

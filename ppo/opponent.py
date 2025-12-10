@@ -72,7 +72,10 @@ class OpponentPool:
         # Keep most recent max_pool_size checkpoints
         self.checkpoint_paths = all_checkpoints[-self.max_pool_size :]
 
-        print(f"[OpponentPool] Discovered {len(self.checkpoint_paths)} checkpoints")
+        # Only log on first refresh or if count changed
+        if not hasattr(self, '_last_checkpoint_count') or self._last_checkpoint_count != len(self.checkpoint_paths):
+            print(f"[OpponentPool] Found {len(self.checkpoint_paths)} checkpoints")
+            self._last_checkpoint_count = len(self.checkpoint_paths)
 
         # Clear cache for removed checkpoints
         valid_paths = set(self.checkpoint_paths)
@@ -148,7 +151,7 @@ class OpponentPool:
         # Cache it
         self.checkpoint_cache[checkpoint_path] = state_dict
 
-        print(f"[OpponentPool] Loaded checkpoint: {checkpoint_path.name}")
+        # Removed verbose logging (happens frequently during opponent sampling)
 
         return state_dict
 
@@ -187,7 +190,7 @@ class Matchmaker:
 
     def reassign_all(self):
         """Reassign all environments (called at start of each rollout)."""
-        print(f"[Matchmaker] Reassigning opponents for {self.num_envs} envs")
+        # Removed verbose logging (happens every rollout)
 
         # Refresh pool periodically
         self.pool.maybe_refresh()
@@ -250,7 +253,10 @@ class Matchmaker:
 
     def clear_loaded_opponents(self):
         """Clear loaded opponent models to free memory."""
-        print(f"[Matchmaker] Clearing {len(self.loaded_opponents)} loaded opponents")
+        # Only log if we're actually clearing models (reduces verbosity)
+        if len(self.loaded_opponents) > 0:
+            # Don't log every time, this happens frequently
+            pass
         self.loaded_opponents.clear()
 
     def is_self_play(self, env_id: int) -> bool:

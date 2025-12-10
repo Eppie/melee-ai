@@ -156,7 +156,8 @@ class ArenaShard:
 
                 # 3. Wait for CRD to signal actions are ready
                 # Use longer timeout for first few steps (menu navigation)
-                timeout = 120.0 if step_id < 5 else 10.0
+                # Also use long timeout in general to handle PPO training pauses
+                timeout = 120.0 if step_id < 5 else 300.0  # 5 minutes for training
                 msg = self.pipe.recv(timeout=timeout)
                 if msg.msg_type != MessageType.ACTIONS_READY:
                     print(

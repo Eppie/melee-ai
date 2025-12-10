@@ -106,6 +106,12 @@ def parse_args():
         default=128,
         help="Batch size for PPO training",
     )
+    parser.add_argument(
+        "--rollouts-per-batch",
+        type=int,
+        default=96,
+        help="Number of rollouts to collect before running PPO training",
+    )
 
     # Opponent pool
     parser.add_argument(
@@ -152,6 +158,7 @@ def main():
     print(f"Character: {args.character}")
     print(f"Stages: {', '.join(args.stages)}")
     print(f"Learning rate: {args.lr}")
+    print(f"Rollouts per training: {args.rollouts_per_batch} (every ~{args.rollouts_per_batch // (args.num_shards * args.envs_per_shard)} cycles)")
     print(
         f"Opponent pool: {args.opponent_pool_size} checkpoints, {args.opponent_sample_prob*100:.0f}% historical"
     )
@@ -182,6 +189,7 @@ def main():
         rollout_length=args.rollout_length,
         ppo_epochs=args.ppo_epochs,
         batch_size=args.batch_size,
+        rollouts_per_batch=args.rollouts_per_batch,
         opponent_pool_size=args.opponent_pool_size,
         opponent_sample_prob=args.opponent_sample_prob,
         checkpoint_dir=args.checkpoint_dir,

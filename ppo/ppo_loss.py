@@ -47,7 +47,7 @@ def compute_action_logprob(
     # Buttons (Bernoulli)
     button_logits = outputs["buttons"][:, -1, :]  # [B, 5]
     button_probs = torch.sigmoid(button_logits)
-    button_samples = actions["buttons"]  # [B, 5] bool
+    button_samples = actions["buttons"].bool()  # [B, 5] bool (ensure boolean type)
     button_logp = torch.log(
         torch.where(button_samples, button_probs, 1 - button_probs)
     ).sum(dim=1)
@@ -143,10 +143,15 @@ def compute_ppo_loss(
     """
     from train.batch_utils import build_model_inputs
 
-    B, T, F = batch_features.shape
+    B, T, feat_dim = batch_features.shape
+
+    # Append horizon feature (model was trained with augment_batch_with_horizons)
+    # Use 0.5 as default (30 frames / 60.0)
+    horizon = torch.full((B, T, 1), 0.5, device=batch_features.device, dtype=batch_features.dtype)
+    batch_features_with_horizon = torch.cat([batch_features, horizon], dim=-1)  # [B, T, F+1]
 
     # Convert raw features to model inputs using existing infrastructure
-    model_inputs = build_model_inputs(batch_features, column_map)
+    model_inputs = build_model_inputs(batch_features_with_horizon, column_map)
 
     # Forward pass through policy network
     outputs = policy(model_inputs)

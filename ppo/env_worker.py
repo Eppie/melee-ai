@@ -134,7 +134,10 @@ class EnvWorker:
             blocking_input=True,  # Wait for AI inputs (precise control)
             online_delay=0,  # No input delay
             save_replays=False,  # Don't save replays (saves disk space)
-            emulation_speed=1.0,  # Normal speed (can set to 0 for unlimited)
+            emulation_speed=1.0,  # Normal speed (FFW gecko code handles speed)
+            # Fast-forward settings (requires exi-ai-rebase Dolphin build)
+            use_exi_inputs=True,  # Use EXI device for faster input (vs standard pipes)
+            enable_ffw=True,  # Enable fast-forward gecko code
             # Dolphin configuration
             tmp_home_directory=True,  # Isolated dolphin config per instance
             copy_home_directory=False,  # Fresh directory
@@ -146,7 +149,7 @@ class EnvWorker:
             iso_path=str(Path(self.config.iso_path).expanduser()),
         )
 
-        # Create controllers
+        # Create controllers (STANDARD type with EXI inputs enabled)
         self.ego_controller = Controller(
             console=self.console,
             port=self.config.bot_port,
@@ -174,18 +177,17 @@ class EnvWorker:
                 f"ENV {self.global_env_id}: Failed to connect opp controller"
             )
 
-        print(
-            f"[ENV {self.global_env_id}] Dolphin started: "
-            f"{self.config.character} vs {self.config.character} on {self.current_stage.name}"
-        )
-        print(
-            f"[ENV {self.global_env_id}] Controllers connected on ports "
-            f"{self.config.bot_port} and {self.config.opp_port}"
-        )
+        # Only log on first start (global_env_id 0) to reduce verbosity
+        if self.global_env_id == 0:
+            print(
+                f"[ENV] {self.config.total_envs} environments started: "
+                f"{self.config.character} vs {self.config.character}"
+            )
 
     def _restart_dolphin(self):
         """Restart Dolphin to prevent memory leaks."""
-        print(f"[ENV {self.global_env_id}] Restarting Dolphin (periodic cleanup)")
+        if self.global_env_id == 0:
+            print(f"[ENV] Restarting Dolphin instances (periodic cleanup)")
 
         if self.console:
             try:
@@ -217,6 +219,18 @@ class EnvWorker:
             bot_port=self.config.bot_port,
             opp_port=self.config.opp_port,
         )
+
+        # Diagnostic logging (env 0 only, every 500 frames)
+        if self.global_env_id == 0 and self.frames_since_restart % 500 == 0:
+            print(f"\n[ENV 0] Raw Controller Values from Gamestate (frame {self.frames_since_restart}):")
+            print(f"  p1_main_stick_x (raw):    {model_inputs.raw.get('p1_main_stick_x', 'N/A')}")
+            print(f"  p1_main_stick_y (raw):    {model_inputs.raw.get('p1_main_stick_y', 'N/A')}")
+            print(f"  p1_c_stick_x (raw):       {model_inputs.raw.get('p1_c_stick_x', 'N/A')}")
+            print(f"  p1_c_stick_y (raw):       {model_inputs.raw.get('p1_c_stick_y', 'N/A')}")
+            print(f"  p1_main_stick_x (trans):  {model_inputs.transformed.get('p1_main_stick_x', 'N/A')}")
+            print(f"  p1_main_stick_y (trans):  {model_inputs.transformed.get('p1_main_stick_y', 'N/A')}")
+            print(f"  p1_c_stick_x (trans):     {model_inputs.transformed.get('p1_c_stick_x', 'N/A')}")
+            print(f"  p1_c_stick_y (trans):     {model_inputs.transformed.get('p1_c_stick_y', 'N/A')}")
 
         # Convert transformed dict to numpy array in correct order
         features = np.array(
@@ -320,6 +334,22 @@ class EnvWorker:
         # Decode shoulder
         shoulder_val = SHOULDER_QUANTIZED[action.shoulder_idx]
 
+        # Diagnostic logging (env 0 ego only, every 500 frames)
+        if self.global_env_id == 0 and is_ego and self.frames_since_restart % 500 == 0:
+            buttons_pressed = [
+                'A' if action.buttons[0] else '',
+                'B' if action.buttons[1] else '',
+                'X' if action.buttons[2] else '',
+                'Z' if action.buttons[3] else '',
+                'L' if action.buttons[4] else ''
+            ]
+            buttons_str = '+'.join(filter(None, buttons_pressed)) or 'none'
+            print(f"[ENV 0] Controller Output (frame {self.frames_since_restart}):")
+            print(f"  Main stick: idx={action.main_idx} → ({main_xy[0]:.3f}, {main_xy[1]:.3f}) → Dolphin({main_01_x:.3f}, {main_01_y:.3f})")
+            print(f"  C-stick:    idx={action.c_idx} → ({c_xy[0]:.3f}, {c_xy[1]:.3f}) → Dolphin({c_01_x:.3f}, {c_01_y:.3f})")
+            print(f"  Shoulder:   idx={action.shoulder_idx} → {shoulder_val:.3f}")
+            print(f"  Buttons:    {action.buttons} → {buttons_str}")
+
         # Apply buttons FIRST (before setting analogs)
         # Release all button presses from previous frame
         controller.release_button(enums.Button.BUTTON_A)
@@ -367,7 +397,9 @@ class EnvWorker:
         # Start Dolphin
         self._start_dolphin()
 
-        print(f"[ENV {self.global_env_id}] Worker loop started")
+        # Only log on first env to reduce verbosity
+        if self.global_env_id == 0:
+            print(f"[ENV] Worker loops started")
 
         while True:
             try:
@@ -379,14 +411,10 @@ class EnvWorker:
 
                 # 2. Handle menu navigation (if not in game)
                 if gamestate.menu_state not in [enums.Menu.IN_GAME, enums.Menu.SUDDEN_DEATH]:
-                    # Log menu state periodically to debug
-                    if self._menu_frame_counter % 120 == 0:  # Every 2 seconds at 60fps
+                    # Log menu state periodically to debug (only on first env)
+                    if self.global_env_id == 0 and self._menu_frame_counter % 300 == 0:  # Every 5 seconds at 60fps
                         print(
-                            f"[ENV {self.env_id}] Still in menus (frame {self._menu_frame_counter}): "
-                            f"menu_state={gamestate.menu_state}, "
-                            f"submenu={gamestate.submenu}, "
-                            f"menu_selection={gamestate.menu_selection}, "
-                            f"frame={gamestate.frame}"
+                            f"[ENV] Still navigating menus (menu_state={gamestate.menu_state})"
                         )
                     self._menu_frame_counter += 1
 
@@ -454,10 +482,9 @@ class EnvWorker:
 
                 # 3. Log when match starts (transition from menu to in-game)
                 if self.was_in_menu:
-                    print(
-                        f"[ENV {self.env_id}] Match started! "
-                        f"{self.config.character} vs {self.config.character} on {self.current_stage.name}"
-                    )
+                    # Only log on first env to reduce verbosity
+                    if self.global_env_id == 0:
+                        print(f"[ENV] Matches started on {self.current_stage.name}")
                     self.was_in_menu = False
                     self._menu_frame_counter = 0  # Reset menu frame counter
                     # Reset frame counter when entering match
@@ -474,21 +501,7 @@ class EnvWorker:
                 # 4. Featurize (only in-game)
                 features = self._featurize(gamestate)
 
-                # Debug: Check if we're getting valid gamestate
-                if self.t_local % 500 == 0:
-                    ego_player = gamestate.players.get(self.config.bot_port)
-                    opp_player = gamestate.players.get(self.config.opp_port)
-                    print(
-                        f"[ENV {self.env_id}] Frame {self.t_local} GAMESTATE: "
-                        f"menu={gamestate.menu_state}, "
-                        f"ego_exists={ego_player is not None}, "
-                        f"opp_exists={opp_player is not None}"
-                    )
-                    if ego_player:
-                        print(
-                            f"[ENV {self.env_id}]   Ego raw: pos=({ego_player.position.x:.1f},{ego_player.position.y:.1f}) "
-                            f"pct={ego_player.percent:.0f}% stock={ego_player.stock}"
-                        )
+                # Removed verbose frame-level logging
 
                 # 5. Write to shared ring buffer at position t_mod
                 self.slab.features[self.env_id, self.t_mod, :] = features
@@ -514,6 +527,15 @@ class EnvWorker:
                 # 10. Compute reward
                 reward = self._compute_reward(gamestate, features)
 
+                # Diagnostic logging (env 0 only, every 500 frames)
+                if self.global_env_id == 0 and self.frames_since_restart % 500 == 0:
+                    print(f"[ENV 0] Frame {self.frames_since_restart}:")
+                    print(f"  Reward: {reward:.4f} (stored with this frame)")
+                    print(f"  Ego damage: {self.prev_ego_percent:.1f}%, stocks: {self.prev_ego_stock}")
+                    print(f"  Opp damage: {self.prev_opp_percent:.1f}%, stocks: {self.prev_opp_stock}")
+                    print(f"  Ego action stored: main={ego_action.main_idx}, c={ego_action.c_idx}, buttons={ego_action.buttons}")
+                    print(f"  Action logp: {ego_action.logp:.4f}, value: {ego_action.value:.4f}")
+
                 # 11. Store in rollout buffer
                 self._store_rollout_frame(features, ego_action, reward)
 
@@ -526,13 +548,13 @@ class EnvWorker:
                 if self.t_local >= self.config.warmup_frames:
                     self.is_warm = True
 
-                # Periodic logging (every 500 frames)
-                if self.t_local % 500 == 0:
+                # Periodic logging (every 500 frames, only on ENV 0)
+                if self.t_local % 500 == 0 and self.global_env_id == 0:
                     ego_player = gamestate.players.get(self.config.bot_port)
                     opp_player = gamestate.players.get(self.config.opp_port)
                     if ego_player and opp_player:
                         print(
-                            f"[ENV {self.env_id}] Frame {self.t_local}: "
+                            f"[ENV] Frame {self.t_local}: "
                             f"Ego: pos=({ego_player.position.x:.1f},{ego_player.position.y:.1f}) "
                             f"pct={ego_player.percent:.0f}% stock={ego_player.stock} | "
                             f"Opp: pos=({opp_player.position.x:.1f},{opp_player.position.y:.1f}) "
@@ -550,11 +572,11 @@ class EnvWorker:
                     )
 
                     # Send completed rollout to shard for coordinator collection
-                    print(
-                        f"[ENV {self.env_id}] Rollout complete "
-                        f"({self.rollout.mask.sum()}/{self.rollout.rollout_length} valid frames), "
-                        f"sending to coordinator"
-                    )
+                    if self.global_env_id == 0:
+                        print(
+                            f"[ENV] Rollout complete "
+                            f"({self.rollout.mask.sum()}/{self.rollout.rollout_length} valid frames)"
+                        )
                     self.rollout_queue.put(self.rollout)
 
                     # Create new rollout buffer for next collection
@@ -563,9 +585,9 @@ class EnvWorker:
                         feature_dim=self.config.feature_dim,
                     )
 
-                # 14. Restart Dolphin periodically
-                if self.frames_since_restart >= self.config.restart_interval:
-                    self._restart_dolphin()
+                # 14. Restart Dolphin periodically (DISABLED - causes shared memory corruption)
+                # if self.frames_since_restart >= self.config.restart_interval:
+                #     self._restart_dolphin()
 
             except KeyboardInterrupt:
                 print(f"[ENV {self.global_env_id}] Interrupted, shutting down")

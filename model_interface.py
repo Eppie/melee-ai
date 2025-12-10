@@ -596,7 +596,7 @@ class GPTInferenceEngine:
         samples = torch.bernoulli(clamped_probs).bool().cpu()
         return samples.tolist()
 
-    def _decode_outputs(self, outputs: TensorDict) -> ControllerState:
+    def _decode_outputs(self, outputs: TensorDict, debug=False) -> ControllerState:
         """Assemble decoded sticks, buttons, and shoulder into controller output."""
         main_logits = outputs["main_stick"][0, -1]
         c_logits = outputs["c_stick"][0, -1]
@@ -612,6 +612,18 @@ class GPTInferenceEngine:
         s_idx = int(torch.argmax(shoulder_logits[0, -1]).item())
         s_idx = max(0, min(s_idx, len(self.shoulder_centers) - 1))
         shoulder_val = float(self.shoulder_centers[s_idx])
+
+        # Diagnostic logging
+        if debug:
+            main_idx = int(torch.argmax(main_logits).item())
+            c_idx = int(torch.argmax(c_logits).item())
+            print(f"[DEBUG] Action outputs:")
+            print(f"  Main stick: idx={main_idx} → ({main_xy[0]:.3f}, {main_xy[1]:.3f})")
+            print(f"  C-stick: idx={c_idx} → ({c_xy[0]:.3f}, {c_xy[1]:.3f})")
+            print(f"  Shoulder: idx={s_idx} → {shoulder_val:.3f}")
+            print(f"  Button probs: {button_probs.tolist()}")
+            print(f"  Buttons pressed: {buttons_bool}")
+            print(f"  Button count: {sum(buttons_bool)}/5")
 
         return ControllerState(
             main_stick_x=float(main_xy[0]),

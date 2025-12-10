@@ -120,7 +120,7 @@ class Barrier:
         self.num_shards = len(pipes)
         self.timeout = timeout
 
-    def wait_all_ready(self, step_id: int, timeout: float = None) -> dict[int, Message]:
+    def wait_all_ready(self, step_id: int, timeout: float = None) -> tuple[dict[int, Message], list[Message]]:
         """
         Wait for all shards to signal READY.
 
@@ -129,42 +129,49 @@ class Barrier:
             timeout: Optional timeout override (uses self.timeout if None)
 
         Returns:
-            Dict mapping shard_id → Message
+            Tuple of:
+                - Dict mapping shard_id → READY Message
+                - List of other messages (e.g., ROLLOUT_COMPLETE) received while waiting
 
         Raises:
             TimeoutError: If any shard times out
             ValueError: If received unexpected message type
         """
         ready_messages = {}
+        other_messages = []
         start_time = time.time()
         timeout_val = timeout if timeout is not None else self.timeout
 
         for pipe in self.pipes:
-            elapsed = time.time() - start_time
-            remaining = max(0.0, timeout_val - elapsed)
+            # Keep reading messages from this pipe until we get READY
+            while pipe.shard_id not in ready_messages:
+                elapsed = time.time() - start_time
+                remaining = max(0.0, timeout_val - elapsed)
 
-            try:
-                msg = pipe.recv(timeout=remaining)
-            except TimeoutError:
-                raise TimeoutError(
-                    f"Shard {pipe.shard_id} timed out waiting for READY (step {step_id})"
-                )
+                try:
+                    msg = pipe.recv(timeout=remaining)
+                except TimeoutError:
+                    raise TimeoutError(
+                        f"Shard {pipe.shard_id} timed out waiting for READY (step {step_id})"
+                    )
 
-            if msg.msg_type != MessageType.READY:
-                raise ValueError(
-                    f"Shard {pipe.shard_id} sent {msg.msg_type}, expected READY"
-                )
+                if msg.msg_type == MessageType.READY:
+                    # Verify step_id matches (optional sanity check)
+                    if msg.payload and msg.payload.get("step_id") != step_id:
+                        print(
+                            f"[WARN] Shard {pipe.shard_id} step_id mismatch: "
+                            f"expected {step_id}, got {msg.payload.get('step_id')}"
+                        )
+                    ready_messages[pipe.shard_id] = msg
+                elif msg.msg_type == MessageType.ROLLOUT_COMPLETE:
+                    # Queue rollout messages for processing after barrier
+                    other_messages.append(msg)
+                else:
+                    raise ValueError(
+                        f"Shard {pipe.shard_id} sent unexpected message {msg.msg_type}, expected READY or ROLLOUT_COMPLETE"
+                    )
 
-            # Verify step_id matches (optional sanity check)
-            if msg.payload and msg.payload.get("step_id") != step_id:
-                print(
-                    f"[WARN] Shard {pipe.shard_id} step_id mismatch: "
-                    f"expected {step_id}, got {msg.payload.get('step_id')}"
-                )
-
-            ready_messages[pipe.shard_id] = msg
-
-        return ready_messages
+        return ready_messages, other_messages
 
     def signal_all_actions_ready(self, step_id: int):
         """Signal all shards that actions are ready."""

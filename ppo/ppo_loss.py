@@ -143,8 +143,6 @@ def compute_ppo_loss(
     """
     from train.batch_utils import build_model_inputs
 
-    B, T, feat_dim = batch_features.shape
-
     # Convert raw features to model inputs using existing infrastructure
     model_inputs = build_model_inputs(batch_features, column_map)
 

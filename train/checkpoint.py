@@ -7,6 +7,7 @@ import torch
 from torch.amp import GradScaler
 from torch.optim import Optimizer
 
+from config.gpt_config import _schema_feature_dims
 from train.gradients import _move_optimizer_state_to_device
 from train.components import TrainingComponents
 from train.validation import maybe_run_validation

@@ -141,7 +141,7 @@ class GPTConfig(BaseModel):
         ),
     )
     n_kv_head: Optional[int] = Field(
-        default=8,
+        default=4,
         ge=1,
         description=(
             "Number of key-value heads for Multi-Query Attention (MQA). "

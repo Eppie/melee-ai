@@ -32,6 +32,9 @@ def compute_value_weighted_weights(
     Returns:
         [B, L] normalized weights
     """
+    # Ensure float dtype for arithmetic operations
+    values = values.float()
+
     if use_exp:
         # Exponential weighting: strongly emphasizes high-value states
         # Subtract max for numerical stability
@@ -64,6 +67,9 @@ def compute_value_filter_weights(
     Returns:
         [B, L] binary or smooth weights
     """
+    # Ensure float dtype for quantile computation
+    values = values.float()
+
     # Compute threshold across entire batch
     threshold = torch.quantile(values.flatten(), percentile / 100.0)
 
@@ -101,6 +107,9 @@ def compute_advantage_weights(
     Returns:
         [B, L] weights based on advantage magnitude
     """
+    # Ensure float dtype for arithmetic operations
+    values = values.float()
+
     B, L = values.shape
 
     if use_gae:

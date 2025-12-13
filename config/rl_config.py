@@ -22,7 +22,7 @@ class RLConfig(BaseModel):
         ),
     )
     value_loss_coef: float = Field(
-        default=0.05,
+        default=1,
         ge=0,
         description=(
             "Coefficient for value function loss in multi-task learning. Balances policy gradient loss vs value prediction loss. "

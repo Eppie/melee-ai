@@ -584,6 +584,21 @@ def prepare_logging_bundle(
         f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation:.3f}"
     )
 
+    # Add advantage metrics if available (value_advantage strategy)
+    if forward_result.advantages is not None:
+        advantages = forward_result.advantages
+        adv_mean = float(advantages.mean().cpu())
+        adv_std = float(advantages.std().cpu())
+        adv_max = float(advantages.max().cpu())
+        adv_min = float(advantages.min().cpu())
+        positive_mask = advantages > 0
+        frac_positive = float(positive_mask.sum().cpu()) / advantages.numel()
+
+        log_lines.append(
+            f"  ADVANTAGE: μ {adv_mean:.4f} | σ {adv_std:.4f} | "
+            f"range [{adv_min:.4f}, {adv_max:.4f}] | pos {frac_positive:.1%}"
+        )
+
     # Build payload
     log_payload: Dict[str, float] = {
         "epoch": epoch + 1,
@@ -777,6 +792,60 @@ def prepare_logging_bundle(
                 "imitation/weight_p95": weight_stats_cpu[4],
                 "imitation/weight_p05": weight_stats_cpu[5],
                 "imitation/effective_batch_fraction": weight_stats_cpu[6],
+            }
+        )
+
+    # 5b. Advantage statistics (only for value_advantage strategy)
+    if forward_result.advantages is not None:
+        advantages = forward_result.advantages  # [B, L]
+
+        # Count positive vs negative advantages
+        positive_mask = advantages > 0
+        negative_mask = advantages < 0
+        num_positive = positive_mask.sum()
+        num_negative = negative_mask.sum()
+        total_nonzero = num_positive + num_negative
+
+        # Separate stats for positive and negative advantages
+        positive_advantages = advantages[positive_mask]
+        negative_advantages = advantages[negative_mask]
+
+        advantage_stats_tensor = torch.stack(
+            [
+                advantages.mean(),
+                advantages.std(),
+                advantages.max(),
+                advantages.min(),
+                torch.quantile(advantages.flatten(), 0.95),
+                torch.quantile(advantages.flatten(), 0.05),
+                num_positive.float() / (total_nonzero + 1e-9),  # Fraction positive
+                (
+                    positive_advantages.mean()
+                    if len(positive_advantages) > 0
+                    else torch.tensor(0.0, device=advantages.device)
+                ),
+                (
+                    negative_advantages.mean()
+                    if len(negative_advantages) > 0
+                    else torch.tensor(0.0, device=advantages.device)
+                ),
+                torch.abs(advantages).mean(),  # Mean absolute advantage
+            ]
+        )
+        advantage_stats_cpu = advantage_stats_tensor.cpu().tolist()
+
+        log_payload.update(
+            {
+                "advantage/mean": advantage_stats_cpu[0],
+                "advantage/std": advantage_stats_cpu[1],
+                "advantage/max": advantage_stats_cpu[2],
+                "advantage/min": advantage_stats_cpu[3],
+                "advantage/p95": advantage_stats_cpu[4],
+                "advantage/p05": advantage_stats_cpu[5],
+                "advantage/frac_positive": advantage_stats_cpu[6],
+                "advantage/mean_positive": advantage_stats_cpu[7],
+                "advantage/mean_negative": advantage_stats_cpu[8],
+                "advantage/mean_abs": advantage_stats_cpu[9],
             }
         )
 

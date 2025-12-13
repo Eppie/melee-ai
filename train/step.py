@@ -160,6 +160,15 @@ def perform_forward_pass(
             )
         )
 
+        # Get value predictions and targets FIRST (needed for model-dependent advantages)
+        value_pred = pred["value"]
+        value_target = compute_value_targets(
+            X,
+            components.column_map,
+            gamma=config.rl.gamma,
+            reward_idx=components.value_idx,
+        )
+
         # Compute change-based weights (focus on action changes)
         change_weights = compute_component_sample_weights(
             target_info,
@@ -169,11 +178,26 @@ def perform_forward_pass(
             change_scale=imbalance_scale,
         )
 
-        # Compute value-based weights (focus on high-value states)
-        # This weights frames by their value_target to emphasize learning from winning play
-        imitation_weights_tensor = compute_imitation_weights(
-            X, components.value_idx, config.imitation
-        )
+        # Compute value-based weights using MODEL-DEPENDENT advantages
+        # Advantage = how much better the actual outcome was vs model prediction
+        # This focuses learning on frames where expert did better than model expected
+        advantages_tensor = None
+        if config.imitation.strategy == "value_advantage":
+            from train.imitation_weights import compute_model_advantage_weights
+
+            # Compute model-dependent advantages: ground_truth - prediction
+            # Positive = actual outcome better than predicted (learn from expert!)
+            # Negative = actual outcome worse than predicted (expert mistake or model overestimate)
+            imitation_weights_tensor, advantages_tensor = compute_model_advantage_weights(
+                value_pred=value_pred.squeeze(-1),  # [B, L, 1] -> [B, L]
+                value_target=value_target.squeeze(-1),  # [B, L, 1] -> [B, L]
+                alpha=config.imitation.advantage_alpha,
+                return_advantages=True,
+            )
+        else:
+            imitation_weights_tensor = compute_imitation_weights(
+                X, components.value_idx, config.imitation
+            )
 
         # Combine change-based and value-based weights
         # Apply value weights to all components
@@ -202,14 +226,6 @@ def perform_forward_pass(
         )
         loss = policy_loss_components["total"]
         loss_components = dict(policy_loss_components)
-
-        value_pred = pred["value"]
-        value_target = compute_value_targets(
-            X,
-            components.column_map,
-            gamma=config.rl.gamma,
-            reward_idx=components.value_idx,
-        )
         value_loss_raw = torch.nn.functional.mse_loss(
             value_pred, value_target, reduction="none"
         ).squeeze(-1)
@@ -220,8 +236,9 @@ def perform_forward_pass(
         # policy heads still benefit from focusing on winning play
         loss_value = value_loss_raw.mean()  # Uniform weighting
 
-        loss = loss + config.rl.value_loss_coef * loss_value
-        loss_components["value"] = loss_value
+        scaled_value_loss = config.rl.value_loss_coef * loss_value
+        loss = loss + scaled_value_loss
+        loss_components["value"] = scaled_value_loss  # Log scaled version for accurate reporting
 
     batch_targets = {
         "main": target_info["main_idx"],
@@ -261,6 +278,7 @@ def perform_forward_pass(
         change_scale=imbalance_scale,
         head_diagnostics=head_diagnostics,
         imitation_weights=imitation_weights_tensor,
+        advantages=advantages_tensor,
     )
 
 
@@ -292,20 +310,25 @@ def perform_backward_pass(
 
     # Clip value head gradients separately BEFORE global clipping
     # This prevents value head from corrupting transformer even if it has large errors
-    value_head_grad_norm = float(
-        clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
-    )
-
     grad_clip = components.config.train.grad_clip
-    pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
-
     grad_stats: Dict[str, float] = {}
+
     if collect_grad_stats:
+        # Slow path: Compute gradient norms for logging (causes CPU-GPU sync)
+        value_head_grad_norm = float(
+            clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
+        )
+        pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
+
         grad_stats = collect_gradient_diagnostics(components.model)
         grad_stats["total_norm_pre_clip"] = pre_clip_norm
         grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
         grad_stats["value_head_norm_pre_clip"] = value_head_grad_norm
         grad_stats["value_head_norm_post_clip"] = min(value_head_grad_norm, 1.0)
+    else:
+        # Fast path: Just clip without computing norms (no sync!)
+        clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
+        clip_grad_norm_(components.model.parameters(), grad_clip)
 
     if scaler.is_enabled():
         scaler.step(optimizer)

@@ -12,15 +12,16 @@ class ImitationConfig(BaseModel):
     strategy: Literal[
         "uniform", "value_weighted", "value_advantage", "value_filter", "hybrid"
     ] = Field(
-        default="hybrid",
+        default="value_advantage",
         description=(
             "Imitation learning sampling strategy. Controls how training samples are weighted/selected. "
             "Options: 'uniform' = all frames equally likely (baseline); "
             "'value_weighted' = weight by value estimate (learn from high-value states); "
-            "'value_advantage' = weight by advantage (learn from surprising outcomes); "
+            "'value_advantage' = weight by MODEL-DEPENDENT advantage (learn from frames where expert beat model's expectations); "
             "'value_filter' = filter to top percentile by value (only learn from best states); "
             "'hybrid' = combine multiple strategies (see hybrid_strategies/hybrid_weights). "
-            "Recommended: 'hybrid' for superhuman play (filters bad play + weights good play)."
+            "RECOMMENDED: 'value_advantage' - focuses on frames where expert did better than model predicted, "
+            "which adapts as your model improves and naturally focuses on harder examples."
         ),
     )
     value_k: float = Field(
@@ -53,41 +54,47 @@ class ImitationConfig(BaseModel):
         ),
     )
     advantage_n_steps: int = Field(
-        default=5,
+        default=10,
         ge=1,
         description=(
+            "DEPRECATED for value_advantage strategy (now uses model-dependent advantages, not temporal). "
             "Number of future steps for n-step advantage estimation. How far to look ahead for TD error. "
             "Effect: Larger n (10-20) = lower bias, higher variance; smaller n (3-5) = higher bias, lower variance. "
-            "Reasonable range: [3, 20]. Used in: value_advantage strategy. "
-            "Interacts with: advantage_use_gae (alternative advantage method)."
+            "Reasonable range: [3, 20]. "
+            "At 60 FPS, n=10 looks ahead ~167ms to detect value improvements from actions."
         ),
     )
     advantage_alpha: float = Field(
-        default=1.0,
+        default=20.0,
         gt=0,
         description=(
-            "Scaling factor for advantage-based weighting. Controls strength of advantage-based prioritization. "
-            "Effect: Higher alpha (2.0-5.0) = stronger emphasis on surprising outcomes; "
-            "lower alpha (0.5-1.0) = gentler weighting. Reasonable range: [0.5, 5.0]. "
-            "Used in: value_advantage strategy."
+            "Scaling factor for model-dependent advantage weighting. Controls how much to emphasize frames "
+            "where expert beat model's predictions. Higher alpha = stronger focus on surprising expert decisions. "
+            "Effect: Higher alpha (20-50) = aggressive focus on frames where expert exceeded model expectations; "
+            "lower alpha (5-15) = gentler emphasis, more uniform learning. Reasonable range: [5.0, 50.0]. "
+            "Since value prediction errors are typically small (0.05-0.3), moderate-to-high alpha needed. "
+            "As your model improves, effective_batch_fraction will naturally decrease as fewer frames surprise the model."
         ),
     )
     advantage_use_gae: bool = Field(
-        default=False,
+        default=True,
         description=(
+            "DEPRECATED for value_advantage strategy (now uses model-dependent advantages). "
             "Use GAE (Generalized Advantage Estimation) instead of n-step returns for advantage. "
-            "Effect: True = more sophisticated advantage with lambda-weighted returns; "
-            "False = simple n-step TD. Recommended: False for simplicity, True for better advantage estimates. "
+            "Effect: True = smooth multi-step value differences with exponential weighting; "
+            "False = simple n-step TD. GAE provides smoother advantage estimates across time. "
             "Interacts with: gae_gamma, gae_lambda (only used if True)."
         ),
     )
     gae_gamma: float = Field(
-        default=0.99,
+        default=0.995,
         ge=0,
         le=1,
         description=(
+            "DEPRECATED for value_advantage strategy (now uses model-dependent advantages). "
             "Discount factor for GAE advantage estimation. Only used if advantage_use_gae=True. "
-            "See RLConfig.gamma for detailed explanation. Reasonable range: [0.99, 0.999]."
+            "Should match RLConfig.gamma (0.995) for consistency. This controls how much future "
+            "value differences are discounted when computing smoothed advantages."
         ),
     )
     gae_lambda: float = Field(
@@ -95,6 +102,7 @@ class ImitationConfig(BaseModel):
         ge=0,
         le=1,
         description=(
+            "DEPRECATED for value_advantage strategy (now uses model-dependent advantages). "
             "Lambda parameter for GAE advantage estimation. Only used if advantage_use_gae=True. "
             "See PPOConfig.gae_lambda for detailed explanation. Reasonable range: [0.9, 0.99]."
         ),

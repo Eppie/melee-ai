@@ -97,21 +97,21 @@ def test_compute_advantage_weights_n_step(dummy_values):
 
     # Last step has 0 advantage by definition in the implementation (or handled gracefully)
 
-    # Row 0: increasing values -> positive advantage -> weight > 1.0
+    # Row 0: increasing values -> positive advantage -> weight > 1.0 (boosted)
     # n=1, so it compares 0 vs 1, 1 vs 2.
     # implementation: advantages[:, :-n] = values[:, n:] - values[:, :-n]
     # values[0] is [0.1, 0.2, 0.3, 0.4, 0.5]
     # adv will be [0.1, 0.1, 0.1, 0.1, 0.0] (approx)
-    # weights should be boosted
+    # weights = 1 + alpha * adv = 1 + 1.0 * 0.1 = 1.1
     assert torch.all(weights[0, :-1] > 1.0)
 
-    # Row 1: decreasing values -> negative advantage -> weight calculated with 0.5 * abs(adv)
+    # Row 1: decreasing values -> negative advantage -> weight < 1.0 (suppressed)
     # adv will be [-0.1, -0.1, -0.1, -0.1, 0.0]
-    # weights = 1 + alpha * 0.5 * 0.1 = 1.05 > 1.0 but less than row 0 boost (1.1)
-    assert torch.all(weights[1, :-1] > 1.0)
+    # weights = 1 / (1 + alpha * 0.5 * |adv|) = 1 / (1 + 1.0 * 0.5 * 0.1) = 1/1.05 ≈ 0.952
+    assert torch.all(weights[1, :-1] < 1.0)
     assert (
         weights[0, 0] > weights[1, 0]
-    )  # Positive advantage weighted higher than negative
+    )  # Positive advantage weighted much higher than negative
 
 
 def test_compute_advantage_weights_gae(dummy_values):

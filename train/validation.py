@@ -265,17 +265,16 @@ def run_validation(
     # Loss metrics
     if batches_processed > 0:
         avg_policy_loss = loss_sums["total"] / batches_processed
-        avg_value_loss = loss_sums["value"] / batches_processed
+        avg_value_loss_raw = loss_sums["value"] / batches_processed
+        avg_value_loss_scaled = config.rl.value_loss_coef * avg_value_loss_raw
         # Combined loss matches training: policy_loss + value_loss_coef * value_loss
-        result["val/loss"] = (
-            avg_policy_loss + config.rl.value_loss_coef * avg_value_loss
-        )
+        result["val/loss"] = avg_policy_loss + avg_value_loss_scaled
         result["val/loss_policy"] = avg_policy_loss
         result["val/loss_main"] = loss_sums["main"] / batches_processed
         result["val/loss_c"] = loss_sums["c"] / batches_processed
         result["val/loss_buttons"] = loss_sums["buttons"] / batches_processed
         result["val/loss_shoulder"] = loss_sums["shoulder"] / batches_processed
-        result["val/loss_value"] = avg_value_loss
+        result["val/loss_value"] = avg_value_loss_scaled  # Log scaled version for consistency
 
     # Accuracy metrics
     if metrics["main_total"] > 0:

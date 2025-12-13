@@ -91,7 +91,8 @@ def compute_advantage_weights(
     use_gae: bool = False,
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
-) -> Tensor:
+    return_advantages: bool = False,
+):
     """Weight by advantage (temporal difference in value).
 
     Frames where value increases (good decisions) get higher weight.
@@ -103,9 +104,11 @@ def compute_advantage_weights(
         use_gae: If True, use GAE; else simple n-step TD
         gamma: Discount factor for GAE
         gae_lambda: Lambda for GAE
+        return_advantages: If True, return (weights, advantages); else just weights
 
     Returns:
-        [B, L] weights based on advantage magnitude
+        If return_advantages=False: [B, L] weights based on advantage magnitude
+        If return_advantages=True: tuple of ([B, L] weights, [B, L] advantages)
     """
     # Ensure float dtype for arithmetic operations
     values = values.float()
@@ -137,15 +140,73 @@ def compute_advantage_weights(
             # Positive = making progress, negative = losing ground
             advantages[:, :-n] = values[:, n:] - values[:, :-n]
 
-    # Weight by absolute advantage (both improvements and mistakes are informative)
-    # But prioritize improvements (positive advantage) more
+    # Weight by advantage: boost positive (value improvements), suppress negative (mistakes/noise)
+    # For imitation learning, we want to learn from frames where expert decisions led to value gains,
+    # not from frames where value declined (likely mistakes or unavoidable bad situations)
     weights = torch.where(
         advantages > 0,
-        1.0 + alpha * advantages,  # boost improvements
-        1.0 + alpha * 0.5 * torch.abs(advantages),  # light weight on mistakes
+        1.0 + alpha * advantages,  # strongly boost improvements
+        1.0 / (1.0 + alpha * 0.5 * torch.abs(advantages)),  # suppress declines (down to ~1/12 weight)
     )
 
-    return weights.clamp_min(0.0)
+    weights = weights.clamp_min(0.0)
+
+    if return_advantages:
+        return weights, advantages
+    return weights
+
+
+def compute_model_advantage_weights(
+    value_pred: Tensor,
+    value_target: Tensor,
+    *,
+    alpha: float,
+    return_advantages: bool = False,
+):
+    """Weight by model-dependent advantage (how much better expert was vs model prediction).
+
+    This computes advantages as: advantage = ground_truth - model_prediction
+
+    Frames where the actual outcome was better than the model predicted get higher weight.
+    This focuses learning on situations where the expert did better than our current model
+    would have expected, which is exactly what we want for imitation learning.
+
+    Args:
+        value_pred: [B, L] model's value predictions
+        value_target: [B, L] ground truth value targets
+        alpha: Scaling factor for advantage weighting
+        return_advantages: If True, return (weights, advantages); else just weights
+
+    Returns:
+        If return_advantages=False: [B, L] weights based on advantage magnitude
+        If return_advantages=True: tuple of ([B, L] weights, [B, L] advantages)
+    """
+    # Ensure float dtype and detach predictions (don't backprop through advantage computation)
+    value_pred = value_pred.detach().float()
+    value_target = value_target.float()
+
+    # Compute model-dependent advantage: how much better was the actual outcome vs prediction
+    # Positive = expert achieved better outcome than model expected (learn from this!)
+    # Negative = expert achieved worse outcome than model expected (model overestimate or expert error)
+    advantages = value_target - value_pred  # [B, L]
+
+    # Weight by advantage: boost positive (expert beat model), suppress negative (model was too optimistic)
+    # For imitation learning, we want to learn from frames where the expert did better than our
+    # model predicted, as these represent situations where we underestimate the expert's capability
+    weights = torch.where(
+        advantages > 0,
+        1.0 + alpha * advantages,  # strongly boost when expert beat our prediction
+        1.0 / (1.0 + alpha * 0.5 * torch.abs(advantages)),  # suppress when model overestimated
+    )
+
+    weights = weights.clamp_min(0.0)
+
+    # Normalize to mean=1 to maintain loss scale
+    weights = weights / (weights.mean() + 1e-8)
+
+    if return_advantages:
+        return weights, advantages
+    return weights
 
 
 def compute_hybrid_weights(

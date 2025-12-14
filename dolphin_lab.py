@@ -729,7 +729,7 @@ class GameLab:
         self._log("Restarting Dolphin for next character.")
         old_console_path = self.console.path
         old_console_address = self.console.slippi_address
-        old_console_save_replays = getattr(self.console, 'save_replays', False)
+        old_console_save_replays = getattr(self.console, "save_replays", False)
 
         try:
             self.console.stop()

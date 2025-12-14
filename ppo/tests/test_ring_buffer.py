@@ -230,8 +230,9 @@ class TestRingBufferRotation:
             for i in range(T):
                 expected_frame = oldest_frame + i
                 if expected_frame < num_steps:
-                    assert rotated[0, i, 0].item() == float(expected_frame), \
-                        f"At position {i}, expected frame {expected_frame}, got {rotated[0, i, 0].item()}"
+                    assert rotated[0, i, 0].item() == float(
+                        expected_frame
+                    ), f"At position {i}, expected frame {expected_frame}, got {rotated[0, i, 0].item()}"
 
     def test_rotation_preserves_batch_dimension(self):
         """Test that rotation preserves independence across batch dimension."""

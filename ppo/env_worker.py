@@ -92,7 +92,9 @@ class EnvWorker:
         )
 
         # Rollout state tracking
-        self.waiting_for_bootstrap = False  # True when rollout is full, waiting for bootstrap value
+        self.waiting_for_bootstrap = (
+            False  # True when rollout is full, waiting for bootstrap value
+        )
 
         # Restart tracking
         self.frames_since_restart = 0

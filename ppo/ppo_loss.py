@@ -52,7 +52,9 @@ def compute_action_logprob(
     button_samples = actions["buttons"].bool()  # [B, T, 5]
     button_logp = torch.log(
         torch.where(button_samples, button_probs, 1 - button_probs)
-    ).sum(dim=-1)  # [B, T]
+    ).sum(
+        dim=-1
+    )  # [B, T]
 
     # Total log prob (sum of independent components)
     total_logp = main_logp + c_logp + shoulder_logp + button_logp
@@ -96,7 +98,9 @@ def compute_action_entropy(
     button_entropy = -(
         button_probs * torch.log(button_probs + 1e-8)
         + (1 - button_probs) * torch.log(1 - button_probs + 1e-8)
-    ).sum(dim=-1)  # [B, T]
+    ).sum(
+        dim=-1
+    )  # [B, T]
 
     # Total entropy
     total_entropy = main_entropy + c_entropy + shoulder_entropy + button_entropy

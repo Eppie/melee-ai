@@ -241,7 +241,10 @@ def create_windowed_batches(
         adv_windows = as_strided(
             rollout.advantages,
             shape=(num_windows, context_length),
-            strides=(stride * rollout.advantages.strides[0], rollout.advantages.strides[0]),
+            strides=(
+                stride * rollout.advantages.strides[0],
+                rollout.advantages.strides[0],
+            ),
         )
         ret_windows = as_strided(
             rollout.returns,

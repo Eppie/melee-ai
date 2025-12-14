@@ -130,16 +130,21 @@ def test_gae_with_bootstrap_value():
     buffer_no_bootstrap.pos = buffer.pos
     buffer_no_bootstrap.complete = True
 
-    adv_no_bootstrap, ret_no_bootstrap = buffer_no_bootstrap.compute_advantages(gamma=0.99, gae_lambda=0.95)
+    adv_no_bootstrap, ret_no_bootstrap = buffer_no_bootstrap.compute_advantages(
+        gamma=0.99, gae_lambda=0.95
+    )
 
     # Compute with bootstrap value (continuing episode, next_value=10.0)
     buffer.bootstrap_value = 10.0
-    adv_with_bootstrap, ret_with_bootstrap = buffer.compute_advantages(gamma=0.99, gae_lambda=0.95)
+    adv_with_bootstrap, ret_with_bootstrap = buffer.compute_advantages(
+        gamma=0.99, gae_lambda=0.95
+    )
 
     # With bootstrap, the returns should be different (returns are not normalized)
     # The bootstrap value affects the temporal difference calculation
-    assert not np.allclose(ret_no_bootstrap, ret_with_bootstrap, atol=0.1), \
-        "Bootstrap value should affect returns"
+    assert not np.allclose(
+        ret_no_bootstrap, ret_with_bootstrap, atol=0.1
+    ), "Bootstrap value should affect returns"
 
 
 def test_bootstrap_value_none_defaults_to_zero():
@@ -200,7 +205,9 @@ def test_gae_bootstrap_impact():
 
     # Test with high bootstrap value (continuing episode with high value)
     buffer.bootstrap_value = 10.0
-    adv_high_bootstrap, ret_high_bootstrap = buffer.compute_advantages(gamma=0.995, gae_lambda=0.95)
+    adv_high_bootstrap, ret_high_bootstrap = buffer.compute_advantages(
+        gamma=0.995, gae_lambda=0.95
+    )
 
     # Reset and test with low bootstrap value (continuing episode with low value)
     buffer.reset()
@@ -214,12 +221,15 @@ def test_gae_bootstrap_impact():
             mask=True,
         )
     buffer.bootstrap_value = -10.0
-    adv_low_bootstrap, ret_low_bootstrap = buffer.compute_advantages(gamma=0.995, gae_lambda=0.95)
+    adv_low_bootstrap, ret_low_bootstrap = buffer.compute_advantages(
+        gamma=0.995, gae_lambda=0.95
+    )
 
     # Returns should differ based on bootstrap value
     # (advantages are normalized so harder to compare directly)
-    assert not np.allclose(ret_high_bootstrap, ret_low_bootstrap), \
-        "Different bootstrap values should produce different returns"
+    assert not np.allclose(
+        ret_high_bootstrap, ret_low_bootstrap
+    ), "Different bootstrap values should produce different returns"
 
 
 def test_windowed_batches_shape(column_map):
@@ -391,9 +401,12 @@ def test_stride_efficiency():
     small_stride_windows = sum(b["features"].shape[0] for b in small_stride_batches)
     large_stride_windows = sum(b["features"].shape[0] for b in large_stride_batches)
 
-    print(f"Stride 8 windows: {small_stride_windows}, Stride 256 windows: {large_stride_windows}")
-    assert large_stride_windows < small_stride_windows, \
-        "Larger stride should create fewer windows"
+    print(
+        f"Stride 8 windows: {small_stride_windows}, Stride 256 windows: {large_stride_windows}"
+    )
+    assert (
+        large_stride_windows < small_stride_windows
+    ), "Larger stride should create fewer windows"
 
     # Check shapes (all sequence training now)
     batch = large_stride_batches[0]
@@ -464,8 +477,9 @@ def test_stride_window_creation():
         # Check number of windows: (rollout_length - context_length) // stride + 1
         expected_windows = (512 - 256) // stride + 1
         total_windows = sum(b["features"].shape[0] for b in batches)
-        assert total_windows == expected_windows, \
-            f"Stride {stride}: Expected {expected_windows} windows, got {total_windows}"
+        assert (
+            total_windows == expected_windows
+        ), f"Stride {stride}: Expected {expected_windows} windows, got {total_windows}"
 
 
 if __name__ == "__main__":

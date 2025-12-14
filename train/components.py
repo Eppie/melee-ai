@@ -15,6 +15,7 @@ from column_map import ColumnMap
 from data_loading.instrumentation import DataLoadingMetrics
 from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
+from train.async_transfer import DeferredScalarAccumulator, PinnedMemoryPool
 from train.wandb_utils import WandbLogger
 from utils import Profiler
 
@@ -122,6 +123,16 @@ class TrainingComponents:
     profilers: Dict[str, Profiler] = field(default_factory=dict)
     # Data loading metrics
     dataloader_metrics: DataLoadingMetrics = field(default_factory=DataLoadingMetrics)
+    # Async transfer utilities
+    loss_accumulator: DeferredScalarAccumulator = field(init=False, repr=False)
+    stats_transfer_pool: PinnedMemoryPool = field(init=False, repr=False)
+
+    def __post_init__(self):
+        # Lazy-init helpers that need device information
+        self.loss_accumulator = DeferredScalarAccumulator(
+            max_size=1000, device=self.device
+        )
+        self.stats_transfer_pool = PinnedMemoryPool()
 
 
 @dataclass

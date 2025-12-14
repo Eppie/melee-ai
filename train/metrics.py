@@ -6,6 +6,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 import torch
+from train.async_transfer import BatchedStatsTransfer, PinnedMemoryPool
 
 
 class StickMetrics:
@@ -142,6 +143,7 @@ class MetricsAccumulator:
         self.btn_total = torch.tensor(0, dtype=torch.long, device=device)
         self.btn_em_correct = torch.tensor(0, dtype=torch.long, device=device)
         self.btn_maj_em_correct = torch.tensor(0, dtype=torch.long, device=device)
+        self.transfer_pool = PinnedMemoryPool()
 
     def _majority_label(self, label_counts: torch.Tensor) -> int:
         """Return the index of the largest count, defaulting to zero for empty tensors.
@@ -292,25 +294,50 @@ class MetricsAccumulator:
         Returns:
             Dictionary of scalar metrics such as ``acc_main`` and ``btn_f1_micro``.
         """
+        transfer = BatchedStatsTransfer(pool=self.transfer_pool)
+        transfer.add("main_correct", self.main.correct)
+        transfer.add("main_total", self.main.total)
+        transfer.add("main_maj_correct", self.main.maj_correct)
+        transfer.add("c_correct", self.c.correct)
+        transfer.add("c_total", self.c.total)
+        transfer.add("c_maj_correct", self.c.maj_correct)
+        transfer.add("btn_tp", self.btn_true_positives)
+        transfer.add("btn_fp", self.btn_false_positives)
+        transfer.add("btn_fn", self.btn_false_negatives)
+        transfer.add("btn_total", self.btn_total)
+        transfer.add("btn_em_correct", self.btn_em_correct)
+        transfer.add("btn_maj_em_correct", self.btn_maj_em_correct)
+
+        if self.K_shoulder > 0:
+            transfer.add("sh_correct", self.shoulder.correct)
+            transfer.add("sh_total", self.shoulder.total)
+            transfer.add("sh_maj_correct", self.shoulder.maj_correct)
+
+        results = transfer.execute()
+
+        main_correct = results["main_correct"]
+        main_total = results["main_total"]
+        main_maj_correct = results["main_maj_correct"]
+        c_correct = results["c_correct"]
+        c_total = results["c_total"]
+        c_maj_correct = results["c_maj_correct"]
+        btn_em_correct = results["btn_em_correct"]
+        btn_total = results["btn_total"]
+        btn_maj_em_correct = results["btn_maj_em_correct"]
+
+        # Button arrays come back as flattened lists
+        tp = np.asarray(results["btn_tp"], dtype=np.float64)
+        fp = np.asarray(results["btn_fp"], dtype=np.float64)
+        fn = np.asarray(results["btn_fn"], dtype=np.float64)
+
         summary = {
-            "acc_main": float(self.main.correct.item())
-            / max(1.0, float(self.main.total.item())),
-            "acc_main_maj": float(self.main.maj_correct.item())
-            / max(1.0, float(self.main.total.item())),
+            "acc_main": main_correct / max(1.0, main_total),
+            "acc_main_maj": main_maj_correct / max(1.0, main_total),
         }
 
         # C-stick
-        summary["acc_c"] = float(self.c.correct.item()) / max(
-            1.0, float(self.c.total.item())
-        )
-        summary["acc_c_maj"] = float(self.c.maj_correct.item()) / max(
-            1.0, float(self.c.total.item())
-        )
-
-        # Buttons
-        tp: np.ndarray = self.btn_true_positives.cpu().numpy()
-        fp: np.ndarray = self.btn_false_positives.cpu().numpy()
-        fn: np.ndarray = self.btn_false_negatives.cpu().numpy()
+        summary["acc_c"] = c_correct / max(1.0, c_total)
+        summary["acc_c_maj"] = c_maj_correct / max(1.0, c_total)
 
         # Micro-averaged
         tp_sum = tp.sum()
@@ -340,25 +367,20 @@ class MetricsAccumulator:
         )
         f1_macro = f1_per_button.mean()
 
-        summary["btn_em"] = float(self.btn_em_correct.item()) / max(
-            1.0, float(self.btn_total.item())
-        )
+        summary["btn_em"] = btn_em_correct / max(1.0, btn_total)
         summary["btn_prec_micro"] = float(prec_micro)
         summary["btn_rec_micro"] = float(rec_micro)
         summary["btn_f1_micro"] = float(f1_micro)
         summary["btn_f1_macro"] = float(f1_macro)
-        summary["btn_em_maj"] = float(self.btn_maj_em_correct.item()) / max(
-            1.0, float(self.btn_total.item())
-        )
+        summary["btn_em_maj"] = btn_maj_em_correct / max(1.0, btn_total)
 
         # Shoulder
         if self.K_shoulder > 0:
-            summary["acc_shoulder"] = float(self.shoulder.correct.item()) / max(
-                1.0, float(self.shoulder.total.item())
-            )
-            summary["acc_shoulder_maj"] = float(self.shoulder.maj_correct.item()) / max(
-                1.0, float(self.shoulder.total.item())
-            )
+            sh_correct = results["sh_correct"]
+            sh_total = results["sh_total"]
+            sh_maj_correct = results["sh_maj_correct"]
+            summary["acc_shoulder"] = sh_correct / max(1.0, sh_total)
+            summary["acc_shoulder_maj"] = sh_maj_correct / max(1.0, sh_total)
 
         return summary
 
@@ -497,19 +519,37 @@ def multilabel_prf(
     t = true_labels.bool()
     p = pred_labels.bool()
 
-    # Micro metrics
-    tp = (t & p).sum().item()
-    fp = ((~t) & p).sum().item()
-    fn = (t & (~p)).sum().item()
+    # Micro and per-class metrics on GPU
+    tp_micro = (t & p).sum()
+    fp_micro = ((~t) & p).sum()
+    fn_micro = (t & (~p)).sum()
+    tp_per_class = (t & p).sum(dim=(0, 1))
+    fp_per_class = ((~t) & p).sum(dim=(0, 1))
+    fn_per_class = (t & (~p)).sum(dim=(0, 1))
+    em_gpu = (pred_labels == true_labels).all(dim=-1).float().mean()
+
+    transfer = BatchedStatsTransfer()
+    transfer.add("tp", tp_micro)
+    transfer.add("fp", fp_micro)
+    transfer.add("fn", fn_micro)
+    transfer.add("em", em_gpu)
+    transfer.add("tp_c", tp_per_class)
+    transfer.add("fp_c", fp_per_class)
+    transfer.add("fn_c", fn_per_class)
+    results = transfer.execute()
+
+    tp = results["tp"]
+    fp = results["fp"]
+    fn = results["fn"]
 
     prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
 
     # Macro metrics (per class)
-    tp_c: np.ndarray = (t & p).sum(dim=(0, 1)).cpu().numpy()
-    fp_c: np.ndarray = ((~t) & p).sum(dim=(0, 1)).cpu().numpy()
-    fn_c: np.ndarray = (t & (~p)).sum(dim=(0, 1)).cpu().numpy()
+    tp_c: np.ndarray = np.asarray(results["tp_c"], dtype=np.float64)
+    fp_c: np.ndarray = np.asarray(results["fp_c"], dtype=np.float64)
+    fn_c: np.ndarray = np.asarray(results["fn_c"], dtype=np.float64)
     f1_c = []
     for a, b, c in zip(tp_c, fp_c, fn_c):
         pr = a / (a + b) if (a + b) > 0 else 0.0
@@ -517,7 +557,6 @@ def multilabel_prf(
         f1_c.append(2 * pr * rc / (pr + rc) if (pr + rc) > 0 else 0.0)
     f1_macro = float(np.mean(f1_c) if len(f1_c) else 0.0)
 
-    # Exact match
-    em = float((pred_labels == true_labels).all(dim=-1).float().mean().item())
+    em = results["em"]
 
     return em, float(prec), float(rec), float(f1), f1_macro

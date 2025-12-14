@@ -326,9 +326,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         _update_epoch_statistics(epoch_ctx, forward_result)
                         state.global_step += 1
 
-                        # Update variance trackers
-                        loss_value = float(forward_result.loss.detach().cpu().item())
-                        components.loss_variance_tracker.add(loss_value)
+                        # Update variance trackers without forcing a sync every step
+                        components.loss_accumulator.add(forward_result.loss.detach())
                         if grad_stats and "total_norm" in grad_stats:
                             components.gradient_variance_tracker.add(
                                 grad_stats["total_norm"]
@@ -350,6 +349,10 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     # Logging
                     if log_this_iter:
                         with ctx("logging"):
+                            # Flush accumulated losses once per log
+                            for loss_value in components.loss_accumulator.get_and_reset():
+                                components.loss_variance_tracker.add(loss_value)
+
                             now = time.time()
                             dt = max(1e-9, now - epoch_ctx.last_log_time)
                             frames_per_s = epoch_ctx.frames_since_last_log / dt
@@ -456,9 +459,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         _update_epoch_statistics(epoch_ctx, forward_result)
                         state.global_step += 1
 
-                        # Update variance trackers
-                        loss_value = float(forward_result.loss.detach().cpu().item())
-                        components.loss_variance_tracker.add(loss_value)
+                        # Update variance trackers without forcing a sync every step
+                        components.loss_accumulator.add(forward_result.loss.detach())
                         if grad_stats and "total_norm" in grad_stats:
                             components.gradient_variance_tracker.add(
                                 grad_stats["total_norm"]
@@ -480,6 +482,10 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     # Logging
                     if log_this_iter:
                         with ctx("logging"):
+                            # Flush accumulated losses once per log
+                            for loss_value in components.loss_accumulator.get_and_reset():
+                                components.loss_variance_tracker.add(loss_value)
+
                             now = time.time()
                             dt = max(1e-9, now - epoch_ctx.last_log_time)
                             frames_per_s = epoch_ctx.frames_since_last_log / dt
@@ -515,6 +521,10 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         print_profiling_results(components.profilers)
 
                 iteration += 1
+
+    # Flush any remaining losses at epoch end (covers both chunked and non-chunked paths)
+    for loss_value in components.loss_accumulator.get_and_reset():
+        components.loss_variance_tracker.add(loss_value)
 
     if epoch == state.resume_epoch:
         state.resume_iter = 0

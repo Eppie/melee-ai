@@ -14,7 +14,6 @@ from torch.amp import GradScaler
 from column_map import ColumnMap
 from data_loading.instrumentation import DataLoadingMetrics
 from model.nano_gpt import GPT
-from train.batch_utils import SampleWeightRatios
 from train.async_transfer import DeferredScalarAccumulator, PinnedMemoryPool
 from train.wandb_utils import WandbLogger
 from utils import Profiler
@@ -100,7 +99,6 @@ class TrainingComponents:
     logger: WandbLogger
     device: torch.device
     amp: AMPContext
-    ratios: SampleWeightRatios
     column_map: ColumnMap
     value_idx: int
     dataset: any
@@ -212,7 +210,6 @@ class ForwardPassResult:
     batch_inputs: Dict[str, torch.Tensor]
     batch_targets: Dict[str, torch.Tensor]
     label_smoothing: float
-    change_scale: float
     head_diagnostics: Dict[
         str, float
     ] = None  # Per-head metrics for instability detection

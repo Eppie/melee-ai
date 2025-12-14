@@ -54,19 +54,6 @@ This document details all metrics logged to wandb during `train.py` execution. U
   - **Too low**: Model may overfit to noise in data
 - **Utility**: Useful for tuning regularization
 
-### `schedule/change_weight_scale`
-- **Description**: Scale factor for class-balancing and change-detection weights
-- **Range**: `config.train.imbalance_scale_initial` → `config.train.imbalance_scale_final`
-- **Related metrics**: `metrics/acc_*_change`, `metrics/acc_*_hold`, `consistency/*`
-- **Interpretation**:
-  - Controls emphasis on rare events (stick changes, button presses)
-  - **Phase 1** (initial): High weight on changes to learn action vocabulary
-  - **Phase 2** (ramp): Gradual transition
-  - **Phase 3** (final): Lower weight to learn timing/holding
-  - **Too high throughout**: Overfits to changes, poor at holding positions
-  - **Too low throughout**: Biased toward neutral stick/no buttons
-- **Utility**: Critical for understanding imbalance correction
-
 ---
 
 ## 2. LOSS METRICS

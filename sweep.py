@@ -31,7 +31,6 @@ from tqdm.auto import tqdm
 
 from column_map import ColumnMap
 from config import Config, get_config, init_config, reset_config
-from loss import _compute_ce_weights, _compute_pos_weights
 from model.nano_gpt import GPT
 
 # Train module utilities
@@ -612,36 +611,28 @@ def run_training_once(
 
                         logits_main = pred["main_stick"].reshape(B * L, -1)
                         target_main = target_info["main_idx"].reshape(B * L)
-                        main_weights = _compute_ce_weights(
-                            target_main, target_info["main_K"], cfg.loss_weights
-                        )
                         loss_main = torch.nn.functional.cross_entropy(
                             logits_main,
                             target_main,
                             reduction="mean",
                             label_smoothing=cfg.train.label_smoothing,
-                            weight=main_weights,
                         )
 
                         logits_c = pred["c_stick"].reshape(B * L, -1)
                         target_c = target_info["c_idx"].reshape(B * L)
-                        c_weights = _compute_ce_weights(target_c, target_info["c_K"])
                         loss_c = torch.nn.functional.cross_entropy(
                             logits_c,
                             target_c,
                             reduction="mean",
                             label_smoothing=cfg.train.label_smoothing,
-                            weight=c_weights,
                         )
 
                         logits_btn = pred["buttons"]
                         target_btn = target_info["buttons"]
-                        pos_weight = _compute_pos_weights(target_btn)
                         loss_btn = torch.nn.functional.binary_cross_entropy_with_logits(
                             logits_btn,
                             target_btn,
                             reduction="mean",
-                            pos_weight=pos_weight,
                         )
 
                         logits_s = pred["shoulder"].reshape(B * L, -1)

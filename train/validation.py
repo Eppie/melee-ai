@@ -11,13 +11,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
-from constants import CONTROLLER_KEY_GROUPS
 from loss import compute_loss_components
-from train.batch_utils import (
-    SampleWeightRatios,
-    build_model_inputs,
-    compute_component_sample_weights,
-)
+from train.batch_utils import build_model_inputs
 from train.metrics import multilabel_prf
 from train.value_head import compute_value_targets
 from window_dataset import RandomWindowSampler
@@ -28,26 +23,6 @@ if TYPE_CHECKING:
 
 # Global cache for validation dataset and dataloader
 _VAL_CACHE: Dict[str, Any] = {}
-
-
-def _build_sample_weight_ratios(loss_cfg) -> SampleWeightRatios:
-    """Mirror the training-time ratios derived from LossConfig."""
-    button_overrides = {
-        "button_z": loss_cfg.button_z,
-        "button_b": loss_cfg.button_b,
-        "button_a": loss_cfg.button_a,
-        "button_xy": loss_cfg.button_xy,
-        "button_lr": loss_cfg.button_lr,
-    }
-    return SampleWeightRatios(
-        main_change=loss_cfg.main_change,
-        c_change=loss_cfg.c_change,
-        shoulder_change=loss_cfg.shoulder_change,
-        buttons_change_default=loss_cfg.buttons_change_default,
-        buttons_change_per_key=button_overrides,
-        hold_base=loss_cfg.hold_base,
-        value_change=loss_cfg.value_change,
-    )
 
 
 def _get_validation_loader(
@@ -108,7 +83,6 @@ def run_validation(
     config,
     max_batches: Optional[int] = None,
     batch_size: Optional[int] = None,
-    imbalance_scale: float = 1.0,
 ) -> Dict[str, float]:
     """Run validation and return metrics dictionary suitable for wandb logging.
 
@@ -118,7 +92,6 @@ def run_validation(
         config: Training configuration.
         max_batches: Maximum number of batches to evaluate (None for all).
         batch_size: Override batch size (defaults to config.train.batch_size).
-        imbalance_scale: Current imbalance scale from training (default 1.0).
 
     Returns:
         Dictionary of validation metrics with "val/" prefix.
@@ -131,8 +104,6 @@ def run_validation(
         batch_size=batch_size,
         window_stride=256,
     )
-
-    ratios = _build_sample_weight_ratios(config.loss_weights)
 
     metrics = defaultdict(float)
     loss_sums: Dict[str, float] = {
@@ -175,13 +146,6 @@ def run_validation(
                 "buttons_K": len(colmap.y_buttons),
                 "shoulder_K": int(head_dims["shoulder"]),
             }
-            weights = compute_component_sample_weights(
-                target_info,
-                device,
-                ratios=ratios,
-                button_names=CONTROLLER_KEY_GROUPS["buttons"],
-                change_scale=imbalance_scale,
-            )
 
             pred = model(inputs_td)
 
@@ -189,15 +153,11 @@ def run_validation(
             logits_c = pred["c_stick"]
             logits_btn = pred["buttons"]
 
-            # Match training's imbalance scale for comparable loss values
             loss_components = compute_loss_components(
                 pred,
                 target_info,
                 label_smoothing=config.train.label_smoothing,
-                sample_weights=weights,
                 loss_config=config.loss_weights,
-                ce_weight_scale=imbalance_scale,
-                pos_weight_scale=imbalance_scale,
             )
 
             for key, value in loss_components.items():
@@ -214,10 +174,7 @@ def run_validation(
             value_loss_raw = torch.nn.functional.mse_loss(
                 value_pred, value_target, reduction="none"
             ).squeeze(-1)
-            value_w = weights.get("global", weights["main"])
-            loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(
-                1e-12
-            )
+            loss_value = value_loss_raw.mean()
             loss_sums["value"] += loss_value.item()
 
             pred_main_idx = logits_main.argmax(dim=-1)
@@ -318,37 +275,12 @@ def maybe_run_validation(
     print("[validation] Running validation...")
     start_time = time.time()
 
-    # Compute current imbalance_scale based on training progress
-    config = components.config
-    progress = min(global_step / float(components.total_steps), 1.0)
-
-    initial_scale = config.train.imbalance_scale_initial
-    final_scale = config.train.imbalance_scale_final
-    final_fraction = config.train.imbalance_scale_final_fraction
-
-    # Match training's imbalance scale computation
-    warmup_steps = config.train.schedule_warmup_epochs * (
-        components.total_steps // config.train.epochs
-    )
-    in_warmup = global_step < warmup_steps
-
-    if in_warmup:
-        imbalance_scale = initial_scale
-    elif progress >= (1.0 - final_fraction):
-        imbalance_scale = final_scale
-    else:
-        ramp_progress = progress / (1.0 - final_fraction)
-        imbalance_scale = initial_scale + (final_scale - initial_scale) * ramp_progress
-
-    imbalance_scale = float(max(min(imbalance_scale, final_scale), initial_scale))
-
     try:
         val_metrics = run_validation(
             model=components.model,
             device=components.device,
             config=components.config,
             max_batches=None,  # Run on full validation set
-            imbalance_scale=imbalance_scale,
         )
 
         # Log to wandb

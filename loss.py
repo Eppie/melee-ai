@@ -12,52 +12,14 @@ if TYPE_CHECKING:
     from config import LossConfig
 
 
-def _compute_ce_weights(
-    labels: Tensor, num_classes: int, loss_config: "LossConfig"
-) -> Optional[Tensor]:
-    """Compute class-balanced weights for cross-entropy loss."""
-    if not loss_config.enable_class_balancing:
-        return None
-    device = labels.device
-    try:
-        counts = torch.bincount(labels, minlength=num_classes)
-    except RuntimeError:
-        counts = torch.bincount(labels.cpu(), minlength=num_classes).to(device)
-    counts = counts.float().clamp_min(1.0)
-    weights = counts.sum() / (counts * num_classes)
-    return weights.clamp(min=loss_config.ce_weight_min, max=loss_config.ce_weight_max)
-
-
-def _compute_pos_weights(
-    targets: Tensor, loss_config: "LossConfig"
-) -> Optional[Tensor]:
-    """Compute positive class weights for multi-label BCE loss."""
-    if not loss_config.enable_pos_weighting:
-        return None
-
-    flat = targets.reshape(-1, targets.shape[-1])
-    pos = flat.sum(dim=0)
-    total = flat.shape[0]
-    neg = total - pos
-    pos_weight = neg / pos.clamp_min(1.0)
-    return pos_weight.clamp(min=1.0, max=loss_config.pos_weight_max).to(targets.device)
-
-
 def _mean_with_weights(x: Tensor, w: Tensor, loss_config: "LossConfig") -> Tensor:
-    if not loss_config.use_weighted_component_means:
+    if w is None or not loss_config.use_weighted_component_means:
         return x.mean()
     # Match dims to broadcast, then true weighted mean:
     w = w.to(x.dtype)
     num = (x * w).sum()
     den = w.sum().clamp_min(1e-12)
     return num / den
-
-
-def _blend_weights(weights: Optional[Tensor], scale: float) -> Optional[Tensor]:
-    assert scale > 0, f"scale {scale} is invalid"
-    if weights is None or scale >= 1:
-        return weights
-    return torch.ones_like(weights) + (weights - 1.0) * scale
 
 
 def compute_loss_components(
@@ -67,8 +29,6 @@ def compute_loss_components(
     label_smoothing: float,
     sample_weights: Optional[Union[Tensor, Mapping[str, Tensor]]] = None,
     loss_config: "LossConfig",
-    ce_weight_scale: float = 1.0,
-    pos_weight_scale: float = 1.0,
 ) -> Dict[str, Tensor]:
     """
     Accepts either:
@@ -109,39 +69,29 @@ def compute_loss_components(
     # --- MAIN ---
     main_targets = target_info["main_idx"].reshape(B * L)
     main_logits = logits_main.reshape(B * L, -1)
-    main_weights = _compute_ce_weights(
-        main_targets, int(target_info["main_K"]), loss_config
-    )
-    main_weights = _blend_weights(main_weights, ce_weight_scale)
     loss_main_vec = F.cross_entropy(
         main_logits,
         main_targets,
         reduction="none",
         label_smoothing=label_smoothing,
-        weight=main_weights,
     ).reshape(B, L)
     loss_main = _mean_with_weights(loss_main_vec, w_main, loss_config)
 
     # --- C-STICK ---
     c_targets = target_info["c_idx"].reshape(B * L)
     c_logits = logits_c.reshape(B * L, -1)
-    c_weights = _compute_ce_weights(c_targets, int(target_info["c_K"]), loss_config)
-    c_weights = _blend_weights(c_weights, ce_weight_scale)
     loss_c_vec = F.cross_entropy(
         c_logits,
         c_targets,
         reduction="none",
         label_smoothing=label_smoothing,
-        weight=c_weights,
     ).reshape(B, L)
     loss_c = _mean_with_weights(loss_c_vec, w_c, loss_config)
 
     # --- BUTTONS (per-label weighting)
     target_btn = target_info["buttons"]
-    pos_weight = _compute_pos_weights(target_btn, loss_config)  # [K_btn] or None
-    pos_weight = _blend_weights(pos_weight, pos_weight_scale)
     loss_btn_all = F.binary_cross_entropy_with_logits(
-        logits_btn, target_btn, reduction="none", pos_weight=pos_weight
+        logits_btn, target_btn, reduction="none"
     )  # [B, L, K_btn]
 
     if w_buttons is not None:

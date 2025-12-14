@@ -253,10 +253,7 @@ def test_config_round_trip_preserves_all_fields(tmp_path: Path) -> None:
             n_embd=256,
             dropout=0.05,
         ),
-        loss_weights=LossConfig(
-            main_change=3.0,
-            button_z=15.0,
-        ),
+        loss_weights=LossConfig(use_weighted_component_means=False),
         reward=RewardConfig(gamma=0.99),
         rl=RLConfig(value_loss_coef=0.5),
     )
@@ -275,8 +272,7 @@ def test_config_round_trip_preserves_all_fields(tmp_path: Path) -> None:
     assert loaded.model.n_head == 4
     assert loaded.model.n_embd == 256
     assert loaded.model.dropout == 0.05
-    assert loaded.loss_weights.main_change == 3.0
-    assert loaded.loss_weights.button_z == 15.0
+    assert loaded.loss_weights.use_weighted_component_means is False
     assert loaded.reward.gamma == 0.99
     assert loaded.rl.value_loss_coef == 0.5
 

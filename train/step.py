@@ -8,11 +8,9 @@ import torch
 from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
-from constants import CONTROLLER_KEY_GROUPS
 from loss import compute_loss_components
 from train.batch_utils import (
     build_model_inputs,
-    compute_component_sample_weights,
 )
 from train.components import ForwardPassResult, TrainingComponents
 from train.gradients import collect_gradient_diagnostics
@@ -139,37 +137,6 @@ def perform_forward_pass(
             )
         label_smoothing = float(max(label_smoothing, 0.0))
 
-        # Imbalance scale scheduling: three-phase approach
-        # Phase 1: Keep at initial value for first initial_fraction (learn action space)
-        # Phase 2: Linear decay from initial to final over middle portion (transition)
-        # Phase 3: Keep at final value for last final_fraction (learn timing)
-        initial_scale = config.train.imbalance_scale_initial
-        final_scale = config.train.imbalance_scale_final
-        initial_fraction = config.train.imbalance_scale_initial_fraction
-        final_fraction = config.train.imbalance_scale_final_fraction
-
-        if progress < initial_fraction:
-            # Phase 1: Keep at initial value
-            imbalance_scale = initial_scale
-        elif progress >= (1.0 - final_fraction):
-            # Phase 3: Keep at final value
-            imbalance_scale = final_scale
-        else:
-            # Phase 2: Linear ramp from initial to final over middle portion
-            ramp_start = initial_fraction
-            ramp_end = 1.0 - final_fraction
-            ramp_progress = (progress - ramp_start) / (ramp_end - ramp_start)
-            imbalance_scale = (
-                initial_scale + (final_scale - initial_scale) * ramp_progress
-            )
-
-        imbalance_scale = float(
-            max(
-                min(imbalance_scale, max(initial_scale, final_scale)),
-                min(initial_scale, final_scale),
-            )
-        )
-
         # Get value predictions and targets FIRST (needed for model-dependent advantages)
         value_pred = pred["value"]
         value_target = compute_value_targets(
@@ -179,25 +146,10 @@ def perform_forward_pass(
             reward_idx=components.value_idx,
         )
 
-        # Compute change-based weights (focus on action changes)
-        change_weights = compute_component_sample_weights(
-            target_info,
-            components.device,
-            ratios=components.ratios,
-            button_names=CONTROLLER_KEY_GROUPS["buttons"],
-            change_scale=imbalance_scale,
-        )
-
-        # Compute value-based weights using MODEL-DEPENDENT advantages
-        # Advantage = how much better the actual outcome was vs model prediction
-        # This focuses learning on frames where expert did better than model expected
         advantages_tensor = None
         if config.imitation.strategy == "value_advantage":
             from train.imitation_weights import compute_model_advantage_weights
 
-            # Compute model-dependent advantages: ground_truth - prediction
-            # Positive = actual outcome better than predicted (learn from expert!)
-            # Negative = actual outcome worse than predicted (expert mistake or model overestimate)
             (
                 imitation_weights_tensor,
                 advantages_tensor,
@@ -212,30 +164,20 @@ def perform_forward_pass(
                 X, components.value_idx, config.imitation
             )
 
-        # Combine change-based and value-based weights
-        # Apply value weights to all components
-        combined_weights = {}
-        for key, change_w in change_weights.items():
-            # Multiply change weights by value weights
-            # Handle broadcasting: change_w might be [B, L] or [B, L, num_classes]
-            # imitation_weights is [B, L], so reshape to [B, L, 1] for broadcasting if needed
-            if change_w.ndim == 3:
-                # change_w is [B, L, C], so broadcast imitation weights to [B, L, 1]
-                combined_weights[key] = change_w * imitation_weights_tensor.unsqueeze(
-                    -1
-                )
-            else:
-                # change_w is [B, L], direct multiplication
-                combined_weights[key] = change_w * imitation_weights_tensor
+        # Apply imitation weights uniformly across policy heads
+        policy_sample_weights = {
+            "main": imitation_weights_tensor,
+            "c": imitation_weights_tensor,
+            "shoulder": imitation_weights_tensor,
+            "buttons": imitation_weights_tensor.unsqueeze(-1),
+        }
 
         policy_loss_components = compute_loss_components(
             pred,
             target_info,
             label_smoothing=label_smoothing,
-            sample_weights=combined_weights,
+            sample_weights=policy_sample_weights,
             loss_config=config.loss_weights,
-            ce_weight_scale=imbalance_scale,
-            pos_weight_scale=imbalance_scale,
         )
         loss = policy_loss_components["total"]
         loss_components = dict(policy_loss_components)
@@ -285,7 +227,7 @@ def perform_forward_pass(
     return ForwardPassResult(
         pred=pred,
         target_info=target_info,
-        weights=combined_weights,
+        weights=policy_sample_weights,
         loss=loss,
         loss_components=loss_components,
         value_pred=value_pred,
@@ -293,7 +235,6 @@ def perform_forward_pass(
         batch_inputs=batch_inputs,
         batch_targets=batch_targets,
         label_smoothing=label_smoothing,
-        change_scale=imbalance_scale,
         head_diagnostics=head_diagnostics,
         imitation_weights=imitation_weights_tensor,
         advantages=advantages_tensor,

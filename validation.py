@@ -28,9 +28,7 @@ from loss import compute_loss_components
 from model.nano_gpt import GPT
 from train import find_latest_checkpoint
 from train.batch_utils import (
-    SampleWeightRatios,
     build_model_inputs as build_inputs_for_gpt,
-    compute_component_sample_weights,
 )
 from train.display import _print_table_block
 from train.metrics import multilabel_prf
@@ -817,26 +815,6 @@ def _frame_rewards_from_batch(
     return compute_frame_rewards(X, idx=features, reward_cfg=reward_cfg)
 
 
-def _build_sample_weight_ratios(loss_cfg) -> SampleWeightRatios:
-    """Mirror the training-time ratios derived from LossConfig."""
-    button_overrides = {
-        "button_z": loss_cfg.button_z,
-        "button_b": loss_cfg.button_b,
-        "button_a": loss_cfg.button_a,
-        "button_xy": loss_cfg.button_xy,
-        "button_lr": loss_cfg.button_lr,
-    }
-    return SampleWeightRatios(
-        main_change=loss_cfg.main_change,
-        c_change=loss_cfg.c_change,
-        shoulder_change=loss_cfg.shoulder_change,
-        buttons_change_default=loss_cfg.buttons_change_default,
-        buttons_change_per_key=button_overrides,
-        hold_base=loss_cfg.hold_base,
-        value_change=loss_cfg.value_change,
-    )
-
-
 def _decode_stick_coords(indices: torch.Tensor, palette: torch.Tensor) -> torch.Tensor:
     """Map quantized stick indices to 2D coordinates."""
     B, L = indices.shape
@@ -1313,7 +1291,6 @@ def _evaluate(
     reward_features = (
         None if value_col_idx is not None else build_reward_feature_index(colmap)
     )
-    ratios = _build_sample_weight_ratios(config.loss_weights)
 
     metrics = defaultdict(float)
 
@@ -1386,13 +1363,6 @@ def _evaluate(
                 "buttons_K": len(colmap.y_buttons),
                 "shoulder_K": int(head_dims["shoulder"]),
             }
-            weights = compute_component_sample_weights(
-                target_info,
-                device,
-                ratios=ratios,
-                button_names=CONTROLLER_KEY_GROUPS["buttons"],
-                change_scale=1.0,
-            )
 
             pred = model(inputs_td)
 
@@ -1405,7 +1375,6 @@ def _evaluate(
                 pred,
                 target_info,
                 label_smoothing=config.train.label_smoothing,
-                sample_weights=weights,
                 loss_config=config.loss_weights,
             )
 

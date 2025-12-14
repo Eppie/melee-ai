@@ -98,6 +98,10 @@ class Coordinator:
         self.t_mod = 0
         self.step_id = 0
 
+        # Initialize t_mod in all slabs (source of truth for workers)
+        for slab in self.shard_slabs:
+            slab.t_mod = self.t_mod
+
         # Training state
         self.optimizer = torch.optim.AdamW(
             self.policy.parameters(),
@@ -384,8 +388,13 @@ class Coordinator:
             All numpy arrays with shape [total_envs]
         """
         with torch.inference_mode():
+            # Rotate ring buffer so newest frame is at position -1 (expected by model)
+            # After writing to t_mod, the oldest frame is at (t_mod + 1) % T
+            # We want oldest at position 0, newest at position -1
+            rotated_X = torch.roll(self.X_gpu, shifts=-(self.t_mod + 1), dims=1)
+
             # 1. Compute ego actions for all envs (single batch)
-            ego_actions = self._forward_policy(self.policy, self.X_gpu)
+            ego_actions = self._forward_policy(self.policy, rotated_X)
 
             # 2. Compute opponent actions
             # Group environments by opponent policy
@@ -420,8 +429,8 @@ class Coordinator:
                 env_ids = [e[0] for e in env_list]
                 opponent_model = env_list[0][1]  # Same for all in group
 
-                # Extract features for this group
-                group_features = self.X_gpu[
+                # Extract features for this group (use rotated buffer)
+                group_features = rotated_X[
                     env_ids
                 ]  # [len(env_ids), context_length, feature_dim]
 
@@ -571,6 +580,10 @@ class Coordinator:
                 # 7. Update ring position
                 self.t_mod = (self.t_mod + 1) % self.ppo_config.context_length
                 self.step_id += 1
+
+                # 8. Write t_mod to all slabs (source of truth for workers)
+                for slab in self.shard_slabs:
+                    slab.t_mod = self.t_mod
                 self.total_frames += (
                     self.ppo_config.total_envs
                 )  # Each step processes all envs

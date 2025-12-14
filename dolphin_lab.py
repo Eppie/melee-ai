@@ -50,7 +50,7 @@ DEFAULT_CHARGE_FRAMES = 45
 DEFAULT_TRAVEL_FRAMES = 120
 DEFAULT_COOLDOWN_FRAMES = 30
 MIN_MOVEMENT_MAG = 0.35
-NEUTRAL_SETTLE_FRAMES = 2
+NEUTRAL_SETTLE_FRAMES = 4
 MAX_TRIGGER_RAW = 140
 COMMAND_TRIGGER_MAX = 255
 DELTA_STABILITY_FRAMES = 5
@@ -326,6 +326,15 @@ class GameLab:
             yield from self._wait_until_player_active(target_port)
             self.set_neutral(target_port)
             yield from self.wait(settle_frames)
+
+            # Store initial position and facing
+            initial_pos = self.player_position(target_port)
+            initial_facing = (
+                self.current_gamestate.players[target_port].facing
+                if self._player_present(target_port)
+                else True
+            )
+
             frame = 0
             move_iter = move_inputs(target_port)
             move_iter_exhausted = False
@@ -375,6 +384,10 @@ class GameLab:
             self.set_neutral(target_port)
             yield from self.wait(cooldown_frames)
 
+            # Ensure character has returned to initial position and facing
+            yield from self._return_to_position(target_port, initial_pos)
+            yield from self._return_to_facing(target_port, initial_facing)
+
         self.enqueue_macro(_macro())
 
     def queue_default_action_state_demo(self, port: Optional[int] = None) -> None:
@@ -384,9 +397,11 @@ class GameLab:
         self.clear_macros()
         self.enqueue_macro(self.wait(180))  # allow spawn/intro frames to finish
         moves: List[Tuple[str, str, Callable[[int], Iterator[None]]]] = [
+            ("neutral B", "grounded", self._fox_neutral_b_macro),
             ("up B", "grounded", self._fox_up_b_macro),
             ("side B", "grounded", self._fox_side_b_macro),
             ("down B", "grounded", self._fox_down_b_macro),
+            ("neutral B", "aerial", self._fox_neutral_b_air_macro),
             ("up B", "aerial", self._fox_up_b_air_macro),
             ("side B", "aerial", self._fox_side_b_air_macro),
             ("down B", "aerial", self._fox_down_b_air_macro),
@@ -409,6 +424,7 @@ class GameLab:
         yield from self.wait(DEFAULT_CHARGE_FRAMES)
         self.set_main_stick(port, 0.0, 1.0)
         yield from self.wait(DEFAULT_TRAVEL_FRAMES)
+        self.set_main_stick(port, 0.0, 0.0)
 
     def _fox_side_b_macro(self, port: int) -> Iterator[None]:
         yield from self.wait(1)
@@ -417,6 +433,7 @@ class GameLab:
         yield
         self.release_button(port, Button.BUTTON_B)
         yield from self.wait(DEFAULT_TRAVEL_FRAMES // 2)
+        self.set_main_stick(port, 0.0, 0.0)
 
     def _fox_down_b_macro(self, port: int) -> Iterator[None]:
         yield from self.wait(1)
@@ -425,6 +442,15 @@ class GameLab:
         yield
         self.release_button(port, Button.BUTTON_B)
         yield from self.wait(DEFAULT_CHARGE_FRAMES)
+        self.set_main_stick(port, 0.0, 0.0)
+
+    def _fox_neutral_b_macro(self, port: int) -> Iterator[None]:
+        yield from self.wait(1)
+        self.set_main_stick(port, 0.0, 0.0)
+        self.press_button(port, Button.BUTTON_B)
+        yield
+        self.release_button(port, Button.BUTTON_B)
+        yield from self.wait(20)
 
     def _short_hop(self, port: int, airborne_wait: int = 4) -> Iterator[None]:
         """Light jump to reach airborne state before a move."""
@@ -434,9 +460,17 @@ class GameLab:
         self.release_button(port, Button.BUTTON_Y)
         yield from self.wait(airborne_wait)
 
+    def _full_hop(self, port: int, airborne_wait: int = 4) -> Iterator[None]:
+        """Full height jump to reach airborne state before a move."""
+
+        self.press_button(port, Button.BUTTON_Y)
+        yield from self.wait(4)
+        self.release_button(port, Button.BUTTON_Y)
+        yield from self.wait(airborne_wait)
+
     def _fox_up_b_air_macro(self, port: int) -> Iterator[None]:
         yield from self.wait(1)
-        yield from self._short_hop(port, airborne_wait=5)
+        yield from self._full_hop(port, airborne_wait=12)
         self.set_main_stick(port, 0.0, 1.0)
         self.press_button(port, Button.BUTTON_B)
         yield
@@ -444,24 +478,36 @@ class GameLab:
         yield from self.wait(DEFAULT_CHARGE_FRAMES)
         self.set_main_stick(port, 0.0, 1.0)
         yield from self.wait(DEFAULT_TRAVEL_FRAMES)
+        self.set_main_stick(port, 0.0, 0.0)
 
     def _fox_side_b_air_macro(self, port: int) -> Iterator[None]:
         yield from self.wait(1)
-        yield from self._short_hop(port, airborne_wait=5)
+        yield from self._full_hop(port, airborne_wait=12)
         self.set_main_stick(port, 1.0, 0.0)
         self.press_button(port, Button.BUTTON_B)
         yield
         self.release_button(port, Button.BUTTON_B)
         yield from self.wait(DEFAULT_TRAVEL_FRAMES // 2)
+        self.set_main_stick(port, 0.0, 0.0)
 
     def _fox_down_b_air_macro(self, port: int) -> Iterator[None]:
         yield from self.wait(1)
-        yield from self._short_hop(port, airborne_wait=5)
+        yield from self._full_hop(port, airborne_wait=12)
         self.set_main_stick(port, 0.0, -1.0)
         self.press_button(port, Button.BUTTON_B)
         yield
         self.release_button(port, Button.BUTTON_B)
         yield from self.wait(DEFAULT_CHARGE_FRAMES)
+        self.set_main_stick(port, 0.0, 0.0)
+
+    def _fox_neutral_b_air_macro(self, port: int) -> Iterator[None]:
+        yield from self.wait(1)
+        yield from self._full_hop(port, airborne_wait=12)
+        self.set_main_stick(port, 0.0, 0.0)
+        self.press_button(port, Button.BUTTON_B)
+        yield
+        self.release_button(port, Button.BUTTON_B)
+        yield from self.wait(20)
 
     def _all_playable_characters(self) -> List[Character]:
         blocked = {
@@ -495,9 +541,11 @@ class GameLab:
             return
         character = self._action_sweep_characters[self._action_sweep_index]
         moves: List[Tuple[str, str, Callable[[int], Iterator[None]]]] = [
+            ("neutral B", "grounded", self._fox_neutral_b_macro),
             ("up B", "grounded", self._fox_up_b_macro),
             ("side B", "grounded", self._fox_side_b_macro),
             ("down B", "grounded", self._fox_down_b_macro),
+            ("neutral B", "aerial", self._fox_neutral_b_air_macro),
             ("up B", "aerial", self._fox_up_b_air_macro),
             ("side B", "aerial", self._fox_side_b_air_macro),
             ("down B", "aerial", self._fox_down_b_air_macro),
@@ -679,6 +727,10 @@ class GameLab:
         """Stop Dolphin and start a fresh instance."""
 
         self._log("Restarting Dolphin for next character.")
+        old_console_path = self.console.path
+        old_console_address = self.console.slippi_address
+        old_console_save_replays = getattr(self.console, 'save_replays', False)
+
         try:
             self.console.stop()
         except Exception:
@@ -692,6 +744,26 @@ class GameLab:
         self.current_gamestate = None
         self._in_game = False
         self._action_sweep_run_in_match = False
+
+        # Create a fresh Console object instead of reusing the old one
+        self.console = Console(
+            path=old_console_path,
+            slippi_address=old_console_address,
+            save_replays=old_console_save_replays,
+            copy_home_directory=False,
+            tmp_home_directory=False,
+            blocking_input=True,
+        )
+
+        # Reconnect controllers to the new console
+        for port, controller in self.controllers.items():
+            self.controllers[port] = Controller(
+                console=self.console,
+                port=port,
+                type=ControllerType.STANDARD,
+                fix_analog_inputs=False,
+            )
+
         try:
             self.console.run(iso_path=str(self.iso_path) if self.iso_path else None)
         except Exception as exc:
@@ -795,6 +867,123 @@ class GameLab:
         while not self._player_is_active(port):
             yield
 
+    def _return_to_position(
+        self,
+        port: int,
+        target_pos: Tuple[float, float],
+        *,
+        tolerance: float = 0.05,
+        max_frames: int = 300,
+    ) -> Iterator[None]:
+        """Move character back to target position within tolerance."""
+
+        target_x, target_y = target_pos
+        if math.isnan(target_x) or math.isnan(target_y):
+            # Invalid initial position, skip position reset
+            return
+
+        frames = 0
+        settle_count = 0
+        neutral_cooldown = 0
+        last_direction = 0.0
+
+        while frames < max_frames:
+            frames += 1
+
+            if not self._player_is_active(port):
+                self.set_neutral(port)
+                yield
+                continue
+
+            pos = self.player_position(port)
+            if math.isnan(pos[0]) or math.isnan(pos[1]):
+                self.set_neutral(port)
+                yield
+                continue
+
+            delta_x = target_x - pos[0]
+            delta_y = abs(target_y - pos[1])
+
+            # Check if we're close enough (within tolerance on X, and grounded/close on Y)
+            if abs(delta_x) <= tolerance and delta_y <= 5.0:
+                self.set_neutral(port)
+                settle_count = min(settle_count + 1, NEUTRAL_SETTLE_FRAMES)
+                if settle_count >= NEUTRAL_SETTLE_FRAMES:
+                    break
+                yield
+                continue
+
+            settle_count = 0
+
+            # Need to move back
+            if abs(delta_x) <= tolerance:
+                # Close enough on X, just wait
+                self.set_neutral(port)
+                yield
+                continue
+
+            # Determine direction to move
+            direction = 1.0 if delta_x > 0 else -1.0
+
+            # If we changed direction, insert neutral cooldown
+            if last_direction != 0.0 and direction != last_direction:
+                self.set_neutral(port)
+                neutral_cooldown = NEUTRAL_SETTLE_FRAMES
+                last_direction = 0.0
+                yield
+                continue
+
+            if neutral_cooldown > 0:
+                self.set_neutral(port)
+                neutral_cooldown -= 1
+                yield
+                continue
+
+            # Move toward target
+            magnitude = min(1.0, max(MIN_MOVEMENT_MAG, abs(delta_x) / 12.0))
+            if abs(delta_x) > 20.0:
+                magnitude = 1.0
+
+            self.set_main_stick(port, direction * magnitude, 0.0)
+            last_direction = direction
+            yield
+
+        # Final settle
+        self.set_neutral(port)
+        yield from self.wait(NEUTRAL_SETTLE_FRAMES)
+
+    def _return_to_facing(
+        self,
+        port: int,
+        target_facing: bool,
+        *,
+        max_attempts: int = 3,
+    ) -> Iterator[None]:
+        """Ensure character is facing the target direction (True = right, False = left)."""
+
+        for attempt in range(max_attempts):
+            if not self._player_is_active(port):
+                yield
+                continue
+
+            player = self.current_gamestate.players[port]
+            current_facing = player.facing
+
+            if current_facing == target_facing:
+                # Already facing the correct direction
+                break
+
+            # Need to turn around - tap the opposite direction briefly
+            turn_direction = -1.0 if current_facing else 1.0
+            self.set_main_stick(port, turn_direction, 0.0)
+            yield from self.wait(2)
+            self.set_neutral(port)
+            yield from self.wait(8)
+
+        # Final settle
+        self.set_neutral(port)
+        yield from self.wait(NEUTRAL_SETTLE_FRAMES)
+
     def player_position(self, port: int) -> Tuple[float, float]:
         if not self.current_gamestate or port not in self.current_gamestate.players:
             return (float("nan"), float("nan"))
@@ -829,6 +1018,8 @@ class GameLab:
                     "move",
                     "frame",
                     "action_state",
+                    "action_state_id",
+                    "action_state_id_hex",
                 ]
             )
             self._action_log_file.flush()
@@ -854,6 +1045,8 @@ class GameLab:
             move,
             frame,
             action.name,
+            action.value,
+            hex(action.value),
         ]
         self._action_log_writer.writerow(row)
         self._action_log_file.flush()

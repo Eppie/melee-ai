@@ -81,8 +81,18 @@ def perform_forward_pass(
     *,
     progress: float,
     in_warmup: bool,
+    collect_diagnostics: bool = False,
 ) -> ForwardPassResult:
-    """Runs the model forward pass and computes losses/targets."""
+    """Runs the model forward pass and computes losses/targets.
+
+    Args:
+        components: Training components (model, optimizer, etc.)
+        batch_tensors: Input batch
+        progress: Training progress [0, 1]
+        in_warmup: Whether in warmup phase
+        collect_diagnostics: If True, collect head diagnostics (causes GPU sync).
+                            Only set to True on logging steps to avoid sync overhead.
+    """
     X = batch_tensors["X"]
     Y = batch_tensors["Y"]
     config = components.config
@@ -254,20 +264,23 @@ def perform_forward_pass(
     batch_inputs = {"X": X}
 
     # Collect per-head diagnostics for instability detection
-    head_diagnostics = collect_head_diagnostics(components.model, pred)
+    # CRITICAL: Only on logging steps! Each float() call causes GPU sync
+    head_diagnostics = {}
+    if collect_diagnostics:
+        head_diagnostics = collect_head_diagnostics(components.model, pred)
 
-    # Add value head prediction bias (mean and target_mean are logged elsewhere)
-    head_diagnostics["value_pred_bias"] = float(
-        (value_pred.mean() - value_target.mean()).detach()
-    )
+        # Add value head prediction bias (mean and target_mean are logged elsewhere)
+        head_diagnostics["value_pred_bias"] = float(
+            (value_pred.mean() - value_target.mean()).detach()
+        )
 
-    # Add loss component breakdown (what % of total loss from each head?)
-    total_loss_val = float(loss.detach())
-    if total_loss_val > 1e-6:  # Avoid division by zero
-        for key, component in loss_components.items():
-            head_diagnostics[f"loss_fraction/{key}"] = (
-                float(component.detach()) / total_loss_val
-            )
+        # Add loss component breakdown (what % of total loss from each head?)
+        total_loss_val = float(loss.detach())
+        if total_loss_val > 1e-6:  # Avoid division by zero
+            for key, component in loss_components.items():
+                head_diagnostics[f"loss_fraction/{key}"] = (
+                    float(component.detach()) / total_loss_val
+                )
 
     return ForwardPassResult(
         pred=pred,

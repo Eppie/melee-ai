@@ -299,6 +299,73 @@ class TestSharedMemorySlab:
         slab.t_mod = 0
         assert slab.t_mod == 0
 
+    def test_t_mod_synchronization(self, cleanup_shm):
+        """Test t_mod synchronization between Coordinator and Workers.
+
+        This tests the fix for the critical bug where EnvWorker would reset
+        t_mod to 0 on restart, causing desync with Coordinator.
+        """
+        slab = cleanup_shm(
+            SharedMemorySlab(
+                shard_id=5,
+                envs_per_shard=8,
+                feature_dim=FEATURE_DIM,
+                create=True,
+            )
+        )
+
+        # Simulate Coordinator advancing t_mod through normal operation
+        for step in range(300):
+            # Coordinator writes t_mod to slab (source of truth)
+            t_mod = step % 256
+            slab.t_mod = t_mod
+
+            # Worker reads t_mod from slab
+            worker_t_mod = slab.t_mod
+            assert worker_t_mod == t_mod
+
+            # Simulate worker restart at step 150 (mid-operation)
+            if step == 150:
+                # Before fix: worker would have reset local t_mod to 0
+                # After fix: worker reads from slab, gets correct value
+                assert slab.t_mod == 150
+                # Worker reads from slab instead of using stale local value
+                worker_t_mod_after_restart = slab.t_mod
+                assert worker_t_mod_after_restart == 150  # NOT 0!
+
+    def test_t_mod_multiprocess_simulation(self, cleanup_shm):
+        """Simulate Coordinator writing t_mod and multiple workers reading it."""
+        slab = cleanup_shm(
+            SharedMemorySlab(
+                shard_id=6,
+                envs_per_shard=8,
+                feature_dim=FEATURE_DIM,
+                create=True,
+            )
+        )
+
+        # Coordinator starts at t_mod=0
+        coordinator_t_mod = 0
+        slab.t_mod = coordinator_t_mod
+
+        # Simulate 1000 steps
+        for step in range(1000):
+            # Coordinator increments t_mod (wrapping at context_length)
+            coordinator_t_mod = (coordinator_t_mod + 1) % 256
+            slab.t_mod = coordinator_t_mod
+
+            # All workers read the same t_mod from slab
+            for env_id in range(8):
+                worker_t_mod = slab.t_mod
+                assert worker_t_mod == coordinator_t_mod
+
+            # Simulate random worker restarts
+            if step % 200 == 0:
+                # Worker that just restarted reads t_mod from slab
+                restarted_worker_t_mod = slab.t_mod
+                # Should match Coordinator, not be reset to 0
+                assert restarted_worker_t_mod == coordinator_t_mod
+
 
 class TestPinnedStagingBuffer:
     """Test PinnedStagingBuffer class."""

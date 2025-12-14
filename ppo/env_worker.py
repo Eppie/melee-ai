@@ -82,7 +82,7 @@ class EnvWorker:
 
         # Ring buffer state
         self.t_local = 0  # Local frame counter
-        self.t_mod = 0  # Ring position (0-255)
+        # Note: t_mod is read from slab metadata (Coordinator is source of truth)
         self.is_warm = False
 
         # Rollout buffer (1024 frames)
@@ -90,6 +90,9 @@ class EnvWorker:
             rollout_length=config.rollout_length,
             feature_dim=config.feature_dim,
         )
+
+        # Rollout state tracking
+        self.waiting_for_bootstrap = False  # True when rollout is full, waiting for bootstrap value
 
         # Restart tracking
         self.frames_since_restart = 0
@@ -198,8 +201,9 @@ class EnvWorker:
         # Reset state
         self.frames_since_restart = 0
         self.t_local = 0
-        self.t_mod = 0
+        # Note: t_mod is managed by Coordinator, don't reset locally
         self.is_warm = False
+        self.waiting_for_bootstrap = False
         self.rollout.reset()
 
         # Select new stage
@@ -518,8 +522,9 @@ class EnvWorker:
                     self._menu_frame_counter = 0  # Reset menu frame counter
                     # Reset frame counter when entering match
                     self.t_local = 0
-                    self.t_mod = 0
+                    # Note: t_mod is managed by Coordinator, don't reset locally
                     self.is_warm = False
+                    self.waiting_for_bootstrap = False
                     self.rollout.reset()
                     # Reset reward tracking state
                     self.prev_ego_percent = 0.0
@@ -532,8 +537,11 @@ class EnvWorker:
 
                 # Removed verbose frame-level logging
 
-                # 5. Write to shared ring buffer at position t_mod
-                self.slab.features[self.env_id, self.t_mod, :] = features
+                # 5. Read current ring position from slab (Coordinator is source of truth)
+                t_mod = self.slab.t_mod
+
+                # 6. Write to shared ring buffer at position t_mod
+                self.slab.features[self.env_id, t_mod, :] = features
 
                 # 6. Mark ready for CRD
                 self.slab.ready_flags[self.env_id] = 1
@@ -573,11 +581,43 @@ class EnvWorker:
                         f"  Action logp: {ego_action.logp:.4f}, value: {ego_action.value:.4f}"
                     )
 
-                # 11. Store in rollout buffer
-                self._store_rollout_frame(features, ego_action, reward)
+                # 11. Check if we need to capture bootstrap value
+                if self.waiting_for_bootstrap:
+                    # Rollout is complete, capture value of current state as bootstrap
+                    self.rollout.bootstrap_value = ego_action.value
 
-                # 12. Update ring position
-                self.t_mod = (self.t_mod + 1) % self.config.context_length
+                    # Compute advantages with bootstrap value
+                    self.rollout.compute_advantages(
+                        gamma=self.config.gamma,
+                        gae_lambda=self.config.gae_lambda,
+                    )
+
+                    # Send completed rollout to shard for coordinator collection
+                    if self.global_env_id == 0:
+                        print(
+                            f"[ENV] Rollout complete with bootstrap value {self.rollout.bootstrap_value:.3f} "
+                            f"({self.rollout.mask.sum()}/{self.rollout.rollout_length} valid frames)"
+                        )
+                    self.rollout_queue.put(self.rollout)
+
+                    # Create new rollout buffer for next collection
+                    self.rollout = RolloutBuffer(
+                        rollout_length=self.config.rollout_length,
+                        feature_dim=self.config.feature_dim,
+                    )
+                    self.waiting_for_bootstrap = False
+
+                # 12. Store in rollout buffer (if not waiting for bootstrap)
+                if not self.waiting_for_bootstrap:
+                    self._store_rollout_frame(features, ego_action, reward)
+
+                    # Check if rollout just became complete
+                    if self.is_warm and self.rollout.complete:
+                        # Set flag to capture bootstrap value on next frame
+                        self.waiting_for_bootstrap = True
+
+                # 13. Update local frame counters
+                # Note: t_mod is managed by Coordinator via slab metadata
                 self.t_local += 1
                 self.frames_since_restart += 1
 
@@ -599,28 +639,6 @@ class EnvWorker:
                             f"Action: main={ego_action.main_idx} c={ego_action.c_idx} "
                             f"btns={ego_action.buttons} | warm={self.is_warm}"
                         )
-
-                # 13. Check if rollout complete
-                if self.is_warm and self.rollout.complete:
-                    # Compute advantages
-                    self.rollout.compute_advantages(
-                        gamma=self.config.gamma,
-                        gae_lambda=self.config.gae_lambda,
-                    )
-
-                    # Send completed rollout to shard for coordinator collection
-                    if self.global_env_id == 0:
-                        print(
-                            f"[ENV] Rollout complete "
-                            f"({self.rollout.mask.sum()}/{self.rollout.rollout_length} valid frames)"
-                        )
-                    self.rollout_queue.put(self.rollout)
-
-                    # Create new rollout buffer for next collection
-                    self.rollout = RolloutBuffer(
-                        rollout_length=self.config.rollout_length,
-                        feature_dim=self.config.feature_dim,
-                    )
 
                 # 14. Restart Dolphin periodically (DISABLED - causes shared memory corruption)
                 # if self.frames_since_restart >= self.config.restart_interval:

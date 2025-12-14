@@ -50,6 +50,9 @@ class RolloutBuffer:
         self.advantages: Optional[np.ndarray] = None  # [rollout_length] float32
         self.returns: Optional[np.ndarray] = None  # [rollout_length] float32
 
+        # Bootstrap value for GAE (value of state after rollout ends)
+        self.bootstrap_value: Optional[float] = None
+
         # Tracking
         self.pos = 0  # Current position in buffer
         self.complete = False
@@ -95,6 +98,7 @@ class RolloutBuffer:
         self.complete = False
         self.advantages = None
         self.returns = None
+        self.bootstrap_value = None
         # Note: Arrays are reused without re-allocation
 
     def compute_advantages(
@@ -117,7 +121,10 @@ class RolloutBuffer:
 
         advantages = np.zeros(self.rollout_length, dtype=np.float32)
         gae = 0.0
-        next_value = 0.0
+
+        # Use bootstrap value if available, otherwise assume terminal state
+        # Bootstrap value is the value of the state immediately after rollout ends
+        next_value = self.bootstrap_value if self.bootstrap_value is not None else 0.0
 
         # Backward pass to compute GAE
         for t in reversed(range(self.rollout_length)):
@@ -152,14 +159,14 @@ class PPOWindow:
     Single window of data for PPO training.
 
     A window is a contiguous slice of [context_length] frames
-    from a rollout, used as a single training example.
+    from a rollout, used for efficient sequence-to-sequence training.
     """
 
     features: np.ndarray  # [context_length, feature_dim]
     actions: np.ndarray  # [context_length] structured
-    old_logp: float  # Log prob at final frame
-    advantage: float  # Advantage at final frame
-    return_: float  # Return at final frame
+    old_logp: np.ndarray  # [context_length]
+    advantage: np.ndarray  # [context_length]
+    return_: np.ndarray  # [context_length]
     mask: np.ndarray  # [context_length] bool
 
 
@@ -167,21 +174,26 @@ def create_windowed_batches(
     rollouts: List[RolloutBuffer],
     context_length: int = 256,
     batch_size: int = 128,
+    stride: Optional[int] = None,
 ) -> List[dict]:
     """
-    Create overlapping sliding windows from rollout buffers.
+    Create sliding windows from rollout buffers for sequence training.
 
-    Each rollout of length L produces (L - context_length + 1) windows
-    via stride-1 sliding. Uses as_strided for zero-copy windowing.
+    Trains on ALL frames in each window for maximum efficiency.
 
     Args:
         rollouts: List of completed rollout buffers
         context_length: Context window size (default 256)
         batch_size: Number of windows per batch
+        stride: Window stride (default: 8 for good data coverage)
+                Lower values = more overlap = more training data
 
     Returns:
         List of batched dicts ready for training
     """
+    # Default stride: 8 for good balance of efficiency and data coverage
+    if stride is None:
+        stride = 8
     all_windows = []
 
     for rollout in rollouts:
@@ -190,29 +202,51 @@ def create_windowed_batches(
         if rollout.advantages is None:
             raise ValueError("Must compute advantages before creating windows")
 
-        # Compute number of windows
-        num_windows = rollout.rollout_length - context_length + 1
+        # Compute number of windows with stride
+        # Example: length=1024, context=256, stride=256 → 4 windows
+        # Example: length=1024, context=256, stride=128 → 7 windows
+        num_windows = (rollout.rollout_length - context_length) // stride + 1
 
-        # Zero-copy windowing via as_strided
+        # Zero-copy windowing via as_strided with custom stride
+        # Stride in bytes for the window dimension
+        window_stride = stride * rollout.X.strides[0]
+
         # Features: [rollout_length, feature_dim] → [num_windows, context_length, feature_dim]
         X_windows = as_strided(
             rollout.X,
             shape=(num_windows, context_length, rollout.feature_dim),
-            strides=(rollout.X.strides[0], rollout.X.strides[0], rollout.X.strides[1]),
+            strides=(window_stride, rollout.X.strides[0], rollout.X.strides[1]),
         )
 
         # Actions: [rollout_length] → [num_windows, context_length]
         action_windows = as_strided(
             rollout.actions,
             shape=(num_windows, context_length),
-            strides=(rollout.actions.strides[0], rollout.actions.strides[0]),
+            strides=(stride * rollout.actions.strides[0], rollout.actions.strides[0]),
         )
 
         # Mask: [rollout_length] → [num_windows, context_length]
         mask_windows = as_strided(
             rollout.mask,
             shape=(num_windows, context_length),
-            strides=(rollout.mask.strides[0], rollout.mask.strides[0]),
+            strides=(stride * rollout.mask.strides[0], rollout.mask.strides[0]),
+        )
+
+        # Scalar arrays: [rollout_length] → [num_windows, context_length]
+        logp_windows = as_strided(
+            rollout.logp,
+            shape=(num_windows, context_length),
+            strides=(stride * rollout.logp.strides[0], rollout.logp.strides[0]),
+        )
+        adv_windows = as_strided(
+            rollout.advantages,
+            shape=(num_windows, context_length),
+            strides=(stride * rollout.advantages.strides[0], rollout.advantages.strides[0]),
+        )
+        ret_windows = as_strided(
+            rollout.returns,
+            shape=(num_windows, context_length),
+            strides=(stride * rollout.returns.strides[0], rollout.returns.strides[0]),
         )
 
         # Only include windows where all frames are valid (mask=True)
@@ -222,15 +256,13 @@ def create_windowed_batches(
                 # Skip windows with warmup frames
                 continue
 
-            # For PPO, we predict/train on the final frame of each window
-            final_idx = i + context_length - 1
-
+            # Train on all frames in window (efficient sequence training)
             window = PPOWindow(
                 features=X_windows[i].copy(),  # Copy to avoid shared memory issues
                 actions=action_windows[i].copy(),
-                old_logp=rollout.logp[final_idx],
-                advantage=rollout.advantages[final_idx],
-                return_=rollout.returns[final_idx],
+                old_logp=logp_windows[i].copy(),  # [context_length]
+                advantage=adv_windows[i].copy(),  # [context_length]
+                return_=ret_windows[i].copy(),  # [context_length]
                 mask=window_mask.copy(),
             )
             all_windows.append(window)
@@ -243,7 +275,7 @@ def create_windowed_batches(
     for i in range(0, len(all_windows), batch_size):
         batch_windows = all_windows[i : i + batch_size]
 
-        # Stack into tensors
+        # Stack into tensors (sequence training: [B, T] for logp/advantages/returns)
         batch = {
             "features": torch.from_numpy(
                 np.stack([w.features for w in batch_windows])
@@ -251,15 +283,15 @@ def create_windowed_batches(
             "actions": np.stack(
                 [w.actions for w in batch_windows]
             ),  # [B, T] structured
-            "old_logp": torch.tensor(
-                [w.old_logp for w in batch_windows], dtype=torch.float32
-            ),  # [B]
-            "advantages": torch.tensor(
-                [w.advantage for w in batch_windows], dtype=torch.float32
-            ),  # [B]
-            "returns": torch.tensor(
-                [w.return_ for w in batch_windows], dtype=torch.float32
-            ),  # [B]
+            "old_logp": torch.from_numpy(
+                np.stack([w.old_logp for w in batch_windows])
+            ),  # [B, T]
+            "advantages": torch.from_numpy(
+                np.stack([w.advantage for w in batch_windows])
+            ),  # [B, T]
+            "returns": torch.from_numpy(
+                np.stack([w.return_ for w in batch_windows])
+            ),  # [B, T]
             "mask": torch.from_numpy(
                 np.stack([w.mask for w in batch_windows])
             ),  # [B, T]

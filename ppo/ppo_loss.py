@@ -18,39 +18,41 @@ def compute_action_logprob(
     """
     Recompute action log probabilities under current policy.
 
+    Computes logp for all timesteps (efficient sequence training).
+
     Args:
         outputs: Model outputs dict with logits for each head
         actions: Dict with sampled actions:
-            - main_idx: [B] int (0-63)
-            - c_idx: [B] int (0-8)
-            - shoulder_idx: [B] int (0-4)
-            - buttons: [B, 5] bool
+            - main_idx: [B, T] int (0-63)
+            - c_idx: [B, T] int (0-8)
+            - shoulder_idx: [B, T] int (0-4)
+            - buttons: [B, T, 5] bool
 
     Returns:
-        total_logp: [B] total log probability (sum of components)
+        total_logp: [B, T] total log probability (sum of components)
     """
     # Main stick
-    main_logits = outputs["main_stick"][:, -1, :]  # [B, 64]
+    main_logits = outputs["main_stick"]  # [B, T, 64]
     main_dist = Categorical(logits=main_logits)
-    main_logp = main_dist.log_prob(actions["main_idx"])
+    main_logp = main_dist.log_prob(actions["main_idx"])  # [B, T]
 
     # C-stick
-    c_logits = outputs["c_stick"][:, -1, :]  # [B, 9]
+    c_logits = outputs["c_stick"]  # [B, T, 9]
     c_dist = Categorical(logits=c_logits)
-    c_logp = c_dist.log_prob(actions["c_idx"])
+    c_logp = c_dist.log_prob(actions["c_idx"])  # [B, T]
 
     # Shoulder
-    shoulder_logits = outputs["shoulder"][:, -1, :]  # [B, 5]
+    shoulder_logits = outputs["shoulder"]  # [B, T, 5]
     shoulder_dist = Categorical(logits=shoulder_logits)
-    shoulder_logp = shoulder_dist.log_prob(actions["shoulder_idx"])
+    shoulder_logp = shoulder_dist.log_prob(actions["shoulder_idx"])  # [B, T]
 
     # Buttons (Bernoulli)
-    button_logits = outputs["buttons"][:, -1, :]  # [B, 5]
+    button_logits = outputs["buttons"]  # [B, T, 5]
     button_probs = torch.sigmoid(button_logits)
-    button_samples = actions["buttons"].bool()  # [B, 5] bool (ensure boolean type)
+    button_samples = actions["buttons"].bool()  # [B, T, 5]
     button_logp = torch.log(
         torch.where(button_samples, button_probs, 1 - button_probs)
-    ).sum(dim=1)
+    ).sum(dim=-1)  # [B, T]
 
     # Total log prob (sum of independent components)
     total_logp = main_logp + c_logp + shoulder_logp + button_logp
@@ -64,35 +66,37 @@ def compute_action_entropy(
     """
     Compute action entropy for exploration bonus.
 
+    Computes entropy for all timesteps (efficient sequence training).
+
     Args:
         outputs: Model outputs dict with logits
 
     Returns:
-        entropy: [B] total entropy (sum of components)
+        entropy: [B, T] total entropy (sum of components)
     """
     # Main stick entropy
-    main_logits = outputs["main_stick"][:, -1, :]
+    main_logits = outputs["main_stick"]  # [B, T, 64]
     main_dist = Categorical(logits=main_logits)
-    main_entropy = main_dist.entropy()
+    main_entropy = main_dist.entropy()  # [B, T]
 
     # C-stick entropy
-    c_logits = outputs["c_stick"][:, -1, :]
+    c_logits = outputs["c_stick"]  # [B, T, 9]
     c_dist = Categorical(logits=c_logits)
-    c_entropy = c_dist.entropy()
+    c_entropy = c_dist.entropy()  # [B, T]
 
     # Shoulder entropy
-    shoulder_logits = outputs["shoulder"][:, -1, :]
+    shoulder_logits = outputs["shoulder"]  # [B, T, 5]
     shoulder_dist = Categorical(logits=shoulder_logits)
-    shoulder_entropy = shoulder_dist.entropy()
+    shoulder_entropy = shoulder_dist.entropy()  # [B, T]
 
     # Button entropy (binary)
-    button_logits = outputs["buttons"][:, -1, :]  # [B, 5]
+    button_logits = outputs["buttons"]  # [B, T, 5]
     button_probs = torch.sigmoid(button_logits)
     # Binary entropy: -p*log(p) - (1-p)*log(1-p)
     button_entropy = -(
         button_probs * torch.log(button_probs + 1e-8)
         + (1 - button_probs) * torch.log(1 - button_probs + 1e-8)
-    ).sum(dim=1)
+    ).sum(dim=-1)  # [B, T]
 
     # Total entropy
     total_entropy = main_entropy + c_entropy + shoulder_entropy + button_entropy
@@ -115,17 +119,19 @@ def compute_ppo_loss(
     """
     Compute PPO clipped objective loss.
 
+    Uses efficient sequence training (trains on all timesteps).
+
     Args:
         policy: Current policy network
         batch_features: [B, T, F] feature tensor
         batch_actions: Dict with action tensors:
-            - main_idx: [B] int (0-63)
-            - c_idx: [B] int (0-8)
-            - shoulder_idx: [B] int (0-4)
-            - buttons: [B, 5] bool
-        old_logps: [B] old policy log probs
-        advantages: [B] GAE advantages (normalized)
-        returns: [B] discounted returns
+            - main_idx: [B, T] int (0-63)
+            - c_idx: [B, T] int (0-8)
+            - shoulder_idx: [B, T] int (0-4)
+            - buttons: [B, T, 5] bool
+        old_logps: [B, T] old policy log probs
+        advantages: [B, T] GAE advantages (normalized)
+        returns: [B, T] discounted returns
         column_map: ColumnMap for feature indexing
         clip_epsilon: PPO clipping parameter (default 0.2)
         value_coef: Value loss coefficient (default 0.5)
@@ -163,8 +169,7 @@ def compute_ppo_loss(
     ).mean()
 
     # Value loss (MSE to returns)
-    # Extract value predictions from final frame
-    values = outputs["value"][:, -1, 0]  # [B]
+    values = outputs["value"][:, :, 0]  # [B, T]
     value_loss = F.mse_loss(values, returns)
 
     # Entropy bonus (encourages exploration)

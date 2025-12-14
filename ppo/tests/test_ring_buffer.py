@@ -157,6 +157,135 @@ class TestRingBufferLogic:
                 assert next_val == expected_next
 
 
+class TestRingBufferRotation:
+    """Test ring buffer rotation for causality preservation."""
+
+    def test_rotation_after_wraparound(self):
+        """Test that rotation fixes causality after wraparound."""
+        B, T, F = 4, 16, 10  # 4 envs, 16 timesteps, 10 features
+        ring = torch.zeros((B, T, F))
+
+        # Simulate writing frames in sequence
+        # Write frames 0 through 20, causing wraparound at position 16
+        for step in range(21):
+            t_mod = step % T
+            # Write step number to all features
+            ring[:, t_mod, :] = float(step)
+
+        # After 21 steps, t_mod = 5
+        # Physical layout:
+        #   pos 0: frame 16
+        #   pos 1: frame 17
+        #   pos 2: frame 18
+        #   pos 3: frame 19
+        #   pos 4: frame 20
+        #   pos 5: frame 5   <- oldest (from first cycle)
+        #   pos 6: frame 6
+        #   ...
+        #   pos 15: frame 15
+        t_mod = 20 % T  # = 4
+
+        # Without rotation, position -1 would be frame 15 (WRONG)
+        assert ring[0, -1, 0].item() == 15.0
+
+        # Apply rotation fix
+        rotated = torch.roll(ring, shifts=-(t_mod + 1), dims=1)
+
+        # After rotation:
+        #   pos 0: frame 5 (oldest)
+        #   pos 1: frame 6
+        #   ...
+        #   pos 15: frame 20 (newest)
+
+        # Verify oldest frame is at position 0
+        assert rotated[0, 0, 0].item() == 5.0
+
+        # Verify newest frame is at position -1
+        assert rotated[0, -1, 0].item() == 20.0
+
+        # Verify all positions are in correct temporal order
+        for i in range(T):
+            expected_frame = 5 + i  # Frames 5 through 20
+            assert rotated[0, i, 0].item() == float(expected_frame)
+
+    def test_rotation_various_positions(self):
+        """Test rotation correctness at various t_mod positions."""
+        B, T, F = 2, 8, 5
+
+        for num_steps in [10, 20, 50, 100]:
+            ring = torch.zeros((B, T, F))
+
+            # Fill ring with sequential writes
+            for step in range(num_steps):
+                t_mod = step % T
+                ring[:, t_mod, :] = float(step)
+
+            t_mod = (num_steps - 1) % T
+
+            # Apply rotation
+            rotated = torch.roll(ring, shifts=-(t_mod + 1), dims=1)
+
+            # Verify temporal order
+            oldest_frame = max(0, num_steps - T)  # Frame number of oldest
+            for i in range(T):
+                expected_frame = oldest_frame + i
+                if expected_frame < num_steps:
+                    assert rotated[0, i, 0].item() == float(expected_frame), \
+                        f"At position {i}, expected frame {expected_frame}, got {rotated[0, i, 0].item()}"
+
+    def test_rotation_preserves_batch_dimension(self):
+        """Test that rotation preserves independence across batch dimension."""
+        B, T, F = 8, 16, 12
+        ring = torch.randn((B, T, F))
+        t_mod = 7
+
+        # Apply rotation
+        rotated = torch.roll(ring, shifts=-(t_mod + 1), dims=1)
+
+        # Each batch element should be rotated independently
+        # Verify shape is preserved
+        assert rotated.shape == ring.shape
+
+        # Verify each batch element is rotated correctly
+        for b in range(B):
+            # Check that position 0 in rotated corresponds to position (t_mod+1) in original
+            expected_pos = (t_mod + 1) % T
+            assert torch.allclose(rotated[b, 0, :], ring[b, expected_pos, :])
+
+            # Check that position -1 in rotated corresponds to position t_mod in original
+            assert torch.allclose(rotated[b, -1, :], ring[b, t_mod, :])
+
+    def test_rotation_edge_case_full_buffer(self):
+        """Test rotation when buffer is exactly full (t_mod = T-1)."""
+        B, T, F = 3, 256, 20
+        ring = torch.zeros((B, T, F))
+
+        # Write exactly T frames (0 through T-1)
+        for step in range(T):
+            ring[:, step, :] = float(step)
+
+        t_mod = T - 1  # Just wrote to last position
+
+        # Apply rotation
+        rotated = torch.roll(ring, shifts=-(t_mod + 1), dims=1)
+
+        # After first full cycle, oldest is at position 0, newest at position T-1
+        # Rotation should be identity (no change)
+        assert torch.allclose(rotated, ring)
+
+    def test_rotation_empty_buffer(self):
+        """Test rotation on empty buffer (all zeros)."""
+        B, T, F = 4, 16, 10
+        ring = torch.zeros((B, T, F))
+        t_mod = 5
+
+        # Rotation should work even on empty buffer
+        rotated = torch.roll(ring, shifts=-(t_mod + 1), dims=1)
+
+        # Should still be all zeros
+        assert torch.allclose(rotated, ring)
+
+
 class TestBatchedRingBufferAccess:
     """Test batched access patterns for GPU ring buffer."""
 

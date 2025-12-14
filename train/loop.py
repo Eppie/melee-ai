@@ -291,6 +291,10 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                             config.train.schedule_cooldown_epochs,
                         )
 
+                    # Determine if we should log this iteration (needed before forward pass)
+                    current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
+                    log_this_iter = _should_log(current_iter)
+
                     # Forward pass
                     with ctx("forward"):
                         forward_result = perform_forward_pass(
@@ -298,10 +302,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                             batch_tensors,
                             progress=progress,
                             in_warmup=epoch < config.train.schedule_warmup_epochs,
+                            collect_diagnostics=log_this_iter,
                         )
-
-                    current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
-                    log_this_iter = _should_log(current_iter)
 
                     # Learning rate update
                     with ctx("lr_update"):
@@ -426,6 +428,10 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                             config.train.schedule_cooldown_epochs,
                         )
 
+                    # Determine if we should log this iteration (needed before forward pass)
+                    current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
+                    log_this_iter = _should_log(current_iter)
+
                     # Forward pass
                     with ctx("forward"):
                         forward_result = perform_forward_pass(
@@ -433,10 +439,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                             batch_tensors,
                             progress=progress,
                             in_warmup=epoch < config.train.schedule_warmup_epochs,
+                            collect_diagnostics=log_this_iter,
                         )
-
-                    current_iter = epoch_ctx.applied_skip + epoch_ctx.iters_processed
-                    log_this_iter = _should_log(current_iter)
 
                     # Learning rate update
                     with ctx("lr_update"):

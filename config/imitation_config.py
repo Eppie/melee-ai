@@ -12,7 +12,7 @@ class ImitationConfig(BaseModel):
     strategy: Literal[
         "uniform", "value_weighted", "value_advantage", "value_filter", "hybrid"
     ] = Field(
-        default="value_advantage",
+        default="hybrid",
         description=(
             "Imitation learning sampling strategy. Controls how training samples are weighted/selected. "
             "Options: 'uniform' = all frames equally likely (baseline); "
@@ -53,17 +53,6 @@ class ImitationConfig(BaseModel):
             "False = gentler weighting (linear scaling). Default True for superhuman play."
         ),
     )
-    advantage_n_steps: int = Field(
-        default=10,
-        ge=1,
-        description=(
-            "DEPRECATED for value_advantage strategy (now uses model-dependent advantages, not temporal). "
-            "Number of future steps for n-step advantage estimation. How far to look ahead for TD error. "
-            "Effect: Larger n (10-20) = lower bias, higher variance; smaller n (3-5) = higher bias, lower variance. "
-            "Reasonable range: [3, 20]. "
-            "At 60 FPS, n=10 looks ahead ~167ms to detect value improvements from actions."
-        ),
-    )
     advantage_alpha: float = Field(
         default=20.0,
         gt=0,
@@ -76,39 +65,8 @@ class ImitationConfig(BaseModel):
             "As your model improves, effective_batch_fraction will naturally decrease as fewer frames surprise the model."
         ),
     )
-    advantage_use_gae: bool = Field(
-        default=True,
-        description=(
-            "DEPRECATED for value_advantage strategy (now uses model-dependent advantages). "
-            "Use GAE (Generalized Advantage Estimation) instead of n-step returns for advantage. "
-            "Effect: True = smooth multi-step value differences with exponential weighting; "
-            "False = simple n-step TD. GAE provides smoother advantage estimates across time. "
-            "Interacts with: gae_gamma, gae_lambda (only used if True)."
-        ),
-    )
-    gae_gamma: float = Field(
-        default=0.995,
-        ge=0,
-        le=1,
-        description=(
-            "DEPRECATED for value_advantage strategy (now uses model-dependent advantages). "
-            "Discount factor for GAE advantage estimation. Only used if advantage_use_gae=True. "
-            "Should match RewardConfig.gamma (0.995) for consistency. This controls how much future "
-            "value differences are discounted when computing smoothed advantages."
-        ),
-    )
-    gae_lambda: float = Field(
-        default=0.95,
-        ge=0,
-        le=1,
-        description=(
-            "DEPRECATED for value_advantage strategy (now uses model-dependent advantages). "
-            "Lambda parameter for GAE advantage estimation. Only used if advantage_use_gae=True. "
-            "See PPOConfig.gae_lambda for detailed explanation. Reasonable range: [0.9, 0.99]."
-        ),
-    )
     filter_percentile: float = Field(
-        default=15.0,
+        default=25.0,
         ge=0,
         le=100,
         description=(
@@ -139,7 +97,7 @@ class ImitationConfig(BaseModel):
         ),
     )
     hybrid_strategies: list[str] = Field(
-        default_factory=lambda: ["value_weighted", "value_filter"],
+        default_factory=lambda: ["value_weighted", "value_filter", "value_advantage"],
         description=(
             "List of strategies to combine in hybrid mode. Must match hybrid_weights length. "
             "Example: ['value_weighted', 'value_filter'] combines value-based weighting with filtering. "
@@ -148,7 +106,7 @@ class ImitationConfig(BaseModel):
         ),
     )
     hybrid_weights: list[float] = Field(
-        default_factory=lambda: [0.5, 0.5],
+        default_factory=lambda: [0.34, 0.33, 0.33],
         description=(
             "Weights for combining hybrid strategies. Must sum to 1.0 and match hybrid_strategies length. "
             "Example: [0.7, 0.3] = 70% first strategy, 30% second strategy. "

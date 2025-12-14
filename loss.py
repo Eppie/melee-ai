@@ -165,13 +165,16 @@ def compute_loss_components(
     main_logits = logits_main.reshape(B * L, -1)
 
     if loss_config.use_focal_loss:
-        loss_main_vec = focal_loss_ce(
-            main_logits,
-            main_targets,
-            gamma=loss_config.focal_gamma,
-            alpha=loss_config.focal_alpha,
-            label_smoothing=label_smoothing,
-        ).reshape(B, L)
+        loss_main_vec = (
+            focal_loss_ce(
+                main_logits,
+                main_targets,
+                gamma=loss_config.focal_gamma,
+                alpha=loss_config.focal_alpha,
+                label_smoothing=label_smoothing,
+            ).reshape(B, L)
+            * loss_config.focal_loss_scale
+        )
     else:
         loss_main_vec = F.cross_entropy(
             main_logits,
@@ -187,13 +190,16 @@ def compute_loss_components(
     c_logits = logits_c.reshape(B * L, -1)
 
     if loss_config.use_focal_loss:
-        loss_c_vec = focal_loss_ce(
-            c_logits,
-            c_targets,
-            gamma=loss_config.focal_gamma,
-            alpha=loss_config.focal_alpha,
-            label_smoothing=label_smoothing,
-        ).reshape(B, L)
+        loss_c_vec = (
+            focal_loss_ce(
+                c_logits,
+                c_targets,
+                gamma=loss_config.focal_gamma,
+                alpha=loss_config.focal_alpha,
+                label_smoothing=label_smoothing,
+            ).reshape(B, L)
+            * loss_config.focal_loss_scale
+        )
     else:
         loss_c_vec = F.cross_entropy(
             c_logits,
@@ -208,11 +214,14 @@ def compute_loss_components(
     target_btn = target_info["buttons"]
 
     if loss_config.use_focal_loss:
-        loss_btn_all = focal_loss_bce(
-            logits_btn,
-            target_btn,
-            gamma=loss_config.focal_gamma,
-            alpha=loss_config.focal_alpha,
+        loss_btn_all = (
+            focal_loss_bce(
+                logits_btn,
+                target_btn,
+                gamma=loss_config.focal_gamma,
+                alpha=loss_config.focal_alpha,
+            )
+            * loss_config.focal_loss_scale
         )  # [B, L, K_btn]
     else:
         loss_btn_all = F.binary_cross_entropy_with_logits(
@@ -229,13 +238,16 @@ def compute_loss_components(
     shoulder_idx = target_info.get("shoulder_idx")
 
     if loss_config.use_focal_loss:
-        sh_vec = focal_loss_ce(
-            shoulder_logits.reshape(B * L, -1),
-            shoulder_idx.reshape(B * L),
-            gamma=loss_config.focal_gamma,
-            alpha=loss_config.focal_alpha,
-            label_smoothing=label_smoothing,
-        ).reshape(B, L)
+        sh_vec = (
+            focal_loss_ce(
+                shoulder_logits.reshape(B * L, -1),
+                shoulder_idx.reshape(B * L),
+                gamma=loss_config.focal_gamma,
+                alpha=loss_config.focal_alpha,
+                label_smoothing=label_smoothing,
+            ).reshape(B, L)
+            * loss_config.focal_loss_scale
+        )
     else:
         sh_vec = F.cross_entropy(
             shoulder_logits.reshape(B * L, -1),

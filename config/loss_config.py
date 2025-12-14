@@ -26,7 +26,7 @@ class LossConfig(BaseModel):
     )
 
     focal_gamma: float = Field(
-        default=2.0,
+        default=1.0,
         description=(
             "Focusing parameter for focal loss. Higher values increase focus on hard examples. "
             "gamma=0.0 reduces to standard cross-entropy. Typical values: 1.0-2.0."
@@ -39,5 +39,15 @@ class LossConfig(BaseModel):
             "Class balancing weight for focal loss. "
             "Lower values (0.25) give more weight to hard/rare examples. "
             "Set to None to disable class balancing. Typical values: 0.25-0.75."
+        ),
+    )
+
+    focal_loss_scale: float = Field(
+        default=10.0,
+        description=(
+            "Multiplicative scaling factor for focal loss. "
+            "Use this to adjust the overall magnitude of focal loss to match gradient scales "
+            "from standard cross-entropy. For example, if focal loss is 10x smaller, "
+            "set this to 10.0 to restore original gradient magnitudes."
         ),
     )

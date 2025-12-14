@@ -275,29 +275,8 @@ def create_windowed_batches(
 
     # Batch windows
     batches = []
-    sequence_training = stride >= context_length
-
-    # Highly overlapping windows carry redundant information; downsize batch to increase shuffling
-    # granularity in that regime. This keeps stride at 8 by default while still producing enough
-    # batches for training and tests.
-    if not sequence_training and stride > 0:
-        overlap_factor = max(1, context_length // stride)
-        effective_batch_size = max(1, batch_size // overlap_factor)
-    else:
-        effective_batch_size = batch_size
-
-    for i in range(0, len(all_windows), effective_batch_size):
-        batch_windows = all_windows[i : i + effective_batch_size]
-
-        if sequence_training:
-            old_logp = np.stack([w.old_logp for w in batch_windows])
-            advantages = np.stack([w.advantage for w in batch_windows])
-            returns = np.stack([w.return_ for w in batch_windows])
-        else:
-            # For heavily overlapping windows, operate on the final timestep only
-            old_logp = np.array([w.old_logp[-1] for w in batch_windows])
-            advantages = np.array([w.advantage[-1] for w in batch_windows])
-            returns = np.array([w.return_[-1] for w in batch_windows])
+    for i in range(0, len(all_windows), batch_size):
+        batch_windows = all_windows[i : i + batch_size]
 
         batch = {
             "features": torch.from_numpy(
@@ -306,9 +285,15 @@ def create_windowed_batches(
             "actions": np.stack(
                 [w.actions for w in batch_windows]
             ),  # [B, T] structured
-            "old_logp": torch.from_numpy(old_logp),  # [B] or [B, T]
-            "advantages": torch.from_numpy(advantages),  # [B] or [B, T]
-            "returns": torch.from_numpy(returns),  # [B] or [B, T]
+            "old_logp": torch.from_numpy(
+                np.stack([w.old_logp for w in batch_windows])
+            ),  # [B, T]
+            "advantages": torch.from_numpy(
+                np.stack([w.advantage for w in batch_windows])
+            ),  # [B, T]
+            "returns": torch.from_numpy(
+                np.stack([w.return_ for w in batch_windows])
+            ),  # [B, T]
             "mask": torch.from_numpy(
                 np.stack([w.mask for w in batch_windows])
             ),  # [B, T]

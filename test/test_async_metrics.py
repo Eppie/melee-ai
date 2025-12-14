@@ -8,15 +8,11 @@ from train.logging import compute_topk_accuracy
 
 def test_metrics_accumulator_batched_transfers():
     """Test that MetricsAccumulator.get_summary() batches GPU->CPU transfers."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create accumulator
     acc = MetricsAccumulator(
-        K_main=10,
-        K_c=10,
-        K_buttons=12,
-        K_shoulder=4,
-        device=device
+        K_main=10, K_c=10, K_buttons=12, K_shoulder=4, device=device
     )
 
     # Update with some fake data
@@ -26,21 +22,23 @@ def test_metrics_accumulator_batched_transfers():
     repeat_mask = torch.zeros(B, L, dtype=torch.bool, device=device)
     repeat_baseline = torch.zeros(B, L, dtype=torch.long, device=device)
     acc.update_stick_metrics(
-        main_pred, main_true,
+        main_pred,
+        main_true,
         majority_baseline=0,
         repeat_baseline=repeat_baseline,
         repeat_mask=repeat_mask,
-        stick_type="main"
+        stick_type="main",
     )
 
     c_pred = torch.randint(0, 10, (B, L), device=device)
     c_true = torch.randint(0, 10, (B, L), device=device)
     acc.update_stick_metrics(
-        c_pred, c_true,
+        c_pred,
+        c_true,
         majority_baseline=0,
         repeat_baseline=repeat_baseline,
         repeat_mask=repeat_mask,
-        stick_type="c"
+        stick_type="c",
     )
 
     # Button data
@@ -78,7 +76,7 @@ def test_metrics_accumulator_batched_transfers():
 
 def test_multilabel_prf_batched():
     """Test that multilabel_prf batches GPU->CPU transfers."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create test data
     B, L, K = 16, 32, 12
@@ -110,7 +108,7 @@ def test_multilabel_prf_batched():
 
 def test_multilabel_prf_perfect():
     """Test multilabel_prf with perfect predictions."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Perfect predictions
     true_labels = torch.tensor([[[1, 0, 1], [0, 1, 0]]], device=device).float()
@@ -129,7 +127,7 @@ def test_multilabel_prf_perfect():
 
 def test_compute_topk_accuracy_batched():
     """Test that compute_topk_accuracy batches accuracy transfers."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create test data
     B, L, K = 8, 16, 100
@@ -145,10 +143,7 @@ def test_compute_topk_accuracy_batched():
     # Test with multiple k values
     k_values = [1, 3, 5, 10]
     results = compute_topk_accuracy(
-        logits=logits,
-        targets=targets,
-        head_name="test",
-        k_values=k_values
+        logits=logits, targets=targets, head_name="test", k_values=k_values
     )
 
     # Verify we got all k values
@@ -172,7 +167,7 @@ def test_compute_topk_accuracy_batched():
 
 def test_compute_topk_accuracy_edge_cases():
     """Test edge cases for compute_topk_accuracy."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Small K
     B, L, K = 2, 4, 3
@@ -182,10 +177,7 @@ def test_compute_topk_accuracy_edge_cases():
     # Request k > K (should be filtered out)
     k_values = [1, 2, 3, 5, 10]  # 5 and 10 are > K
     results = compute_topk_accuracy(
-        logits=logits,
-        targets=targets,
-        head_name="test",
-        k_values=k_values
+        logits=logits, targets=targets, head_name="test", k_values=k_values
     )
 
     # Should only get results for k <= K
@@ -207,6 +199,6 @@ if __name__ == "__main__":
     test_compute_topk_accuracy_batched()
     test_compute_topk_accuracy_edge_cases()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("✅ All async metrics tests passed!")
-    print("="*60)
+    print("=" * 60)

@@ -217,7 +217,9 @@ class ForwardPassResult:
         str, float
     ] = None  # Per-head metrics for instability detection
     imitation_weights: torch.Tensor = None  # Value-based sample weights [B, L]
-    advantages: torch.Tensor = None  # Advantage values [B, L] (only for value_advantage strategy)
+    advantages: torch.Tensor = (
+        None  # Advantage values [B, L] (only for value_advantage strategy)
+    )
 
 
 @dataclass

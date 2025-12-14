@@ -10,7 +10,11 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import Config
-from controller_utils import CONTROL_STICK_QUANTIZED, C_STICK_QUANTIZED, SHOULDER_QUANTIZED
+from controller_utils import (
+    CONTROL_STICK_QUANTIZED,
+    C_STICK_QUANTIZED,
+    SHOULDER_QUANTIZED,
+)
 from model.nano_gpt import GPT
 from schema import get_feature_names, get_target_names
 from column_map import ColumnMap
@@ -115,7 +119,9 @@ def test_output_sanity(checkpoint_path: Path):
         print(f"    ❌ ERROR: Invalid main_idx={main_idx} (should be 0-63)")
     else:
         main_xy = CONTROL_STICK_QUANTIZED[main_idx]
-        print(f"    ✓ Decoded position: idx={main_idx} → ({main_xy[0]:.3f}, {main_xy[1]:.3f})")
+        print(
+            f"    ✓ Decoded position: idx={main_idx} → ({main_xy[0]:.3f}, {main_xy[1]:.3f})"
+        )
 
     # C-stick
     c_logits = outputs["c_stick"][0, -1]
@@ -252,7 +258,7 @@ if __name__ == "__main__":
 
     # Compare if imitation checkpoint provided
     if args.imitation_checkpoint:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         test_output_sanity(args.imitation_checkpoint)
         compare_checkpoints(args.imitation_checkpoint, args.ppo_checkpoint)
 

@@ -50,11 +50,13 @@ def test_sticks01_to_unit11_single_coordinate_outside_circle():
 def test_quantize_stick_indices_with_batch():
     """Test quantize_stick_indices with batched inputs that trigger the clamping path."""
     # Create stick coordinates that will exceed unit circle after conversion
-    sticks = np.array([
-        [1.0, 1.0],  # Will be outside circle
-        [0.5, 0.5],  # Will be inside circle
-        [1.0, 0.0],  # On circle edge
-    ])
+    sticks = np.array(
+        [
+            [1.0, 1.0],  # Will be outside circle
+            [0.5, 0.5],  # Will be inside circle
+            [1.0, 0.0],  # On circle edge
+        ]
+    )
 
     # This should not raise IndexError
     indices = quantize_stick_indices(
@@ -70,10 +72,12 @@ def test_quantize_stick_indices_with_batch():
 def test_quantize_stick_indices_3d_input():
     """Test with 3D input (e.g., batch of sequences)."""
     # Shape: (batch=2, sequence=3, coords=2)
-    sticks = np.array([
-        [[1.0, 1.0], [0.5, 0.5], [0.0, 0.0]],
-        [[1.0, 0.0], [0.0, 1.0], [0.75, 0.75]],
-    ])
+    sticks = np.array(
+        [
+            [[1.0, 1.0], [0.5, 0.5], [0.0, 0.0]],
+            [[1.0, 0.0], [0.0, 1.0], [0.75, 0.75]],
+        ]
+    )
 
     # This should not raise IndexError
     indices = quantize_stick_indices(
@@ -98,12 +102,15 @@ def test_sticks01_to_unit11_torch_consistency():
     np.testing.assert_allclose(result_np, result_torch, rtol=1e-6, atol=1e-6)
 
 
-@pytest.mark.parametrize("shape", [
-    (2,),           # Single coordinate
-    (5, 2),         # Batch
-    (3, 4, 2),      # 3D tensor
-    (2, 3, 4, 2),   # 4D tensor
-])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (2,),  # Single coordinate
+        (5, 2),  # Batch
+        (3, 4, 2),  # 3D tensor
+        (2, 3, 4, 2),  # 4D tensor
+    ],
+)
 def test_sticks01_to_unit11_various_shapes(shape):
     """Test _sticks01_to_unit11 with various input shapes."""
     # Create array with values that will exceed unit circle

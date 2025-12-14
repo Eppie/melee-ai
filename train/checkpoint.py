@@ -201,7 +201,6 @@ def _load_latest_checkpoint(
                 # Check for shape mismatches in error message
                 error_msg = str(e)
 
-
                 incompatible = model.load_state_dict(filtered_state, strict=False)
                 missing = list(getattr(incompatible, "missing_keys", ()))
                 unexpected = list(getattr(incompatible, "unexpected_keys", ()))

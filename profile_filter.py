@@ -11,17 +11,19 @@ from pstats import SortKey
 # Import the filter module
 from filter_bad_replays import _process_zip_archive, Character
 
+
 def run_profiling():
     """Run cProfile on the zip processing code."""
 
     zip_path = Path("/Users/eppie/PycharmProjects/nano-melee/test_replays.zip")
 
     # Create temporary directories for output
-    with tempfile.TemporaryDirectory(prefix="profile_good_") as good_dir, \
-         tempfile.TemporaryDirectory(prefix="profile_failed_") as failed_dir:
-
+    with tempfile.TemporaryDirectory(
+        prefix="profile_good_"
+    ) as good_dir, tempfile.TemporaryDirectory(prefix="profile_failed_") as failed_dir:
         # Temporarily override the output directories
         import filter_bad_replays
+
         original_good = filter_bad_replays.GOOD_DIR
         original_failed = filter_bad_replays.FAILED_DIR
 
@@ -73,7 +75,7 @@ def run_profiling():
         stats.sort_stats(SortKey.TIME).print_stats(30)
 
         # Save full stats to file
-        with open(stats_file, 'w') as f:
+        with open(stats_file, "w") as f:
             stats = pstats.Stats(profiler, stream=f)
             f.write("=" * 80 + "\n")
             f.write("TOP FUNCTIONS BY CUMULATIVE TIME\n")
@@ -93,6 +95,7 @@ def run_profiling():
         print(f"✓ Binary profile saved to: filter_profile.prof")
         print("\nTo view interactively:")
         print("  python -m pstats filter_profile.prof")
+
 
 if __name__ == "__main__":
     run_profiling()

@@ -55,7 +55,7 @@ def create_post_frame_event_with_nan(nan_offset: int) -> bytes:
     struct.pack_into(">f", event, 0x22, 5.0)
 
     # Status bytes at 0x26-0x2A (5 bytes)
-    event[0x26:0x2B] = b'\x00\x00\x00\x00\x00'
+    event[0x26:0x2B] = b"\x00\x00\x00\x00\x00"
 
     # Controller inputs at 0x19 (4 floats for stick values)
     struct.pack_into(">4f", event, 0x19, 0.5, 0.5, 0.5, 0.5)
@@ -115,11 +115,14 @@ def test_hitlag_left_nan_handling():
     assert gamestate.players[1].hitlag_left == 0
 
 
-@pytest.mark.parametrize("nan_offset,field_name", [
-    (0x2B, "hitstun_frames_left"),
-    (0x22, "action_frame"),
-    (0x49, "hitlag_left"),
-])
+@pytest.mark.parametrize(
+    "nan_offset,field_name",
+    [
+        (0x2B, "hitstun_frames_left"),
+        (0x22, "action_frame"),
+        (0x49, "hitlag_left"),
+    ],
+)
 def test_all_float_to_int_conversions_handle_nan(nan_offset: int, field_name: str):
     """Parameterized test for all float-to-int conversions that might encounter NaN."""
     console = Console()

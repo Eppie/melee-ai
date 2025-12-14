@@ -34,12 +34,16 @@ def main() -> None:
         print(f"[step] ep {idx} open arrays start {t0:.2f}", flush=True)
         feats, targs = ds.index.open_episode_arrays(ep)
         t1 = time.time()
-        print(f"[step] ep {idx} open arrays done {t1:.2f} (dt={t1-t0:.2f}s)", flush=True)
+        print(
+            f"[step] ep {idx} open arrays done {t1:.2f} (dt={t1-t0:.2f}s)", flush=True
+        )
         # Force materialization to measure true in-memory footprint
         f_np = np.asarray(feats[:], dtype=np.float32, order="C")
         t_np = np.asarray(targs[:], dtype=np.float32, order="C")
         t2 = time.time()
-        print(f"[step] ep {idx} materialize done {t2:.2f} (dt={t2-t1:.2f}s)", flush=True)
+        print(
+            f"[step] ep {idx} materialize done {t2:.2f} (dt={t2-t1:.2f}s)", flush=True
+        )
         size_bytes = f_np.nbytes + t_np.nbytes
         sizes.append(size_bytes)
         shapes = (f_np.shape, t_np.shape)
@@ -54,7 +58,9 @@ def main() -> None:
 
     sizes = np.array(sizes, dtype=np.int64)
     rss_final = psutil.Process().memory_info().rss / 1024**2
-    print(f"[rss] after sampling: {rss_final:.2f} MiB (delta {rss_final-rss1:.2f} MiB from init)")
+    print(
+        f"[rss] after sampling: {rss_final:.2f} MiB (delta {rss_final-rss1:.2f} MiB from init)"
+    )
     print(f"measured episodes: {len(sizes)}")
     print(f"sample shapes (features, targets): {shapes}")
     print(f"avg size: {sizes.mean()/1024**2:.2f} MiB")

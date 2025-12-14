@@ -460,7 +460,9 @@ def test_update_enhanced_metrics_handles_single_frame_batches_and_copies_frame_f
         main_palette[pred_main_idx] - main_palette[target_main], dim=-1
     )
     c_errors = torch.linalg.norm(c_palette[pred_c_idx] - c_palette[target_c], dim=-1)
-    assert enhanced.main_stick_error.error_hold == pytest.approx(main_errors.sum().item())
+    assert enhanced.main_stick_error.error_hold == pytest.approx(
+        main_errors.sum().item()
+    )
     assert enhanced.main_stick_error.error_change == 0.0
     assert enhanced.c_stick_error.error_hold == pytest.approx(c_errors.sum().item())
     assert enhanced.c_stick_error.error_change == 0.0

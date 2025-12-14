@@ -73,7 +73,9 @@ class OpponentPool:
         self.checkpoint_paths = all_checkpoints[-self.max_pool_size :]
 
         # Only log on first refresh or if count changed
-        if not hasattr(self, '_last_checkpoint_count') or self._last_checkpoint_count != len(self.checkpoint_paths):
+        if not hasattr(
+            self, "_last_checkpoint_count"
+        ) or self._last_checkpoint_count != len(self.checkpoint_paths):
             print(f"[OpponentPool] Found {len(self.checkpoint_paths)} checkpoints")
             self._last_checkpoint_count = len(self.checkpoint_paths)
 

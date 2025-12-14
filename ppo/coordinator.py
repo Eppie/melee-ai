@@ -264,15 +264,18 @@ class Coordinator:
         B, T, F = features.shape
 
         # Diagnostic logging (every 100 steps, all envs)
-        if hasattr(self, 'step_id') and self.step_id % 100 == 0 and B > 0:
+        if hasattr(self, "step_id") and self.step_id % 100 == 0 and B > 0:
             # Get last timestep for all envs
             last_frame_features = features[:, -1]  # [B, F]
-            print(f"\n[CRD] ═══ Feature Diagnostics (step {self.step_id}, {B} envs, last frame) ═══")
+            print(
+                f"\n[CRD] ═══ Feature Diagnostics (step {self.step_id}, {B} envs, last frame) ═══"
+            )
             print(f"  Feature shape: {features.shape} (B={B}, T={T}, F={F})")
 
             # Get feature names
             from schema import get_feature_names
             import numpy as np
+
             feature_names = get_feature_names()
 
             # Convert to float numpy for statistics
@@ -288,17 +291,29 @@ class Coordinator:
 
                 # Add markers for categorical features
                 if i == self.column_map.stage_idx:
-                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← STAGE")
+                    print(
+                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← STAGE"
+                    )
                 elif i == self.column_map.ego_char_idx:
-                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← EGO_CHAR")
+                    print(
+                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← EGO_CHAR"
+                    )
                 elif i == self.column_map.opp_char_idx:
-                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← OPP_CHAR")
+                    print(
+                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← OPP_CHAR"
+                    )
                 elif i == self.column_map.ego_action_idx:
-                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← EGO_ACTION")
+                    print(
+                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← EGO_ACTION"
+                    )
                 elif i == self.column_map.opp_action_idx:
-                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← OPP_ACTION")
+                    print(
+                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← OPP_ACTION"
+                    )
                 else:
-                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}")
+                    print(
+                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}"
+                    )
             print(f"[CRD] ═══ End Feature Diagnostics ═══\n")
 
         # Build model inputs
@@ -337,14 +352,20 @@ class Coordinator:
         total_logp = main_logp + c_logp + shoulder_logp + button_logp
 
         # Diagnostic logging (first env only, every 100 steps)
-        if hasattr(self, 'step_id') and self.step_id % 100 == 0:
+        if hasattr(self, "step_id") and self.step_id % 100 == 0:
             env0_idx = 0
             print(f"[CRD] Action Diagnostics (step {self.step_id}, env 0):")
-            print(f"  Main stick: idx={main_idx[env0_idx].item()} (logit range: {main_logits[env0_idx].min():.2f} to {main_logits[env0_idx].max():.2f})")
-            print(f"  C-stick: idx={c_idx[env0_idx].item()} (logit range: {c_logits[env0_idx].min():.2f} to {c_logits[env0_idx].max():.2f})")
+            print(
+                f"  Main stick: idx={main_idx[env0_idx].item()} (logit range: {main_logits[env0_idx].min():.2f} to {main_logits[env0_idx].max():.2f})"
+            )
+            print(
+                f"  C-stick: idx={c_idx[env0_idx].item()} (logit range: {c_logits[env0_idx].min():.2f} to {c_logits[env0_idx].max():.2f})"
+            )
             print(f"  Shoulder: idx={shoulder_idx[env0_idx].item()}")
             print(f"  Button probs: {button_probs[env0_idx].tolist()}")
-            print(f"  Buttons sampled: {button_samples[env0_idx].tolist()} ({button_samples[env0_idx].sum().item()}/5)")
+            print(
+                f"  Buttons sampled: {button_samples[env0_idx].tolist()} ({button_samples[env0_idx].sum().item()}/5)"
+            )
             print(f"  Value estimate: {value[env0_idx].item():.3f}")
 
         return main_idx, c_idx, shoulder_idx, button_samples, total_logp, value
@@ -490,12 +511,16 @@ class Coordinator:
 
     def run(self):
         """Main CRD loop."""
-        print(f"[CRD] Waiting for all ENVs to finish menu navigation and enter matches...")
+        print(
+            f"[CRD] Waiting for all ENVs to finish menu navigation and enter matches..."
+        )
         print(f"[CRD] This may take 30-60 seconds...")
 
         # Wait for first READY signal with extended timeout (menu navigation)
         try:
-            _, _ = self.barrier.wait_all_ready(self.step_id, timeout=120.0)  # 2 minute timeout
+            _, _ = self.barrier.wait_all_ready(
+                self.step_id, timeout=120.0
+            )  # 2 minute timeout
             print(f"[CRD] All ENVs ready! Starting main inference loop")
         except TimeoutError:
             print(f"[CRD] ERROR: ENVs failed to enter matches within 2 minutes")
@@ -511,7 +536,9 @@ class Coordinator:
                 if self.step_id > 0:
                     # 1. Wait for all S8s to signal READY
                     # This may also receive ROLLOUT_COMPLETE messages that we process immediately
-                    _, queued_rollout_messages = self.barrier.wait_all_ready(self.step_id)
+                    _, queued_rollout_messages = self.barrier.wait_all_ready(
+                        self.step_id
+                    )
 
                     # Process any rollout messages that arrived during barrier wait
                     for msg in queued_rollout_messages:
@@ -568,21 +595,30 @@ class Coordinator:
                     try:
                         # Find indices for key features
                         from schema import get_feature_names
+
                         feature_names = get_feature_names()
 
                         # Create a feature dict for easier access
-                        feat_dict = {name: env0_raw[i] for i, name in enumerate(feature_names)}
+                        feat_dict = {
+                            name: env0_raw[i] for i, name in enumerate(feature_names)
+                        }
 
                         # Extract key game state info
                         # Note: Features are normalized, need to reverse scaling
-                        ego_pos_x = feat_dict.get('p1_position_x', 0.0) * 20.0  # scaled by 1/20
-                        ego_pos_y = feat_dict.get('p1_position_y', 0.0) * 20.0
-                        ego_pct = feat_dict.get('p1_percent', 0.0) * 100.0  # scaled by 1/100
-                        ego_stock = feat_dict.get('p1_stock', 0.0) * 4.0  # scaled by 1/4
-                        opp_pos_x = feat_dict.get('p2_position_x', 0.0) * 20.0
-                        opp_pos_y = feat_dict.get('p2_position_y', 0.0) * 20.0
-                        opp_pct = feat_dict.get('p2_percent', 0.0) * 100.0
-                        opp_stock = feat_dict.get('p2_stock', 0.0) * 4.0
+                        ego_pos_x = (
+                            feat_dict.get("p1_position_x", 0.0) * 20.0
+                        )  # scaled by 1/20
+                        ego_pos_y = feat_dict.get("p1_position_y", 0.0) * 20.0
+                        ego_pct = (
+                            feat_dict.get("p1_percent", 0.0) * 100.0
+                        )  # scaled by 1/100
+                        ego_stock = (
+                            feat_dict.get("p1_stock", 0.0) * 4.0
+                        )  # scaled by 1/4
+                        opp_pos_x = feat_dict.get("p2_position_x", 0.0) * 20.0
+                        opp_pos_y = feat_dict.get("p2_position_y", 0.0) * 20.0
+                        opp_pct = feat_dict.get("p2_percent", 0.0) * 100.0
+                        opp_stock = feat_dict.get("p2_stock", 0.0) * 4.0
 
                         gamestate_str = (
                             f"Ego: pos=({ego_pos_x:.1f},{ego_pos_y:.1f}) "
@@ -758,11 +794,14 @@ class Coordinator:
     def _run_ppo_training(self):
         """Execute PPO training on accumulated rollouts."""
         print(f"[CRD] Starting PPO training with {len(self.rollouts_ready)} rollouts")
-        print(f"[CRD] Training step {self.training_steps}, Total frames: {self.total_frames:,}")
+        print(
+            f"[CRD] Training step {self.training_steps}, Total frames: {self.total_frames:,}"
+        )
         print(f"[CRD] NOTE: Shards will pause during training (may take 30-60 seconds)")
 
         # Force garbage collection before training
         import gc
+
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -789,22 +828,31 @@ class Coordinator:
 
             num_batches = len(batches)
             print(f"[CRD] Created {num_batches} windowed batches")
-            print(f"[CRD] Training: {self.ppo_config.ppo_epochs} epochs × {num_batches} batches = {self.ppo_config.ppo_epochs * num_batches} total updates")
+            print(
+                f"[CRD] Training: {self.ppo_config.ppo_epochs} epochs × {num_batches} batches = {self.ppo_config.ppo_epochs * num_batches} total updates"
+            )
 
             # Estimate memory usage
             batch_memory_mb = (
-                self.ppo_config.batch_size * self.ppo_config.context_length *
-                (self.feature_dim * 4 + 40 + 16) / 1024 / 1024
+                self.ppo_config.batch_size
+                * self.ppo_config.context_length
+                * (self.feature_dim * 4 + 40 + 16)
+                / 1024
+                / 1024
             )
             total_memory_mb = batch_memory_mb * num_batches
-            print(f"[CRD] Estimated batch memory: {total_memory_mb:.0f} MB ({batch_memory_mb:.1f} MB per batch)")
+            print(
+                f"[CRD] Estimated batch memory: {total_memory_mb:.0f} MB ({batch_memory_mb:.1f} MB per batch)"
+            )
 
             if total_memory_mb > 2000:
-                print(f"[CRD] WARNING: High memory usage! Consider reducing --rollouts-per-batch")
+                print(
+                    f"[CRD] WARNING: High memory usage! Consider reducing --rollouts-per-batch"
+                )
 
             # PPO epochs
             for epoch in range(self.ppo_config.ppo_epochs):
-                epoch_start = __import__('time').time()
+                epoch_start = __import__("time").time()
                 for batch_idx, batch in enumerate(batches):
                     # Move batch to device
                     features = batch["features"].to(self.device)
@@ -817,14 +865,18 @@ class Coordinator:
                     # Actions are [B, T] but we only need the final timestep for PPO
                     # Use np.ascontiguousarray to fix stride alignment issues with structured arrays
                     action_dict = {
-                        "main_idx": torch.from_numpy(np.ascontiguousarray(actions["main_idx"][:, -1])).to(
-                            self.device
-                        ),
-                        "c_idx": torch.from_numpy(np.ascontiguousarray(actions["c_idx"][:, -1])).to(self.device),
-                        "shoulder_idx": torch.from_numpy(np.ascontiguousarray(actions["shoulder_idx"][:, -1])).to(
-                            self.device
-                        ),
-                        "buttons": torch.from_numpy(np.ascontiguousarray(actions["buttons"][:, -1, :])).to(self.device),
+                        "main_idx": torch.from_numpy(
+                            np.ascontiguousarray(actions["main_idx"][:, -1])
+                        ).to(self.device),
+                        "c_idx": torch.from_numpy(
+                            np.ascontiguousarray(actions["c_idx"][:, -1])
+                        ).to(self.device),
+                        "shoulder_idx": torch.from_numpy(
+                            np.ascontiguousarray(actions["shoulder_idx"][:, -1])
+                        ).to(self.device),
+                        "buttons": torch.from_numpy(
+                            np.ascontiguousarray(actions["buttons"][:, -1, :])
+                        ).to(self.device),
                     }
 
                     # Compute PPO loss
@@ -877,35 +929,61 @@ class Coordinator:
 
                         # Action distribution diagnostics (first batch only)
                         if batch_idx == 0 and epoch == 0:
-                            button_count = action_dict["buttons"].float().sum(dim=1).mean().item()
+                            button_count = (
+                                action_dict["buttons"].float().sum(dim=1).mean().item()
+                            )
                             # Button breakdown
-                            button_names = ['A', 'B', 'X', 'Z', 'L']
-                            button_rates = [action_dict["buttons"][:, i].float().mean().item() for i in range(5)]
+                            button_names = ["A", "B", "X", "Z", "L"]
+                            button_rates = [
+                                action_dict["buttons"][:, i].float().mean().item()
+                                for i in range(5)
+                            ]
 
-                            print(f"\n[CRD] ═══ Training Batch Diagnostics (step {self.training_steps}) ═══")
+                            print(
+                                f"\n[CRD] ═══ Training Batch Diagnostics (step {self.training_steps}) ═══"
+                            )
                             print(f"[CRD] Batch Action Stats:")
                             print(f"  Mean buttons pressed: {button_count:.2f}/5")
-                            print(f"  Button rates: {', '.join(f'{name}={rate:.1%}' for name, rate in zip(button_names, button_rates))}")
-                            print(f"  Main stick idx range: {action_dict['main_idx'].min().item()} to {action_dict['main_idx'].max().item()}")
-                            print(f"  C-stick idx range: {action_dict['c_idx'].min().item()} to {action_dict['c_idx'].max().item()}")
-                            print(f"  Shoulder idx range: {action_dict['shoulder_idx'].min().item()} to {action_dict['shoulder_idx'].max().item()}")
+                            print(
+                                f"  Button rates: {', '.join(f'{name}={rate:.1%}' for name, rate in zip(button_names, button_rates))}"
+                            )
+                            print(
+                                f"  Main stick idx range: {action_dict['main_idx'].min().item()} to {action_dict['main_idx'].max().item()}"
+                            )
+                            print(
+                                f"  C-stick idx range: {action_dict['c_idx'].min().item()} to {action_dict['c_idx'].max().item()}"
+                            )
+                            print(
+                                f"  Shoulder idx range: {action_dict['shoulder_idx'].min().item()} to {action_dict['shoulder_idx'].max().item()}"
+                            )
                             # old_logp is [B, T] for windowed batches
                             if old_logp.dim() == 2:
-                                print(f"  Old logp: mean={old_logp[:, -1].mean().item():.3f}, std={old_logp[:, -1].std().item():.3f}")
+                                print(
+                                    f"  Old logp: mean={old_logp[:, -1].mean().item():.3f}, std={old_logp[:, -1].std().item():.3f}"
+                                )
                             else:
-                                print(f"  Old logp: mean={old_logp.mean().item():.3f}, std={old_logp.std().item():.3f}")
-                            print(f"  Advantages: mean={advantages.mean().item():.3f}, std={advantages.std().item():.3f}")
-                            print(f"  Returns: mean={returns.mean().item():.3f}, std={returns.std().item():.3f}")
+                                print(
+                                    f"  Old logp: mean={old_logp.mean().item():.3f}, std={old_logp.std().item():.3f}"
+                                )
+                            print(
+                                f"  Advantages: mean={advantages.mean().item():.3f}, std={advantages.std().item():.3f}"
+                            )
+                            print(
+                                f"  Returns: mean={returns.mean().item():.3f}, std={returns.std().item():.3f}"
+                            )
 
                             # Feature statistics for training batch
                             # features is [B, T, F], get last timestep
                             batch_last_frame = features[:, -1, :]  # [B, F]
                             from schema import get_feature_names
                             import numpy as np
+
                             feature_names = get_feature_names()
                             features_np = batch_last_frame.cpu().float().numpy()
 
-                            print(f"\n[CRD] Batch Feature Stats (last timestep, {features_np.shape[0]} examples):")
+                            print(
+                                f"\n[CRD] Batch Feature Stats (last timestep, {features_np.shape[0]} examples):"
+                            )
                             for i, name in enumerate(feature_names):
                                 feat_values = features_np[:, i]
                                 min_val = feat_values.min()
@@ -914,21 +992,33 @@ class Coordinator:
 
                                 # Only print categorical features and a few key continuous ones
                                 if i == self.column_map.stage_idx:
-                                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← STAGE")
+                                    print(
+                                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← STAGE"
+                                    )
                                 elif i == self.column_map.ego_char_idx:
-                                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← EGO_CHAR")
+                                    print(
+                                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← EGO_CHAR"
+                                    )
                                 elif i == self.column_map.opp_char_idx:
-                                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← OPP_CHAR")
+                                    print(
+                                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← OPP_CHAR"
+                                    )
                                 elif i == self.column_map.ego_action_idx:
-                                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← EGO_ACTION")
+                                    print(
+                                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← EGO_ACTION"
+                                    )
                                 elif i == self.column_map.opp_action_idx:
-                                    print(f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← OPP_ACTION")
+                                    print(
+                                        f"    [{i:2d}] {name:40s} min={min_val:7.3f} med={median_val:7.3f} max={max_val:7.3f}  ← OPP_ACTION"
+                                    )
 
                             # Check for NaN/Inf in features
                             has_nan = torch.isnan(features).any().item()
                             has_inf = torch.isinf(features).any().item()
                             if has_nan or has_inf:
-                                print(f"  ⚠️ WARNING: features contain NaN={has_nan}, Inf={has_inf}")
+                                print(
+                                    f"  ⚠️ WARNING: features contain NaN={has_nan}, Inf={has_inf}"
+                                )
                             print(f"[CRD] ═══ End Training Batch Diagnostics ═══\n")
 
                         print(
@@ -946,7 +1036,7 @@ class Coordinator:
                     del features, old_logp, advantages, returns, action_dict, loss_dict
 
                 # End of epoch summary
-                epoch_time = __import__('time').time() - epoch_start
+                epoch_time = __import__("time").time() - epoch_start
                 epoch_losses = all_losses[-num_batches:]  # Last epoch's losses
                 print(
                     f"[CRD] Epoch {epoch+1}/{self.ppo_config.ppo_epochs} complete: "
@@ -956,17 +1046,22 @@ class Coordinator:
 
                 # Force garbage collection after each epoch
                 import gc
+
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
             # Print summary metrics
             print(f"[CRD] ===== Training Summary =====")
-            print(f"[CRD]   Total Loss:    {np.mean(all_losses):.4f} ± {np.std(all_losses):.4f}")
+            print(
+                f"[CRD]   Total Loss:    {np.mean(all_losses):.4f} ± {np.std(all_losses):.4f}"
+            )
             print(f"[CRD]   Policy Loss:   {np.mean(all_policy_losses):.4f}")
             print(f"[CRD]   Value Loss:    {np.mean(all_value_losses):.4f}")
             print(f"[CRD]   Entropy Loss:  {np.mean(all_entropy_losses):.4f}")
-            print(f"[CRD]   Mean Ratio:    {np.mean(all_ratios):.3f} (clip at {self.ppo_config.clip_epsilon})")
+            print(
+                f"[CRD]   Mean Ratio:    {np.mean(all_ratios):.3f} (clip at {self.ppo_config.clip_epsilon})"
+            )
             print(f"[CRD]   Approx KL:     {np.mean(all_kl_divs):.4f}")
             print(f"[CRD] ==============================")
 
@@ -983,6 +1078,7 @@ class Coordinator:
 
             # Final cleanup
             import gc
+
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

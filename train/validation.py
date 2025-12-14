@@ -274,7 +274,9 @@ def run_validation(
         result["val/loss_c"] = loss_sums["c"] / batches_processed
         result["val/loss_buttons"] = loss_sums["buttons"] / batches_processed
         result["val/loss_shoulder"] = loss_sums["shoulder"] / batches_processed
-        result["val/loss_value"] = avg_value_loss_scaled  # Log scaled version for consistency
+        result[
+            "val/loss_value"
+        ] = avg_value_loss_scaled  # Log scaled version for consistency
 
     # Accuracy metrics
     if metrics["main_total"] > 0:

@@ -361,7 +361,9 @@ class WindowDataset(Dataset):
         cache_hit: Optional[bool] = None
 
         if cache_enabled:
-            feature_array, target_array, cache_hit = self._get_cached_episode_tensors(ep)
+            feature_array, target_array, cache_hit = self._get_cached_episode_tensors(
+                ep
+            )
         else:
             feature_array, target_array = self._get_episode_arrays(ep)
         # Slice contiguous window; arrays are (T, F) and (T, Yd)
@@ -384,9 +386,7 @@ class WindowDataset(Dataset):
             features_out: ProcessedTorchTensor = torch.from_numpy(
                 np.ascontiguousarray(feature_window)
             )
-            targets_out = torch.from_numpy(
-                np.ascontiguousarray(target_window)
-            )
+            targets_out = torch.from_numpy(np.ascontiguousarray(target_window))
 
         if cache_hit is not None:
             self._maybe_log_cache_stats()

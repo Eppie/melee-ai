@@ -146,7 +146,10 @@ def compute_advantage_weights(
     weights = torch.where(
         advantages > 0,
         1.0 + alpha * advantages,  # strongly boost improvements
-        1.0 / (1.0 + alpha * 0.5 * torch.abs(advantages)),  # suppress declines (down to ~1/12 weight)
+        1.0
+        / (
+            1.0 + alpha * 0.5 * torch.abs(advantages)
+        ),  # suppress declines (down to ~1/12 weight)
     )
 
     weights = weights.clamp_min(0.0)
@@ -196,7 +199,10 @@ def compute_model_advantage_weights(
     weights = torch.where(
         advantages > 0,
         1.0 + alpha * advantages,  # strongly boost when expert beat our prediction
-        1.0 / (1.0 + alpha * 0.5 * torch.abs(advantages)),  # suppress when model overestimated
+        1.0
+        / (
+            1.0 + alpha * 0.5 * torch.abs(advantages)
+        ),  # suppress when model overestimated
     )
 
     weights = weights.clamp_min(0.0)

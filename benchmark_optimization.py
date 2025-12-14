@@ -8,6 +8,7 @@ from pathlib import Path
 import peppi_py
 from filter_bad_replays import sanity_reason, quality_reason, _iter_zip_members
 
+
 def benchmark_single_pass(zip_path: Path, num_files: int = 10):
     """Benchmark the old single-pass approach."""
     print("=" * 80)
@@ -22,12 +23,13 @@ def benchmark_single_pass(zip_path: Path, num_files: int = 10):
         # Extract files first
         import zipfile
         import shutil
+
         extracted_files = []
         with zipfile.ZipFile(zip_path) as zf:
             for member in members:
                 dest = tmpdir / Path(member).name
-                with zf.open(member) as src, open(dest, 'wb') as out:
-                    shutil.copyfileobj(src, out, length=1024*1024)
+                with zf.open(member) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out, length=1024 * 1024)
                 extracted_files.append(dest)
 
         # Benchmark: Single pass with all data
@@ -61,6 +63,7 @@ def benchmark_single_pass(zip_path: Path, num_files: int = 10):
 
         return elapsed
 
+
 def benchmark_two_pass(zip_path: Path, num_files: int = 10):
     """Benchmark the new two-pass approach."""
     print("\n" + "=" * 80)
@@ -75,12 +78,13 @@ def benchmark_two_pass(zip_path: Path, num_files: int = 10):
         # Extract files first
         import zipfile
         import shutil
+
         extracted_files = []
         with zipfile.ZipFile(zip_path) as zf:
             for member in members:
                 dest = tmpdir / Path(member).name
-                with zf.open(member) as src, open(dest, 'wb') as out:
-                    shutil.copyfileobj(src, out, length=1024*1024)
+                with zf.open(member) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out, length=1024 * 1024)
                 extracted_files.append(dest)
 
         # Benchmark: Two-pass approach
@@ -117,6 +121,7 @@ def benchmark_two_pass(zip_path: Path, num_files: int = 10):
 
         return elapsed
 
+
 if __name__ == "__main__":
     zip_path = Path("/Users/eppie/PycharmProjects/nano-melee/test_replays.zip")
 
@@ -151,4 +156,6 @@ if __name__ == "__main__":
     print(f"\nSingle-Pass (avg {num_runs} runs): {avg_single:.3f}s")
     print(f"Two-Pass (avg {num_runs} runs):    {avg_two_pass:.3f}s")
     print(f"\nSpeedup: {avg_single / avg_two_pass:.2f}x")
-    print(f"Time saved: {(avg_single - avg_two_pass):.3f}s ({(1 - avg_two_pass/avg_single) * 100:.1f}%)")
+    print(
+        f"Time saved: {(avg_single - avg_two_pass):.3f}s ({(1 - avg_two_pass/avg_single) * 100:.1f}%)"
+    )

@@ -188,7 +188,10 @@ def perform_forward_pass(
             # Compute model-dependent advantages: ground_truth - prediction
             # Positive = actual outcome better than predicted (learn from expert!)
             # Negative = actual outcome worse than predicted (expert mistake or model overestimate)
-            imitation_weights_tensor, advantages_tensor = compute_model_advantage_weights(
+            (
+                imitation_weights_tensor,
+                advantages_tensor,
+            ) = compute_model_advantage_weights(
                 value_pred=value_pred.squeeze(-1),  # [B, L, 1] -> [B, L]
                 value_target=value_target.squeeze(-1),  # [B, L, 1] -> [B, L]
                 alpha=config.imitation.advantage_alpha,
@@ -238,7 +241,9 @@ def perform_forward_pass(
 
         scaled_value_loss = config.rl.value_loss_coef * loss_value
         loss = loss + scaled_value_loss
-        loss_components["value"] = scaled_value_loss  # Log scaled version for accurate reporting
+        loss_components[
+            "value"
+        ] = scaled_value_loss  # Log scaled version for accurate reporting
 
     batch_targets = {
         "main": target_info["main_idx"],

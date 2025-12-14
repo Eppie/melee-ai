@@ -2,7 +2,9 @@ import torch
 from torch import Tensor
 
 
-def get_alibi_biases(num_heads: int, max_seq_len: int, device: torch.device = None) -> Tensor:
+def get_alibi_biases(
+    num_heads: int, max_seq_len: int, device: torch.device = None
+) -> Tensor:
     """
     Compute ALiBi (Attention with Linear Biases) position biases.
 
@@ -53,22 +55,30 @@ def get_alibi_biases(num_heads: int, max_seq_len: int, device: torch.device = No
     # Formula: 2^(-(8*k/num_heads)) for k in [1, 2, ..., num_heads]
     slopes = torch.pow(
         2.0,
-        -8.0 * torch.arange(1, num_heads + 1, dtype=torch.float32, device=device) / num_heads
+        -8.0
+        * torch.arange(1, num_heads + 1, dtype=torch.float32, device=device)
+        / num_heads,
     )  # Shape: (num_heads,)
 
     # Create position indices
-    positions = torch.arange(max_seq_len, dtype=torch.float32, device=device)  # Shape: (max_seq_len,)
+    positions = torch.arange(
+        max_seq_len, dtype=torch.float32, device=device
+    )  # Shape: (max_seq_len,)
 
     # Compute pairwise distances: |i - j|
     # positions[:, None] creates (max_seq_len, 1), positions[None, :] creates (1, max_seq_len)
     # Broadcasting gives us (max_seq_len, max_seq_len) matrix of distances
-    distances = torch.abs(positions[:, None] - positions[None, :])  # Shape: (max_seq_len, max_seq_len)
+    distances = torch.abs(
+        positions[:, None] - positions[None, :]
+    )  # Shape: (max_seq_len, max_seq_len)
 
     # Apply slopes: bias[h, i, j] = -slope[h] * distance[i, j]
     # slopes[:, None, None] creates (num_heads, 1, 1)
     # distances[None, :, :] creates (1, max_seq_len, max_seq_len)
     # Broadcasting gives us (num_heads, max_seq_len, max_seq_len)
-    biases = -slopes[:, None, None] * distances[None, :, :]  # Shape: (num_heads, max_seq_len, max_seq_len)
+    biases = (
+        -slopes[:, None, None] * distances[None, :, :]
+    )  # Shape: (num_heads, max_seq_len, max_seq_len)
 
     # Add batch dimension: (1, num_heads, max_seq_len, max_seq_len)
     biases = biases.unsqueeze(0)

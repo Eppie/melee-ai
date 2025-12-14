@@ -4,7 +4,11 @@ import torch
 import numpy as np
 import pytest
 
-from ppo.ppo_loss import compute_ppo_loss, compute_action_logprob, compute_action_entropy
+from ppo.ppo_loss import (
+    compute_ppo_loss,
+    compute_action_logprob,
+    compute_action_entropy,
+)
 from column_map import ColumnMap
 from schema import get_feature_names, get_target_names
 from model.nano_gpt import GPT
@@ -40,16 +44,16 @@ def test_action_logprob_shapes():
     # Create mock outputs (with final timestep extracted)
     outputs = {
         "main_stick": torch.randn(batch_size, 256, 64),  # [B, T, 64]
-        "c_stick": torch.randn(batch_size, 256, 9),      # [B, T, 9]
-        "shoulder": torch.randn(batch_size, 256, 5),     # [B, T, 5]
-        "buttons": torch.randn(batch_size, 256, 5),      # [B, T, 5]
-        "value": torch.randn(batch_size, 256, 1),        # [B, T, 1]
+        "c_stick": torch.randn(batch_size, 256, 9),  # [B, T, 9]
+        "shoulder": torch.randn(batch_size, 256, 5),  # [B, T, 5]
+        "buttons": torch.randn(batch_size, 256, 5),  # [B, T, 5]
+        "value": torch.randn(batch_size, 256, 1),  # [B, T, 1]
     }
 
     # Create mock actions (final timestep only)
     actions = {
-        "main_idx": torch.randint(0, 64, (batch_size,)),     # [B]
-        "c_idx": torch.randint(0, 9, (batch_size,)),         # [B]
+        "main_idx": torch.randint(0, 64, (batch_size,)),  # [B]
+        "c_idx": torch.randint(0, 9, (batch_size,)),  # [B]
         "shoulder_idx": torch.randint(0, 5, (batch_size,)),  # [B]
         "buttons": torch.randint(0, 2, (batch_size, 5)).bool(),  # [B, 5]
     }
@@ -58,7 +62,9 @@ def test_action_logprob_shapes():
     logp = compute_action_logprob(outputs, actions)
 
     # Check output shape
-    assert logp.shape == (batch_size,), f"Expected shape ({batch_size},), got {logp.shape}"
+    assert logp.shape == (
+        batch_size,
+    ), f"Expected shape ({batch_size},), got {logp.shape}"
     assert torch.isfinite(logp).all(), "Log probs contain NaN or Inf"
 
 
@@ -75,7 +81,9 @@ def test_action_entropy_shapes():
 
     entropy = compute_action_entropy(outputs)
 
-    assert entropy.shape == (batch_size,), f"Expected shape ({batch_size},), got {entropy.shape}"
+    assert entropy.shape == (
+        batch_size,
+    ), f"Expected shape ({batch_size},), got {entropy.shape}"
     assert (entropy >= 0).all(), "Entropy should be non-negative"
 
 
@@ -115,14 +123,21 @@ def test_ppo_loss_shapes(column_map, mock_policy):
         )
 
     # Check all expected keys are present
-    expected_keys = ["total", "policy", "value", "entropy", "ratio_mean", "ratio_std", "approx_kl"]
+    expected_keys = [
+        "total",
+        "policy",
+        "value",
+        "entropy",
+        "ratio_mean",
+        "ratio_std",
+        "approx_kl",
+    ]
     for key in expected_keys:
         assert key in loss_dict, f"Missing key: {key}"
 
     # Check loss is scalar
     assert loss_dict["total"].shape == (), "Total loss should be scalar"
     assert torch.isfinite(loss_dict["total"]), "Total loss is NaN or Inf"
-
 
 
 def test_button_type_handling():

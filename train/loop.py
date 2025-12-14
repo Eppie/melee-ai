@@ -97,10 +97,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
     if epoch == state.resume_epoch:
         epoch_ctx.applied_skip = state.resume_iter
         epoch_ctx.skip_remaining = state.resume_iter
-        if (
-            not chunked
-            and state.resume_iter
-        ):
+        if not chunked and state.resume_iter:
             try:
                 components.sampler.set_start_offset(state.resume_iter)
                 logger.info(
@@ -350,7 +347,9 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     if log_this_iter:
                         with ctx("logging"):
                             # Flush accumulated losses once per log
-                            for loss_value in components.loss_accumulator.get_and_reset():
+                            for (
+                                loss_value
+                            ) in components.loss_accumulator.get_and_reset():
                                 components.loss_variance_tracker.add(loss_value)
 
                             now = time.time()
@@ -483,7 +482,9 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     if log_this_iter:
                         with ctx("logging"):
                             # Flush accumulated losses once per log
-                            for loss_value in components.loss_accumulator.get_and_reset():
+                            for (
+                                loss_value
+                            ) in components.loss_accumulator.get_and_reset():
                                 components.loss_variance_tracker.add(loss_value)
 
                             now = time.time()

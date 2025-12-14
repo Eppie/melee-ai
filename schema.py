@@ -251,7 +251,6 @@ def get_target_names() -> list[str]:
         "p1_button_lr",
     ]
 
-
     return base_targets
 
 

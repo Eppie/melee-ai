@@ -134,7 +134,9 @@ class GPT(nn.Module):
             c_stick_input_size = self.embedding_dim
             shoulder_input_size = self.embedding_dim
         else:
-            raise ValueError(f"Unknown head_flow mode: {self.head_flow}. Valid options: 'sequential', 'parallel'")
+            raise ValueError(
+                f"Unknown head_flow mode: {self.head_flow}. Valid options: 'sequential', 'parallel'"
+            )
 
         self.button_head = SimpleHead(
             button_input_size, self.button_output_size, hidden=head_hidden_dim
@@ -159,7 +161,9 @@ class GPT(nn.Module):
             alibi_bias = get_alibi_biases(
                 num_heads=model_config.n_head,
                 max_seq_len=self.block_size,
-                device=torch.device("cpu")  # Will be moved to correct device with model.to(device)
+                device=torch.device(
+                    "cpu"
+                ),  # Will be moved to correct device with model.to(device)
             )
             self.register_buffer("alibi_bias", alibi_bias, persistent=False)
             # Still register cos/sin as None for compatibility
@@ -224,7 +228,9 @@ class GPT(nn.Module):
             categorical_features = [
                 self.stage_embedding(inputs["stage"].squeeze(-1).long()),
                 self.character_embedding(inputs["ego_character"].squeeze(-1).long()),
-                self.character_embedding(inputs["opponent_character"].squeeze(-1).long()),
+                self.character_embedding(
+                    inputs["opponent_character"].squeeze(-1).long()
+                ),
                 self.action_embedding(inputs["ego_action"].squeeze(-1).long()),
                 self.action_embedding(inputs["opponent_action"].squeeze(-1).long()),
             ]
@@ -254,7 +260,8 @@ class GPT(nn.Module):
             ]
 
         return torch.cat(
-            categorical_features + [
+            categorical_features
+            + [
                 inputs["gamestate"],
                 inputs["controller"],
             ],
@@ -284,7 +291,9 @@ class GPT(nn.Module):
             alibi_bias = None
 
         for block in self.blocks:
-            hidden_states = block(hidden_states, cos=cos, sin=sin, alibi_bias=alibi_bias)
+            hidden_states = block(
+                hidden_states, cos=cos, sin=sin, alibi_bias=alibi_bias
+            )
 
         hidden_states = norm(hidden_states)
 
@@ -326,7 +335,9 @@ class GPT(nn.Module):
             )
 
         else:
-            raise ValueError(f"Unknown head_flow mode: {self.head_flow}. Valid options: 'sequential', 'parallel'")
+            raise ValueError(
+                f"Unknown head_flow mode: {self.head_flow}. Valid options: 'sequential', 'parallel'"
+            )
 
         # Build output dict with controller heads
         outputs_dict = {

@@ -222,15 +222,33 @@ class EnvWorker:
 
         # Diagnostic logging (env 0 only, every 500 frames)
         if self.global_env_id == 0 and self.frames_since_restart % 500 == 0:
-            print(f"\n[ENV 0] Raw Controller Values from Gamestate (frame {self.frames_since_restart}):")
-            print(f"  p1_main_stick_x (raw):    {model_inputs.raw.get('p1_main_stick_x', 'N/A')}")
-            print(f"  p1_main_stick_y (raw):    {model_inputs.raw.get('p1_main_stick_y', 'N/A')}")
-            print(f"  p1_c_stick_x (raw):       {model_inputs.raw.get('p1_c_stick_x', 'N/A')}")
-            print(f"  p1_c_stick_y (raw):       {model_inputs.raw.get('p1_c_stick_y', 'N/A')}")
-            print(f"  p1_main_stick_x (trans):  {model_inputs.transformed.get('p1_main_stick_x', 'N/A')}")
-            print(f"  p1_main_stick_y (trans):  {model_inputs.transformed.get('p1_main_stick_y', 'N/A')}")
-            print(f"  p1_c_stick_x (trans):     {model_inputs.transformed.get('p1_c_stick_x', 'N/A')}")
-            print(f"  p1_c_stick_y (trans):     {model_inputs.transformed.get('p1_c_stick_y', 'N/A')}")
+            print(
+                f"\n[ENV 0] Raw Controller Values from Gamestate (frame {self.frames_since_restart}):"
+            )
+            print(
+                f"  p1_main_stick_x (raw):    {model_inputs.raw.get('p1_main_stick_x', 'N/A')}"
+            )
+            print(
+                f"  p1_main_stick_y (raw):    {model_inputs.raw.get('p1_main_stick_y', 'N/A')}"
+            )
+            print(
+                f"  p1_c_stick_x (raw):       {model_inputs.raw.get('p1_c_stick_x', 'N/A')}"
+            )
+            print(
+                f"  p1_c_stick_y (raw):       {model_inputs.raw.get('p1_c_stick_y', 'N/A')}"
+            )
+            print(
+                f"  p1_main_stick_x (trans):  {model_inputs.transformed.get('p1_main_stick_x', 'N/A')}"
+            )
+            print(
+                f"  p1_main_stick_y (trans):  {model_inputs.transformed.get('p1_main_stick_y', 'N/A')}"
+            )
+            print(
+                f"  p1_c_stick_x (trans):     {model_inputs.transformed.get('p1_c_stick_x', 'N/A')}"
+            )
+            print(
+                f"  p1_c_stick_y (trans):     {model_inputs.transformed.get('p1_c_stick_y', 'N/A')}"
+            )
 
         # Convert transformed dict to numpy array in correct order
         features = np.array(
@@ -272,7 +290,9 @@ class EnvWorker:
         opp_stock_delta = opp.stock - self.prev_opp_stock
 
         # Positive reward for taking opponent's stock, negative for losing stock
-        reward += (self.prev_opp_stock - opp.stock) * 1.0  # Opponent lost stock (ego took it)
+        reward += (
+            self.prev_opp_stock - opp.stock
+        ) * 1.0  # Opponent lost stock (ego took it)
         reward -= (self.prev_ego_stock - ego.stock) * 1.0  # Ego lost stock
 
         # Update tracking state
@@ -337,16 +357,20 @@ class EnvWorker:
         # Diagnostic logging (env 0 ego only, every 500 frames)
         if self.global_env_id == 0 and is_ego and self.frames_since_restart % 500 == 0:
             buttons_pressed = [
-                'A' if action.buttons[0] else '',
-                'B' if action.buttons[1] else '',
-                'X' if action.buttons[2] else '',
-                'Z' if action.buttons[3] else '',
-                'L' if action.buttons[4] else ''
+                "A" if action.buttons[0] else "",
+                "B" if action.buttons[1] else "",
+                "X" if action.buttons[2] else "",
+                "Z" if action.buttons[3] else "",
+                "L" if action.buttons[4] else "",
             ]
-            buttons_str = '+'.join(filter(None, buttons_pressed)) or 'none'
+            buttons_str = "+".join(filter(None, buttons_pressed)) or "none"
             print(f"[ENV 0] Controller Output (frame {self.frames_since_restart}):")
-            print(f"  Main stick: idx={action.main_idx} → ({main_xy[0]:.3f}, {main_xy[1]:.3f}) → Dolphin({main_01_x:.3f}, {main_01_y:.3f})")
-            print(f"  C-stick:    idx={action.c_idx} → ({c_xy[0]:.3f}, {c_xy[1]:.3f}) → Dolphin({c_01_x:.3f}, {c_01_y:.3f})")
+            print(
+                f"  Main stick: idx={action.main_idx} → ({main_xy[0]:.3f}, {main_xy[1]:.3f}) → Dolphin({main_01_x:.3f}, {main_01_y:.3f})"
+            )
+            print(
+                f"  C-stick:    idx={action.c_idx} → ({c_xy[0]:.3f}, {c_xy[1]:.3f}) → Dolphin({c_01_x:.3f}, {c_01_y:.3f})"
+            )
             print(f"  Shoulder:   idx={action.shoulder_idx} → {shoulder_val:.3f}")
             print(f"  Buttons:    {action.buttons} → {buttons_str}")
 
@@ -410,9 +434,14 @@ class EnvWorker:
                     continue
 
                 # 2. Handle menu navigation (if not in game)
-                if gamestate.menu_state not in [enums.Menu.IN_GAME, enums.Menu.SUDDEN_DEATH]:
+                if gamestate.menu_state not in [
+                    enums.Menu.IN_GAME,
+                    enums.Menu.SUDDEN_DEATH,
+                ]:
                     # Log menu state periodically to debug (only on first env)
-                    if self.global_env_id == 0 and self._menu_frame_counter % 300 == 0:  # Every 5 seconds at 60fps
+                    if (
+                        self.global_env_id == 0 and self._menu_frame_counter % 300 == 0
+                    ):  # Every 5 seconds at 60fps
                         print(
                             f"[ENV] Still navigating menus (menu_state={gamestate.menu_state})"
                         )
@@ -531,10 +560,18 @@ class EnvWorker:
                 if self.global_env_id == 0 and self.frames_since_restart % 500 == 0:
                     print(f"[ENV 0] Frame {self.frames_since_restart}:")
                     print(f"  Reward: {reward:.4f} (stored with this frame)")
-                    print(f"  Ego damage: {self.prev_ego_percent:.1f}%, stocks: {self.prev_ego_stock}")
-                    print(f"  Opp damage: {self.prev_opp_percent:.1f}%, stocks: {self.prev_opp_stock}")
-                    print(f"  Ego action stored: main={ego_action.main_idx}, c={ego_action.c_idx}, buttons={ego_action.buttons}")
-                    print(f"  Action logp: {ego_action.logp:.4f}, value: {ego_action.value:.4f}")
+                    print(
+                        f"  Ego damage: {self.prev_ego_percent:.1f}%, stocks: {self.prev_ego_stock}"
+                    )
+                    print(
+                        f"  Opp damage: {self.prev_opp_percent:.1f}%, stocks: {self.prev_opp_stock}"
+                    )
+                    print(
+                        f"  Ego action stored: main={ego_action.main_idx}, c={ego_action.c_idx}, buttons={ego_action.buttons}"
+                    )
+                    print(
+                        f"  Action logp: {ego_action.logp:.4f}, value: {ego_action.value:.4f}"
+                    )
 
                 # 11. Store in rollout buffer
                 self._store_rollout_frame(features, ego_action, reward)

@@ -120,7 +120,9 @@ class Barrier:
         self.num_shards = len(pipes)
         self.timeout = timeout
 
-    def wait_all_ready(self, step_id: int, timeout: float = None) -> tuple[dict[int, Message], list[Message]]:
+    def wait_all_ready(
+        self, step_id: int, timeout: float = None
+    ) -> tuple[dict[int, Message], list[Message]]:
         """
         Wait for all shards to signal READY.
 

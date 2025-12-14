@@ -38,15 +38,11 @@ def _compute_categorical_size(
         return (
             embedding_dim_stage
             + embedding_dim_character * 2  # ego + opponent
-            + embedding_dim_action * 2      # ego + opponent
+            + embedding_dim_action * 2  # ego + opponent
         )
     else:
         # With one-hot encoding: num_stages + num_characters*2 + num_actions*2
-        return (
-            num_stages
-            + num_characters * 2
-            + num_actions * 2
-        )
+        return num_stages + num_characters * 2 + num_actions * 2
 
 
 class GPTConfig(BaseModel):
@@ -217,8 +213,15 @@ class GPTConfig(BaseModel):
         super().__setattr__(name, value)
 
         # If use_learned_embeddings or related fields changed, recalculate input_size
-        if name in ("use_learned_embeddings", "embedding_dim_stage", "embedding_dim_character",
-                    "embedding_dim_action", "num_stages", "num_characters", "num_actions"):
+        if name in (
+            "use_learned_embeddings",
+            "embedding_dim_stage",
+            "embedding_dim_character",
+            "embedding_dim_action",
+            "num_stages",
+            "num_characters",
+            "num_actions",
+        ):
             # Only recalculate if input_size was auto-computed (not explicitly set)
             # We check if it's been set by seeing if it exists
             if hasattr(self, "_input_size_auto_computed"):
@@ -238,11 +241,7 @@ class GPTConfig(BaseModel):
             self.embedding_dim_action,
         )
 
-        new_input_size = (
-            categorical_size
-            + default_gamestate
-            + default_controller
-        )
+        new_input_size = categorical_size + default_gamestate + default_controller
 
         # Use object.__setattr__ to avoid recursion
         object.__setattr__(self, "input_size", new_input_size)
@@ -276,11 +275,7 @@ class GPTConfig(BaseModel):
 
         # Use object.__setattr__ to bypass Pydantic's validation since we're in a validator
         object.__setattr__(
-            self,
-            "input_size",
-            categorical_size
-            + gamestate_dim
-            + controller_dim
+            self, "input_size", categorical_size + gamestate_dim + controller_dim
         )
 
         # Mark that input_size was auto-computed so we can recalculate it later

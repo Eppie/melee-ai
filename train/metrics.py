@@ -16,7 +16,9 @@ class StickMetrics:
         self.label_counts = torch.zeros(K, dtype=torch.long, device=device)
         self.maj_correct = torch.tensor(0, dtype=torch.long, device=device)
 
-    def update(self, pred_idx: torch.Tensor, true_idx: torch.Tensor, majority_baseline: int):
+    def update(
+        self, pred_idx: torch.Tensor, true_idx: torch.Tensor, majority_baseline: int
+    ):
         self.correct += (pred_idx == true_idx).sum()
         self.total += true_idx.numel()
         bincount = torch.bincount(true_idx, minlength=self.label_counts.shape[0])
@@ -29,6 +31,7 @@ class StickMetrics:
         self.label_counts.zero_()
         self.maj_correct.zero_()
 
+
 class PositionMetrics:
     def __init__(self, K: int, device: torch.device):
         self.correct = torch.tensor(0, dtype=torch.long, device=device)
@@ -37,7 +40,13 @@ class PositionMetrics:
         self.maj_correct = torch.tensor(0, dtype=torch.long, device=device)
         self.spatial_error_sum = torch.tensor(0.0, dtype=torch.float32, device=device)
 
-    def update(self, pred_idx: torch.Tensor, true_idx: torch.Tensor, majority_baseline: int, spatial_error_sum: torch.Tensor):
+    def update(
+        self,
+        pred_idx: torch.Tensor,
+        true_idx: torch.Tensor,
+        majority_baseline: int,
+        spatial_error_sum: torch.Tensor,
+    ):
         self.correct += (pred_idx == true_idx).sum()
         self.total += true_idx.numel()
         bincount = torch.bincount(true_idx, minlength=self.label_counts.shape[0])

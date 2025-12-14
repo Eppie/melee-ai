@@ -38,10 +38,12 @@ class FrameData:
 
     def __post_init__(self):
         expected_dim = self.feature_dim or self.features.shape[0]
-        assert (
-            self.features.shape == (expected_dim,)
+        assert self.features.shape == (
+            expected_dim,
         ), f"Expected ({expected_dim},), got {self.features.shape}"
-        assert self.features.ndim == 1, f"Expected 1D features, got {self.features.ndim}D"
+        assert (
+            self.features.ndim == 1
+        ), f"Expected 1D features, got {self.features.ndim}D"
         assert (
             self.features.dtype == np.float32
         ), f"Expected float32, got {self.features.dtype}"

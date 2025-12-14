@@ -8,7 +8,12 @@ import numpy as np
 import pytest
 
 # This is a private function, so we have to do this.
-from validation import EnhancedMetrics, RunStats, StickErrorMetrics, _print_enhanced_metrics
+from validation import (
+    EnhancedMetrics,
+    RunStats,
+    StickErrorMetrics,
+    _print_enhanced_metrics,
+)
 
 
 def run_print_and_capture(enhanced: EnhancedMetrics) -> str:

@@ -27,8 +27,9 @@ def test_horizon_feature_appending():
     features = torch.randn(batch_size, seq_length, feature_dim)
 
     # Append horizon
-    horizon = torch.full((batch_size, seq_length, 1), 0.5,
-                        device=features.device, dtype=features.dtype)
+    horizon = torch.full(
+        (batch_size, seq_length, 1), 0.5, device=features.device, dtype=features.dtype
+    )
     features_with_horizon = torch.cat([features, horizon], dim=-1)
 
     assert features_with_horizon.shape == (batch_size, seq_length, feature_dim + 1)
@@ -43,8 +44,9 @@ def test_build_model_inputs_with_horizon(column_map):
 
     # Create features with horizon appended
     features = torch.randn(batch_size, seq_length, feature_dim)
-    horizon = torch.full((batch_size, seq_length, 1), 0.5,
-                        device=features.device, dtype=features.dtype)
+    horizon = torch.full(
+        (batch_size, seq_length, 1), 0.5, device=features.device, dtype=features.dtype
+    )
     features_with_horizon = torch.cat([features, horizon], dim=-1)
 
     # Should not raise
@@ -56,8 +58,9 @@ def test_build_model_inputs_with_horizon(column_map):
         # Horizon should be appended to gamestate
         expected_gamestate_dim = len(column_map.gamestate_idxs) + 1  # +1 for horizon
         actual_gamestate_dim = model_inputs["gamestate"].shape[-1]
-        assert actual_gamestate_dim == expected_gamestate_dim, \
-            f"Gamestate dim: expected {expected_gamestate_dim}, got {actual_gamestate_dim}"
+        assert (
+            actual_gamestate_dim == expected_gamestate_dim
+        ), f"Gamestate dim: expected {expected_gamestate_dim}, got {actual_gamestate_dim}"
     except Exception as e:
         pytest.fail(f"build_model_inputs failed with horizon: {e}")
 
@@ -110,8 +113,9 @@ def test_memory_estimation():
 
     # Estimate single batch memory
     batch_memory_bytes = (
-        batch_size * context_length *
-        (feature_dim * 4 + 40 + 16)  # features + actions + metadata
+        batch_size
+        * context_length
+        * (feature_dim * 4 + 40 + 16)  # features + actions + metadata
     )
     batch_memory_mb = batch_memory_bytes / 1024 / 1024
 
@@ -134,6 +138,7 @@ def test_tensor_cleanup():
 
     # Force garbage collection
     import gc
+
     gc.collect()
 
     # Should not raise

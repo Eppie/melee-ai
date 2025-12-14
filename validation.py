@@ -395,12 +395,15 @@ class StickErrorMetrics:
     error_change: float = 0.0
     error_hold: float = 0.0
 
-    def update(self, errors: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor):
+    def update(
+        self, errors: torch.Tensor, change_mask: torch.Tensor, hold_mask: torch.Tensor
+    ):
         self.total_error += errors.sum().item()
         if change_mask.any():
             self.error_change += errors[change_mask].sum().item()
         if hold_mask.any():
             self.error_hold += errors[hold_mask].sum().item()
+
 
 @dataclass
 class EnhancedMetrics:
@@ -601,7 +604,9 @@ def _print_extreme_value_frames(
             ("p1_shield_strength", reward_idx.p1_shield_strength),
             ("p2_shield_strength", reward_idx.p2_shield_strength),
         ]
-        reward_columns = [(name, idx) for name, idx in reward_columns if idx is not None]
+        reward_columns = [
+            (name, idx) for name, idx in reward_columns if idx is not None
+        ]
 
     if reward_columns:
         selected_headers = [name for name, _ in reward_columns]
@@ -1625,7 +1630,9 @@ def _print_enhanced_metrics(enhanced: EnhancedMetrics) -> None:
 
     # 1. Mean Stick Error
     print("\n1. Mean Stick Error:")
-    avg_main_error = _safe_div(enhanced.main_stick_error.total_error, enhanced.total_frames)
+    avg_main_error = _safe_div(
+        enhanced.main_stick_error.total_error, enhanced.total_frames
+    )
     avg_c_error = _safe_div(enhanced.c_stick_error.total_error, enhanced.total_frames)
     print(f"  Main Stick (Euclidean): {avg_main_error:.4f}")
     print(f"  C-Stick (Euclidean):    {avg_c_error:.4f}")

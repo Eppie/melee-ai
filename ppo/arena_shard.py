@@ -146,7 +146,9 @@ class ArenaShard:
                 self._wait_all_ready(timeout=wait_timeout)
 
                 if step_id == 0:
-                    print(f"[S8-{self.shard_id}] All {self.config.envs_per_shard} ENVs in-game and ready!")
+                    print(
+                        f"[S8-{self.shard_id}] All {self.config.envs_per_shard} ENVs in-game and ready!"
+                    )
 
                 # 2. Notify CRD that this shard is ready
                 self.pipe.send(

@@ -158,7 +158,9 @@ def main():
     print(f"Character: {args.character}")
     print(f"Stages: {', '.join(args.stages)}")
     print(f"Learning rate: {args.lr}")
-    print(f"Rollouts per training: {args.rollouts_per_batch} (every ~{args.rollouts_per_batch // (args.num_shards * args.envs_per_shard)} cycles)")
+    print(
+        f"Rollouts per training: {args.rollouts_per_batch} (every ~{args.rollouts_per_batch // (args.num_shards * args.envs_per_shard)} cycles)"
+    )
     print(
         f"Opponent pool: {args.opponent_pool_size} checkpoints, {args.opponent_sample_prob*100:.0f}% historical"
     )

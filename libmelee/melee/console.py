@@ -1101,7 +1101,9 @@ class Console:
         # Scalars with length guards (avoid try/except in hot path)
         blen = len(mv)
         ps.hitstun_frames_left = (
-            _safe_float_to_int(_S_F.unpack_from(event_bytes, 0x2B)[0]) if blen > 0x2E else 0
+            _safe_float_to_int(_S_F.unpack_from(event_bytes, 0x2B)[0])
+            if blen > 0x2E
+            else 0
         )
         ps.on_ground = (mv[0x2F] == 0) if blen > 0x2F else True
         if blen > 0x32:
@@ -1145,7 +1147,9 @@ class Console:
                 _S_F.unpack_from(event_bytes, 0x45)[0] if blen > 0x48 else 0.0
             )
             ps.hitlag_left = (
-                _safe_float_to_int(_S_F.unpack_from(event_bytes, 0x49)[0]) if blen > 0x4C else 0
+                _safe_float_to_int(_S_F.unpack_from(event_bytes, 0x49)[0])
+                if blen > 0x4C
+                else 0
             )
 
         # TODO: Maybe calculate this ourselves in a vectorized way, later?

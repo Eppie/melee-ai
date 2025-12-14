@@ -361,8 +361,6 @@ class ShardResult:
     target_names: List[str]
 
 
-
-
 def _rows_to_dense(
     rows: Sequence[object], schema: Schema
 ) -> Tuple[RawNumpyArray, RawNumpyArray, List[str], List[str], List[str], List[str]]:
@@ -411,9 +409,7 @@ def _rows_to_dense(
     return X, Y, feat_dtypes, targ_dtypes, feature_names_out, target_names_out
 
 
-def _rows_to_episode(
-    rows: Sequence[Row], schema: Schema, config
-) -> ProcessedEpisode:
+def _rows_to_episode(rows: Sequence[Row], schema: Schema, config) -> ProcessedEpisode:
     """Convert raw :class:`Row` values into processed feature/target arrays."""
     (
         X,
@@ -435,9 +431,7 @@ def _rows_to_episode(
     target_info = quantize_targets(torch_Y, raw_colmap, input_domain="unit01")
     main_idx = target_info["main_idx"].squeeze(0).cpu().numpy().astype(np.int32)
     c_idx = target_info["c_idx"].squeeze(0).cpu().numpy().astype(np.int32)
-    shoulder_idx = target_info["shoulder_idx"].squeeze(0).cpu().numpy().astype(
-        np.int32
-    )
+    shoulder_idx = target_info["shoulder_idx"].squeeze(0).cpu().numpy().astype(np.int32)
     buttons = target_info["buttons"].squeeze(0).cpu().numpy().astype(np.float32)
 
     # Build final target array
@@ -772,13 +766,9 @@ def build_dataset(
                             shard_feat_dtypes[shard_idx] = episode.feat_dtypes
                             shard_targ_dtypes[shard_idx] = episode.targ_dtypes
                         if shard_feature_names[shard_idx] is None:
-                            shard_feature_names[shard_idx] = list(
-                                episode.feature_names
-                            )
+                            shard_feature_names[shard_idx] = list(episode.feature_names)
                         if shard_target_names[shard_idx] is None:
-                            shard_target_names[shard_idx] = list(
-                                episode.target_names
-                            )
+                            shard_target_names[shard_idx] = list(episode.target_names)
 
                         shard_episode_entries[shard_idx].append(
                             (episode_id, episode.features.shape[0])

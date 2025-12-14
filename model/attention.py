@@ -67,11 +67,13 @@ class CausalSelfAttention(nn.Module):
             # Apply causal mask by setting future positions to -inf
             # Create causal mask: lower triangular matrix (1 where valid, 0 where invalid)
             causal_mask = torch.tril(
-                torch.ones(sequence_length, sequence_length, device=hidden_states.device)
+                torch.ones(
+                    sequence_length, sequence_length, device=hidden_states.device
+                )
             )
             # Expand to match attn_mask shape and apply
             causal_mask = causal_mask.view(1, 1, sequence_length, sequence_length)
-            attn_mask = attn_mask.masked_fill(causal_mask == 0, float('-inf'))
+            attn_mask = attn_mask.masked_fill(causal_mask == 0, float("-inf"))
             is_causal = False  # We've already applied causal masking
 
         # Normalize queries and keys

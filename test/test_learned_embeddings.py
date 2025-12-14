@@ -30,7 +30,9 @@ class TestLearnedEmbeddings:
 
         # Use the actual schema to get proper dimensions
         colmap = ColumnMap(get_feature_names(), get_target_names())
-        X = torch.zeros(batch_size, sequence_length, len(colmap.feat_names), device=device)
+        X = torch.zeros(
+            batch_size, sequence_length, len(colmap.feat_names), device=device
+        )
         inputs = build_model_inputs(X, colmap)
 
         return inputs
@@ -61,7 +63,10 @@ class TestLearnedEmbeddings:
 
         # Check embedding dimensions
         assert model.stage_embedding.embedding_dim == config.model.embedding_dim_stage
-        assert model.character_embedding.embedding_dim == config.model.embedding_dim_character
+        assert (
+            model.character_embedding.embedding_dim
+            == config.model.embedding_dim_character
+        )
         assert model.action_embedding.embedding_dim == config.model.embedding_dim_action
 
         # Forward pass should work
@@ -132,13 +137,13 @@ class TestLearnedEmbeddings:
 
         # Verify the expected difference (850 - 104 = 746)
         categorical_diff = (
-            config_onehot.model.num_stages +
-            config_onehot.model.num_characters * 2 +
-            config_onehot.model.num_actions * 2
+            config_onehot.model.num_stages
+            + config_onehot.model.num_characters * 2
+            + config_onehot.model.num_actions * 2
         ) - (
-            config_learned.model.embedding_dim_stage +
-            config_learned.model.embedding_dim_character * 2 +
-            config_learned.model.embedding_dim_action * 2
+            config_learned.model.embedding_dim_stage
+            + config_learned.model.embedding_dim_character * 2
+            + config_learned.model.embedding_dim_action * 2
         )
         assert input_size_onehot - input_size_learned == categorical_diff
 
@@ -212,7 +217,9 @@ class TestLearnedEmbeddings:
         for name, param in model.named_parameters():
             if param.requires_grad:
                 assert param.grad is not None, f"No gradient for {name}"
-                assert torch.isfinite(param.grad).all(), f"Non-finite gradient for {name}"
+                assert torch.isfinite(
+                    param.grad
+                ).all(), f"Non-finite gradient for {name}"
 
     def test_gradient_flow_with_one_hot(self, sample_inputs):
         """Test that gradients flow correctly with one-hot encoding."""
@@ -243,7 +250,9 @@ class TestLearnedEmbeddings:
         for name, param in model.named_parameters():
             if param.requires_grad:
                 assert param.grad is not None, f"No gradient for {name}"
-                assert torch.isfinite(param.grad).all(), f"Non-finite gradient for {name}"
+                assert torch.isfinite(
+                    param.grad
+                ).all(), f"Non-finite gradient for {name}"
 
     def test_custom_embedding_dimensions(self, sample_inputs):
         """Test that custom embedding dimensions work correctly."""
@@ -305,8 +314,9 @@ class TestLearnedEmbeddings:
 
         # Output shapes should be identical
         for key in ["buttons", "main_stick", "c_stick", "shoulder", "value"]:
-            assert outputs_learned[key].shape == outputs_onehot[key].shape, \
-                f"Shape mismatch for {key}"
+            assert (
+                outputs_learned[key].shape == outputs_onehot[key].shape
+            ), f"Shape mismatch for {key}"
 
     def test_different_head_flow_modes(self, sample_inputs):
         """Test that learned embeddings work with different head_flow modes."""

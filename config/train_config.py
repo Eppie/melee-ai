@@ -312,7 +312,6 @@ class TrainConfig(BaseModel):
         description="Wandb mode. Can be 'online', 'offline', or 'disabled'.",
     )
 
-
     # Performance optimizations
     torch_compile: bool = Field(
         default_factory=lambda: _should_enable_torch_compile(),

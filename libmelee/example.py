@@ -46,11 +46,11 @@ LEGAL_TOURNAMENT_STAGES = [
 
 SUPPORTED_CHARS = [
     Character.FOX,
-#    Character.FALCO,
-#    Character.CPTFALCON,
-#    Character.JIGGLYPUFF,
-#    Character.MARTH,
-#    Character.SHEIK,
+    #    Character.FALCO,
+    #    Character.CPTFALCON,
+    #    Character.JIGGLYPUFF,
+    #    Character.MARTH,
+    #    Character.SHEIK,
 ]
 
 
@@ -328,15 +328,22 @@ if __name__ == "__main__":
                     # CPU Check
                     p2_ready = (
                         (p2_state.character == opp_char)
-                        and (p2_state.controller_status == ControllerStatus.CONTROLLER_CPU)
+                        and (
+                            p2_state.controller_status
+                            == ControllerStatus.CONTROLLER_CPU
+                        )
                         and (p2_state.cpu_level == 9)
                     )
 
                 autostart = p1_ready and p2_ready
                 if gamestate.frame % 60 == 0:  # Print once per second
                     print(f"Frame: {gamestate.frame}, Menu: {gamestate.menu_state}")
-                    print(f"P1 ({bot_char}): {p1_state.character}, Coin: {p1_state.coin_down} -> Ready: {p1_ready}")
-                    print(f"P2 ({opp_char}): {p2_state.character}, Status: {p2_state.controller_status}, Level: {p2_state.cpu_level} -> Ready: {p2_ready}")
+                    print(
+                        f"P1 ({bot_char}): {p1_state.character}, Coin: {p1_state.coin_down} -> Ready: {p1_ready}"
+                    )
+                    print(
+                        f"P2 ({opp_char}): {p2_state.character}, Status: {p2_state.controller_status}, Level: {p2_state.cpu_level} -> Ready: {p2_ready}"
+                    )
                     print(f"Autostart: {autostart}")
 
             menu_helper.menu_helper_simple(

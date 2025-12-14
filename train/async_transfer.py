@@ -38,8 +38,12 @@ class PinnedMemoryPool:
 
         # Small buffers for stats vectors (min, max, mean, std)
         self.stats_buffer_small = torch.empty(32, dtype=torch.float32, pin_memory=True)
-        self.stats_buffer_medium = torch.empty(256, dtype=torch.float32, pin_memory=True)
-        self.stats_buffer_large = torch.empty(2048, dtype=torch.float32, pin_memory=True)
+        self.stats_buffer_medium = torch.empty(
+            256, dtype=torch.float32, pin_memory=True
+        )
+        self.stats_buffer_large = torch.empty(
+            2048, dtype=torch.float32, pin_memory=True
+        )
 
         # Stream for async transfers (separate from compute stream)
         self.transfer_stream: Optional[torch.cuda.Stream] = None
@@ -85,9 +89,7 @@ class PinnedMemoryPool:
             return torch.empty(size, dtype=torch.float32, pin_memory=True)
 
     def transfer_scalar_async(
-        self,
-        gpu_tensor: torch.Tensor,
-        dtype: torch.dtype = torch.float32
+        self, gpu_tensor: torch.Tensor, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
         """Transfer a scalar from GPU to CPU asynchronously.
 
@@ -113,9 +115,7 @@ class PinnedMemoryPool:
         return buffer
 
     def transfer_tensor_async(
-        self,
-        gpu_tensor: torch.Tensor,
-        buffer: Optional[torch.Tensor] = None
+        self, gpu_tensor: torch.Tensor, buffer: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Transfer a tensor from GPU to CPU asynchronously.
 
@@ -128,9 +128,7 @@ class PinnedMemoryPool:
         """
         if buffer is None:
             buffer = torch.empty(
-                gpu_tensor.shape,
-                dtype=gpu_tensor.dtype,
-                pin_memory=True
+                gpu_tensor.shape, dtype=gpu_tensor.dtype, pin_memory=True
             )
 
         if self.transfer_stream is not None:
@@ -180,7 +178,9 @@ class DeferredScalarAccumulator:
             device: Device to store accumulated values (defaults to CUDA if available).
         """
         self.max_size = max_size
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device or torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self.values: list[torch.Tensor] = []
         self.pinned_buffer = torch.empty(max_size, dtype=torch.float32, pin_memory=True)
 
@@ -218,7 +218,7 @@ class DeferredScalarAccumulator:
         stacked = torch.stack(self.values)
 
         # Transfer via pinned memory
-        buffer = self.pinned_buffer[:len(self.values)]
+        buffer = self.pinned_buffer[: len(self.values)]
         buffer.copy_(stacked, non_blocking=False)  # Blocking transfer for simplicity
 
         # Convert to Python list
@@ -308,10 +308,10 @@ class BatchedStatsTransfer:
         for name, tensor in arrays.items():
             buffer = self.pool.get_stats_buffer(tensor.numel())
             flat = tensor.flatten()
-            buffer[:flat.numel()].copy_(flat, non_blocking=non_blocking)
+            buffer[: flat.numel()].copy_(flat, non_blocking=non_blocking)
 
             if not non_blocking:
-                results[name] = buffer[:flat.numel()].tolist()
+                results[name] = buffer[: flat.numel()].tolist()
 
         self.tensors.clear()
         return results

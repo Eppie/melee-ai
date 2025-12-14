@@ -23,6 +23,7 @@ from controller_utils import (
 )
 from controller_quantization_shared import quantize_stick_indices
 
+
 # TODO: Do we need clamp here?
 def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:
     """Map controller coordinates from ``[0, 1]`` to ``[-1, 1]``.

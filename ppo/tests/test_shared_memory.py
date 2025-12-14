@@ -202,9 +202,7 @@ class TestSharedMemorySlab:
         # Write features at different positions
         for env_id in range(4):
             for t_mod in range(10):
-                features = np.full(
-                    FEATURE_DIM, env_id * 1000 + t_mod, dtype=np.float32
-                )
+                features = np.full(FEATURE_DIM, env_id * 1000 + t_mod, dtype=np.float32)
                 slab.features[env_id, t_mod, :] = features
 
         # Read back and verify

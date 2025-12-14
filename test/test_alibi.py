@@ -104,7 +104,9 @@ class TestAlibiBiases:
         max_seq_len = 16
 
         # Test CPU
-        biases_cpu = get_alibi_biases(num_heads, max_seq_len, device=torch.device("cpu"))
+        biases_cpu = get_alibi_biases(
+            num_heads, max_seq_len, device=torch.device("cpu")
+        )
         assert biases_cpu.device.type == "cpu"
 
         # Test CUDA if available
@@ -165,7 +167,9 @@ class TestModelWithAlibi:
         # Use the actual schema to get proper dimensions
         colmap = ColumnMap(get_feature_names(), get_target_names())
         # Use zeros to avoid negative values in categorical columns
-        X = torch.zeros(batch_size, sequence_length, len(colmap.feat_names), device=device)
+        X = torch.zeros(
+            batch_size, sequence_length, len(colmap.feat_names), device=device
+        )
         inputs = build_model_inputs(X, colmap)
 
         return inputs
@@ -282,7 +286,9 @@ class TestModelWithAlibi:
         for name, param in model.named_parameters():
             if param.requires_grad:
                 assert param.grad is not None, f"No gradient for {name}"
-                assert torch.isfinite(param.grad).all(), f"Non-finite gradient for {name}"
+                assert torch.isfinite(
+                    param.grad
+                ).all(), f"Non-finite gradient for {name}"
 
     def test_different_sequence_lengths_alibi(self, config_alibi):
         """Test that ALiBi works with different sequence lengths."""
@@ -295,7 +301,9 @@ class TestModelWithAlibi:
 
         # Test with different sequence lengths
         for seq_len in [8, 16, 32, 64]:
-            X = torch.zeros(batch_size, seq_len, len(colmap.feat_names) + 1, device=device)
+            X = torch.zeros(
+                batch_size, seq_len, len(colmap.feat_names) + 1, device=device
+            )
             inputs = build_model_inputs(X, colmap)
 
             with torch.no_grad():

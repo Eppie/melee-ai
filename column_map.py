@@ -78,7 +78,6 @@ class ColumnMap:
         self.y_shoulder_idx = _tid("p1_shoulder_idx")
         self.y_buttons = [_tid(name) for name in BUTTON_TARGET_NAMES]
 
-
     @classmethod
     def from_dataset(
         cls, dataset

@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
 from config import get_config, init_config
+from config.reward_config import RewardConfig
 from constants import CONTROLLER_KEY_GROUPS, _MAIN_STICK_LABELS, _BUTTON_PRETTY
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
@@ -808,11 +809,12 @@ def _prepare_dataloader(
 def _frame_rewards_from_batch(
     X: torch.Tensor,
     colmap: ColumnMap,
+    reward_cfg: RewardConfig,
     reward_features: Optional[RewardFeatureIdx],
 ) -> torch.Tensor:
     """Recompute per-frame rewards for logging."""
     features = reward_features or build_reward_feature_index(colmap)
-    return compute_frame_rewards(X, idx=features)
+    return compute_frame_rewards(X, idx=features, reward_cfg=reward_cfg)
 
 
 def _build_sample_weight_ratios(loss_cfg) -> SampleWeightRatios:
@@ -1066,11 +1068,13 @@ def _accumulate_value_metrics(
     value_target = compute_value_targets(
         X,
         colmap,
-        gamma=config.rl.gamma,
+        reward_cfg=config.reward,
         reward_idx=value_idx,
         reward_features=reward_features,
     )
-    frame_rewards = _frame_rewards_from_batch(X, colmap, reward_features)
+    frame_rewards = _frame_rewards_from_batch(
+        X, colmap, config.reward, reward_features
+    )
 
     value_mse = ((value_pred - value_target) ** 2).mean().item()
     value_mae = (value_pred - value_target).abs().mean().item()

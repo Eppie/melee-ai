@@ -21,53 +21,15 @@ from constants import (
 from controller_utils import (
     SHOULDER_QUANTIZED,
 )
-from controller_quantization_shared import quantize_stick_indices
+from controller_quantization_shared import (
+    InputDomain,
+    clamp_unit_circle,
+    quantize_stick_indices_unit01,
+    quantize_stick_indices_unit11,
+    sticks01_to_unit11,
+)
 
-
-# TODO: Do we need clamp here?
-def sticks01_to_unit11(xy01: torch.Tensor) -> torch.Tensor:
-    """Map controller coordinates from ``[0, 1]`` to ``[-1, 1]``.
-
-    Example
-    -------
-    Consider ``xy01 = tensor([[0.2, 0.8], [1.3, -0.4]])``.
-
-    1. Multiply by ``2`` and subtract ``1`` to rescale the square:
-       ``xy11 = xy01 * 2 - 1`` gives ``[[-0.6, 0.6], [1.6, -1.8]]``.
-    2. Clamp each element to ``[-1, 1]`` so impossible analog values snap to the
-       stick limits, resulting in ``[[-0.6, 0.6], [1.0, -1.0]]``.
-    3. Call :func:`_clamp_unit_circle` so that ``(1.0, -1.0)`` is renormalized to
-       lie on the perimeter of the unit circle (the vector has length ``√2`` so it
-       is divided by ``√2``), yielding ``[[-0.6, 0.6], [0.7071, -0.7071]]``.
-
-    The returned tensor therefore mirrors exactly how analog sticks are scaled and
-    saturated before palette lookup in quantization.
-    """
-    xy11 = torch.clamp(xy01 * 2.0 - 1.0, -1.0, 1.0)
-    return _clamp_unit_circle(xy11)
-
-
-def _clamp_unit_circle(xy11: torch.Tensor) -> torch.Tensor:
-    """Project stick coordinates in ``[-1, 1]`` back onto the unit circle.
-
-    Example
-    -------
-    With ``xy11 = tensor([[0.9, 0.9], [0.3, -0.4]])`` the squared radii are
-    ``[1.62, 0.25]``. Only the first row exceeds ``1`` so we divide it by its
-    radius ``sqrt(1.62) ≈ 1.2728`` to produce ``[0.7071, 0.7071]`` while the
-    second row remains ``[0.3, -0.4]``. The function therefore returns
-    ``tensor([[0.7071, 0.7071], [0.3, -0.4]])`` showing how just the overflowing
-    vectors are rescaled.
-    """
-    # Optimized: use squared norm to avoid sqrt, then only normalize if needed
-    radius_sq = (xy11 * xy11).sum(dim=-1, keepdim=True)
-    # Only normalize if radius > 1
-    scale = torch.where(
-        radius_sq > 1.0,
-        torch.sqrt(radius_sq.clamp_min(1e-12)),
-        torch.ones_like(radius_sq),
-    )
-    return xy11 / scale
+_clamp_unit_circle = clamp_unit_circle
 
 
 def _device_cache_key(device: torch.device) -> Tuple[str, Optional[int]]:
@@ -126,21 +88,25 @@ def _quantize_stick(
     xy: torch.Tensor,
     palette: torch.Tensor,
     palette_norm_sq: torch.Tensor,
-    input_domain: str,
+    input_domain: InputDomain,
     batch_size: int,
     seq_len: int,
 ) -> torch.Tensor:
     """Convert continuous stick coordinates to palette indices via distance."""
-    idx = quantize_stick_indices(xy, palette, palette_norm_sq, input_domain)
+    if input_domain == "unit01":
+        idx = quantize_stick_indices_unit01(xy, palette, palette_norm_sq)
+    elif input_domain == "unit11":
+        idx = quantize_stick_indices_unit11(xy, palette, palette_norm_sq)
+    else:
+        raise ValueError(f"Unknown input domain: {input_domain}")
     return idx.view(batch_size, seq_len)
 
 
-# TODO: auto should not be needed. also we shouldn't have to touch buttons.
 def quantize_targets(
     targets: Tensor,
     column_map: ColumnMap,
     *,
-    input_domain: str = "auto",
+    input_domain: InputDomain,
 ) -> Dict[str, torch.Tensor]:
     """Quantize raw controller targets with a frame-by-frame walkthrough.
 
@@ -151,8 +117,8 @@ def quantize_targets(
     ``p1_c_stick_(x, y)``, and button probabilities follow. For the first batch
     element we might have::
 
-        main stick  -> [[0.2, 0.8], [1.1, -0.4], [0.5, 0.5]]
-        c-stick     -> [[0.0, 1.0], [0.4, 0.4], [0.8, 0.1]]
+        main stick  -> [[0.2, 0.8], [1.0, 0.4], [0.5, 0.5]]
+        c-stick     -> [[0.1, 1.0], [0.4, 0.4], [0.8, 0.1]]
         buttons     -> [[0.7, 0.1, 0.9, 0.0, 0.2], ...]
 
     ``quantize_targets`` performs the following steps for each batch:

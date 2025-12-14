@@ -175,7 +175,7 @@ def perform_forward_pass(
         value_target = compute_value_targets(
             X,
             components.column_map,
-            gamma=config.rl.gamma,
+            reward_cfg=config.reward,
             reward_idx=components.value_idx,
         )
 

@@ -58,65 +58,24 @@ def test_quantize_stick_unit11(palette_data):
     assert torch.equal(result, expected)
 
 
-def test_quantize_stick_auto_domain_as_unit01(palette_data):
-    """Tests the 'auto' domain when input is in [0, 1] range."""
-    palette, palette_norm_sq = palette_data
-    B, L = 1, 2
-    # Input in [0, 1] range
-    xy = torch.tensor([[[0.5, 0.5], [1.0, 0.5]]], dtype=torch.float32)
-
-    # Expected indices (should behave like unit01)
-    neutral_idx = np.where(
-        (np.array(CONTROL_STICK_QUANTIZED) == [0.0, 0.0]).all(axis=1)
-    )[0][0]
-    right_idx = np.where((np.array(CONTROL_STICK_QUANTIZED) == [1.0, 0.0]).all(axis=1))[
-        0
-    ][0]
-
-    expected = torch.tensor([[neutral_idx, right_idx]], dtype=torch.long)
-    result = _quantize_stick(xy, palette, palette_norm_sq, "auto", B, L)
-    assert torch.equal(result, expected)
-
-
-def test_quantize_stick_auto_domain_as_unit11(palette_data):
-    """Tests the 'auto' domain when input is outside [0, 1] range."""
-    palette, palette_norm_sq = palette_data
-    B, L = 1, 2
-    # Input in [-1, 1] range
-    xy = torch.tensor([[[0.0, 0.0], [-1.0, 0.0]]], dtype=torch.float32)
-
-    # Expected indices (should behave like unit11)
-    neutral_idx = np.where(
-        (np.array(CONTROL_STICK_QUANTIZED) == [0.0, 0.0]).all(axis=1)
-    )[0][0]
-    left_idx = np.where((np.array(CONTROL_STICK_QUANTIZED) == [-1.0, 0.0]).all(axis=1))[
-        0
-    ][0]
-
-    expected = torch.tensor([[neutral_idx, left_idx]], dtype=torch.long)
-    result = _quantize_stick(xy, palette, palette_norm_sq, "auto", B, L)
-    assert torch.equal(result, expected)
-
-
-def test_quantize_stick_auto_domain_greater_than_1(palette_data):
-    """Tests the 'auto' domain when input is greater than 1."""
+def test_quantize_stick_unit01_rejects_out_of_range(palette_data):
+    """unit01 domain should assert if inputs leave [0, 1]."""
     palette, palette_norm_sq = palette_data
     B, L = 1, 1
     xy = torch.tensor([[[1.1, 0.5]]], dtype=torch.float32)
 
-    # Manually calculate the expected index
-    clamped_xy = torch.clamp(xy, -1.0, 1.0)
-    from controller_quantization import _clamp_unit_circle
+    with pytest.raises(ValueError):
+        _quantize_stick(xy, palette, palette_norm_sq, "unit01", B, L)
 
-    xy11 = _clamp_unit_circle(clamped_xy)
-    V = xy11.reshape(-1, 2)
-    v_norm_sq = (V * V).sum(dim=1, keepdim=True)
-    dot = V @ palette.t()
-    d2 = v_norm_sq - 2.0 * dot + palette_norm_sq.unsqueeze(0)
-    expected_idx = torch.argmin(d2, dim=1).view(B, L)
 
-    result = _quantize_stick(xy, palette, palette_norm_sq, "auto", B, L)
-    assert torch.equal(result, expected_idx)
+def test_quantize_stick_unit11_rejects_out_of_range(palette_data):
+    """unit11 domain should assert if inputs leave [-1, 1]."""
+    palette, palette_norm_sq = palette_data
+    B, L = 1, 1
+    xy = torch.tensor([[[1.1, 0.5]]], dtype=torch.float32)
+
+    with pytest.raises(ValueError):
+        _quantize_stick(xy, palette, palette_norm_sq, "unit11", B, L)
 
 
 from controller_quantization import (
@@ -149,11 +108,8 @@ def test_sticks01_to_unit11():
 
     xy01 = torch.tensor([[[1.1, -0.1]]])
 
-    expected = torch.tensor([[[0.7071, -0.7071]]])
-
-    result = sticks01_to_unit11(xy01)
-
-    assert torch.allclose(result, expected, atol=1e-4)
+    with pytest.raises(ValueError):
+        sticks01_to_unit11(xy01)
 
 
 def test_clamp_unit_circle():
@@ -212,7 +168,7 @@ def test_quantize_targets():
     # main_x, main_y, c_x, c_y, button_a, button_b, shoulder
     batch_Y = torch.tensor([[[0.5, 0.5, 0.5, 0.5, 1.0, 0.0, 0.5]]], dtype=torch.float32)
 
-    result = quantize_targets(batch_Y, colmap)
+    result = quantize_targets(batch_Y, colmap, input_domain="unit01")
 
     assert "main_idx" in result
     assert "c_idx" in result
@@ -245,7 +201,7 @@ def test_quantize_targets_shoulders_floor_palette():
         dtype=torch.float32,
     )
 
-    result = quantize_targets(batch_Y, colmap)
+    result = quantize_targets(batch_Y, colmap, input_domain="unit01")
     palette = SHOULDER_QUANTIZED
     expected_indices = torch.tensor(
         [
@@ -278,7 +234,7 @@ def test_quantize_targets_no_shoulder(monkeypatch):
     monkeypatch.setattr("controller_quantization._SHOULDER_PALETTE_CPU", None)
 
     with pytest.raises(AttributeError):
-        quantize_targets(batch_Y, colmap)
+        quantize_targets(batch_Y, colmap, input_domain="unit01")
 
 
 def test_quantize_stick_unit01_out_of_range(palette_data):
@@ -287,15 +243,5 @@ def test_quantize_stick_unit01_out_of_range(palette_data):
     B, L = 1, 1
     xy = torch.tensor([[[1.1, 0.5]]], dtype=torch.float32)
 
-    # Manually calculate the expected index
-    from controller_quantization import sticks01_to_unit11
-
-    xy11 = sticks01_to_unit11(xy)
-    V = xy11.reshape(-1, 2)
-    v_norm_sq = (V * V).sum(dim=1, keepdim=True)
-    dot = V @ palette.t()
-    d2 = v_norm_sq - 2.0 * dot + palette_norm_sq.unsqueeze(0)
-    expected_idx = torch.argmin(d2, dim=1).view(B, L)
-
-    result = _quantize_stick(xy, palette, palette_norm_sq, "unit01", B, L)
-    assert torch.equal(result, expected_idx)
+    with pytest.raises(ValueError):
+        _quantize_stick(xy, palette, palette_norm_sq, "unit01", B, L)

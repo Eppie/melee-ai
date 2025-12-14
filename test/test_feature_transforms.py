@@ -19,14 +19,10 @@ def test_sticks01_to_unit11():
     result = _sticks01_to_unit11(xy01)
     assert np.allclose(result, expected, atol=1e-4)
 
-    # Test case 2: values outside [0, 1]
+    # Test case 2: values outside [0, 1] should raise
     xy01 = np.array([[1.1, -0.1]])
-    # clipped to [[1.0, 0.0]]
-    # scaled to [[1.0, -1.0]]
-    # clamped to [[1/sqrt(2), -1/sqrt(2)]]
-    expected = np.array([[1.0 / np.sqrt(2), -1.0 / np.sqrt(2)]])
-    result = _sticks01_to_unit11(xy01)
-    assert np.allclose(result, expected, atol=1e-4)
+    with pytest.raises(ValueError):
+        _sticks01_to_unit11(xy01)
 
 
 def test_quantize_stick_unit01():
@@ -48,23 +44,8 @@ def test_quantize_stick_out_of_range():
     palette_norm = np.sum(MAIN_PALETTE**2, axis=1, keepdims=True)
     block = np.array([[-0.5, 0.5], [1.1, 0.0]], dtype=np.float32)
 
-    result = _quantize_stick(block.copy(), MAIN_PALETTE, palette_norm)
-
-    # Find closest for [-0.5, 0.5]
-    points = np.asarray(CONTROL_STICK_QUANTIZED)
-    target0 = np.array([-0.5, 0.5])
-    distances0 = np.sum((points - target0) ** 2, axis=1)
-    closest_idx0 = np.argmin(distances0)
-    expected_0 = points[closest_idx0]
-
-    # Find closest for [1.0, 0.0]
-    target1 = np.array([1.0, 0.0])
-    distances1 = np.sum((points - target1) ** 2, axis=1)
-    closest_idx1 = np.argmin(distances1)
-    expected_1 = points[closest_idx1]
-
-    assert np.allclose(result[0], expected_0)
-    assert np.allclose(result[1], expected_1)
+    with pytest.raises(ValueError):
+        _quantize_stick(block.copy(), MAIN_PALETTE, palette_norm)
 
 
 def test_apply_feature_transforms_basic():

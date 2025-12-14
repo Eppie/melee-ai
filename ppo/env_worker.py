@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import torch
 
 from column_map import ColumnMap
 from libmelee.melee import enums
@@ -104,12 +105,7 @@ class EnvWorker:
 
         # Reward computation
         self.reward_idx = build_reward_feature_index(self.column_map)
-
-        # Reward tracking state
-        self.prev_ego_percent = 0.0
-        self.prev_opp_percent = 0.0
-        self.prev_ego_stock = 4
-        self.prev_opp_stock = 4
+        self.prev_features: Optional[np.ndarray] = None
 
         # Stage selection
         self.current_stage = self._select_stage()
@@ -207,6 +203,7 @@ class EnvWorker:
         self.is_warm = False
         self.waiting_for_bootstrap = False
         self.rollout.reset()
+        self.prev_features = None
 
         # Select new stage
         self.current_stage = self._select_stage()
@@ -264,49 +261,28 @@ class EnvWorker:
 
         return features
 
-    def _compute_reward(self, gamestate: GameState, features: np.ndarray) -> float:
+    def _compute_reward(self, features: np.ndarray) -> float:
         """
-        Compute zero-sum reward for current frame based on damage and stocks.
+        Compute zero-sum reward for the transition into the current frame using the shared reward config.
 
-        Reward structure:
-        - Damage dealt to opponent: +damage_delta
-        - Damage taken: -damage_delta
-        - Stock taken from opponent: +1.0
-        - Stock lost: -1.0
-
-        Returns: ego_reward - opp_reward (zero-sum)
+        The implementation reuses the imitation-learning reward path (damage, stock, hitlag, shield)
+        by calling :func:`compute_frame_rewards` on the previous and current feature vectors.
         """
-        ego = gamestate.players.get(self.config.bot_port)
-        opp = gamestate.players.get(self.config.opp_port)
-
-        if ego is None or opp is None:
+        if self.prev_features is None:
+            self.prev_features = features
             return 0.0
 
-        reward = 0.0
+        stacked = np.stack([self.prev_features, features], axis=0)
+        X = torch.from_numpy(stacked).unsqueeze(0)
+        rewards = compute_frame_rewards(
+            X,
+            idx=self.reward_idx,
+            reward_cfg=self.config.reward,
+        )
 
-        # Damage rewards (normalized by 100 for scale)
-        ego_damage_delta = ego.percent - self.prev_ego_percent
-        opp_damage_delta = opp.percent - self.prev_opp_percent
-
-        # Positive reward for damaging opponent, negative for taking damage
-        reward += (opp_damage_delta - ego_damage_delta) / 100.0
-
-        # Stock rewards (large bonus/penalty)
-        ego_stock_delta = ego.stock - self.prev_ego_stock
-        opp_stock_delta = opp.stock - self.prev_opp_stock
-
-        # Positive reward for taking opponent's stock, negative for losing stock
-        reward += (
-            self.prev_opp_stock - opp.stock
-        ) * 1.0  # Opponent lost stock (ego took it)
-        reward -= (self.prev_ego_stock - ego.stock) * 1.0  # Ego lost stock
-
-        # Update tracking state
-        self.prev_ego_percent = ego.percent
-        self.prev_opp_percent = opp.percent
-        self.prev_ego_stock = ego.stock
-        self.prev_opp_stock = opp.stock
-
+        # Reward for transition from prev_features -> features lives at index 0
+        reward = float(rewards[0, 0].item())
+        self.prev_features = features
         return reward
 
     def _apply_neutral_action(self):
@@ -528,11 +504,7 @@ class EnvWorker:
                     self.is_warm = False
                     self.waiting_for_bootstrap = False
                     self.rollout.reset()
-                    # Reset reward tracking state
-                    self.prev_ego_percent = 0.0
-                    self.prev_opp_percent = 0.0
-                    self.prev_ego_stock = 4
-                    self.prev_opp_stock = 4
+                    self.prev_features = None
 
                 # 4. Featurize (only in-game)
                 features = self._featurize(gamestate)
@@ -564,18 +536,21 @@ class EnvWorker:
                     self._apply_action(opp_action, is_ego=False)
 
                 # 10. Compute reward
-                reward = self._compute_reward(gamestate, features)
+                reward = self._compute_reward(features)
 
                 # Diagnostic logging (env 0 only, every 500 frames)
                 if self.global_env_id == 0 and self.frames_since_restart % 500 == 0:
                     print(f"[ENV 0] Frame {self.frames_since_restart}:")
                     print(f"  Reward: {reward:.4f} (stored with this frame)")
-                    print(
-                        f"  Ego damage: {self.prev_ego_percent:.1f}%, stocks: {self.prev_ego_stock}"
-                    )
-                    print(
-                        f"  Opp damage: {self.prev_opp_percent:.1f}%, stocks: {self.prev_opp_stock}"
-                    )
+                    ego_state = gamestate.players.get(self.config.bot_port)
+                    opp_state = gamestate.players.get(self.config.opp_port)
+                    if ego_state and opp_state:
+                        print(
+                            f"  Ego damage: {ego_state.percent:.1f}%, stocks: {ego_state.stock}"
+                        )
+                        print(
+                            f"  Opp damage: {opp_state.percent:.1f}%, stocks: {opp_state.stock}"
+                        )
                     print(
                         f"  Ego action stored: main={ego_action.main_idx}, c={ego_action.c_idx}, buttons={ego_action.buttons}"
                     )
@@ -590,7 +565,7 @@ class EnvWorker:
 
                     # Compute advantages with bootstrap value
                     self.rollout.compute_advantages(
-                        gamma=self.config.gamma,
+                        gamma=self.config.reward.gamma,
                         gae_lambda=self.config.gae_lambda,
                     )
 

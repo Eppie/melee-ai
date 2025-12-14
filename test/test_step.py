@@ -20,6 +20,9 @@ def build_training_components() -> TrainingComponents:
     model = mock.MagicMock()
     model.parameters.return_value = [torch.ones(1, requires_grad=True)]
 
+    # TrainingComponents signature expects a dataset; tests do not use it, so inject None.
+    dataset = None
+
     return TrainingComponents(
         config=SimpleNamespace(train=SimpleNamespace(grad_clip=1.0)),
         model=model,
@@ -31,6 +34,7 @@ def build_training_components() -> TrainingComponents:
         ratios=None,
         column_map=None,
         value_idx=0,
+        dataset=dataset,
         loader=None,
         sampler=None,
         total_steps=0,

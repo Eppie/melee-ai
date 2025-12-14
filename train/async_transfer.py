@@ -279,6 +279,23 @@ class BatchedStatsTransfer:
         if not self.tensors:
             return {}
 
+        # When tensors live on CPU/MPS there is nothing to batch to pinned memory.
+        # Trying to use the CUDA-oriented buffers on these backends produces garbage values,
+        # so fall back to a straightforward CPU conversion.
+        uses_cuda = torch.cuda.is_available() and any(
+            tensor.is_cuda for tensor in self.tensors.values()
+        )
+        if not uses_cuda:
+            results: dict[str, float | list] = {}
+            for name, tensor in self.tensors.items():
+                detached = tensor.detach()
+                if detached.dim() == 0:
+                    results[name] = float(detached.to("cpu").item())
+                else:
+                    results[name] = detached.reshape(-1).to("cpu").tolist()
+            self.tensors.clear()
+            return results
+
         results = {}
 
         # Group by size for efficient batching
@@ -286,7 +303,7 @@ class BatchedStatsTransfer:
         arrays = {}
 
         for name, tensor in self.tensors.items():
-            if tensor.numel() == 1:
+            if tensor.dim() == 0:
                 scalars[name] = tensor
             else:
                 arrays[name] = tensor

@@ -7,8 +7,8 @@ import pytest
 import torch
 
 from controller_quantization_shared import (
-    _sticks01_to_unit11,
-    quantize_stick_indices,
+    quantize_stick_indices_unit01,
+    sticks01_to_unit11,
 )
 from feature_transforms import MAIN_PALETTE, _MAIN_PALETTE_NORM
 
@@ -28,7 +28,7 @@ def test_sticks01_to_unit11_with_batch_dimension():
     assert sticks.shape == (batch_size, 2)
 
     # This should not raise IndexError
-    result = _sticks01_to_unit11(sticks)
+    result = sticks01_to_unit11(sticks)
 
     # Check that results are within or on the unit circle
     norms = np.linalg.norm(result, axis=-1)
@@ -40,7 +40,7 @@ def test_sticks01_to_unit11_single_coordinate_outside_circle():
     # (1.0, 1.0) in [0,1] becomes (1.0, 1.0) in [-1,1], which is outside the circle
     stick = np.array([1.0, 1.0])
 
-    result = _sticks01_to_unit11(stick)
+    result = sticks01_to_unit11(stick)
 
     # Should be clamped to unit circle
     norm = np.linalg.norm(result)
@@ -59,9 +59,7 @@ def test_quantize_stick_indices_with_batch():
     )
 
     # This should not raise IndexError
-    indices = quantize_stick_indices(
-        sticks, MAIN_PALETTE, _MAIN_PALETTE_NORM, input_domain="unit01"
-    )
+    indices = quantize_stick_indices_unit01(sticks, MAIN_PALETTE, _MAIN_PALETTE_NORM)
 
     # Verify we got valid indices
     assert indices.shape == (3,)
@@ -80,9 +78,7 @@ def test_quantize_stick_indices_3d_input():
     )
 
     # This should not raise IndexError
-    indices = quantize_stick_indices(
-        sticks, MAIN_PALETTE, _MAIN_PALETTE_NORM, input_domain="unit01"
-    )
+    indices = quantize_stick_indices_unit01(sticks, MAIN_PALETTE, _MAIN_PALETTE_NORM)
 
     # Verify output shape
     assert indices.shape == (2, 3)
@@ -95,8 +91,8 @@ def test_sticks01_to_unit11_torch_consistency():
     sticks_np = np.array([[1.0, 1.0], [0.5, 0.5], [0.0, 1.0]])
     sticks_torch = torch.from_numpy(sticks_np).float()
 
-    result_np = _sticks01_to_unit11(sticks_np)
-    result_torch = _sticks01_to_unit11(sticks_torch).numpy()
+    result_np = sticks01_to_unit11(sticks_np)
+    result_torch = sticks01_to_unit11(sticks_torch).numpy()
 
     # Results should be very close (accounting for floating point differences)
     np.testing.assert_allclose(result_np, result_torch, rtol=1e-6, atol=1e-6)
@@ -117,7 +113,7 @@ def test_sticks01_to_unit11_various_shapes(shape):
     arr = np.ones(shape, dtype=np.float32)
 
     # Should not raise IndexError
-    result = _sticks01_to_unit11(arr)
+    result = sticks01_to_unit11(arr)
 
     # Check shape is preserved
     assert result.shape == shape
@@ -127,16 +123,8 @@ def test_sticks01_to_unit11_various_shapes(shape):
     assert np.all(norms <= 1.0 + 1e-6)
 
 
-def test_clamp_with_auto_domain():
-    """Test the auto domain detection with values that need clamping."""
-    # Values in [0,1] range that will exceed unit circle
-    sticks = np.array([[1.0, 1.0], [0.9, 0.9]])
-
-    # Auto domain should detect [0,1] range and convert properly
-    indices = quantize_stick_indices(
-        sticks, MAIN_PALETTE, _MAIN_PALETTE_NORM, input_domain="auto"
-    )
-
-    assert indices.shape == (2,)
-    assert np.all(indices >= 0)
-    assert np.all(indices < len(MAIN_PALETTE))
+def test_quantize_stick_indices_unit01_range_asserts():
+    """unit01 path should enforce range bounds tightly."""
+    sticks = np.array([[1.0000015, 0.5]])
+    with pytest.raises(ValueError):
+        quantize_stick_indices_unit01(sticks, MAIN_PALETTE, _MAIN_PALETTE_NORM)

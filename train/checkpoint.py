@@ -185,46 +185,38 @@ def _load_latest_checkpoint(
         # Handle torch.compile() prefix mismatch (both directions)
         model_state = match_state_dict_keys(model_state, model)
 
-        original_state = model_state.copy()
-
         try:
             # Always try strict loading first
-            try:
-                model.load_state_dict(model_state, strict=True)
-            except RuntimeError as e:
-                # Get expected keys
-                model_keys = set(model.state_dict().keys())
-                ckpt_keys = set(model_state.keys())
-                missing_keys = list(model_keys - ckpt_keys)
-                unexpected_keys = list(ckpt_keys - model_keys)
-
-                # Check for shape mismatches in error message
-                error_msg = str(e)
-
-                incompatible = model.load_state_dict(filtered_state, strict=False)
-                missing = list(getattr(incompatible, "missing_keys", ()))
-                unexpected = list(getattr(incompatible, "unexpected_keys", ()))
-
-                # If validation passed, show what was loaded
-                if allow_partial_load:
-                    if missing:
-                        preview = ", ".join(missing[:5])
-                        more = "..." if len(missing) > 5 else ""
-                        print(
-                            f"Checkpoint is missing {len(missing)} parameter(s); "
-                            f"initialising from current model weights: {preview}{more}"
-                        )
-                    if unexpected:
-                        preview = ", ".join(unexpected[:5])
-                        more = "..." if len(unexpected) > 5 else ""
-                        print(
-                            f"Checkpoint has {len(unexpected)} unexpected parameter(s); ignoring: {preview}{more}"
-                        )
+            model.load_state_dict(model_state, strict=True)
         except RuntimeError as err:
-            raise RuntimeError(
-                "Checkpoint parameters do not match the current model. "
-                "Set train.allow_partial_checkpoint_load=True if this is intentional."
-            ) from err
+            if not allow_partial_load:
+                raise RuntimeError(
+                    "Checkpoint parameters do not match the current model. "
+                    "Set train.allow_partial_checkpoint_load=True if this is intentional."
+                ) from err
+
+            # Filter to keys that both exist and match shape to avoid shape errors
+            target_state = model.state_dict()
+            filtered_state = {
+                k: v for k, v in model_state.items() if k in target_state and v.shape == target_state[k].shape
+            }
+            incompatible = model.load_state_dict(filtered_state, strict=False)
+            missing = list(getattr(incompatible, "missing_keys", ()))
+            unexpected = list(getattr(incompatible, "unexpected_keys", ()))
+
+            if missing:
+                preview = ", ".join(missing[:5])
+                more = "..." if len(missing) > 5 else ""
+                print(
+                    f"Checkpoint is missing {len(missing)} parameter(s); "
+                    f"initialising from current model weights: {preview}{more}"
+                )
+            if unexpected:
+                preview = ", ".join(unexpected[:5])
+                more = "..." if len(unexpected) > 5 else ""
+                print(
+                    f"Checkpoint has {len(unexpected)} unexpected parameter(s); ignoring: {preview}{more}"
+                )
 
     opt_state = ckpt.get("optimizer")
     if opt_state:

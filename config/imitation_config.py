@@ -93,7 +93,7 @@ class ImitationConfig(BaseModel):
         description=(
             "DEPRECATED for value_advantage strategy (now uses model-dependent advantages). "
             "Discount factor for GAE advantage estimation. Only used if advantage_use_gae=True. "
-            "Should match RLConfig.gamma (0.995) for consistency. This controls how much future "
+            "Should match RewardConfig.gamma (0.995) for consistency. This controls how much future "
             "value differences are discounted when computing smoothed advantages."
         ),
     )

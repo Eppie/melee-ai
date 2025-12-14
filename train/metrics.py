@@ -19,11 +19,15 @@ class StickMetrics:
     def update(
         self, pred_idx: torch.Tensor, true_idx: torch.Tensor, majority_baseline: int
     ):
-        self.correct += (pred_idx == true_idx).sum()
-        self.total += true_idx.numel()
-        bincount = torch.bincount(true_idx, minlength=self.label_counts.shape[0])
+        # Flatten so torch.bincount always receives 1-D input.
+        pred_flat = pred_idx.reshape(-1)
+        true_flat = true_idx.reshape(-1)
+
+        self.correct += (pred_flat == true_flat).sum()
+        self.total += true_flat.numel()
+        bincount = torch.bincount(true_flat, minlength=self.label_counts.shape[0])
         self.label_counts += bincount[: self.label_counts.shape[0]]
-        self.maj_correct += (true_idx == majority_baseline).sum()
+        self.maj_correct += (true_flat == majority_baseline).sum()
 
     def reset(self):
         self.correct.zero_()
@@ -47,11 +51,14 @@ class PositionMetrics:
         majority_baseline: int,
         spatial_error_sum: torch.Tensor,
     ):
-        self.correct += (pred_idx == true_idx).sum()
-        self.total += true_idx.numel()
-        bincount = torch.bincount(true_idx, minlength=self.label_counts.shape[0])
+        pred_flat = pred_idx.reshape(-1)
+        true_flat = true_idx.reshape(-1)
+
+        self.correct += (pred_flat == true_flat).sum()
+        self.total += true_flat.numel()
+        bincount = torch.bincount(true_flat, minlength=self.label_counts.shape[0])
         self.label_counts += bincount[: self.label_counts.shape[0]]
-        self.maj_correct += (true_idx == majority_baseline).sum()
+        self.maj_correct += (true_flat == majority_baseline).sum()
         self.spatial_error_sum += spatial_error_sum
 
     def reset(self):

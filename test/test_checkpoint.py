@@ -229,7 +229,13 @@ def test_init_config_from_checkpoint_missing_config(tmp_path: Path) -> None:
 
 def test_config_round_trip_preserves_all_fields(tmp_path: Path) -> None:
     """Test that saving and loading preserves all config fields."""
-    from config.config import TrainConfig, GPTConfig, LossConfig, RLConfig
+    from config.config import (
+        TrainConfig,
+        GPTConfig,
+        LossConfig,
+        RewardConfig,
+        RLConfig,
+    )
 
     model = torch.nn.Linear(4, 2)
 
@@ -251,9 +257,8 @@ def test_config_round_trip_preserves_all_fields(tmp_path: Path) -> None:
             main_change=3.0,
             button_z=15.0,
         ),
-        rl=RLConfig(
-            gamma=0.99,
-        ),
+        reward=RewardConfig(gamma=0.99),
+        rl=RLConfig(value_loss_coef=0.5),
     )
 
     ckpt_path = tmp_path / "round_trip.pt"
@@ -272,7 +277,8 @@ def test_config_round_trip_preserves_all_fields(tmp_path: Path) -> None:
     assert loaded.model.dropout == 0.05
     assert loaded.loss_weights.main_change == 3.0
     assert loaded.loss_weights.button_z == 15.0
-    assert loaded.rl.gamma == 0.99
+    assert loaded.reward.gamma == 0.99
+    assert loaded.rl.value_loss_coef == 0.5
 
 
 def test_set_config(tmp_path: Path) -> None:

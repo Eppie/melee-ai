@@ -76,12 +76,8 @@ def test_output_sanity(checkpoint_path: Path):
     features[..., colmap.ego_action_idx] = 0  # Some action
     features[..., colmap.opp_action_idx] = 0  # Some action
 
-    # Append horizon feature (model was trained with this)
-    horizon = torch.full((1, seq_len, 1), 0.5)
-    features_with_horizon = torch.cat([features, horizon], dim=-1)
-
     # Build proper model inputs
-    inputs = build_model_inputs(features_with_horizon, colmap)
+    inputs = build_model_inputs(features, colmap)
 
     # Run forward pass
     with torch.inference_mode():
@@ -224,11 +220,7 @@ def compare_checkpoints(imitation_ckpt: Path, ppo_ckpt: Path):
     features[..., colmap.ego_action_idx] = 0
     features[..., colmap.opp_action_idx] = 0
 
-    # Append horizon
-    horizon = torch.full((1, 256, 1), 0.5)
-    features_with_horizon = torch.cat([features, horizon], dim=-1)
-
-    inputs = build_model_inputs(features_with_horizon, colmap)
+    inputs = build_model_inputs(features, colmap)
 
     with torch.inference_mode():
         out_im = model_im(inputs)

@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 from schema import get_feature_names
 
+from config.reward_config import RewardConfig
+
 
 class PPOConfig(BaseModel):
     """Configuration for hierarchical PPO training system."""
@@ -120,12 +122,6 @@ class PPOConfig(BaseModel):
         ge=0.0,
         description="Entropy bonus coefficient",
     )
-    gamma: float = Field(
-        default=0.995,
-        ge=0.0,
-        le=1.0,
-        description="Discount factor for returns",
-    )
     gae_lambda: float = Field(
         default=0.95,
         ge=0.0,
@@ -180,6 +176,10 @@ class PPOConfig(BaseModel):
     checkpoint_dir: Path = Field(
         default=Path("ppo_checkpoints"),
         description="Directory for saving PPO checkpoints",
+    )
+    reward: RewardConfig = Field(
+        default_factory=RewardConfig,
+        description="Shared reward shaping used for both imitation and PPO.",
     )
 
     @property

@@ -208,7 +208,7 @@ def run_validation(
             value_target = compute_value_targets(
                 X,
                 colmap,
-                gamma=config.rl.gamma,
+                reward_cfg=config.reward,
                 reward_idx=value_idx,
             )
             value_loss_raw = torch.nn.functional.mse_loss(

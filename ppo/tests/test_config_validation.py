@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 import torch
 
+from column_map import ColumnMap
+from config import Config, RewardConfig
 from ppo.config import PPOConfig
+from schema import get_feature_names, get_target_names
+from train.value_head import build_reward_feature_index, compute_frame_rewards
 
 
 @pytest.fixture
@@ -179,6 +183,30 @@ def test_total_envs_property(temp_files):
     )
 
     assert config.total_envs == 96
+
+
+def test_reward_config_alignment_with_imitation(temp_files):
+    """PPO should reuse the same reward shaping as imitation learning."""
+    base_cfg = Config(
+        reward=RewardConfig(reward_damage_dealt=0.123),
+    )
+
+    ppo_cfg = PPOConfig(
+        dolphin_path=temp_files["dolphin"],
+        iso_path=temp_files["iso"],
+        init_checkpoint=temp_files["checkpoint"],
+        reward=base_cfg.reward,
+    )
+
+    colmap = ColumnMap(get_feature_names(), get_target_names())
+    idx = build_reward_feature_index(colmap)
+    X = torch.zeros((1, 2, len(colmap.feat_names)), dtype=torch.float32)
+    X[0, :, idx.p2_percent] = torch.tensor([0.0, 2.0])
+
+    rewards_il = compute_frame_rewards(X, idx=idx, reward_cfg=base_cfg.reward)
+    rewards_ppo = compute_frame_rewards(X, idx=idx, reward_cfg=ppo_cfg.reward)
+
+    assert torch.allclose(rewards_il, rewards_ppo)
 
 
 if __name__ == "__main__":

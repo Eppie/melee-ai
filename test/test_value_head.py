@@ -46,7 +46,7 @@ def _reset_config():
 def reward_setup():
     colmap = _build_colmap()
     idx = build_reward_feature_index(colmap)
-    return colmap, idx
+    return colmap, idx, get_config().reward
 
 
 @pytest.fixture(scope="module")
@@ -70,12 +70,14 @@ def replay_reward_data():
         return apply_feature_transforms(buf, feat_names)
 
     X = torch.from_numpy(transform(X_np)).unsqueeze(0)
-    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
+    rewards = compute_frame_rewards(X, idx=idx, reward_cfg=cfg.reward).squeeze(0)
 
     swapped_rows = [_swap_row_players(row) for row in rows]
     X_swapped, _, _, _, _, _ = _rows_to_dense(swapped_rows, schema)
     swapped_rewards = compute_frame_rewards(
-        torch.from_numpy(transform(X_swapped)).unsqueeze(0), idx=idx
+        torch.from_numpy(transform(X_swapped)).unsqueeze(0),
+        idx=idx,
+        reward_cfg=cfg.reward,
     ).squeeze(0)
 
     reset_config()
@@ -87,7 +89,7 @@ def replay_reward_data():
 
 def test_compute_frame_rewards_damage_and_stock(reward_setup):
     """Damage deltas and stock losses convert to the configured rewards."""
-    colmap, idx = reward_setup
+    colmap, idx, reward_cfg = reward_setup
     assert idx.p2_percent is not None and idx.p2_action is not None
 
     seq_len = 4
@@ -101,9 +103,9 @@ def test_compute_frame_rewards_damage_and_stock(reward_setup):
         [50.0, 50.0, 5.0, 5.0]
     )  # Alive -> Alive -> Dying -> Dying
 
-    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
+    rewards = compute_frame_rewards(X, idx=idx, reward_cfg=reward_cfg).squeeze(0)
 
-    cfg = get_config().rl
+    cfg = reward_cfg
     expected = torch.tensor(
         [
             2.0 * float(cfg.reward_damage_dealt),
@@ -118,7 +120,7 @@ def test_compute_frame_rewards_damage_and_stock(reward_setup):
 
 def test_compute_frame_rewards_shield_penalty(reward_setup):
     """Low shield strength applies a per-frame penalty only to the ego player."""
-    colmap, idx = reward_setup
+    colmap, idx, reward_cfg = reward_setup
     assert idx.p1_shield_strength is not None
     assert idx.p2_shield_strength is not None
 
@@ -127,9 +129,9 @@ def test_compute_frame_rewards_shield_penalty(reward_setup):
     X[0, :, idx.p2_shield_strength] = 1.0  # keep opponent shielded to avoid penalties
     X[0, :, idx.p1_shield_strength] = torch.tensor([1.0, 0.1, 0.4])
 
-    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
+    rewards = compute_frame_rewards(X, idx=idx, reward_cfg=reward_cfg).squeeze(0)
 
-    cfg = get_config().rl
+    cfg = reward_cfg
     # penalty = clamp(1 - 2 * shield, 0, 1) * reward_low_shield
     expected = torch.tensor(
         [
@@ -144,7 +146,7 @@ def test_compute_frame_rewards_shield_penalty(reward_setup):
 
 def test_compute_frame_rewards_hitlag_terms(reward_setup):
     """Attacking frames award the configured opponent hitlag bonus."""
-    colmap, idx = reward_setup
+    colmap, idx, reward_cfg = reward_setup
     assert idx.p1_is_in_hitlag is not None
     assert idx.p1_is_defender_in_hitlag is not None
     assert idx.p2_is_in_hitlag is not None
@@ -158,9 +160,9 @@ def test_compute_frame_rewards_hitlag_terms(reward_setup):
     # Frame 2: roles swap, p2 hits p1.
     X[0, 2, idx.p1_is_in_hitlag] = 1.0
 
-    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
+    rewards = compute_frame_rewards(X, idx=idx, reward_cfg=reward_cfg).squeeze(0)
 
-    cfg = get_config().rl
+    cfg = reward_cfg
     expected = torch.tensor(
         [
             float(cfg.reward_hitlag_opponent),
@@ -174,7 +176,7 @@ def test_compute_frame_rewards_hitlag_terms(reward_setup):
 
 def test_compute_value_targets_sequence_gamma(reward_setup):
     """Discounted returns should honor the provided gamma factor."""
-    colmap, _ = reward_setup
+    colmap, _, reward_cfg = reward_setup
     seq_len = 4
     X = _zeros_feature_tensor(colmap, seq_len)
     reward_col = colmap.value_idx
@@ -185,7 +187,9 @@ def test_compute_value_targets_sequence_gamma(reward_setup):
 
     gamma = 0.9
     returns = (
-        compute_value_targets(X, colmap, gamma=gamma, reward_idx=reward_col)
+        compute_value_targets(
+            X, colmap, reward_cfg=reward_cfg.model_copy(update={"gamma": gamma}), reward_idx=reward_col
+        )
         .squeeze(0)
         .squeeze(-1)
     )
@@ -195,7 +199,7 @@ def test_compute_value_targets_sequence_gamma(reward_setup):
 
 def test_compute_value_targets_fallback_reward_computation(reward_setup):
     """Legacy datasets without stored rewards should recompute values on the fly."""
-    colmap, idx = reward_setup
+    colmap, idx, reward_cfg = reward_setup
     seq_len = 4
     X = _zeros_feature_tensor(colmap, seq_len)
     X[0, :, idx.p2_percent] = torch.tensor([0.0, 1.0, 1.0, 2.0])
@@ -205,7 +209,7 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
         compute_value_targets(
             X,
             colmap,
-            gamma=gamma,
+            reward_cfg=reward_cfg.model_copy(update={"gamma": gamma}),
             reward_idx=None,
             reward_features=idx,
         )
@@ -213,7 +217,7 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
         .squeeze(-1)
     )
 
-    cfg = get_config().rl
+    cfg = reward_cfg
     expected_rewards = torch.tensor(
         [
             float(cfg.reward_damage_dealt),

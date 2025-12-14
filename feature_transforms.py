@@ -7,7 +7,12 @@ from typing import Dict, List, Sequence, TYPE_CHECKING
 import numpy as np
 
 from controller_utils import C_STICK_QUANTIZED, CONTROL_STICK_QUANTIZED
-from controller_quantization_shared import quantize_stick_indices
+from controller_quantization_shared import (
+    quantize_stick_indices_unit01,
+    sticks01_to_unit11,
+)
+
+_sticks01_to_unit11 = sticks01_to_unit11
 
 if TYPE_CHECKING:
     from column_map import ColumnMap
@@ -29,24 +34,13 @@ _SCALE_FACTORS: Dict[str, float] = {
 }
 
 
-def _sticks01_to_unit11(xy01: np.ndarray) -> np.ndarray:
-    """Convert [0, 1] stick coordinates to [-1, 1] with unit-circle clamping."""
-    xy01_clipped = np.clip(xy01, 0.0, 1.0)
-    xy11 = xy01_clipped * 2.0 - 1.0
-    norms = np.linalg.norm(xy11, axis=1)
-    mask = norms > 1.0
-    if np.any(mask):
-        xy11[mask] /= norms[mask, np.newaxis]
-    return xy11
-
-
 def _quantize_stick(
     block: np.ndarray,
     palette: np.ndarray,
     palette_norm: np.ndarray,
 ) -> np.ndarray:
     """Snap (x, y) stick pairs to the nearest palette entry."""
-    idx = quantize_stick_indices(block, palette, palette_norm, input_domain="auto")
+    idx = quantize_stick_indices_unit01(block, palette, palette_norm)
     return palette[idx]
 
 
@@ -186,4 +180,6 @@ __all__ = [
     "C_PALETTE",
     "apply_feature_transforms",
     "apply_feature_transforms_dict",
+    "_quantize_stick",
+    "_sticks01_to_unit11",
 ]

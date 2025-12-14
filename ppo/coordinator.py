@@ -874,21 +874,20 @@ class Coordinator:
                     returns = batch["returns"].to(self.device)
                     actions = batch["actions"]  # Stays on CPU (structured array)
 
-                    # Convert actions to dict format
-                    # Actions are [B, T] but we only need the final timestep for PPO
+                    # Convert actions to dict format (train on all timesteps)
                     # Use np.ascontiguousarray to fix stride alignment issues with structured arrays
                     action_dict = {
                         "main_idx": torch.from_numpy(
-                            np.ascontiguousarray(actions["main_idx"][:, -1])
+                            np.ascontiguousarray(actions["main_idx"])
                         ).to(self.device),
                         "c_idx": torch.from_numpy(
-                            np.ascontiguousarray(actions["c_idx"][:, -1])
+                            np.ascontiguousarray(actions["c_idx"])
                         ).to(self.device),
                         "shoulder_idx": torch.from_numpy(
-                            np.ascontiguousarray(actions["shoulder_idx"][:, -1])
+                            np.ascontiguousarray(actions["shoulder_idx"])
                         ).to(self.device),
                         "buttons": torch.from_numpy(
-                            np.ascontiguousarray(actions["buttons"][:, -1, :])
+                            np.ascontiguousarray(actions["buttons"])
                         ).to(self.device),
                     }
 

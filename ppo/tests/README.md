@@ -13,9 +13,6 @@ pytest ppo/tests/test_ppo_loss.py -v
 
 # Run with coverage
 pytest ppo/tests/ --cov=ppo --cov-report=html
-
-# Run specific test
-pytest ppo/tests/test_ppo_loss.py::test_horizon_feature_added -v
 ```
 
 ## Test Categories
@@ -24,7 +21,6 @@ pytest ppo/tests/test_ppo_loss.py::test_horizon_feature_added -v
 - Action log probability computation
 - Entropy calculation
 - Full PPO loss with all components
-- Horizon feature handling
 - Button type conversion (uint8 → bool)
 - Clipping behavior
 
@@ -37,8 +33,6 @@ pytest ppo/tests/test_ppo_loss.py::test_horizon_feature_added -v
 - Multi-rollout batching
 
 ### 3. Coordinator Shape Tests (`test_coordinator_shapes.py`)
-- Horizon feature appending
-- Model input building with horizon
 - Action shape extraction (final timestep)
 - Feature scaling/unscaling
 - Memory estimation
@@ -56,7 +50,6 @@ pytest ppo/tests/test_ppo_loss.py::test_horizon_feature_added -v
    - Variable name shadowing (F vs torch.nn.functional.F)
 
 3. **Missing Features**: Tests verify:
-   - Horizon feature added before model forward
    - All loss components present
 
 4. **Memory Issues**: Tests check:

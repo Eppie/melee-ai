@@ -28,7 +28,7 @@
 5. **Trace git history for the regression**
    - `git log -S 'input_domain="unit11"' -- train.py validation.py sweep.py`.
    - Found commit `2cddf1a48aab34a7dd5f11828067b02e62f88b07` (“lots more”, Oct 14 2025) which explicitly switched the training/validation calls to `quantize_targets(..., input_domain="unit11")`.
-   - Earlier revisions left `input_domain` at its default (`auto`) or explicitly used the `[0,1]` path; the stick values have always been stored in `[0,1]`.
+   - Earlier revisions either explicitly used the `[0,1]` path or relied on the old auto-detection; the stick values have always been stored in `[0,1]`.
 
 6. **Why the fix seemed ineffective**
    - After retraining with `input_domain="unit01"`, offline metrics looked healthy, but the live bot still *never* went left.
@@ -41,7 +41,7 @@
 Targets were quantized under the assumption that they were already in `[-1, 1]`. In reality the dataset stores sticks in `[0, 1]`. Mapping `0.5` (neutral) directly into the palette with `input_domain="unit11"` makes it look like `+0.5`, which is closest to the up-right entries. Because training labels were wrong, the model learned exactly that behaviour.
 
 ## Fix
-- Call `quantize_targets` with `input_domain="unit01"` (or let it auto-detect) everywhere the labels are prepared: `train.py`, `validation.py`, `sweep.py`, and any downstream scripts.
+- Call `quantize_targets` with `input_domain="unit01"` everywhere the labels are prepared: `train.py`, `validation.py`, `sweep.py`, and any downstream scripts.
 - Re-train (or at least regenerate labels/metrics) so the model learns against the corrected targets.
 - Ensure inference keeps the live stick readings intact—only use the cached values as a fallback.
 

@@ -473,7 +473,7 @@ def _rows_to_episode(rows: Sequence[Row], schema: Schema, config) -> ProcessedEp
                 compute_value_targets(
                     torch_X,
                     colmap,
-                    gamma=config.rl.gamma,
+                    reward_cfg=config.reward,
                     reward_idx=None,
                     reward_features=reward_features,
                 )

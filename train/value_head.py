@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from column_map import ColumnMap
-from config.config import get_config
+from config.reward_config import RewardConfig
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
 def _compute_player_rewards(
     X: torch.Tensor,
     idx: RewardFeatureIdx,
-    cfg,
+    reward_cfg: RewardConfig,
     *,
     player: str,
 ) -> torch.Tensor:
@@ -121,7 +121,7 @@ def _compute_player_rewards(
     # --- Damage deltas (current player deals damage to opponent/opponent to player) ---
     d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
     d_opp.clamp_min_(0.0)
-    rewards[:, prev_slice].add_(d_opp.mul_(cfg.reward_damage_dealt))
+    rewards[:, prev_slice].add_(d_opp.mul_(reward_cfg.reward_damage_dealt))
 
     # --- Death detection using action state (opponent dying)
     # Action state IDs 0-10 (0x00-0x0A) are death states
@@ -138,25 +138,27 @@ def _compute_player_rewards(
 
     # Reward for taking opponent's stock
     stock_taken = opp_deaths.to(dtype)  # Convert bool to float
-    rewards[:, prev_slice].add_(stock_taken.mul_(cfg.reward_stock_taken))
+    rewards[:, prev_slice].add_(stock_taken.mul_(reward_cfg.reward_stock_taken))
 
     # --- Hitlag rewards/penalties (per-frame) ---
     opp_hitlag_idx = getattr(idx, f"{opponent}_is_in_hitlag")
     opp_def_hitlag_idx = getattr(idx, f"{opponent}_is_defender_in_hitlag")
     opp_metric = X[:, :, opp_hitlag_idx] - X[:, :, opp_def_hitlag_idx]
-    hitlag_reward = (opp_metric == 1).to(dtype).mul_(cfg.reward_hitlag_opponent)
+    hitlag_reward = (opp_metric == 1).to(dtype).mul_(reward_cfg.reward_hitlag_opponent)
     rewards[:, prev_slice].add_(hitlag_reward[:, curr_slice])
 
     # --- Shield penalty (per-frame) ---
     shield_idx = getattr(idx, f"{player}_shield_strength")
     shield = X[:, :, shield_idx]
     penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
-    rewards[:, prev_slice].add_(penalty[:, curr_slice].mul_(cfg.reward_low_shield))
+    rewards[:, prev_slice].add_(penalty[:, curr_slice].mul_(reward_cfg.reward_low_shield))
 
     return rewards
 
 
-def compute_frame_rewards(X: torch.Tensor, idx: RewardFeatureIdx) -> torch.Tensor:
+def compute_frame_rewards(
+    X: torch.Tensor, idx: RewardFeatureIdx, reward_cfg: RewardConfig
+) -> torch.Tensor:
     """Compute zero-sum per-frame rewards as ego minus opponent reward.
 
     Example:
@@ -168,14 +170,13 @@ def compute_frame_rewards(X: torch.Tensor, idx: RewardFeatureIdx) -> torch.Tenso
     Args:
         X: ``[B, L, F]`` input feature tensor.
         idx: Optional cached feature indices from :func:`build_reward_feature_index`.
+        reward_cfg: Shared reward parameters (shaping weights and discount factor).
 
     Returns:
         ``[B, L]`` tensor of per-frame rewards.
     """
-    cfg = get_config().rl
-
-    ego_rewards = _compute_player_rewards(X, idx, cfg, player="p1")
-    opp_rewards = _compute_player_rewards(X, idx, cfg, player="p2")
+    ego_rewards = _compute_player_rewards(X, idx, reward_cfg, player="p1")
+    opp_rewards = _compute_player_rewards(X, idx, reward_cfg, player="p2")
 
     return ego_rewards - opp_rewards
 
@@ -265,7 +266,7 @@ def _get_gamma_powers(
 def compute_value_targets(
     X: torch.Tensor,
     colmap: ColumnMap,
-    gamma: float,
+    reward_cfg: RewardConfig,
     reward_idx: Optional[int],
     *,
     reward_features: Optional[RewardFeatureIdx] = None,
@@ -273,8 +274,8 @@ def compute_value_targets(
     """Compute discounted returns by summing future rewards with geometric decay.
 
     Example:
-        Suppose ``compute_frame_rewards`` yields ``[[1.0, 2.0, 3.0]]`` with ``gamma=0.9``. The helper
-        obtains gamma powers ``[1.0, 0.9, 0.81]`` and performs a reversed cumulative sum:
+        Suppose ``compute_frame_rewards`` yields ``[[1.0, 2.0, 3.0]]`` with ``reward_cfg.gamma=0.9``.
+        The helper obtains gamma powers ``[1.0, 0.9, 0.81]`` and performs a reversed cumulative sum:
 
         * Weighted rewards become ``[[1.0, 1.8, 2.43]]``.
         * The reversed ``cumsum`` generates ``[[5.23, 4.23, 2.43]]``.
@@ -283,7 +284,7 @@ def compute_value_targets(
     Args:
         X: ``[B, L, F]`` input features.
         colmap: Column mapping describing feature positions.
-        gamma: Discount factor used for future rewards.
+        reward_cfg: Shared reward configuration (provides reward weights and ``gamma``).
         reward_idx: Column index of a precomputed discounted return (e.g., dataset-stored value
             targets). When ``None`` the helper recomputes per-frame rewards and discounts them.
         reward_features: Optional cached reward feature indices for the fallback path to avoid
@@ -301,8 +302,8 @@ def compute_value_targets(
         return stored.to(device=device, dtype=dtype)
 
     reward_features = reward_features or build_reward_feature_index(colmap)
-    rewards = compute_frame_rewards(X, idx=reward_features)
-    gamma_powers = _get_gamma_powers(L, gamma, device, rewards.dtype)
+    rewards = compute_frame_rewards(X, idx=reward_features, reward_cfg=reward_cfg)
+    gamma_powers = _get_gamma_powers(L, reward_cfg.gamma, device, rewards.dtype)
 
     weighted = rewards * gamma_powers  # broadcast multiply
     discounted = torch.cumsum(weighted.flip(1), dim=1).flip(1)

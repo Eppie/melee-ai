@@ -350,7 +350,9 @@ def test_update_enhanced_metrics_accumulates_multimodal_statistics(
     assert enhanced.value_target_list == pytest.approx(flat_target)
     assert enhanced.value_frames == B * L
 
-    frame_rewards = _frame_rewards_from_batch(X, column_map, reward_features)
+    frame_rewards = _frame_rewards_from_batch(
+        X, column_map, config.reward, reward_features
+    )
     assert len(enhanced.value_frame_data) == B * L
     first_entry = enhanced.value_frame_data[0]
     assert first_entry[0] == pytest.approx(value_pred[0, 0, 0].item())
@@ -482,12 +484,12 @@ def test_update_enhanced_metrics_handles_single_frame_batches_and_copies_frame_f
     expected_value_target = compute_value_targets(
         X_before,
         column_map,
-        gamma=cfg.rl.gamma,
+        reward_cfg=cfg.reward,
         reward_idx=None,
         reward_features=reward_features,
     )
     expected_frame_rewards = _frame_rewards_from_batch(
-        X_before, column_map, reward_features
+        X_before, column_map, cfg.reward, reward_features
     )
     mse = ((value_pred - expected_value_target) ** 2).mean().item()
     mae = (value_pred - expected_value_target).abs().mean().item()

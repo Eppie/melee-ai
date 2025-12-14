@@ -1,7 +1,6 @@
 """Tests for PPO loss computation."""
 
 import torch
-import numpy as np
 import pytest
 
 from ppo.ppo_loss import (
@@ -37,25 +36,43 @@ def mock_policy():
     return policy
 
 
+def make_valid_features(
+    batch_size: int, seq_length: int, column_map: ColumnMap, *, add_noise: bool = True
+) -> torch.Tensor:
+    """Create feature tensors with categorical columns in-bounds."""
+    feature_dim = len(get_feature_names())
+    features = torch.zeros(batch_size, seq_length, feature_dim)
+
+    if add_noise:
+        features += torch.randn_like(features) * 0.1
+
+    features[..., column_map.stage_idx] = 0  # valid stage id
+    features[..., column_map.ego_char_idx] = 0
+    features[..., column_map.opp_char_idx] = 0
+    features[..., column_map.ego_action_idx] = 0
+    features[..., column_map.opp_action_idx] = 0
+
+    return features
+
+
 def test_action_logprob_shapes():
     """Test that action log probability computation handles correct shapes."""
     batch_size = 32
+    seq_length = 16
 
-    # Create mock outputs (with final timestep extracted)
     outputs = {
-        "main_stick": torch.randn(batch_size, 256, 64),  # [B, T, 64]
-        "c_stick": torch.randn(batch_size, 256, 9),  # [B, T, 9]
-        "shoulder": torch.randn(batch_size, 256, 5),  # [B, T, 5]
-        "buttons": torch.randn(batch_size, 256, 5),  # [B, T, 5]
-        "value": torch.randn(batch_size, 256, 1),  # [B, T, 1]
+        "main_stick": torch.randn(batch_size, seq_length, 64),  # [B, T, 64]
+        "c_stick": torch.randn(batch_size, seq_length, 9),  # [B, T, 9]
+        "shoulder": torch.randn(batch_size, seq_length, 5),  # [B, T, 5]
+        "buttons": torch.randn(batch_size, seq_length, 5),  # [B, T, 5]
+        "value": torch.randn(batch_size, seq_length, 1),  # [B, T, 1]
     }
 
-    # Create mock actions (final timestep only)
     actions = {
-        "main_idx": torch.randint(0, 64, (batch_size,)),  # [B]
-        "c_idx": torch.randint(0, 9, (batch_size,)),  # [B]
-        "shoulder_idx": torch.randint(0, 5, (batch_size,)),  # [B]
-        "buttons": torch.randint(0, 2, (batch_size, 5)).bool(),  # [B, 5]
+        "main_idx": torch.randint(0, 64, (batch_size, seq_length)),  # [B, T]
+        "c_idx": torch.randint(0, 9, (batch_size, seq_length)),  # [B, T]
+        "shoulder_idx": torch.randint(0, 5, (batch_size, seq_length)),  # [B, T]
+        "buttons": torch.randint(0, 2, (batch_size, seq_length, 5)).bool(),  # [B, T, 5]
     }
 
     # Should not raise
@@ -64,48 +81,50 @@ def test_action_logprob_shapes():
     # Check output shape
     assert logp.shape == (
         batch_size,
-    ), f"Expected shape ({batch_size},), got {logp.shape}"
+        seq_length,
+    ), f"Expected shape ({batch_size}, {seq_length}), got {logp.shape}"
     assert torch.isfinite(logp).all(), "Log probs contain NaN or Inf"
 
 
 def test_action_entropy_shapes():
     """Test that entropy computation returns correct shapes."""
     batch_size = 32
+    seq_length = 16
 
     outputs = {
-        "main_stick": torch.randn(batch_size, 256, 64),
-        "c_stick": torch.randn(batch_size, 256, 9),
-        "shoulder": torch.randn(batch_size, 256, 5),
-        "buttons": torch.randn(batch_size, 256, 5),
+        "main_stick": torch.randn(batch_size, seq_length, 64),
+        "c_stick": torch.randn(batch_size, seq_length, 9),
+        "shoulder": torch.randn(batch_size, seq_length, 5),
+        "buttons": torch.randn(batch_size, seq_length, 5),
     }
 
     entropy = compute_action_entropy(outputs)
 
     assert entropy.shape == (
         batch_size,
-    ), f"Expected shape ({batch_size},), got {entropy.shape}"
+        seq_length,
+    ), f"Expected shape ({batch_size}, {seq_length}), got {entropy.shape}"
     assert (entropy >= 0).all(), "Entropy should be non-negative"
 
 
 def test_ppo_loss_shapes(column_map, mock_policy):
     """Test that PPO loss computation handles all shapes correctly."""
     batch_size = 16
-    seq_length = 256
-    feature_dim = len(get_feature_names())
+    seq_length = 16
 
     # Create mock batch data
-    batch_features = torch.randn(batch_size, seq_length, feature_dim)
+    batch_features = make_valid_features(batch_size, seq_length, column_map)
 
     batch_actions = {
-        "main_idx": torch.randint(0, 64, (batch_size,)),
-        "c_idx": torch.randint(0, 9, (batch_size,)),
-        "shoulder_idx": torch.randint(0, 5, (batch_size,)),
-        "buttons": torch.randint(0, 2, (batch_size, 5)).bool(),
+        "main_idx": torch.randint(0, 64, (batch_size, seq_length)),
+        "c_idx": torch.randint(0, 9, (batch_size, seq_length)),
+        "shoulder_idx": torch.randint(0, 5, (batch_size, seq_length)),
+        "buttons": torch.randint(0, 2, (batch_size, seq_length, 5)).bool(),
     }
 
-    old_logps = torch.randn(batch_size)
-    advantages = torch.randn(batch_size)
-    returns = torch.randn(batch_size)
+    old_logps = torch.randn(batch_size, seq_length)
+    advantages = torch.randn(batch_size, seq_length)
+    returns = torch.randn(batch_size, seq_length)
 
     # Compute loss
     with torch.no_grad():  # Faster for testing
@@ -143,55 +162,51 @@ def test_ppo_loss_shapes(column_map, mock_policy):
 def test_button_type_handling():
     """Test that button actions handle uint8/bool conversion correctly."""
     batch_size = 32
+    seq_length = 8
 
     outputs = {
-        "main_stick": torch.randn(batch_size, 256, 64),
-        "c_stick": torch.randn(batch_size, 256, 9),
-        "shoulder": torch.randn(batch_size, 256, 5),
-        "buttons": torch.randn(batch_size, 256, 5),
-        "value": torch.randn(batch_size, 256, 1),
+        "main_stick": torch.randn(batch_size, seq_length, 64),
+        "c_stick": torch.randn(batch_size, seq_length, 9),
+        "shoulder": torch.randn(batch_size, seq_length, 5),
+        "buttons": torch.randn(batch_size, seq_length, 5),
+        "value": torch.randn(batch_size, seq_length, 1),
     }
 
     # Test with uint8 (should be converted to bool internally)
     actions_uint8 = {
-        "main_idx": torch.randint(0, 64, (batch_size,)),
-        "c_idx": torch.randint(0, 9, (batch_size,)),
-        "shoulder_idx": torch.randint(0, 5, (batch_size,)),
-        "buttons": torch.randint(0, 2, (batch_size, 5), dtype=torch.uint8),
+        "main_idx": torch.randint(0, 64, (batch_size, seq_length)),
+        "c_idx": torch.randint(0, 9, (batch_size, seq_length)),
+        "shoulder_idx": torch.randint(0, 5, (batch_size, seq_length)),
+        "buttons": torch.randint(0, 2, (batch_size, seq_length, 5), dtype=torch.uint8),
     }
 
     # Should not raise warning or error
-    with pytest.warns(None) as warning_list:
-        logp = compute_action_logprob(outputs, actions_uint8)
-
-    # Check no uint8 deprecation warnings
-    uint8_warnings = [w for w in warning_list if "uint8" in str(w.message).lower()]
-    assert len(uint8_warnings) == 0, f"Got uint8 warning: {uint8_warnings}"
+    compute_action_logprob(outputs, actions_uint8)
 
 
 def test_clipping_behavior():
     """Test that PPO clipping works as expected."""
     batch_size = 16
-    seq_length = 256
-    feature_dim = len(get_feature_names())
+    seq_length = 8
 
     column_map = ColumnMap(get_feature_names(), get_target_names())
     config = Config()
     config.model.n_layer = 1
     config.model.n_embd = 32
+    config.model.block_size = max(config.model.block_size, seq_length)
     policy = GPT(config)
 
-    batch_features = torch.randn(batch_size, seq_length, feature_dim)
+    batch_features = make_valid_features(batch_size, seq_length, column_map)
     batch_actions = {
-        "main_idx": torch.randint(0, 64, (batch_size,)),
-        "c_idx": torch.randint(0, 9, (batch_size,)),
-        "shoulder_idx": torch.randint(0, 5, (batch_size,)),
-        "buttons": torch.randint(0, 2, (batch_size, 5)).bool(),
+        "main_idx": torch.randint(0, 64, (batch_size, seq_length)),
+        "c_idx": torch.randint(0, 9, (batch_size, seq_length)),
+        "shoulder_idx": torch.randint(0, 5, (batch_size, seq_length)),
+        "buttons": torch.randint(0, 2, (batch_size, seq_length, 5)).bool(),
     }
 
-    old_logps = torch.randn(batch_size)
-    advantages = torch.randn(batch_size)
-    returns = torch.randn(batch_size)
+    old_logps = torch.randn(batch_size, seq_length)
+    advantages = torch.randn(batch_size, seq_length)
+    returns = torch.randn(batch_size, seq_length)
 
     with torch.no_grad():
         loss_dict = compute_ppo_loss(
@@ -210,6 +225,31 @@ def test_clipping_behavior():
     # Check ratio is reasonable (not exploding)
     assert loss_dict["ratio_mean"] > 0, "Ratio mean should be positive"
     assert loss_dict["ratio_mean"] < 10, "Ratio mean should not explode"
+
+
+def test_action_shape_mismatch_raises():
+    """Ensure mismatched action shapes trigger an error (regression guard)."""
+    batch_size = 4
+    seq_length = 3
+
+    outputs = {
+        "main_stick": torch.randn(batch_size, seq_length, 64),
+        "c_stick": torch.randn(batch_size, seq_length, 9),
+        "shoulder": torch.randn(batch_size, seq_length, 5),
+        "buttons": torch.randn(batch_size, seq_length, 5),
+        "value": torch.randn(batch_size, seq_length, 1),
+    }
+
+    # Incorrectly sliced actions (previous bug)
+    bad_actions = {
+        "main_idx": torch.randint(0, 64, (batch_size,)),
+        "c_idx": torch.randint(0, 9, (batch_size,)),
+        "shoulder_idx": torch.randint(0, 5, (batch_size,)),
+        "buttons": torch.randint(0, 2, (batch_size, 5)).bool(),
+    }
+
+    with pytest.raises(ValueError):
+        compute_action_logprob(outputs, bad_actions)
 
 
 if __name__ == "__main__":

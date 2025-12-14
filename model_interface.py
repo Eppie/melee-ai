@@ -27,6 +27,7 @@ from controller_utils import (
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
+from controller_quantization_shared import clamp_unit_circle
 from feature_transforms import apply_feature_transforms_dict
 from libmelee.melee import enums
 from libmelee.melee.controller import Controller
@@ -234,12 +235,7 @@ def model_to_dolphin01(
         if coords11.shape[-1] != 2:
             raise ValueError("model_out must have last dimension size 2")
 
-    # Vectorized clamping to unit circle
-    r2 = np.einsum("...i,...i->...", coords11, coords11)
-    over = r2 > 1.0
-    if np.any(over):
-        coords11 = coords11.copy()
-        coords11[over] /= np.sqrt(r2[over])[..., None]
+    coords11 = clamp_unit_circle(coords11)
 
     # Map [-1,1] -> [0,1]
     xy01 = np.clip(coords11 * 0.5 + 0.5, 0.0, 1.0).astype(np.float32)

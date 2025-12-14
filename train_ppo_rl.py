@@ -198,6 +198,8 @@ def main():
         checkpoint_interval=args.checkpoint_interval,
         init_checkpoint=args.init_checkpoint,
     )
+    # Share reward shaping with imitation config to keep value targets aligned
+    ppo_config.reward = config.reward
 
     # Create checkpoint directory
     ppo_config.checkpoint_dir.mkdir(parents=True, exist_ok=True)

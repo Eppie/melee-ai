@@ -85,6 +85,16 @@ class PPOConfig(BaseModel):
         ge=0,
         description="Neutral action warmup frames (excluded from training)",
     )
+    min_context_for_training: int = Field(
+        default=128,
+        ge=0,
+        description=(
+            "Minimum context frames required for training. "
+            "First min_context positions in each training window are masked out. "
+            "This ensures frames have similar context during training as during rollout. "
+            "Default 128 provides good balance between data efficiency and context quality."
+        ),
+    )
     restart_interval: int = Field(
         default=10000,
         ge=1,

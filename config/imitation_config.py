@@ -12,7 +12,7 @@ class ImitationConfig(BaseModel):
     strategy: Literal[
         "uniform", "value_weighted", "value_advantage", "value_filter", "hybrid"
     ] = Field(
-        default="value_advantage",
+        default="hybrid",
         description=(
             "Imitation learning sampling strategy. Controls how training samples are weighted/selected. "
             "Options: 'uniform' = all frames equally likely (baseline); "

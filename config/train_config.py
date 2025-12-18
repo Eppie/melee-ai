@@ -153,7 +153,7 @@ class TrainConfig(BaseModel):
         description="Keep dataloader workers alive between epochs. Faster but uses more memory.",
     )
     stride: int = Field(
-        default=8,
+        default=32,
         ge=1,
         description=(
             "Stride between consecutive training windows. Lower stride = more overlapping windows = "

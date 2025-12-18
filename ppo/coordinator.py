@@ -278,7 +278,6 @@ class Coordinator:
 
             # Get feature names
             from schema import get_feature_names
-            import numpy as np
 
             feature_names = get_feature_names()
 
@@ -837,10 +836,22 @@ class Coordinator:
                 rollouts=self.rollouts_ready,
                 context_length=self.ppo_config.context_length,
                 batch_size=self.ppo_config.batch_size,
+                min_context=self.ppo_config.min_context_for_training,
             )
 
             num_batches = len(batches)
             print(f"[CRD] Created {num_batches} windowed batches")
+
+            # Compute masking statistics
+            if num_batches > 0:
+                total_frames = sum(batch["mask"].numel() for batch in batches)
+                valid_frames = sum(batch["mask"].sum().item() for batch in batches)
+                mask_pct = 100.0 * valid_frames / total_frames if total_frames > 0 else 0
+                print(
+                    f"[CRD] Context masking: {valid_frames:,}/{total_frames:,} frames valid "
+                    f"({mask_pct:.1f}%), min_context={self.ppo_config.min_context_for_training}"
+                )
+
             print(
                 f"[CRD] Training: {self.ppo_config.ppo_epochs} epochs × {num_batches} batches = {self.ppo_config.ppo_epochs * num_batches} total updates"
             )
@@ -872,6 +883,7 @@ class Coordinator:
                     old_logp = batch["old_logp"].to(self.device)
                     advantages = batch["advantages"].to(self.device)
                     returns = batch["returns"].to(self.device)
+                    mask = batch["mask"].to(self.device)  # Context + warmup mask
                     actions = batch["actions"]  # Stays on CPU (structured array)
 
                     # Convert actions to dict format (train on all timesteps)
@@ -902,6 +914,7 @@ class Coordinator:
                         advantages=advantages,
                         returns=returns,
                         column_map=self.column_map,
+                        mask=mask,  # Apply context + warmup masking
                         clip_epsilon=self.ppo_config.clip_epsilon,
                         value_coef=self.ppo_config.value_coef,
                         entropy_coef=self.ppo_config.entropy_coef,
@@ -988,7 +1001,6 @@ class Coordinator:
                             # features is [B, T, F], get last timestep
                             batch_last_frame = features[:, -1, :]  # [B, F]
                             from schema import get_feature_names
-                            import numpy as np
 
                             feature_names = get_feature_names()
                             features_np = batch_last_frame.cpu().float().numpy()

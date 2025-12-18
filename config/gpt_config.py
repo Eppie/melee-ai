@@ -158,7 +158,7 @@ class GPTConfig(BaseModel):
         ),
     )
     use_learned_embeddings: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Use learned embeddings for categorical features (stage, ego_character, opponent_character, "
             "ego_action, opponent_action) instead of one-hot encoding. "

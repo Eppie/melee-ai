@@ -86,10 +86,9 @@ def compute_value_filter_weights(
 def compute_advantage_weights(
     values: Tensor,
     *,
-    n_steps: int,
     alpha: float,
     use_gae: bool = False,
-    gamma: float = 0.99,
+    gamma: float = 0.995,
     gae_lambda: float = 0.95,
     return_advantages: bool = False,
 ):
@@ -99,9 +98,7 @@ def compute_advantage_weights(
 
     Args:
         values: [B, L] value targets
-        n_steps: Number of steps for TD error (if not using GAE)
         alpha: Scaling factor for advantage weighting
-        use_gae: If True, use GAE; else simple n-step TD
         gamma: Discount factor for GAE
         gae_lambda: Lambda for GAE
         return_advantages: If True, return (weights, advantages); else just weights
@@ -115,30 +112,18 @@ def compute_advantage_weights(
 
     B, L = values.shape
 
-    if use_gae:
-        # GAE advantage estimation (more sophisticated)
-        advantages = torch.zeros_like(values)
-        deltas = torch.zeros_like(values)
+    # GAE advantage estimation (more sophisticated)
+    advantages = torch.zeros_like(values)
+    deltas = torch.zeros_like(values)
 
-        # Compute TD errors
-        deltas[:, :-1] = values[:, 1:] - values[:, :-1]
+    # Compute TD errors
+    deltas[:, :-1] = values[:, 1:] - values[:, :-1]
 
-        # Compute GAE
-        gae = torch.zeros(B, device=values.device, dtype=values.dtype)
-        for t in reversed(range(L - 1)):
-            gae = deltas[:, t] + gamma * gae_lambda * gae
-            advantages[:, t] = gae
-
-    else:
-        # Simple n-step advantage: V(t) - V(t+n)
-        # Positive advantage = value increased (good decision)
-        advantages = torch.zeros_like(values)
-        n = min(n_steps, L - 1)
-
-        if n > 0:
-            # Advantage = future value - current value
-            # Positive = making progress, negative = losing ground
-            advantages[:, :-n] = values[:, n:] - values[:, :-n]
+    # Compute GAE
+    gae = torch.zeros(B, device=values.device, dtype=values.dtype)
+    for t in reversed(range(L - 1)):
+        gae = deltas[:, t] + gamma * gae_lambda * gae
+        advantages[:, t] = gae
 
     # Weight by advantage: boost positive (value improvements), suppress negative (mistakes/noise)
     # For imitation learning, we want to learn from frames where expert decisions led to value gains,
@@ -251,11 +236,7 @@ def compute_hybrid_weights(
         elif strategy_name == "value_advantage":
             w = compute_advantage_weights(
                 values,
-                n_steps=config.advantage_n_steps,
                 alpha=config.advantage_alpha,
-                use_gae=config.advantage_use_gae,
-                gamma=config.gae_gamma,
-                gae_lambda=config.gae_lambda,
             )
         elif strategy_name == "uniform":
             w = torch.ones_like(values)
@@ -317,11 +298,7 @@ def compute_imitation_weights(
     elif strategy == "value_advantage":
         return compute_advantage_weights(
             values,
-            n_steps=config.advantage_n_steps,
             alpha=config.advantage_alpha,
-            use_gae=config.advantage_use_gae,
-            gamma=config.gae_gamma,
-            gae_lambda=config.gae_lambda,
         )
 
     elif strategy == "hybrid":

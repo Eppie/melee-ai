@@ -175,11 +175,13 @@ def create_windowed_batches(
     context_length: int = 256,
     batch_size: int = 128,
     stride: Optional[int] = None,
+    min_context: int = 128,
 ) -> List[dict]:
     """
     Create sliding windows from rollout buffers for sequence training.
 
-    Trains on ALL frames in each window for maximum efficiency.
+    Applies context masking to ensure all trained frames have sufficient context,
+    matching the context they had during rollout collection.
 
     Args:
         rollouts: List of completed rollout buffers
@@ -187,6 +189,9 @@ def create_windowed_batches(
         batch_size: Number of windows per batch
         stride: Window stride (default: 8 for good data coverage)
                 Lower values = more overlap = more training data
+        min_context: Minimum context frames required for training (default 128)
+                     First min_context positions in each window are masked from loss.
+                     This prevents training on frames that lack context compared to rollout.
 
     Returns:
         List of batched dicts ready for training
@@ -252,21 +257,28 @@ def create_windowed_batches(
             strides=(stride * rollout.returns.strides[0], rollout.returns.strides[0]),
         )
 
-        # Only include windows where all frames are valid (mask=True)
+        # Create context mask: first min_context positions need sufficient context
+        context_mask = np.arange(context_length) >= min_context
+
+        # Process each window
         for i in range(num_windows):
-            window_mask = mask_windows[i]
-            if not window_mask.all():
-                # Skip windows with warmup frames
+            # Combine warmup mask (from rollout) with context mask (for window position)
+            warmup_mask = mask_windows[i]  # From rollout (excludes warmup frames)
+            combined_mask = warmup_mask & context_mask  # Both must be True
+
+            # Skip windows with no valid training frames
+            if not combined_mask.any():
                 continue
 
-            # Train on all frames in window (efficient sequence training)
+            # Create window with combined mask
+            # Only frames where mask=True will contribute to loss
             window = PPOWindow(
                 features=X_windows[i].copy(),  # Copy to avoid shared memory issues
                 actions=action_windows[i].copy(),
                 old_logp=logp_windows[i].copy(),  # [context_length]
                 advantage=adv_windows[i].copy(),  # [context_length]
                 return_=ret_windows[i].copy(),  # [context_length]
-                mask=window_mask.copy(),
+                mask=combined_mask.copy(),  # Combined warmup + context mask
             )
             all_windows.append(window)
 

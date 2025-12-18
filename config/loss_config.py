@@ -19,7 +19,7 @@ class LossConfig(BaseModel):
         ),
     )
     ce_weight_min: float = Field(
-        default=0.1,
+        default=0.5,
         gt=0,
         description=(
             "Minimum class weight for cross-entropy balancing. Prevents over-penalizing very common classes. "
@@ -29,7 +29,7 @@ class LossConfig(BaseModel):
         ),
     )
     ce_weight_max: float = Field(
-        default=10.0,
+        default=3.0,
         gt=0,
         description=(
             "Maximum class weight for cross-entropy balancing. Prevents over-emphasizing very rare classes. "
@@ -46,7 +46,7 @@ class LossConfig(BaseModel):
         ),
     )
     pos_weight_max: float = Field(
-        default=3.0,
+        default=4.0,
         gt=0,
         description=(
             "Maximum positive class weight for BCE. Caps how much button presses are up-weighted. "

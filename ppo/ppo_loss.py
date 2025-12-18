@@ -116,6 +116,7 @@ def compute_ppo_loss(
     advantages: torch.Tensor,
     returns: torch.Tensor,
     column_map,
+    mask: torch.Tensor = None,
     clip_epsilon: float = 0.2,
     value_coef: float = 0.5,
     entropy_coef: float = 0.01,
@@ -123,7 +124,7 @@ def compute_ppo_loss(
     """
     Compute PPO clipped objective loss.
 
-    Uses efficient sequence training (trains on all timesteps).
+    Uses efficient sequence training with optional masking for context requirements.
 
     Args:
         policy: Current policy network
@@ -137,6 +138,8 @@ def compute_ppo_loss(
         advantages: [B, T] GAE advantages (normalized)
         returns: [B, T] discounted returns
         column_map: ColumnMap for feature indexing
+        mask: [B, T] bool mask (True = train on this frame, False = skip)
+              If None, train on all frames
         clip_epsilon: PPO clipping parameter (default 0.2)
         value_coef: Value loss coefficient (default 0.5)
         entropy_coef: Entropy bonus coefficient (default 0.01)
@@ -153,6 +156,10 @@ def compute_ppo_loss(
     """
     from train.batch_utils import build_model_inputs
 
+    # Create default mask if not provided
+    if mask is None:
+        mask = torch.ones_like(old_logps, dtype=torch.bool)
+
     # Convert raw features to model inputs using existing infrastructure
     model_inputs = build_model_inputs(batch_features, column_map)
 
@@ -165,28 +172,35 @@ def compute_ppo_loss(
     # Compute importance sampling ratio
     ratio = torch.exp(new_logps - old_logps)
 
-    # Clipped surrogate objective
+    # Clipped surrogate objective (only on masked positions)
     clipped_ratio = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon)
-    policy_loss = -torch.min(
+    policy_loss_per_frame = -torch.min(
         ratio * advantages,
         clipped_ratio * advantages,
-    ).mean()
+    )
+    # Apply mask and compute mean over valid positions
+    policy_loss = (policy_loss_per_frame * mask).sum() / mask.sum().clamp(min=1)
 
-    # Value loss (MSE to returns)
+    # Value loss (MSE to returns, only on masked positions)
     values = outputs["value"][:, :, 0]  # [B, T]
-    value_loss = F.mse_loss(values, returns)
+    value_loss_per_frame = (values - returns) ** 2
+    value_loss = (value_loss_per_frame * mask).sum() / mask.sum().clamp(min=1)
 
-    # Entropy bonus (encourages exploration)
+    # Entropy bonus (encourages exploration, only on masked positions)
     entropy = compute_action_entropy(outputs)
-    entropy_loss = -entropy.mean()
+    entropy_loss = -(entropy * mask).sum() / mask.sum().clamp(min=1)
 
     # Total loss
     total_loss = policy_loss + value_coef * value_loss + entropy_coef * entropy_loss
 
-    # Compute diagnostics
-    ratio_mean = ratio.mean()
-    ratio_std = ratio.std()
-    approx_kl = (old_logps - new_logps).mean()
+    # Compute diagnostics (only on masked positions)
+    valid_ratio = ratio[mask]
+    valid_old_logps = old_logps[mask]
+    valid_new_logps = new_logps[mask]
+
+    ratio_mean = valid_ratio.mean() if mask.any() else torch.tensor(1.0)
+    ratio_std = valid_ratio.std() if mask.any() else torch.tensor(0.0)
+    approx_kl = (valid_old_logps - valid_new_logps).mean() if mask.any() else torch.tensor(0.0)
 
     return {
         "total": total_loss,

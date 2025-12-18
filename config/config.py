@@ -17,16 +17,6 @@ from .rl_config import RLConfig
 from .train_config import TrainConfig
 from .zarr_config import ZarrConfig
 
-# Import PPOConfig (optional dependency)
-try:
-    from ppo.config import PPOConfig
-
-    _PPO_AVAILABLE = True
-except ImportError:
-    PPOConfig = None
-    _PPO_AVAILABLE = False
-
-
 class Config(BaseModel):
     """Main Pydantic configuration with all sub-configs."""
 
@@ -45,9 +35,6 @@ class Config(BaseModel):
     rl: RLConfig = Field(default_factory=RLConfig)
     loss_weights: LossConfig = Field(default_factory=LossConfig)
     imitation: ImitationConfig = Field(default_factory=ImitationConfig)
-    ppo: Optional[Union[PPOConfig, Any]] = Field(
-        default=None, description="PPO training configuration (optional)"
-    )
 
     def freeze(self) -> None:
         """Make config immutable."""

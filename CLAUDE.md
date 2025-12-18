@@ -18,7 +18,6 @@ source ~/.venvs/slippi312/bin/activate
 # Tests
 pytest                                                    # full suite
 pytest test/test_controller_quantization.py -k shoulder   # focused
-pytest ppo/tests/ -v                                      # PPO tests
 
 # Data preprocessing (Slippi .slp → Zarr)
 python zarr_storage.py
@@ -43,15 +42,6 @@ python scripts/analyze_feature_importance.py
 python scripts/interpret.py
 python scripts/benchmark_dataloader.py
 
-# PPO reinforcement learning
-python train_ppo_rl.py \
-  --init-checkpoint /home/eppie/checkpoints/model_ep032_005001.pt \
-  --dolphin-path /home/eppie/slippi-Ishiiruka/build/Binaries/dolphin-emu \
-  --iso-path /home/eppie/melee-ai/melee.iso \
-  --num-shards 2 \
-  --envs-per-shard 4 \
-  --rollouts-per-batch 16  # IMPORTANT: Keep low to avoid OOM (default: 96)
-```
 
 ## System Paths
 

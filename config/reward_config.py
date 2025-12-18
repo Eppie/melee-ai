@@ -5,7 +5,7 @@ from pydantic_settings import SettingsConfigDict
 
 
 class RewardConfig(BaseModel):
-    """Shared reward weights and discounting used by imitation and PPO."""
+    """Shared reward weights and discounting used by imitation."""
 
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 

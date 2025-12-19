@@ -1,0 +1,221 @@
+validation.py:    tensor = _PALETTE_CACHE.get(key)
+validation.py:    proj_weight = state_dict.get("projection_down.weight")
+validation.py:    return _ACTION_VALUE_TO_NAME.get(idx, str(idx))
+validation.py:            logits_shoulder = pred.get("shoulder")
+validation.py:            value_pred = pred.get("value")  # [B, L, 1] or None
+validation.py:            shoulder_idx = target_info.get("shoulder_idx")
+validation.py:        label = _BUTTON_PRETTY.get(name, name.upper())
+validation.py:        total = stats.get("main_total", 0)
+validation.py:            main_acc = _safe_div(stats.get("main_correct", 0), total)
+validation.py:                stats.get("btn_em_correct", 0), stats.get("btn_total", 0)
+validation.py:    enhanced: EnhancedMetrics = results.get("enhanced")
+validation.py:    enhanced: EnhancedMetrics = results.get("enhanced")
+validation.py:    _apply_checkpoint_config(config, ckpt.get("config"))
+validation.py:    _patch_model_config_from_state_dict(config, ckpt.get("model"))
+stats/output/terminal.py:    print(f"Total episodes:     {format_number(ep_stats.get('total_episodes', 0))}")
+stats/output/terminal.py:    print(f"Total frames:       {format_number(ep_stats.get('total_frames', 0))}")
+stats/output/terminal.py:    length = ep_stats.get("length", {})
+stats/output/terminal.py:            f"Avg episode length: {length.get('mean', 0):.1f} frames ({length.get('mean', 0)/60:.1f}s)"
+stats/output/terminal.py:            f"Length range:       {length.get('min', 0)} - {length.get('max', 0)} frames"
+stats/output/terminal.py:    stages = ep_stats.get("stages", {})
+stats/output/terminal.py:            stages.items(), key=lambda x: x[1].get("count", 0), reverse=True
+stats/output/terminal.py:            count = info.get("count", 0)
+stats/output/terminal.py:            pct = info.get("percent", 0)
+stats/output/terminal.py:    outcomes = ep_stats.get("outcomes", {})
+stats/output/terminal.py:        p1_wins = outcomes.get("p1_wins", 0)
+stats/output/terminal.py:        p2_wins = outcomes.get("p2_wins", 0)
+stats/output/terminal.py:        draws = outcomes.get("draws", 0)
+stats/output/terminal.py:        print(f"  P1 wins: {p1_wins} ({outcomes.get('p1_win_rate', 0):.1f}%)")
+stats/output/terminal.py:        print(f"  P2 wins: {p2_wins} ({outcomes.get('p2_win_rate', 0):.1f}%)")
+stats/output/terminal.py:    summary = quality.get("summary", {})
+stats/output/terminal.py:    score = quality.get("data_quality_score", 0)
+stats/output/terminal.py:    if summary.get("empty_episodes", 0) > 0:
+stats/output/terminal.py:    if summary.get("very_short_episodes", 0) > 0:
+stats/output/terminal.py:    if summary.get("stock_inconsistencies", 0) > 0:
+stats/output/terminal.py:    nan_inf = quality.get("nan_inf_issues", {})
+stats/output/terminal.py:        total_nan = sum(v.get("nan_count", 0) for v in nan_inf.values())
+stats/output/terminal.py:        total_inf = sum(v.get("inf_count", 0) for v in nan_inf.values())
+stats/output/terminal.py:    violations = quality.get("range_violations", {})
+stats/output/terminal.py:        total_violations = sum(v.get("count", 0) for v in violations.values())
+stats/output/terminal.py:    p1_stats = action_stats.get("p1", {})
+stats/output/terminal.py:    action_dist = p1_stats.get("action_distribution", [])
+stats/output/terminal.py:            name = action.get("name", f"Action {action.get('action_id')}")
+stats/output/terminal.py:            cat = action.get("category", "unknown")
+stats/output/terminal.py:            pct = action.get("percent", 0)
+stats/output/terminal.py:    categories = p1_stats.get("category_distribution", {})
+stats/output/terminal.py:            categories.items(), key=lambda x: x[1].get("percent", 0), reverse=True
+stats/output/terminal.py:            print(f"  {cat_name}: {info.get('percent', 0):.1f}%")
+stats/output/terminal.py:        player_stats = ctrl_stats.get(player, {})
+stats/output/terminal.py:        buttons = player_stats.get("buttons", {})
+stats/output/terminal.py:                [(b, info.get("percent_frames", 0)) for b, info in buttons.items()],
+stats/output/terminal.py:        main_stick = player_stats.get("main_stick", {})
+stats/output/terminal.py:        regions = main_stick.get("regions", {})
+stats/output/terminal.py:                [(r, info.get("percent", 0)) for r, info in regions.items()],
+stats/output/terminal.py:    dist = derived.get("distance", {})
+stats/output/terminal.py:        print(f"Avg player distance: {dist.get('mean', 0):.1f} units")
+stats/output/terminal.py:    adv = derived.get("advantage", {})
+stats/output/terminal.py:        print(f"P1 advantage: {adv.get('p1_advantage_percent', 0):.1f}%")
+stats/output/terminal.py:        print(f"P2 advantage: {adv.get('p2_advantage_percent', 0):.1f}%")
+stats/output/terminal.py:    combos = derived.get("combos", {})
+stats/output/terminal.py:        p1_combos = combos.get("p1_received", {})
+stats/output/terminal.py:        p2_combos = combos.get("p2_received", {})
+stats/output/terminal.py:        if p1_combos.get("count", 0) > 0:
+stats/output/terminal.py:                f"P1 combos received: {p1_combos['count']} (avg {p1_combos.get('mean_length_seconds', 0):.2f}s)"
+stats/output/terminal.py:        if p2_combos.get("count", 0) > 0:
+stats/output/terminal.py:                f"P2 combos received: {p2_combos['count']} (avg {p2_combos.get('mean_length_seconds', 0):.2f}s)"
+stats/output/terminal.py:    kills = derived.get("kill_percents", {})
+stats/output/terminal.py:        p1_kills = kills.get("p1", {})
+stats/output/terminal.py:        p2_kills = kills.get("p2", {})
+stats/output/terminal.py:        if p1_kills.get("count", 0) > 0:
+stats/output/terminal.py:            print(f"P1 avg death percent: {p1_kills.get('mean', 0):.1f}%")
+stats/output/terminal.py:        if p2_kills.get("count", 0) > 0:
+stats/output/terminal.py:            print(f"P2 avg death percent: {p2_kills.get('mean', 0):.1f}%")
+stats/output/terminal.py:    columns = col_stats.get("columns", {})
+stats/output/terminal.py:        col_type = info.get("type", "unknown")
+stats/output/terminal.py:            stats = info.get("stats", {})
+stats/output/terminal.py:                f"  {name}: mean={stats.get('mean', 0):.2f}, std={stats.get('std', 0):.2f}"
+stats/output/terminal.py:            stats = info.get("stats", {})
+stats/output/terminal.py:            print(f"  {name}: {stats.get('n_unique', 0)} unique values")
+stats/index.py:        schema = meta.get("schema", {})
+stats/index.py:        self.feature_names: List[str] = list(schema.get("features", []))
+stats/index.py:        self.target_names: List[str] = list(schema.get("targets", []))
+stats/index.py:                        num_frames=int(row.get("frames", 0)),
+stats/index.py:        shard_group = self._shard_cache.get(episode.shard_id)
+stats/index.py:        Y = ep_group.get("Y")
+stats/collectors/data_quality.py:            self._out_of_range[col_name] = self._out_of_range.get(
+stats/collectors/data_quality.py:            ) + other._out_of_range.get(col_name, 0)
+stats/collectors/data_quality.py:            self._nan_counts[col_name] = self._nan_counts.get(
+stats/collectors/data_quality.py:            ) + other._nan_counts.get(col_name, 0)
+stats/collectors/data_quality.py:            self._inf_counts[col_name] = self._inf_counts.get(
+stats/collectors/data_quality.py:            ) + other._inf_counts.get(col_name, 0)
+stats/collectors/data_quality.py:            self._non_default_counts[col_name] = self._non_default_counts.get(
+stats/collectors/data_quality.py:            ) + other._non_default_counts.get(col_name, 0)
+stats/collectors/data_quality.py:                other._out_of_range_examples.get(col_name, [])[:10]
+stats/collectors/data_quality.py:            count = self._out_of_range.get(col_name, 0)
+stats/collectors/data_quality.py:                    "examples": self._out_of_range_examples.get(col_name, []),
+stats/collectors/data_quality.py:            nan_count = self._nan_counts.get(col_name, 0)
+stats/collectors/data_quality.py:            inf_count = self._inf_counts.get(col_name, 0)
+stats/collectors/data_quality.py:            non_default = self._non_default_counts.get(col_name, 0)
+stats/collectors/episode_stats.py:            stage_name = STAGE_NAMES.get(stage_id, f"Unknown({stage_id})")
+stats/collectors/cross_feature.py:                        (vals1 - self._means.get(name1, 0))
+stats/collectors/cross_feature.py:                        * (vals2 - self._means.get(name2, 0))
+stats/collectors/cross_feature.py:                m1 = self._means.get(name, 0)
+stats/collectors/cross_feature.py:                m2 = other._means.get(name, 0)
+stats/collectors/cross_feature.py:                v1 = self._m2.get(name, 0)
+stats/collectors/cross_feature.py:                v2 = other._m2.get(name, 0)
+stats/collectors/cross_feature.py:                self._cross_m2[key] = self._cross_m2.get(key, 0) + other._cross_m2.get(
+stats/collectors/cross_feature.py:                var1 = self._m2.get(name1, 0) / (self._n - 1) if self._n > 1 else 0
+stats/collectors/cross_feature.py:                var2 = self._m2.get(name2, 0) / (self._n - 1) if self._n > 1 else 0
+stats/collectors/action_states.py:                name = ACTION_STATE_NAMES.get(action, f"Action_{action}")
+stats/collectors/action_states.py:                from_name = ACTION_STATE_NAMES.get(from_action, f"Action_{from_action}")
+stats/collectors/action_states.py:                    to_name = ACTION_STATE_NAMES.get(to_action, f"Action_{to_action}")
+stats/collectors/action_states.py:                name = ACTION_STATE_NAMES.get(action, f"Action_{action}")
+stats/collectors/column_stats.py:            col_type = self._column_types.get(col_name, "continuous")
+stats/collectors/column_stats.py:                stats = self._continuous_stats.get(col_name, ContinuousStats())
+stats/collectors/column_stats.py:                stats = self._categorical_stats.get(col_name, CategoricalStats())
+controller_quantization.py:    cached = cache.get(key)
+ppo/selfplay_env.py:            frame[idx] = float(raw_inputs.get(name, 0.0))
+ppo/selfplay_env.py:        shoulder_logits = outputs.get("shoulder")
+ppo/selfplay_env.py:                learner_value = learner_outputs.get("value", torch.zeros(1, 1, 1))[
+ppo/selfplay_env.py:        p1 = gamestate.players.get(self.learner_port)
+ppo/selfplay_env.py:        p2 = gamestate.players.get(self.opponent_port)
+ppo/inference_coordinator.py:        shoulder_logits = outputs.get("shoulder")
+ppo/inference_coordinator.py:        values = outputs.get("value", torch.zeros(batch_size, 1, 1, device=self.device))
+ppo/inference_coordinator.py:        values = outputs.get("value", torch.zeros(len(ready_workers), 1, 1))
+ppo/trajectory_slicer.py:                    worker_id, features_np, reward, done = state_queue.get(timeout=30.0)
+ppo/trajectory_slicer.py:            bootstrap_val = rollout.bootstrap_values.get(worker_id, torch.tensor(0.0))
+ppo/simulation_worker.py:                        signal = self.control_queue.get()
+ppo/simulation_worker.py:        p1 = gamestate.players.get(self.learner_port)
+ppo/simulation_worker.py:        p2 = gamestate.players.get(self.opponent_port)
+ppo/simulation_worker.py:        p1_actions, p2_actions = self.action_queue.get()
+ppo/simulation_worker.py:            frame[idx] = float(raw_inputs.get(name, 0.0))
+ppo/opponent_pool.py:                metadata = ckpt.get("metadata", {})
+ppo/opponent_pool.py:                opp_id = metadata.get("opponent_id", 0)
+ppo/opponent_pool.py:                    f"Removed oldest opponent: {oldest_path.name} (id={oldest_meta.get('opponent_id')})"
+ppo/opponent_pool.py:            if meta.get("opponent_id") == opponent_id:
+train/validation.py:            value_w = weights.get("global", weights["main"])
+train/validation.py:    if metrics.get("main_change_total", 0) > 0:
+train/validation.py:            f"loss={val_metrics.get('val/loss', 0):.4f} "
+train/validation.py:            f"main_acc={val_metrics.get('val/acc_main', 0):.3f} "
+train/validation.py:            f"c_acc={val_metrics.get('val/acc_c', 0):.3f} "
+train/validation.py:            f"btn_em={val_metrics.get('val/btn_em', 0):.3f}"
+measure_worker_memory.py:        f"{k}={stats.get(k, 0)/1024:.1f} MB" for k in keys if k in stats
+train/wandb_utils.py:            resume_run_id = os.environ.get("WANDB_RUN_ID") or os.environ.get(
+train/wandb_utils.py:                    resume_run_id = meta.get("id") or meta.get("run_id")
+scripts/analyze_feature_importance.py:        member = Action._value2member_map_.get(value)
+train/value_head.py:    cached = _GAMMA_POW_CACHE.get(key)
+config/config.py:        gamestate_dim = context.get("gamestate_dim")
+config/config.py:        controller_dim = context.get("controller_dim")
+config/config.py:        field_info = parent.model_fields.get(field_name)
+config/config.py:    config_dict = ckpt.get("config")
+train/step.py:        value_w = weights.get("global", weights["main"])
+train/step.py:        "shoulder_idx": target_info.get("shoulder_idx"),
+config/zarr_config.py:                cname = config.get("cname", "zstd")
+config/zarr_config.py:                clevel = config.get("clevel", 3)
+config/zarr_config.py:                shuffle_str = config.get("shuffle", "bitshuffle")
+config/zarr_config.py:            cname = v.get("cname", "zstd")
+config/zarr_config.py:            clevel = v.get("clevel", 3)
+config/zarr_config.py:            shuffle_val = v.get("shuffle", BloscShuffle.bitshuffle)
+sweep.py:    shoulder_out = int(target_shapes.get("shoulder"))
+sweep.py:    c_out = int(target_shapes.get("c_stick"))
+sweep.py:    main_out = int(target_shapes.get("main_stick"))
+sweep.py:    btn_out = int(target_shapes.get("buttons"))
+sweep.py:                                    btn_probs = pred.get("buttons_probs")
+sweep.py:                                    shoulder_logits = pred.get("shoulder")
+sweep.py:                                    shoulder_idx = target_info.get("shoulder_idx")
+sweep.py:                metric_val = result.metrics_summary.get(obj.metric)
+train/display.py:        return _ACTION_VALUE_TO_NAME.get(idx, str(idx))
+train/display.py:            formatter = formatters.get(col_name, _format_value)
+train/display.py:    total = losses.get("total", sum(v for k, v in losses.items() if k != "total"))
+window_dataset.py:            shard_path = self._shard_paths.get(ep.shard_id)
+zarr_storage.py:                    writer = writers.get(shard_idx)
+zarr_storage.py:        writer = writers.get(shard_idx)
+dolphin_lab.py:        tested = len(self.shield_drain_results.get(port, {}))
+dolphin_lab.py:        threshold_raw = self.shield_threshold_raw.get(self.primary_port)
+config/gpt_config.py:        gamestate_dim = context.get("gamestate_dim")
+config/gpt_config.py:        controller_dim = context.get("controller_dim")
+config/gpt_config.py:        num_stages = data.get("num_stages", cls.model_fields["num_stages"].default)
+config/gpt_config.py:        num_characters = data.get(
+config/gpt_config.py:        num_actions = data.get("num_actions", cls.model_fields["num_actions"].default)
+model/compile_utils.py:            f"[torch.compile] Compiled {label} (mode={kwargs.get('mode')}, fullgraph={kwargs.get('fullgraph')})"
+train_ppo.py:    episode = ckpt.get("episode", ckpt.get("rollout", 0))
+train_ppo.py:                new_values = outputs.get(
+train_ppo.py:            f"[Worker {worker_id}] Episode complete: {episode_metrics.get('episode/frames', 0)} frames"
+train_ppo.py:                new_values = outputs.get(
+train_ppo.py:                        values = [m.get(key, 0.0) for m in all_episode_metrics]
+train_ppo.py:                        "total_reward": episode_metrics.get(
+train/checkpoint.py:    return ckpt.get("config")
+train/checkpoint.py:    model_state = ckpt.get("model")
+train/checkpoint.py:    opt_state = ckpt.get("optimizer")
+train/checkpoint.py:    scaler_state = ckpt.get("scaler")
+model_interface.py:ENABLE_PROFILING = os.environ.get("PROFILE_MODEL_INTERFACE", "0") == "1"
+model_interface.py:    ego_player = gamestate.players.get(bot_port)
+model_interface.py:    opp_player = gamestate.players.get(opp_port)
+model_interface.py:        train_cfg = ckpt.get("config", {})
+model_interface.py:        data_root = Path(train_cfg.get("data_root", "dataset_FOX_vs_FOX"))
+model_interface.py:            self.seq_len = int(meta.get("seq_len", 256))
+model_interface.py:        ckpt_cfg = ckpt.get("config")
+model_interface.py:            maybe_model_cfg = ckpt_cfg.get("model")
+model_interface.py:                cached = self._prev_controller_features.get(key)
+model_interface.py:                cached = self._prev_controller_features.get(key)
+model_interface.py:        shoulder_logits = outputs.get("shoulder")
+model_interface.py:        self._maybe_log_death(raw_snapshot.get("p1_stock"))
+train/logging.py:    K_main = int(target_info.get("main_K", logits_main.shape[-1]))
+train/logging.py:        label = _BUTTON_PRETTY.get(name, name)
+train/logging.py:        label = _BUTTON_PRETTY.get(name, name)
+libmelee/example_with_stats.py:        player_state = gamestate.players.get(port)
+libmelee/example_with_stats.py:        deaths = death_counts.get(port, 0)
+libmelee/example_with_stats.py:        ko_window = _format_ko_window(death_percents.get(port))
+libmelee/example_with_stats.py:                player_state = gamestate.players.get(port)
+libmelee/example_with_stats.py:                prior_percent = prev_percent.get(port, player_state.percent)
+libmelee/example_with_stats.py:                was_dead = prev_is_dead.get(port, player_state.is_dead)
+test/test_validation_metrics.py:        expected_total[category] = expected_total.get(category, 0) + 1
+test/test_validation_metrics.py:            expected_correct[category] = expected_correct.get(category, 0) + 1
+test/test_validation_metrics.py:    assert enhanced.state_correct.get("other", 0) == 0
+column_map.py:        self.value_idx = name2idx.get("value_target")
+column_map.py:            self.y_shoulder = targ2idx.get("p1_shoulder_analog")
+column_map.py:            if meta.get('group') == group:
+column_map.py:                if player is None or meta.get('player') == player:
+loss.py:    shoulder_logits = pred.get("shoulder")  # [B, L, K_sh]
+loss.py:        w = sample_weights.get(name)
+loss.py:    shoulder_idx = target_info.get("shoulder_idx")

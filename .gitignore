@@ -10,3 +10,4 @@ processed_data*
 *.pstats
 future_data/
 melee.iso
+misc/replay_index.db

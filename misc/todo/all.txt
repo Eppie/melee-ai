@@ -1,0 +1,35 @@
+validation.py:    # TODO: use loading from checkpoint.py
+schema.py:    # TODO: It would be great to have these. Do we have replays with these populated? Added in version 3.5.0
+schema.py:    ("l_cancel_status", np.int32),  # TODO: Maybe one-hot encode this?
+controller_utils.py:# TODO: Move these to constants.py or schema.py
+data_types.py:# TODO: More of this!
+controller_quantization.py:# TODO: Do we need clamp here?
+controller_quantization.py:# TODO: Why do we need this function?
+controller_quantization.py:# TODO: clamp needed? Maybe a better way to do this? Remove input_domain param!
+controller_quantization.py:# TODO: auto should not be needed. also we shouldn't have to touch buttons.
+model_interface.py:    # TODO: Raw or processed here?
+zarr_storage.py:# TODO: Rename this file
+zarr_storage.py:            # TODO: Duplicate
+zarr_storage.py:            # TODO: Duplicate
+train/value_head.py:# TODO: Can we pre-compute this and save a branch?
+train/value_head.py:# TODO: Separate this into two functions:
+config/train_config.py:    # TODO: Document the effect of this setting
+config/train_config.py:    # TODO: Document the effect of this setting
+sweep.py:    # TODO: Remove profiler
+train/metrics.py:# TODO: Do we really need this? Check sweep.py.
+train/metrics.py:        # TODO: Why is this conditional needed?
+train/metrics.py:        # TODO: Why are these conditionals needed?
+train/metrics.py:# TODO: why is this unused?
+train/metrics.py:# TODO: Optimize? are there more useful metrics? expose precision and recall here too?
+train/metrics.py:# TODO: What is the difference between micro and macro?
+train/step.py:# TODO: We are probably failing to call clip_grad_norm if collect_grad_stats is False
+config/rl_config.py:    # TODO: Document what effect this has
+config/rl_config.py:    # TODO: Document what effect this has
+config/gpt_config.py:    # TODO: This wasn't working before, so we might have implemented the same logic elsewhere, find it and remove it
+train/batch_utils.py:# TODO: Make this optional via config (might be done already?)
+train/batch_utils.py:# TODO: Reduce duplication within this function
+ppo/selfplay_env.py:    # TODO: Some of this is duplicated from model_interface.py
+model/nano_gpt.py:        # TODO: Move this to config
+model/nano_gpt.py:        # TODO: Do we need this multiplier?
+model/nano_gpt.py:    # TODO: Is there a way to pre-compute and cache the one-hot results?
+model/nano_gpt.py:    # TODO: Why do we need the `.long()` calls?

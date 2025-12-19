@@ -1,0 +1,102 @@
+validation.py:        current = getattr(target, key)
+validation.py:            setattr(target, key, value)
+validation.py:        col_idx = getattr(reward_idx, field_info.name)
+validation.py:    setattr(enhanced, total_attr, getattr(enhanced, total_attr) + errors.sum().item())
+validation.py:        setattr(
+validation.py:            getattr(enhanced, change_attr) + errors[change_mask].sum().item(),
+validation.py:        setattr(
+validation.py:            getattr(enhanced, hold_attr) + errors[hold_mask].sum().item(),
+utils.py:        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+utils.py:        weight = getattr(module, "weight")
+utils.py:        mult = getattr(module, "mult", None)
+utils.py:        act = getattr(module, "activation", None)
+model/compile_utils.py:    compile_fn = getattr(torch, "compile", None)
+model/compile_utils.py:    if getattr(module, "_is_compiled_with_torch_compile", False):
+model/compile_utils.py:        setattr(compiled, "_is_compiled_with_torch_compile", True)
+sweep.py:    shutdown = getattr(loader_iter, "_shutdown_workers", None)
+sweep.py:    iterator = getattr(loader, "_iterator", None)
+sweep.py:    if not getattr(prof_cfg, "enable", False) or not hasattr(torch, "profiler"):
+sweep.py:    mps_activity = getattr(torch.profiler.ProfilerActivity, "MPS", None)
+sweep.py:    if cfg.train.num_workers > 0 and getattr(cfg.train, "persistent_workers", False):
+sweep.py:        and getattr(cfg.train, "pin_memory", False)
+scripts/analyze_feature_importance.py:if getattr(torch.backends, "mps", None):
+test/test_step.py:    monkeypatch.setattr("train.step.clip_grad_norm_", clip_mock)
+test/test_step.py:    monkeypatch.setattr("train.step.collect_gradient_diagnostics", grad_diag_mock)
+train/value_head.py:    opp_percent_idx = getattr(idx, f"{opponent}_percent")
+train/value_head.py:    opp_stock_idx = getattr(idx, f"{opponent}_stock")
+train/value_head.py:    opp_hitlag_idx = getattr(idx, f"{opponent}_is_in_hitlag")
+train/value_head.py:    opp_def_hitlag_idx = getattr(idx, f"{opponent}_is_defender_in_hitlag")
+train/value_head.py:    shield_idx = getattr(idx, f"{player}_shield_strength")
+scripts/wrapper.py:        lineno = getattr(original_node, "lineno", 1)
+scripts/wrapper.py:        col_offset = getattr(original_node, "col_offset", 0)
+train/setup.py:            project=getattr(config.train, "wandb_project", "melee-ai"),
+train/setup.py:            name=getattr(config.train, "run_name", None),
+train/setup.py:            mode=getattr(config.train, "wandb_mode", "online"),
+train/setup.py:    allow_partial_load = getattr(config.train, "allow_partial_checkpoint_load", False)
+test/test_logging.py:    monkeypatch.setattr(torch.Tensor, "item", spy, raising=False)
+libmelee/example_with_stats.py:        percent = getattr(player_state, "percent", None)
+train/checkpoint.py:                missing = list(getattr(incompatible, "missing_keys", ()))
+train/checkpoint.py:                unexpected = list(getattr(incompatible, "unexpected_keys", ()))
+test/test_controller_quantization.py:    monkeypatch.setattr("controller_quantization._SHOULDER_PALETTE_CPU", None)
+test/test_window_dataset.py:    monkeypatch.setattr(window_dataset.np, "searchsorted", fail_searchsorted)
+train/metrics.py:        setattr(self, correct_attr, getattr(self, correct_attr) + correct)
+train/metrics.py:        setattr(self, total_attr, getattr(self, total_attr) + true_idx.numel())
+train/metrics.py:        label_counts = getattr(self, counts_attr)
+train/metrics.py:        setattr(self, counts_attr, label_counts + bincount[: label_counts.shape[0]])
+train/metrics.py:        setattr(self, maj_attr, getattr(self, maj_attr) + maj_correct)
+train/metrics.py:            setattr(
+train/metrics.py:                getattr(self, rep_correct_attr) + rep_correct,
+train/metrics.py:            setattr(
+train/metrics.py:                getattr(self, rep_total_attr) + repeat_mask.sum(),
+dolphin_lab.py:        current_action = getattr(player, "action", None)
+dolphin_lab.py:            getattr(player, "is_inactive", False)
+dolphin_lab.py:            or getattr(player, "is_dead", False)
+dolphin_lab.py:        strength = float(getattr(player, "shield_strength", SHIELD_FULL_VALUE))
+dolphin_lab.py:        shield_active = bool(getattr(player, "is_shield_active", False))
+column_map.py:        feature_names = getattr(
+column_map.py:        target_names = getattr(dataset, "_target_names_sel", dataset.index.target_names)
+train/logging.py:        net = getattr(module, "net", None)
+train/logging.py:            bias = getattr(last, "bias", None)
+train/logging.py:        bias = getattr(module, "bias", None)
+window_dataset.py:        cached = getattr(self, "_episode_cache", None)
+window_dataset.py:        shard_cache = getattr(self, "_shard_cache", None)
+window_dataset.py:    start_method = getattr(config.train, "worker_start_method", None)
+window_dataset.py:        max_prefetch_mb = getattr(config.train, "max_loader_prefetch_mb", None)
+measure_worker_memory.py:    workers = getattr(loader_iter, "_workers", None)
+zarr_storage.py:            swap_values[name] = getattr(row, f"p2_{name[3:]}")
+zarr_storage.py:            swap_values[name] = getattr(row, f"p1_{name[3:]}")
+zarr_storage.py:            swap_values[name] = getattr(row, name)
+zarr_storage.py:            if abs(getattr(row, stick_x, 0.5) - 0.5) > stick_eps:
+zarr_storage.py:            if abs(getattr(row, stick_y, 0.5) - 0.5) > stick_eps:
+zarr_storage.py:            if abs(getattr(row, c_x, 0.5) - 0.5) > stick_eps:
+zarr_storage.py:            if abs(getattr(row, c_y, 0.5) - 0.5) > stick_eps:
+zarr_storage.py:            if getattr(row, shoulder, 0.0) > 0.0:
+zarr_storage.py:            if any(getattr(row, field, 0.0) > 0.0 for field in btn_fields):
+zarr_storage.py:    chunk_frames = getattr(config.zarr, "chunk_frames", None)
+zarr_storage.py:        v0 = getattr(rows[0], name)
+zarr_storage.py:        v0 = getattr(rows[0], name)
+zarr_storage.py:            (getattr(rows[i], name) for i in range(T_out)),
+zarr_storage.py:            (getattr(rows[i + 1], name) for i in range(T_out)),
+filter_bad_replays.py:    x_arr = getattr(joystick, "x", None)
+filter_bad_replays.py:    y_arr = getattr(joystick, "y", None)
+config/config.py:            parent = getattr(parent, part)
+config/config.py:            setattr(parent, field_name, value)
+libmelee/test/test_console.py:    monkeypatch.setattr(enums, "to_internal", lambda b: enums.Character.FOX)
+libmelee/test/test_console.py:    monkeypatch.setattr(enums, "to_internal", _raise_typeerror)
+libmelee/test/test_console.py:    monkeypatch.setattr(np, "ndarray", missing_css_data)
+libmelee/test/test_console.py:    monkeypatch.setattr(console, "_Console__game_start", mock_game_start)
+libmelee/test/test_console.py:    monkeypatch.setattr(console, "_Console__pre_frame", mock_pre_frame)
+libmelee/test/test_console.py:    monkeypatch.setattr(console, "_Console__post_frame", mock_post_frame)
+libmelee/test/test_console.py:    monkeypatch.setattr(console, "_Console__frame_bookend", mock_frame_bookend)
+libmelee/test/test_console.py:    monkeypatch.setattr(console, "_Console__item_update", mock_item_update)
+libmelee/test/test_console.py:    monkeypatch.setattr(console, "_Console__frame_bookend", mock_frame_bookend)
+libmelee/test/test_console.py:            fn = getattr(c, attr_name, None)
+libmelee/test/test_console.py:            setattr(c, attr_name, _make_wrapper(fn, public))
+model_interface.py:    if player is None or getattr(player, "controller_state", None) is None:
+model_interface.py:                    setattr(config.model, field, value)
+test/test_training_optimizations.py:        monkeypatch.setattr(torch.Tensor, "item", spy, raising=False)
+test/test_training_optimizations.py:        monkeypatch.setattr(torch.Tensor, "item", spy, raising=False)
+config/zarr_config.py:            # Use object.__setattr__ to bypass frozen config if needed
+config/zarr_config.py:            object.__setattr__(
+config/zarr_config.py:            object.__setattr__(
+config/zarr_config.py:        object.__setattr__(self, "out_root", f"{base_path}_{self.episode_count}")

@@ -133,6 +133,7 @@ def _patch_model_config_from_state_dict(
     proj_weight = state_dict.get("projection_down.weight")
     if isinstance(proj_weight, torch.Tensor):
         config.model.n_embd = proj_weight.shape[0]
+        config.model.input_size = proj_weight.shape[1]
 
     block_indices = []
     for key in state_dict.keys():
@@ -2120,7 +2121,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    init_config()
+    # Keep config mutable so checkpoint metadata can adjust fields (seq_len, etc.)
+    init_config(freeze=False)
     config = get_config()
     args = parse_args()
 
@@ -2181,14 +2183,15 @@ def main() -> None:
     gamestate_dim = len(colmap.gamestate_idxs)
     controller_dim = len(colmap.controller_idxs)
 
-    # Update the config with the dynamic dimensions
-    config.model.input_size = (
-        config.model.num_stages
-        + config.model.num_characters * 2
-        + config.model.num_actions * 2
-        + gamestate_dim
-        + controller_dim
-    )
+    # Only recompute input_size if it hasn't been inferred from the checkpoint
+    if config.model.input_size in (-1, None):
+        config.model.input_size = (
+            config.model.num_stages
+            + config.model.num_characters * 2
+            + config.model.num_actions * 2
+            + gamestate_dim
+            + controller_dim
+        )
 
     model = GPT(config)
     # TODO: use loading from checkpoint.py

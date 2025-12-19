@@ -261,18 +261,16 @@ class EnvWorker:
 
         return features
 
-    def _compute_reward(self, features: np.ndarray) -> float:
+    def _compute_reward(
+        self, prev_features: np.ndarray, features: np.ndarray
+    ) -> float:
         """
-        Compute zero-sum reward for the transition into the current frame using the shared reward config.
+        Compute zero-sum reward for the transition from ``prev_features`` to ``features``.
 
         The implementation reuses the imitation-learning reward path (damage, stock, hitlag, shield)
         by calling :func:`compute_frame_rewards` on the previous and current feature vectors.
         """
-        if self.prev_features is None:
-            self.prev_features = features
-            return 0.0
-
-        stacked = np.stack([self.prev_features, features], axis=0)
+        stacked = np.stack([prev_features, features], axis=0)
         X = torch.from_numpy(stacked).unsqueeze(0)
         rewards = compute_frame_rewards(
             X,
@@ -282,7 +280,6 @@ class EnvWorker:
 
         # Reward for transition from prev_features -> features lives at index 0
         reward = float(rewards[0, 0].item())
-        self.prev_features = features
         return reward
 
     def _apply_neutral_action(self):
@@ -386,6 +383,7 @@ class EnvWorker:
         features: np.ndarray,
         action: ActionData,
         reward: float,
+        mask: bool,
     ):
         """Store frame in rollout buffer."""
         if not self.rollout.complete:
@@ -395,7 +393,7 @@ class EnvWorker:
                 logp=action.logp,
                 value=action.value,
                 reward=reward,
-                mask=self.is_warm,
+                mask=mask,
             )
 
     def run(self):
@@ -406,6 +404,9 @@ class EnvWorker:
         # Only log on first env to reduce verbosity
         if self.global_env_id == 0:
             print(f"[ENV] Worker loops started")
+
+        prev_action: Optional[ActionData] = None
+        prev_is_warm = False
 
         while True:
             try:
@@ -505,9 +506,25 @@ class EnvWorker:
                     self.waiting_for_bootstrap = False
                     self.rollout.reset()
                     self.prev_features = None
+                    prev_action = None
 
                 # 4. Featurize (only in-game)
                 features = self._featurize(gamestate)
+
+                # 4.5 Compute reward for previous transition and store the previous frame.
+                # We buffer (state, action) until we see the next state so the stored reward
+                # corresponds to the action that caused it (S_t, A_t, R_t). This aligns PPO's
+                # (obs, action, reward, value) tuples and avoids the prior off-by-one where
+                # rewards were paired with the subsequent action.
+                if self.prev_features is not None and prev_action is not None:
+                    reward = self._compute_reward(self.prev_features, features)
+                    if not self.waiting_for_bootstrap:
+                        self._store_rollout_frame(
+                            self.prev_features, prev_action, reward, mask=prev_is_warm
+                        )
+                        if prev_is_warm and self.rollout.complete:
+                            # Set flag to capture bootstrap value on next frame
+                            self.waiting_for_bootstrap = True
 
                 # Removed verbose frame-level logging
 
@@ -584,14 +601,10 @@ class EnvWorker:
                     )
                     self.waiting_for_bootstrap = False
 
-                # 12. Store in rollout buffer (if not waiting for bootstrap)
-                if not self.waiting_for_bootstrap:
-                    self._store_rollout_frame(features, ego_action, reward)
-
-                    # Check if rollout just became complete
-                    if self.is_warm and self.rollout.complete:
-                        # Set flag to capture bootstrap value on next frame
-                        self.waiting_for_bootstrap = True
+                # 12. Buffer current step for next reward computation
+                self.prev_features = features
+                prev_action = ego_action
+                prev_is_warm = self.is_warm
 
                 # 13. Update local frame counters
                 # Note: t_mod is managed by Coordinator via slab metadata

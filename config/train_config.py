@@ -285,7 +285,7 @@ class TrainConfig(BaseModel):
 
     # Checkpointing
     out_dir: str = Field(
-        default="../checkpoints",
+        default="checkpoints",
         description="Directory for saving model checkpoints during training.",
     )
     allow_partial_checkpoint_load: bool = Field(

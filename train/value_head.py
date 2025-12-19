@@ -25,6 +25,8 @@ class RewardFeatureIdx:
     p2_is_defender_in_hitlag: Optional[int] = None
     p1_shield_strength: Optional[int] = None
     p2_shield_strength: Optional[int] = None
+    p1_is_in_hitstun: Optional[int] = None
+    p2_is_in_hitstun: Optional[int] = None
 
 
 def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
@@ -59,7 +61,100 @@ def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
         p2_is_defender_in_hitlag=idx("p2_is_defender_in_hitlag"),
         p1_shield_strength=idx("p1_shield_strength"),
         p2_shield_strength=idx("p2_shield_strength"),
+        p1_is_in_hitstun=idx("p1_is_in_hitstun"),
+        p2_is_in_hitstun=idx("p2_is_in_hitstun"),
     )
+
+
+def _compute_hitstun_streak_lengths(opponent_in_hitstun: torch.Tensor) -> torch.Tensor:
+    """Compute the length of consecutive hitstun sequences at each position.
+
+    For each frame, calculates how many consecutive frames of hitstun have occurred
+    up to and including that frame. Resets to 0 when hitstun ends.
+
+    Example:
+        Given ``opponent_in_hitstun = [[False, True, True, True, False, True, True]]``,
+        returns ``[[0, 1, 2, 3, 0, 1, 2]]``.
+
+    Args:
+        opponent_in_hitstun: ``[B, L]`` boolean tensor indicating hitstun status.
+
+    Returns:
+        ``[B, L]`` tensor where each position contains the current consecutive
+        hitstun streak length (0 if not in hitstun).
+    """
+    B, L = opponent_in_hitstun.shape
+    device = opponent_in_hitstun.device
+    dtype = torch.float32
+
+    # Convert boolean to float for computation
+    hitstun_float = opponent_in_hitstun.to(dtype=dtype)
+
+    # Initialize output tensor
+    streak_lengths = torch.zeros((B, L), device=device, dtype=dtype)
+
+    # Compute streak lengths sequentially
+    # streak[t] = (streak[t-1] + 1) * hitstun[t]
+    # This gives 0 when not in hitstun, and increments when in hitstun
+    for i in range(L):
+        if i == 0:
+            streak_lengths[:, i] = hitstun_float[:, i]
+        else:
+            streak_lengths[:, i] = (streak_lengths[:, i - 1] + 1) * hitstun_float[:, i]
+
+    return streak_lengths
+
+
+def _compute_hitstun_curve_reward(
+    streak_length: torch.Tensor,
+    min_frames: int,
+    peak_frames: int,
+    max_frames: int,
+    peak_reward: float,
+) -> torch.Tensor:
+    """Compute per-frame reward based on hitstun streak length using a piecewise linear curve.
+
+    Implements a reward curve with three phases:
+    1. ``[0, min_frames)``: No reward (filters out brief hits)
+    2. ``[min_frames, peak_frames]``: Linear increase from 0 to peak_reward
+    3. ``(peak_frames, max_frames]``: Linear decrease from peak_reward to 0
+    4. ``(max_frames, inf)``: No reward (prevents infinite accumulation)
+
+    Example:
+        With ``min_frames=15``, ``peak_frames=400``, ``max_frames=600``, ``peak_reward=0.04``:
+        - Streak of 10 frames: reward = 0.0
+        - Streak of 200 frames: reward ≈ 0.019 (midway to peak)
+        - Streak of 400 frames: reward = 0.04 (peak)
+        - Streak of 500 frames: reward ≈ 0.02 (midway down)
+        - Streak of 600+ frames: reward = 0.0
+
+    Args:
+        streak_length: ``[B, L]`` tensor of consecutive hitstun frame counts.
+        min_frames: Minimum consecutive frames before reward starts.
+        peak_frames: Frame count where reward reaches maximum.
+        max_frames: Frame count where reward returns to zero.
+        peak_reward: Maximum per-frame reward value at peak.
+
+    Returns:
+        ``[B, L]`` tensor of per-frame rewards.
+    """
+    reward = torch.zeros_like(streak_length)
+
+    # Phase 1: Increasing phase [min_frames, peak_frames]
+    increasing_mask = (streak_length >= min_frames) & (streak_length <= peak_frames)
+    if increasing_mask.any():
+        # Linear interpolation: progress from 0 to 1
+        progress = (streak_length - min_frames) / max(1, peak_frames - min_frames)
+        reward = torch.where(increasing_mask, progress * peak_reward, reward)
+
+    # Phase 2: Decreasing phase (peak_frames, max_frames]
+    decreasing_mask = (streak_length > peak_frames) & (streak_length <= max_frames)
+    if decreasing_mask.any():
+        # Linear interpolation: progress from 1 to 0
+        progress = (max_frames - streak_length) / max(1, max_frames - peak_frames)
+        reward = torch.where(decreasing_mask, progress * peak_reward, reward)
+
+    return reward
 
 
 def _compute_player_rewards(
@@ -152,6 +247,23 @@ def _compute_player_rewards(
     shield = X[:, :, shield_idx]
     penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
     rewards[:, prev_slice].add_(penalty[:, curr_slice].mul_(reward_cfg.reward_low_shield))
+
+    # --- Hitstun combo reward (per-frame, with length-based curve) ---
+    opp_hitstun_idx = getattr(idx, f"{opponent}_is_in_hitstun")
+    if opp_hitstun_idx is not None:
+        opp_in_hitstun = X[:, :, opp_hitstun_idx] > 0.5  # [B, L] boolean
+        # Compute consecutive hitstun streak lengths
+        streak_lengths = _compute_hitstun_streak_lengths(opp_in_hitstun)  # [B, L]
+        # Apply configurable reward curve based on streak length
+        hitstun_reward = _compute_hitstun_curve_reward(
+            streak_lengths,
+            min_frames=reward_cfg.reward_hitstun_min_frames,
+            peak_frames=reward_cfg.reward_hitstun_peak_frames,
+            max_frames=reward_cfg.reward_hitstun_max_frames,
+            peak_reward=reward_cfg.reward_hitstun_peak_value,
+        )
+        # Add to rewards for all frames (not just prev_slice, since this is per-frame)
+        rewards.add_(hitstun_reward.to(dtype=dtype))
 
     return rewards
 

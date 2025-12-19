@@ -51,3 +51,35 @@ class RewardConfig(BaseModel):
             "Negative value discourages shield breaks. Reasonable range: [-0.5, 0.0]."
         ),
     )
+    reward_hitstun_min_frames: int = Field(
+        default=15,
+        ge=0,
+        description=(
+            "Minimum consecutive hitstun frames before reward starts. "
+            "Filters out brief hits/pokes. Reasonable range: [0, 30]."
+        ),
+    )
+    reward_hitstun_peak_frames: int = Field(
+        default=400,
+        ge=1,
+        description=(
+            "Consecutive hitstun frames where per-frame reward reaches maximum. "
+            "Encourages extended combos. Should be > min_frames. Reasonable range: [200, 600]."
+        ),
+    )
+    reward_hitstun_max_frames: int = Field(
+        default=600,
+        ge=1,
+        description=(
+            "Consecutive hitstun frames where per-frame reward returns to zero. "
+            "Prevents infinite reward accumulation. Should be > peak_frames. Reasonable range: [400, 900]."
+        ),
+    )
+    reward_hitstun_peak_value: float = Field(
+        default=0.04,
+        description=(
+            "Maximum per-frame reward at peak hitstun length. "
+            "Should be smaller than damage reward (typically ~0.5x damage reward). "
+            "Reasonable range: [0.01, 0.1]."
+        ),
+    )

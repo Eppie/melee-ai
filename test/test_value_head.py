@@ -174,6 +174,91 @@ def test_compute_frame_rewards_hitlag_terms(reward_setup):
     assert torch.allclose(rewards, expected)
 
 
+def test_compute_frame_rewards_hitstun_curve(reward_setup):
+    """Hitstun rewards follow the configured curve: no reward until min_frames,
+    peak at peak_frames, then decline to zero at max_frames."""
+    colmap, idx, reward_cfg = reward_setup
+    assert idx.p2_is_in_hitstun is not None
+
+    # Configure curve: min=15, peak=400, max=600, peak_value=0.04
+    cfg = reward_cfg.model_copy(update={
+        "reward_hitstun_min_frames": 15,
+        "reward_hitstun_peak_frames": 400,
+        "reward_hitstun_max_frames": 600,
+        "reward_hitstun_peak_value": 0.04,
+    })
+
+    # Create sequence with continuous hitstun
+    seq_len = 650
+    X = _zeros_feature_tensor(colmap, seq_len)
+    # All frames in hitstun
+    X[0, :, idx.p2_is_in_hitstun] = 1.0
+
+    rewards = compute_frame_rewards(X, idx=idx, reward_cfg=cfg).squeeze(0)
+
+    # Test key points on the curve
+    # Frames 0-14: no reward (below min_frames)
+    assert torch.allclose(rewards[0], torch.tensor(0.0), atol=1e-6)
+    assert torch.allclose(rewards[14], torch.tensor(0.0), atol=1e-6)
+
+    # Frame 15: just reached min_frames, should start getting reward
+    assert rewards[15].item() > 0.0
+    assert rewards[15].item() < 0.04
+
+    # Frame 399: at peak (streak of 400), should be maximum reward
+    # Frame 400: streak of 401, slightly past peak
+    assert torch.allclose(rewards[399], torch.tensor(0.04), atol=1e-4)
+    assert rewards[400].item() < 0.04  # Past peak, declining
+    assert rewards[400].item() > 0.039  # But still very close to peak
+
+    # Frame 500: streak of 501, midway in decline (between 400 and 600)
+    expected_500 = 0.04 * (600 - 501) / (600 - 400)  # Linear interpolation
+    assert torch.allclose(rewards[500], torch.tensor(expected_500), atol=1e-4)
+
+    # Frame 600+: beyond max_frames, no reward
+    assert torch.allclose(rewards[600], torch.tensor(0.0), atol=1e-6)
+    assert torch.allclose(rewards[649], torch.tensor(0.0), atol=1e-6)
+
+
+def test_compute_frame_rewards_hitstun_resets_on_break(reward_setup):
+    """Hitstun streak counter resets when hitstun is interrupted."""
+    colmap, idx, reward_cfg = reward_setup
+    assert idx.p2_is_in_hitstun is not None
+
+    cfg = reward_cfg.model_copy(update={
+        "reward_hitstun_min_frames": 10,
+        "reward_hitstun_peak_frames": 50,
+        "reward_hitstun_max_frames": 100,
+        "reward_hitstun_peak_value": 0.1,
+    })
+
+    seq_len = 75
+    X = _zeros_feature_tensor(colmap, seq_len)
+
+    # Pattern: 25 frames hitstun, 5 frames break, 25 frames hitstun
+    X[0, 0:25, idx.p2_is_in_hitstun] = 1.0  # First combo
+    X[0, 25:30, idx.p2_is_in_hitstun] = 0.0  # Break
+    X[0, 30:55, idx.p2_is_in_hitstun] = 1.0  # Second combo
+
+    rewards = compute_frame_rewards(X, idx=idx, reward_cfg=cfg).squeeze(0)
+
+    # Frame 24: streak of 25, should have reward
+    assert rewards[24].item() > 0.0
+
+    # Frames 25-29: no hitstun, no reward
+    assert torch.allclose(rewards[25:30], torch.zeros(5), atol=1e-6)
+
+    # Frame 30: first frame of second combo (streak=1), below min, no reward
+    assert torch.allclose(rewards[30], torch.tensor(0.0), atol=1e-6)
+
+    # Frame 40: streak of 11 in second combo, should have reward
+    assert rewards[40].item() > 0.0
+
+    # Second combo's peak reward should be lower than if it continued from first
+    # (since streak resets)
+    assert rewards[40].item() < rewards[24].item()
+
+
 def test_compute_value_targets_sequence_gamma(reward_setup):
     """Discounted returns should honor the provided gamma factor."""
     colmap, _, reward_cfg = reward_setup
@@ -240,7 +325,8 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
 def test_replay_rewards_shape_and_sparsity(replay_reward_data):
     rewards = replay_reward_data["rewards"]
     assert rewards.shape[0] == 6956
-    assert torch.count_nonzero(rewards).item() == 382
+    # Updated count includes hitstun rewards (was 382 before hitstun rewards added)
+    assert torch.count_nonzero(rewards).item() == 1450
 
 
 @pytest.mark.parametrize(

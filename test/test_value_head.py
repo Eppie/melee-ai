@@ -95,8 +95,8 @@ def test_compute_frame_rewards_damage_and_stock(reward_setup):
     seq_len = 4
     X = _zeros_feature_tensor(colmap, seq_len)
 
-    # Opponent percent rises by 2, then by 3 -> convert to rewards at frames 1 and 2.
-    X[0, :, idx.p2_percent] = torch.tensor([0.0, 2.0, 5.0, 5.0])
+    # Opponent percent rises by 2%, then by 3% -> scaled by 1/100.
+    X[0, :, idx.p2_percent] = torch.tensor([0.0, 0.02, 0.05, 0.05])
     # Opponent loses one stock between frames 1 and 2 (action transitions from alive to dying)
     # Action > 0xA means alive, action <= 0xA means dying
     X[0, :, idx.p2_action] = torch.tensor(
@@ -108,8 +108,8 @@ def test_compute_frame_rewards_damage_and_stock(reward_setup):
     cfg = reward_cfg
     expected = torch.tensor(
         [
-            2.0 * float(cfg.reward_damage_dealt),
-            3.0 * float(cfg.reward_damage_dealt) + float(cfg.reward_stock_taken),
+            0.02 * float(cfg.reward_damage_dealt),
+            0.03 * float(cfg.reward_damage_dealt) + float(cfg.reward_stock_taken),
             0.0,
             0.0,
         ],
@@ -287,7 +287,7 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
     colmap, idx, reward_cfg = reward_setup
     seq_len = 4
     X = _zeros_feature_tensor(colmap, seq_len)
-    X[0, :, idx.p2_percent] = torch.tensor([0.0, 1.0, 1.0, 2.0])
+    X[0, :, idx.p2_percent] = torch.tensor([0.0, 0.01, 0.01, 0.02])
 
     gamma = 0.9
     returns = (
@@ -305,9 +305,9 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
     cfg = reward_cfg
     expected_rewards = torch.tensor(
         [
-            float(cfg.reward_damage_dealt),
+            0.01 * float(cfg.reward_damage_dealt),
             0.0,
-            float(cfg.reward_damage_dealt),
+            0.01 * float(cfg.reward_damage_dealt),
             0.0,
         ],
         dtype=torch.float32,

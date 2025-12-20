@@ -268,6 +268,94 @@ def _compute_player_rewards(
     return rewards
 
 
+def _compute_player_reward_components(
+    X: torch.Tensor,
+    idx: RewardFeatureIdx,
+    reward_cfg: RewardConfig,
+    *,
+    player: str,
+) -> Dict[str, torch.Tensor]:
+    """Compute per-frame reward components from the perspective of a single player."""
+    if player not in ("p1", "p2"):
+        raise ValueError(f"player must be 'p1' or 'p2', got {player!r}")
+
+    opponent = "p2" if player == "p1" else "p1"
+
+    B, L, _F = X.shape
+    device = X.device
+    dtype = X.dtype
+
+    components = {
+        "damage": torch.zeros(B, L, device=device, dtype=dtype),
+        "stock": torch.zeros(B, L, device=device, dtype=dtype),
+        "hitlag": torch.zeros(B, L, device=device, dtype=dtype),
+        "low_shield": torch.zeros(B, L, device=device, dtype=dtype),
+        "hitstun": torch.zeros(B, L, device=device, dtype=dtype),
+    }
+
+    if L <= 1:
+        return components
+
+    prev_slice = slice(None, -1)  # indices 0 .. L-2
+    curr_slice = slice(1, None)  # indices 1 .. L-1
+
+    if player == "p1":
+        opp_percent_idx = idx.p2_percent
+        opp_action_idx = idx.p2_action
+        opp_hitlag_idx = idx.p2_is_in_hitlag
+        opp_def_hitlag_idx = idx.p2_is_defender_in_hitlag
+        shield_idx = idx.p1_shield_strength
+        opp_hitstun_idx = idx.p2_is_in_hitstun
+    else:
+        opp_percent_idx = idx.p1_percent
+        opp_action_idx = idx.p1_action
+        opp_hitlag_idx = idx.p1_is_in_hitlag
+        opp_def_hitlag_idx = idx.p1_is_defender_in_hitlag
+        shield_idx = idx.p2_shield_strength
+        opp_hitstun_idx = idx.p1_is_in_hitstun
+
+    d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
+    d_opp.clamp_min_(0.0)
+    components["damage"][:, prev_slice].add_(
+        d_opp.mul_(reward_cfg.reward_damage_dealt)
+    )
+
+    opp_action = X[:, :, opp_action_idx]  # [B, L]
+    opp_is_dying = opp_action <= 0x0A  # [B, L]
+    opp_deaths = torch.logical_and(
+        torch.logical_not(opp_is_dying[:, :-1]), opp_is_dying[:, 1:]
+    )
+    components["stock"][:, prev_slice].add_(
+        opp_deaths.to(dtype).mul_(reward_cfg.reward_stock_taken)
+    )
+
+    opp_hitlag = X[:, :, opp_hitlag_idx]
+    opp_def_hitlag = X[:, :, opp_def_hitlag_idx]
+    opp_metric = opp_hitlag - opp_def_hitlag
+    hitlag_reward = (opp_metric == 1).to(dtype).mul_(reward_cfg.reward_hitlag_opponent)
+    components["hitlag"][:, prev_slice].add_(hitlag_reward[:, curr_slice])
+
+    shield = X[:, :, shield_idx]
+    penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
+    components["low_shield"][:, prev_slice].add_(
+        penalty[:, curr_slice].mul_(reward_cfg.reward_low_shield)
+    )
+
+    if opp_hitstun_idx is not None:
+        opp_in_hitstun = X[:, :, opp_hitstun_idx] > 0.5
+        streak_lengths = _compute_hitstun_streak_lengths(opp_in_hitstun)
+        hitstun_reward = _compute_hitstun_curve_reward(
+            streak_lengths,
+            min_frames=reward_cfg.reward_hitstun_min_frames,
+            peak_frames=reward_cfg.reward_hitstun_peak_frames,
+            max_frames=reward_cfg.reward_hitstun_max_frames,
+            peak_reward=reward_cfg.reward_hitstun_peak_value,
+        )
+        components["hitstun"].add_(hitstun_reward.to(dtype=dtype))
+
+    return components
+
+
 def compute_frame_rewards(
     X: torch.Tensor, idx: RewardFeatureIdx, reward_cfg: RewardConfig
 ) -> torch.Tensor:
@@ -291,6 +379,24 @@ def compute_frame_rewards(
     opp_rewards = _compute_player_rewards(X, idx, reward_cfg, player="p2")
 
     return ego_rewards - opp_rewards
+
+
+def compute_reward_components(
+    X: torch.Tensor, idx: RewardFeatureIdx, reward_cfg: RewardConfig
+) -> Dict[str, torch.Tensor]:
+    """Compute zero-sum per-frame reward components.
+
+    Returns per-component tensors with shape ``[B, L]`` and a ``total`` entry.
+    """
+    ego = _compute_player_reward_components(X, idx, reward_cfg, player="p1")
+    opp = _compute_player_reward_components(X, idx, reward_cfg, player="p2")
+
+    components: Dict[str, torch.Tensor] = {}
+    for key in ego:
+        components[key] = ego[key] - opp[key]
+
+    components["total"] = sum(components.values())
+    return components
 
 
 # Cache for gamma powers to avoid recomputation

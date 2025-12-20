@@ -17,13 +17,15 @@ import argparse
 import random
 import signal
 import sys
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from contextlib import nullcontext
 from tensordict import TensorDict
 from torch.distributions import Bernoulli, Categorical
 
@@ -43,6 +45,7 @@ from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
 from libmelee.melee.enums import (
     Character,
+    ControllerStatus,
     ControllerType,
     Menu,
     Stage,
@@ -58,7 +61,11 @@ from model_interface import (
 )
 from train import find_latest_checkpoint
 from train.batch_utils import build_model_inputs
-from train.value_head import build_reward_feature_index, compute_frame_rewards
+from train.value_head import (
+    build_reward_feature_index,
+    compute_frame_rewards,
+    compute_reward_components,
+)
 
 
 # ============================================================================
@@ -75,8 +82,14 @@ class PPOConfig:
     # PPO parameters
     clip_epsilon: float = 0.2  # Clipping range for policy ratio
     num_epochs: int = 4  # Number of epochs to train on each rollout
+    mini_batch_size: int = 256  # Mini-batch size (increased for M4 Max efficiency)
     value_coef: float = 0.5  # Coefficient for value loss
     entropy_coef: float = 0.01  # Coefficient for entropy bonus
+
+    # Mixed precision - DISABLED by default for inference
+    # AMP adds overhead for single-sample inference (batch_size=1) that outweighs
+    # float16 benefits. The autocast context manager overhead at 60Hz is significant.
+    use_amp: bool = False
 
     # GAE parameters
     gae_lambda: float = 0.95  # Lambda for GAE
@@ -91,6 +104,30 @@ class PPOConfig:
 
     # Logging
     log_interval: int = 1  # Log every episode
+
+
+def get_amp_context(device: torch.device, use_amp: bool):
+    """Get the appropriate AMP context manager for the device.
+
+    For MPS (Apple Silicon), uses float16 which is well-optimized for AMX units.
+    For CUDA, uses bfloat16 if available, else float16.
+    Returns nullcontext if AMP is disabled or device is CPU.
+    """
+    if not use_amp:
+        return nullcontext()
+
+    device_type = device.type
+
+    if device_type == "mps":
+        # MPS: float16 is well-supported and optimized for Apple Silicon
+        return torch.amp.autocast(device_type="mps", dtype=torch.float16)
+    elif device_type == "cuda":
+        # CUDA: prefer bfloat16 if available (better numerical stability)
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        return torch.amp.autocast(device_type="cuda", dtype=dtype)
+    else:
+        # CPU: no benefit from AMP
+        return nullcontext()
 
 
 LEGAL_TOURNAMENT_STAGES = [
@@ -123,17 +160,17 @@ class ActionInfo:
     shoulder_idx: int
 
     # Log probabilities
-    main_log_prob: float
-    c_log_prob: float
+    main_log_prob: torch.Tensor
+    c_log_prob: torch.Tensor
     buttons_log_probs: torch.Tensor  # [5]
-    shoulder_log_prob: float
+    shoulder_log_prob: torch.Tensor
 
 
 @dataclass
 class RolloutStep:
     """Single timestep in a rollout."""
 
-    # Full feature sequence needed for model input [seq_len, F]
+    # Single frame features [F] (not full sequence!)
     features: torch.Tensor
 
     # Actions taken
@@ -195,62 +232,141 @@ class PPOLossComponents:
 # Action Sampling
 # ============================================================================
 
+ActionSelection = Literal["stochastic", "greedy"]
+
+
+def _pack_actions_for_cpu(
+    main_idx: torch.Tensor,
+    c_idx: torch.Tensor,
+    shoulder_idx: torch.Tensor,
+    button_samples: torch.Tensor,
+) -> Tuple[int, int, int, torch.Tensor]:
+    """Move actions to CPU once for controller application."""
+    indices = torch.stack([main_idx, c_idx, shoulder_idx]).to(
+        dtype=button_samples.dtype
+    )
+    actions_gpu = torch.cat([indices, button_samples], dim=0)
+    actions_cpu = actions_gpu.detach().cpu()
+    buttons_cpu = actions_cpu[3:].to(torch.float32)
+    return (
+        int(actions_cpu[0].item()),
+        int(actions_cpu[1].item()),
+        int(actions_cpu[2].item()),
+        buttons_cpu,
+    )
+
+
 def sample_actions_with_logprobs(
     outputs: TensorDict,
-    device: torch.device,
 ) -> ActionInfo:
     """Sample actions from model outputs and compute log probabilities.
 
     Args:
         outputs: Model outputs with keys ["main_stick", "c_stick", "buttons", "shoulder"]
-        device: Device for tensor operations
-
     Returns:
         ActionInfo with sampled actions and log probabilities
     """
     # Extract last timestep logits [1, seq_len, K] -> [K]
-    main_logits = outputs["main_stick"][0, -1].to(device)  # [64]
-    c_logits = outputs["c_stick"][0, -1].to(device)  # [9]
-    button_logits = outputs["buttons"][0, -1].to(device)  # [5]
-    shoulder_logits = outputs["shoulder"][0, -1].to(device)  # [5]
+    # Note: outputs are already on device, no need to call .to(device)
+    main_logits = outputs["main_stick"][0, -1]  # [64]
+    c_logits = outputs["c_stick"][0, -1]  # [9]
+    button_logits = outputs["buttons"][0, -1]  # [5]
+    shoulder_logits = outputs["shoulder"][0, -1]  # [5]
 
-    # Main stick: Categorical distribution
-    main_dist = Categorical(logits=main_logits)
-    main_idx = main_dist.sample()
-    main_log_prob = main_dist.log_prob(main_idx)
+    # Sample all categorical actions using multinomial (faster than Categorical for single samples)
+    main_idx = torch.multinomial(torch.softmax(main_logits, dim=-1), 1).squeeze(-1)
+    c_idx = torch.multinomial(torch.softmax(c_logits, dim=-1), 1).squeeze(-1)
+    shoulder_idx = torch.multinomial(torch.softmax(shoulder_logits, dim=-1), 1).squeeze(-1)
 
-    # C-stick: Categorical distribution
-    c_dist = Categorical(logits=c_logits)
-    c_idx = c_dist.sample()
-    c_log_prob = c_dist.log_prob(c_idx)
+    # Compute log probabilities using log_softmax (avoids creating distribution objects)
+    main_log_softmax = torch.log_softmax(main_logits, dim=-1)
+    c_log_softmax = torch.log_softmax(c_logits, dim=-1)
+    shoulder_log_softmax = torch.log_softmax(shoulder_logits, dim=-1)
 
-    # Shoulder: Categorical distribution
-    shoulder_dist = Categorical(logits=shoulder_logits)
-    shoulder_idx = shoulder_dist.sample()
-    shoulder_log_prob = shoulder_dist.log_prob(shoulder_idx)
+    main_log_prob = main_log_softmax[main_idx]
+    c_log_prob = c_log_softmax[c_idx]
+    shoulder_log_prob = shoulder_log_softmax[shoulder_idx]
 
     # Buttons: Independent Bernoulli for each button
     button_probs = torch.sigmoid(button_logits)
     button_samples = torch.bernoulli(button_probs)
 
     # Compute log probabilities for buttons
-    # log(p) if sampled 1, log(1-p) if sampled 0
     button_log_probs = torch.where(
         button_samples == 1,
         torch.log(button_probs + 1e-8),
         torch.log(1 - button_probs + 1e-8),
     )
 
-    return ActionInfo(
-        main_stick_idx=main_idx.item(),
-        c_stick_idx=c_idx.item(),
-        buttons=button_samples.cpu(),
-        shoulder_idx=shoulder_idx.item(),
-        main_log_prob=main_log_prob.item(),
-        c_log_prob=c_log_prob.item(),
-        buttons_log_probs=button_log_probs.cpu(),
-        shoulder_log_prob=shoulder_log_prob.item(),
+    main_idx_cpu, c_idx_cpu, shoulder_idx_cpu, buttons_cpu = _pack_actions_for_cpu(
+        main_idx, c_idx, shoulder_idx, button_samples
     )
+
+    return ActionInfo(
+        main_stick_idx=main_idx_cpu,
+        c_stick_idx=c_idx_cpu,
+        buttons=buttons_cpu,
+        shoulder_idx=shoulder_idx_cpu,
+        main_log_prob=main_log_prob.detach(),
+        c_log_prob=c_log_prob.detach(),
+        buttons_log_probs=button_log_probs.detach(),
+        shoulder_log_prob=shoulder_log_prob.detach(),
+    )
+
+
+def greedy_actions_with_logprobs(outputs: TensorDict) -> ActionInfo:
+    """Select greedy actions and compute log probabilities."""
+    main_logits = outputs["main_stick"][0, -1]  # [64]
+    c_logits = outputs["c_stick"][0, -1]  # [9]
+    button_logits = outputs["buttons"][0, -1]  # [5]
+    shoulder_logits = outputs["shoulder"][0, -1]  # [5]
+
+    main_idx = torch.argmax(main_logits, dim=-1)
+    c_idx = torch.argmax(c_logits, dim=-1)
+    shoulder_idx = torch.argmax(shoulder_logits, dim=-1)
+
+    main_log_softmax = torch.log_softmax(main_logits, dim=-1)
+    c_log_softmax = torch.log_softmax(c_logits, dim=-1)
+    shoulder_log_softmax = torch.log_softmax(shoulder_logits, dim=-1)
+
+    main_log_prob = main_log_softmax[main_idx]
+    c_log_prob = c_log_softmax[c_idx]
+    shoulder_log_prob = shoulder_log_softmax[shoulder_idx]
+
+    button_probs = torch.sigmoid(button_logits)
+    button_samples = (button_probs >= 0.5).to(button_probs.dtype)
+    button_log_probs = torch.where(
+        button_samples == 1,
+        torch.log(button_probs + 1e-8),
+        torch.log(1 - button_probs + 1e-8),
+    )
+
+    main_idx_cpu, c_idx_cpu, shoulder_idx_cpu, buttons_cpu = _pack_actions_for_cpu(
+        main_idx, c_idx, shoulder_idx, button_samples
+    )
+
+    return ActionInfo(
+        main_stick_idx=main_idx_cpu,
+        c_stick_idx=c_idx_cpu,
+        buttons=buttons_cpu,
+        shoulder_idx=shoulder_idx_cpu,
+        main_log_prob=main_log_prob.detach(),
+        c_log_prob=c_log_prob.detach(),
+        buttons_log_probs=button_log_probs.detach(),
+        shoulder_log_prob=shoulder_log_prob.detach(),
+    )
+
+
+def select_actions_with_logprobs(
+    outputs: TensorDict,
+    mode: ActionSelection,
+) -> ActionInfo:
+    """Select actions according to the requested rollout mode."""
+    if mode == "stochastic":
+        return sample_actions_with_logprobs(outputs)
+    if mode == "greedy":
+        return greedy_actions_with_logprobs(outputs)
+    raise ValueError(f"Unknown action selection mode: {mode}")
 
 
 def action_info_to_controller_state(
@@ -272,8 +388,8 @@ def action_info_to_controller_state(
     shoulder_val = SHOULDER_QUANTIZED[action_info.shoulder_idx]
 
     # Convert to Dolphin [0, 1] coordinates
-    main_x, main_y = model_to_dolphin01(main_coords[0], main_coords[1])
-    c_x, c_y = model_to_dolphin01(c_coords[0], c_coords[1])
+    main_x, main_y = model_to_dolphin01(main_coords)
+    c_x, c_y = model_to_dolphin01(c_coords)
 
     # Extract button values
     buttons = action_info.buttons
@@ -306,6 +422,8 @@ def collect_rollout(
     current_stage: Stage,
     bot_char: Character,
     opp_char: Character,
+    action_selection: ActionSelection,
+    use_amp: bool = True,
 ) -> Rollout:
     """Collect a complete episode rollout.
 
@@ -319,6 +437,8 @@ def collect_rollout(
         current_stage: Stage to play on
         bot_char: Bot character
         opp_char: Opponent character
+        action_selection: Rollout action selection mode
+        use_amp: Whether to use AMP during inference
 
     Returns:
         Complete rollout with rewards
@@ -345,6 +465,21 @@ def collect_rollout(
 
         # Handle menu navigation
         if gamestate.menu_state not in [Menu.IN_GAME, Menu.SUDDEN_DEATH]:
+            # Check if both players are ready before autostarting
+            autostart = False
+            if BOT_PORT in gamestate.players and OPP_PORT in gamestate.players:
+                p1_state = gamestate.players[BOT_PORT]
+                p1_ready = (p1_state.character == bot_char) and p1_state.coin_down
+
+                p2_state = gamestate.players[OPP_PORT]
+                p2_ready = (
+                    (p2_state.character == opp_char)
+                    and (p2_state.controller_status == ControllerStatus.CONTROLLER_CPU)
+                    and (p2_state.cpu_level == 9)
+                )
+
+                autostart = p1_ready and p2_ready
+
             # Navigate menus
             menu_helper.menu_helper_simple(
                 gamestate,
@@ -352,7 +487,7 @@ def collect_rollout(
                 bot_char,
                 current_stage,
                 costume=1,
-                autostart=True,
+                autostart=autostart,
                 swag=False,
             )
             # Configure opponent as CPU
@@ -372,9 +507,24 @@ def collect_rollout(
             gamestate, BOT_PORT, OPP_PORT
         )
 
-        # Prepare model inputs (updates buffer)
-        engine.prepare_inputs(raw_inputs.transformed)
+        # Prepare model inputs (updates buffer AND returns TensorDict)
+        inputs_td = engine.prepare_inputs(raw_inputs.transformed)
+
+        # Store current frame for rollout (just this frame, not the full sequence!)
+        current_frame = engine.buffer[-1].detach() if len(engine.buffer) > 0 else None
+
         frame_count += 1
+
+        # ===== PERIODIC LOGGING =====
+        if frame_count % 60 == 0:  # Once per second
+            if BOT_PORT in gamestate.players and OPP_PORT in gamestate.players:
+                bot_player = gamestate.players[BOT_PORT]
+                opp_player = gamestate.players[OPP_PORT]
+                print(
+                    f"Frame {frame_count:4d} | "
+                    f"Bot: {bot_player.stock:1d} stocks, {bot_player.percent:5.1f}% | "
+                    f"Opp: {opp_player.stock:1d} stocks, {opp_player.percent:5.1f}%"
+                )
 
         # ===== CHECK EPISODE TERMINATION =====
         p1_action = raw_inputs.raw.get("p1_action")
@@ -399,7 +549,7 @@ def collect_rollout(
         prev_p2_action = p2_action
 
         # ===== MODEL INFERENCE =====
-        if len(engine.buffer) < engine.warmup_frames:
+        if inputs_td is None or len(engine.buffer) < engine.warmup_frames:
             # Warmup: use neutral controller
             controller_state = ControllerState.neutral()
             apply_model_outputs_to_game(controllers[BOT_PORT], controller_state)
@@ -409,52 +559,78 @@ def collect_rollout(
                 break
             continue
 
-        # Stack buffered frames
-        features_batch = torch.stack(list(engine.buffer), dim=0)  # [seq_len, F]
-        inputs_td = build_model_inputs(
-            features_batch.unsqueeze(0), column_map
-        )  # [1, seq_len, F]
+        # Get model device (engine.prepare_inputs already moves tensors to device)
+        device = next(model.parameters()).device
 
-        # Forward pass
-        with torch.inference_mode():
+        # Forward pass with optional AMP (float16 on MPS for Apple Silicon optimization)
+        with torch.inference_mode(), get_amp_context(device, use_amp):
             outputs = model(inputs_td)
 
-        # Sample actions and get log probs
-        action_info = sample_actions_with_logprobs(outputs, model.device)
+        # Sample or select actions and get log probs
+        action_info = select_actions_with_logprobs(outputs, action_selection)
 
         # Apply to game
         controller_state = action_info_to_controller_state(action_info, engine)
         apply_model_outputs_to_game(controllers[BOT_PORT], controller_state)
 
-        # Get value prediction
-        value_pred = outputs["value"][0, -1, 0].item()
-
-        # Compute reward (needs at least 2 frames)
-        if len(steps) > 0:
-            # Build feature tensor for reward computation
-            # Need [1, 2, F] with previous and current frame
-            X_for_reward = features_batch[-2:].unsqueeze(0)  # [1, 2, F]
-            rewards_tensor = compute_frame_rewards(
-                X_for_reward, reward_idx, reward_config
-            )  # [1, 2]
-            frame_reward = rewards_tensor[0, -1].item()
-        else:
-            frame_reward = 0.0
-
-        # Store step
+        # Store step - ONLY store current frame [F], not full sequence!
         steps.append(RolloutStep(
-            features=features_batch.clone(),  # Full sequence
+            features=current_frame,  # Just current frame [F], not [seq_len, F]
             action_info=action_info,
-            value_pred=value_pred,
-            reward=frame_reward,
+            value_pred=outputs["value"][0, -1, 0].item(),
+            reward=0.0,  # Will compute after episode ends
             done=done,
         ))
 
         if done:
             break
 
+    # ===== POST-EPISODE PROCESSING =====
+    # Now compute rewards and transfer to CPU
+    warmup = engine.warmup_frames
+    total_frames = frame_count
+    print(f"\n[Episode ended] Total: {total_frames} frames ({warmup} warmup + {len(steps)} collected)")
+    print("[Post-process] Computing rewards...")
+    post_start = time.perf_counter()
+    device = next(model.parameters()).device
+    rewards = torch.zeros(len(steps), dtype=torch.float32)
+    if steps:
+        features = torch.stack([s.features for s in steps], dim=0)  # [L, F]
+        features_device = features.to(device)
+        rewards_tensor = compute_frame_rewards(
+            features_device.unsqueeze(0), reward_idx, reward_config
+        )
+        rewards = rewards_tensor[0].detach().cpu()
+        components = compute_reward_components(
+            features_device.unsqueeze(0), reward_idx, reward_config
+        )
+        components_cpu = {key: value[0].detach().cpu() for key, value in components.items()}
+    else:
+        components_cpu = {}
+
+    for i, step in enumerate(steps):
+        step.reward = float(rewards[i].item())
+        step.features = step.features.cpu()
+
     # Compute total reward
-    total_reward = sum(s.reward for s in steps)
+    total_reward = float(rewards.sum().item()) if steps else 0.0
+    post_elapsed = time.perf_counter() - post_start
+    print(f"[Rewards computed] {post_elapsed:.2f}s | Total reward: {total_reward:+.2f}")
+    if components_cpu:
+        print("[Reward breakdown]")
+        for key in ("damage", "stock", "hitlag", "low_shield", "hitstun"):
+            values = components_cpu.get(key)
+            if values is None:
+                continue
+            nonzero = int((values != 0).sum().item())
+            total = float(values.sum().item())
+            abs_total = float(values.abs().sum().item())
+            print(
+                f"  {key:>10}: sum={total:+.4f} | "
+                f"abs_sum={abs_total:.4f} | nonzero={nonzero:4d}"
+            )
+        total_components = float(components_cpu["total"].sum().item())
+        print(f"  {'total':>10}: sum={total_components:+.4f}")
 
     return Rollout(
         steps=steps,
@@ -509,6 +685,24 @@ def compute_gae_advantages(
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
     return advantages, returns
+
+
+def compute_transition_reward(
+    prev_features: torch.Tensor,
+    curr_features: torch.Tensor,
+    reward_idx,
+    reward_config: RewardConfig,
+    device: torch.device,
+) -> float:
+    """Compute the reward for the transition prev -> curr.
+
+    compute_frame_rewards assigns the transition reward to the previous frame index,
+    so we read index 0 from the two-frame window.
+    """
+    X_for_reward = torch.stack([prev_features, curr_features], dim=0).unsqueeze(0)
+    X_for_reward = X_for_reward.to(device)
+    rewards_tensor = compute_frame_rewards(X_for_reward, reward_idx, reward_config)
+    return rewards_tensor[0, 0].item()
 
 
 # ============================================================================
@@ -627,50 +821,193 @@ def compute_policy_entropy(outputs: TensorDict) -> Dict[str, float]:
     }
 
 
-def compute_ppo_loss(
+def compute_ppo_loss_with_gradient_accumulation(
     rollout: Rollout,
     model: GPT,
     column_map: ColumnMap,
     ppo_config: PPOConfig,
+    optimizer: torch.optim.Optimizer,
+    seq_len: int,
 ) -> PPOLossComponents:
-    """Compute PPO loss for a rollout.
+    """Compute PPO loss with gradient accumulation across mini-batches.
+
+    Calls backward() after each mini-batch to avoid OOM from large computation graphs.
 
     Args:
         rollout: Complete rollout with advantages and returns
         model: GPT model
         column_map: Feature column mapping
         ppo_config: PPO configuration
-
-    Returns:
-        PPO loss components
+        optimizer: Optimizer used for updates
+        seq_len: Sequence length for training windows
     """
-    device = model.device
+    device = next(model.parameters()).device
     L = len(rollout.steps)
+    mini_batch_size = min(ppo_config.mini_batch_size, L)
+    num_batches = (L + mini_batch_size - 1) // mini_batch_size
 
-    # Build batch of inputs [L, seq_len, F]
-    features_batch = torch.stack(
-        [s.features for s in rollout.steps], dim=0
-    ).to(device)
-    inputs_td = build_model_inputs(features_batch, column_map)
+    # Accumulate metrics (scalars only, no tensors!)
+    total_policy_losses = {"main": 0.0, "c": 0.0, "buttons": 0.0, "shoulder": 0.0}
+    total_value_loss = 0.0
+    total_entropy = {"main": 0.0, "c": 0.0, "buttons": 0.0, "shoulder": 0.0}
+    total_clip_fracs = {"main": 0.0, "c": 0.0, "buttons": 0.0, "shoulder": 0.0}
+    total_kl = 0.0
 
-    # Forward pass
-    outputs = model(inputs_td)
+    # ===== PRE-COMPUTE ALL SEQUENCES ONCE =====
+    # This is the expensive operation - do it once, not every batch/epoch
+    # Use the configured rollout/training sequence length.
+    precompute_start = time.perf_counter()
 
+    # Stack all features into a single tensor first
+    all_features = torch.stack([s.features for s in rollout.steps], dim=0)  # [L, F]
+
+    # Pre-allocate output tensor [L, seq_len, F]
+    F = all_features.shape[1]
+    all_sequences = torch.zeros(L, seq_len, F, device=all_features.device)
+
+    # Build sequences efficiently using tensor operations
+    for i in range(L):
+        start_frame_idx = max(0, i - seq_len + 1)
+        seq_slice = all_features[start_frame_idx:i + 1]  # [actual_len, F]
+        actual_len = seq_slice.shape[0]
+
+        if actual_len < seq_len:
+            # Pad by repeating first frame
+            num_pad = seq_len - actual_len
+            all_sequences[i, :num_pad] = seq_slice[0]  # Repeat first frame
+            all_sequences[i, num_pad:] = seq_slice
+        else:
+            all_sequences[i] = seq_slice
+
+    # Move to device once
+    all_sequences = all_sequences.to(device)
+
+    precompute_elapsed = time.perf_counter() - precompute_start
+    print(f"    [Precompute] Built {L} sequences of length {seq_len} in {precompute_elapsed:.2f}s")
+
+    for batch_idx in range(num_batches):
+        batch_start = time.perf_counter()
+
+        start_idx = batch_idx * mini_batch_size
+        end_idx = min(start_idx + mini_batch_size, L)
+        batch_steps = rollout.steps[start_idx:end_idx]
+        batch_len = len(batch_steps)
+
+        # Slice pre-computed sequences (fast!)
+        features_batch = all_sequences[start_idx:end_idx]  # [batch_len, seq_len, F]
+        inputs_td = build_model_inputs(features_batch, column_map)
+
+        build_time = time.perf_counter() - batch_start
+
+        # Forward pass with AMP
+        fwd_start = time.perf_counter()
+        with get_amp_context(device, ppo_config.use_amp):
+            outputs = model(inputs_td)
+        fwd_time = time.perf_counter() - fwd_start
+
+        # Create mini-rollout
+        mini_rollout = Rollout(
+            steps=batch_steps,
+            episode_length=batch_len,
+            total_reward=0.0,
+            winner=0,
+        )
+        mini_rollout.advantages = rollout.advantages[start_idx:end_idx]
+        mini_rollout.returns = rollout.returns[start_idx:end_idx]
+
+        # Compute losses for this batch
+        loss_start = time.perf_counter()
+        batch_loss_components = _compute_batch_loss(
+            outputs, mini_rollout, device, ppo_config
+        )
+        loss_time = time.perf_counter() - loss_start
+
+        # Backward pass (gradient accumulation)
+        bwd_start = time.perf_counter()
+        batch_loss = batch_loss_components["total_loss"]
+        (batch_loss / num_batches).backward()  # Normalize by num_batches
+        bwd_time = time.perf_counter() - bwd_start
+
+        # Accumulate metrics (scalars only)
+        for key in total_policy_losses:
+            total_policy_losses[key] += batch_loss_components["policy_losses"][key].item() * batch_len
+        total_value_loss += batch_loss_components["value_loss"].item() * batch_len
+        for key in total_entropy:
+            total_entropy[key] += batch_loss_components["entropies"][key] * batch_len
+        for key in total_clip_fracs:
+            total_clip_fracs[key] += batch_loss_components["clip_fracs"][key] * batch_len
+        total_kl += batch_loss_components["kl"] * batch_len
+
+        batch_total = time.perf_counter() - batch_start
+        print(f"      Batch {batch_idx+1}/{num_batches}: "
+              f"build={build_time:.2f}s fwd={fwd_time:.2f}s loss={loss_time:.2f}s bwd={bwd_time:.2f}s "
+              f"total={batch_total:.2f}s")
+
+        # Free memory (let Python GC handle it - empty_cache() is expensive on MPS)
+        del outputs, inputs_td, batch_loss_components
+
+    # Free pre-computed sequences
+    del all_sequences, all_features
+
+    # Average metrics
+    for key in total_policy_losses:
+        total_policy_losses[key] /= L
+    total_value_loss /= L
+    for key in total_entropy:
+        total_entropy[key] /= L
+    for key in total_clip_fracs:
+        total_clip_fracs[key] /= L
+    total_kl /= L
+
+    # Return components (as scalars/floats for logging)
+    total_policy_loss = sum(total_policy_losses.values())
+    total_entropy_val = sum(total_entropy.values())
+    total_loss = total_policy_loss + ppo_config.value_coef * total_value_loss - ppo_config.entropy_coef * total_entropy_val
+
+    return PPOLossComponents(
+        total_loss=torch.tensor(total_loss),  # Dummy tensor for compatibility
+        policy_loss=torch.tensor(total_policy_loss),
+        value_loss=torch.tensor(total_value_loss),
+        entropy=torch.tensor(total_entropy_val),
+        main_policy_loss=torch.tensor(total_policy_losses["main"]),
+        c_policy_loss=torch.tensor(total_policy_losses["c"]),
+        buttons_policy_loss=torch.tensor(total_policy_losses["buttons"]),
+        shoulder_policy_loss=torch.tensor(total_policy_losses["shoulder"]),
+        main_entropy=total_entropy["main"],
+        c_entropy=total_entropy["c"],
+        buttons_entropy=total_entropy["buttons"],
+        shoulder_entropy=total_entropy["shoulder"],
+        main_clip_frac=total_clip_fracs["main"],
+        c_clip_frac=total_clip_fracs["c"],
+        buttons_clip_frac=total_clip_fracs["buttons"],
+        shoulder_clip_frac=total_clip_fracs["shoulder"],
+        approx_kl=total_kl,
+        grad_norm=0.0,
+    )
+
+
+def _compute_batch_loss(
+    outputs: TensorDict,
+    mini_rollout: Rollout,
+    device: torch.device,
+    ppo_config: PPOConfig,
+) -> dict:
+    """Compute loss for a single mini-batch."""
     # Compute new log probabilities
-    new_log_probs = compute_log_probs_for_actions(outputs, rollout, device)
+    new_log_probs = compute_log_probs_for_actions(outputs, mini_rollout, device)
 
-    # Extract old log probabilities from rollout
-    old_main_log_probs = torch.tensor(
-        [s.action_info.main_log_prob for s in rollout.steps], device=device
-    )
-    old_c_log_probs = torch.tensor(
-        [s.action_info.c_log_prob for s in rollout.steps], device=device
-    )
-    old_shoulder_log_probs = torch.tensor(
-        [s.action_info.shoulder_log_prob for s in rollout.steps], device=device
-    )
+    # Extract old log probabilities
+    old_main_log_probs = torch.stack(
+        [s.action_info.main_log_prob for s in mini_rollout.steps], dim=0
+    ).to(device)
+    old_c_log_probs = torch.stack(
+        [s.action_info.c_log_prob for s in mini_rollout.steps], dim=0
+    ).to(device)
+    old_shoulder_log_probs = torch.stack(
+        [s.action_info.shoulder_log_prob for s in mini_rollout.steps], dim=0
+    ).to(device)
     old_buttons_log_probs = torch.stack(
-        [s.action_info.buttons_log_probs for s in rollout.steps], dim=0
+        [s.action_info.buttons_log_probs for s in mini_rollout.steps], dim=0
     ).to(device)
 
     old_log_probs = {
@@ -680,90 +1017,263 @@ def compute_ppo_loss(
         "shoulder": old_shoulder_log_probs,
     }
 
-    # Get advantages
-    advantages = rollout.advantages.to(device)  # [L]
+    advantages = mini_rollout.advantages.to(device)
 
-    # ===== POLICY LOSS (Clipped Surrogate Objective) =====
+    # Policy losses
     policy_losses = {}
-    clip_fractions = {}
+    clip_fracs = {}
 
     for key in ["main", "c", "shoulder"]:
-        # Compute importance ratio
-        ratio = torch.exp(new_log_probs[key] - old_log_probs[key])  # [L]
-
-        # Clipped surrogate objective
+        ratio = torch.exp(new_log_probs[key] - old_log_probs[key])
         surr1 = ratio * advantages
-        surr2 = torch.clamp(
-            ratio,
-            1.0 - ppo_config.clip_epsilon,
-            1.0 + ppo_config.clip_epsilon,
-        ) * advantages
+        surr2 = torch.clamp(ratio, 1.0 - ppo_config.clip_epsilon, 1.0 + ppo_config.clip_epsilon) * advantages
+        policy_losses[key] = -torch.min(surr1, surr2).mean()
+        clip_fracs[key] = (torch.abs(ratio - 1.0) > ppo_config.clip_epsilon).float().mean().item()
 
-        policy_loss = -torch.min(surr1, surr2).mean()
-        policy_losses[key] = policy_loss
-
-        # Clip fraction (diagnostic)
-        clip_fractions[key] = (
-            (torch.abs(ratio - 1.0) > ppo_config.clip_epsilon).float().mean().item()
-        )
-
-    # Buttons: handle per-button (averaged)
-    button_ratio = torch.exp(new_log_probs["buttons"] - old_log_probs["buttons"])  # [L, 5]
+    # Buttons
+    button_ratio = torch.exp(new_log_probs["buttons"] - old_log_probs["buttons"])
     button_surr1 = button_ratio * advantages.unsqueeze(-1)
-    button_surr2 = torch.clamp(
-        button_ratio,
-        1.0 - ppo_config.clip_epsilon,
-        1.0 + ppo_config.clip_epsilon,
-    ) * advantages.unsqueeze(-1)
-    button_policy_loss = -torch.min(button_surr1, button_surr2).mean()
-    policy_losses["buttons"] = button_policy_loss
-    clip_fractions["buttons"] = (
-        (torch.abs(button_ratio - 1.0) > ppo_config.clip_epsilon).float().mean().item()
-    )
+    button_surr2 = torch.clamp(button_ratio, 1.0 - ppo_config.clip_epsilon, 1.0 + ppo_config.clip_epsilon) * advantages.unsqueeze(-1)
+    policy_losses["buttons"] = -torch.min(button_surr1, button_surr2).mean()
+    clip_fracs["buttons"] = (torch.abs(button_ratio - 1.0) > ppo_config.clip_epsilon).float().mean().item()
 
-    total_policy_loss = sum(policy_losses.values())
-
-    # ===== VALUE LOSS (MSE) =====
-    value_preds = outputs["value"][:, -1, 0]  # [L]
-    value_targets = rollout.returns.to(device)  # [L]
+    # Value loss
+    value_preds = outputs["value"][:, -1, 0]
+    value_targets = mini_rollout.returns.to(device)
     value_loss = ((value_preds - value_targets) ** 2).mean()
 
-    # ===== ENTROPY BONUS =====
+    # Entropy
     entropies = compute_policy_entropy(outputs)
-    total_entropy = sum(entropies.values())
 
-    # ===== TOTAL LOSS =====
-    total_loss = (
-        total_policy_loss
-        + ppo_config.value_coef * value_loss
-        - ppo_config.entropy_coef * total_entropy
-    )
-
-    # ===== DIAGNOSTICS =====
-    # Approximate KL divergence
-    approx_kl = 0.5 * sum(
+    # KL divergence
+    kl = 0.5 * sum(
         ((new_log_probs[k] - old_log_probs[k]) ** 2).mean().item()
         for k in ["main", "c", "shoulder"]
     ) + 0.5 * ((new_log_probs["buttons"] - old_log_probs["buttons"]) ** 2).mean().item()
 
+    # Total loss
+    total_policy_loss = sum(policy_losses.values())
+    total_entropy = sum(entropies.values())
+    total_loss = total_policy_loss + ppo_config.value_coef * value_loss - ppo_config.entropy_coef * total_entropy
+
+    return {
+        "total_loss": total_loss,
+        "policy_losses": policy_losses,
+        "value_loss": value_loss,
+        "entropies": entropies,
+        "clip_fracs": clip_fracs,
+        "kl": kl,
+    }
+
+
+def compute_ppo_loss(
+    rollout: Rollout,
+    model: GPT,
+    column_map: ColumnMap,
+    ppo_config: PPOConfig,
+    seq_len: int,
+) -> PPOLossComponents:
+    """Compute PPO loss for a rollout using mini-batches.
+
+    Args:
+        rollout: Complete rollout with advantages and returns
+        model: GPT model
+        column_map: Feature column mapping
+        ppo_config: PPO configuration
+        seq_len: Sequence length for training windows
+
+    Returns:
+        PPO loss components
+    """
+    device = next(model.parameters()).device
+    L = len(rollout.steps)
+    mini_batch_size = min(ppo_config.mini_batch_size, L)
+
+    # Split rollout into mini-batches
+    num_batches = (L + mini_batch_size - 1) // mini_batch_size
+
+    # Accumulate losses as tensors (for gradient tracking)
+    accumulated_policy_losses = {"main": [], "c": [], "buttons": [], "shoulder": []}
+    accumulated_value_losses = []
+    accumulated_entropies = {"main": [], "c": [], "buttons": [], "shoulder": []}
+    accumulated_clip_fracs = {"main": [], "c": [], "buttons": [], "shoulder": []}
+    accumulated_kl = []
+    batch_sizes = []
+
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * mini_batch_size
+        end_idx = min(start_idx + mini_batch_size, L)
+        batch_steps = rollout.steps[start_idx:end_idx]
+        batch_len = len(batch_steps)
+
+        # Reconstruct sequences for each timestep in the batch
+        # For each step i, we need frames [i-seq_len+1 : i+1]
+        # Use the configured rollout/training sequence length.
+        sequences = []
+
+        for idx in range(len(batch_steps)):
+            global_idx = start_idx + idx
+            # Get seq_len frames ending at global_idx
+            start_frame_idx = max(0, global_idx - seq_len + 1)
+            end_frame_idx = global_idx + 1
+
+            # Extract frames for this sequence
+            frame_slice = rollout.steps[start_frame_idx:end_frame_idx]
+            frames = torch.stack([s.features for s in frame_slice], dim=0)  # [actual_len, F]
+
+            # Pad if needed (for early frames)
+            if len(frames) < seq_len:
+                # Pad by repeating the first frame (not zeros - zeros cause NaN with AMP)
+                first_frame = frames[0:1]  # Keep dim: [1, F]
+                num_pad = seq_len - len(frames)
+                padding = first_frame.expand(num_pad, -1)  # [num_pad, F]
+                frames = torch.cat([padding, frames], dim=0)
+
+            sequences.append(frames)
+
+        features_batch = torch.stack(sequences, dim=0).to(device)  # [batch_len, seq_len, F]
+        inputs_td = build_model_inputs(features_batch, column_map)
+
+        # Forward pass with AMP
+        with get_amp_context(device, ppo_config.use_amp):
+            outputs = model(inputs_td)
+
+        # Create a mini-rollout for this batch
+        mini_rollout = Rollout(
+            steps=batch_steps,
+            episode_length=batch_len,
+            total_reward=0.0,
+            winner=0,
+        )
+        mini_rollout.advantages = rollout.advantages[start_idx:end_idx]
+        mini_rollout.returns = rollout.returns[start_idx:end_idx]
+
+        # Compute new log probabilities for this batch
+        new_log_probs = compute_log_probs_for_actions(outputs, mini_rollout, device)
+
+        # Extract old log probabilities from batch
+        old_main_log_probs = torch.stack(
+            [s.action_info.main_log_prob for s in batch_steps], dim=0
+        ).to(device)
+        old_c_log_probs = torch.stack(
+            [s.action_info.c_log_prob for s in batch_steps], dim=0
+        ).to(device)
+        old_shoulder_log_probs = torch.stack(
+            [s.action_info.shoulder_log_prob for s in batch_steps], dim=0
+        ).to(device)
+        old_buttons_log_probs = torch.stack(
+            [s.action_info.buttons_log_probs for s in batch_steps], dim=0
+        ).to(device)
+
+        old_log_probs = {
+            "main": old_main_log_probs,
+            "c": old_c_log_probs,
+            "buttons": old_buttons_log_probs,
+            "shoulder": old_shoulder_log_probs,
+        }
+
+        # Get advantages for this batch
+        advantages = mini_rollout.advantages.to(device)
+
+        # ===== POLICY LOSS (Clipped Surrogate Objective) =====
+        for key in ["main", "c", "shoulder"]:
+            ratio = torch.exp(new_log_probs[key] - old_log_probs[key])
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(
+                ratio,
+                1.0 - ppo_config.clip_epsilon,
+                1.0 + ppo_config.clip_epsilon,
+            ) * advantages
+
+            policy_loss = -torch.min(surr1, surr2).mean()
+            accumulated_policy_losses[key].append(policy_loss * batch_len)
+
+            # Clip fraction (diagnostic, can be scalar)
+            clip_frac = (torch.abs(ratio - 1.0) > ppo_config.clip_epsilon).float().mean()
+            accumulated_clip_fracs[key].append(clip_frac * batch_len)
+
+        # Buttons
+        button_ratio = torch.exp(new_log_probs["buttons"] - old_log_probs["buttons"])
+        button_surr1 = button_ratio * advantages.unsqueeze(-1)
+        button_surr2 = torch.clamp(
+            button_ratio,
+            1.0 - ppo_config.clip_epsilon,
+            1.0 + ppo_config.clip_epsilon,
+        ) * advantages.unsqueeze(-1)
+        button_policy_loss = -torch.min(button_surr1, button_surr2).mean()
+        accumulated_policy_losses["buttons"].append(button_policy_loss * batch_len)
+
+        clip_frac = (torch.abs(button_ratio - 1.0) > ppo_config.clip_epsilon).float().mean()
+        accumulated_clip_fracs["buttons"].append(clip_frac * batch_len)
+
+        # ===== VALUE LOSS =====
+        value_preds = outputs["value"][:, -1, 0]
+        value_targets = mini_rollout.returns.to(device)
+        value_loss = ((value_preds - value_targets) ** 2).mean()
+        accumulated_value_losses.append(value_loss * batch_len)
+
+        # ===== ENTROPY =====
+        entropies = compute_policy_entropy(outputs)
+        for key in entropies:
+            accumulated_entropies[key].append(entropies[key] * batch_len)
+
+        # ===== KL DIVERGENCE =====
+        kl = 0.5 * sum(
+            ((new_log_probs[k] - old_log_probs[k]) ** 2).mean()
+            for k in ["main", "c", "shoulder"]
+        ) + 0.5 * ((new_log_probs["buttons"] - old_log_probs["buttons"]) ** 2).mean()
+        accumulated_kl.append(kl * batch_len)
+
+        batch_sizes.append(batch_len)
+
+        # Free memory (let Python GC handle it - empty_cache() is expensive on MPS)
+        del outputs, features_batch, inputs_td
+
+    # Average across all timesteps by summing weighted losses
+    total_policy_losses = {}
+    for key in accumulated_policy_losses:
+        total_policy_losses[key] = sum(accumulated_policy_losses[key]) / L
+
+    total_value_loss = sum(accumulated_value_losses) / L
+
+    total_entropy = {}
+    for key in accumulated_entropies:
+        total_entropy[key] = sum(accumulated_entropies[key]) / L
+
+    total_clip_fracs = {}
+    for key in accumulated_clip_fracs:
+        total_clip_fracs[key] = (sum(accumulated_clip_fracs[key]) / L).item()
+
+    total_kl = (sum(accumulated_kl) / L).item()
+
+    # Compute total loss (as tensor with grad)
+    total_policy_loss = sum(total_policy_losses.values())
+    total_entropy_val = sum(total_entropy.values())
+
+    total_loss = (
+        total_policy_loss
+        + ppo_config.value_coef * total_value_loss
+        - ppo_config.entropy_coef * total_entropy_val
+    )
+
     return PPOLossComponents(
         total_loss=total_loss,
         policy_loss=total_policy_loss,
-        value_loss=value_loss,
-        entropy=torch.tensor(total_entropy),
-        main_policy_loss=policy_losses["main"],
-        c_policy_loss=policy_losses["c"],
-        buttons_policy_loss=policy_losses["buttons"],
-        shoulder_policy_loss=policy_losses["shoulder"],
-        main_entropy=entropies["main"],
-        c_entropy=entropies["c"],
-        buttons_entropy=entropies["buttons"],
-        shoulder_entropy=entropies["shoulder"],
-        main_clip_frac=clip_fractions["main"],
-        c_clip_frac=clip_fractions["c"],
-        buttons_clip_frac=clip_fractions["buttons"],
-        shoulder_clip_frac=clip_fractions["shoulder"],
-        approx_kl=approx_kl,
+        value_loss=total_value_loss,
+        entropy=total_entropy_val,
+        main_policy_loss=total_policy_losses["main"],
+        c_policy_loss=total_policy_losses["c"],
+        buttons_policy_loss=total_policy_losses["buttons"],
+        shoulder_policy_loss=total_policy_losses["shoulder"],
+        main_entropy=total_entropy["main"],
+        c_entropy=total_entropy["c"],
+        buttons_entropy=total_entropy["buttons"],
+        shoulder_entropy=total_entropy["shoulder"],
+        main_clip_frac=total_clip_fracs["main"],
+        c_clip_frac=total_clip_fracs["c"],
+        buttons_clip_frac=total_clip_fracs["buttons"],
+        shoulder_clip_frac=total_clip_fracs["shoulder"],
+        approx_kl=total_kl,
         grad_norm=0.0,  # Will be filled in after backward pass
     )
 
@@ -771,6 +1281,21 @@ def compute_ppo_loss(
 # ============================================================================
 # Metrics and Logging
 # ============================================================================
+
+def compute_discounted_returns(
+    rewards: torch.Tensor,
+    gamma: float,
+) -> torch.Tensor:
+    """Compute Monte Carlo discounted returns from per-step rewards."""
+    if rewards.numel() == 0:
+        return rewards
+    returns = torch.zeros_like(rewards)
+    running = 0.0
+    for idx in range(rewards.numel() - 1, -1, -1):
+        running = rewards[idx].item() + gamma * running
+        returns[idx] = running
+    return returns
+
 
 def print_ppo_metrics(
     episode_count: int,
@@ -805,6 +1330,28 @@ def print_ppo_metrics(
           f"c={loss_components.c_entropy:.4f}, "
           f"btn={loss_components.buttons_entropy:.4f}, "
           f"shoulder={loss_components.shoulder_entropy:.4f})")
+
+    rewards = torch.tensor([s.reward for s in rollout.steps], dtype=torch.float32)
+    gamma = get_config().reward.gamma
+    discounted_returns = compute_discounted_returns(rewards, gamma)
+    reward_nonzero = int((rewards != 0).sum().item()) if rewards.numel() > 0 else 0
+    reward_mean = rewards.mean().item() if rewards.numel() > 0 else 0.0
+    reward_abs_mean = rewards.abs().mean().item() if rewards.numel() > 0 else 0.0
+    reward_min = rewards.min().item() if rewards.numel() > 0 else 0.0
+    reward_max = rewards.max().item() if rewards.numel() > 0 else 0.0
+
+    disc_total = discounted_returns[0].item() if discounted_returns.numel() > 0 else 0.0
+    disc_mean = discounted_returns.mean().item() if discounted_returns.numel() > 0 else 0.0
+    disc_min = discounted_returns.min().item() if discounted_returns.numel() > 0 else 0.0
+    disc_max = discounted_returns.max().item() if discounted_returns.numel() > 0 else 0.0
+
+    print("Rewards:")
+    print(f"  Non-zero: {reward_nonzero:4d}/{rollout.episode_length:4d} | "
+          f"Mean: {reward_mean:+.6f} | Abs mean: {reward_abs_mean:.6f} | "
+          f"Min/Max: {reward_min:+.4f}/{reward_max:+.4f}")
+    print(f"  Discounted (gamma={gamma:.5f}): "
+          f"Total: {disc_total:+.4f} | Mean: {disc_mean:+.6f} | "
+          f"Min/Max: {disc_min:+.4f}/{disc_max:+.4f}")
 
     # Diagnostics
     print(f"Diagnostics:")
@@ -874,12 +1421,23 @@ def main():
         default=None,
         help="Path to Dolphin executable",
     )
+    parser.add_argument(
+        "--rollout-mode",
+        choices=("stochastic", "greedy"),
+        default="stochastic",
+        help="Action selection during rollouts: stochastic (policy sampling) or greedy (argmax).",
+    )
     args = parser.parse_args()
 
     # Initialize config
     init_config()
     config = get_config()
     ppo_config = PPOConfig()
+    seq_len = config.seq_len
+    if seq_len != 256:
+        raise ValueError(
+            f"Expected config.seq_len=256 for PPO, got {seq_len}."
+        )
 
     # Load model from checkpoint
     checkpoint_path = args.checkpoint
@@ -897,7 +1455,11 @@ def main():
     model = engine.model
     model.train()  # Switch to training mode
 
-    print(f"Model loaded. Device: {model.device}")
+    print(f"Model loaded. Device: {next(model.parameters()).device}")
+    if seq_len > model.block_size:
+        raise ValueError(
+            f"Sequence length {seq_len} exceeds model.block_size {model.block_size}."
+        )
 
     # Setup optimizer
     optimizer = torch.optim.Adam(
@@ -971,6 +1533,7 @@ def main():
 
     while True:
         # ===== 1. COLLECT ROLLOUT =====
+        model.eval()
         rollout = collect_rollout(
             console=console,
             controllers=controllers,
@@ -981,16 +1544,24 @@ def main():
             current_stage=current_stage,
             bot_char=bot_char,
             opp_char=opp_char,
+            action_selection=args.rollout_mode,
+            use_amp=ppo_config.use_amp,
         )
+        model.train()
 
         episode_count += 1
 
-        # Check if episode is long enough
-        if rollout.episode_length < 2:
-            print(f"Episode {episode_count} too short ({rollout.episode_length} frames), skipping...")
+        # Check if episode is long enough for meaningful training
+        # Need at least 64 frames (~1 second) for reasonable gradient estimates
+        min_episode_length = 64
+        if rollout.episode_length < min_episode_length:
+            print(f"Episode {episode_count} too short ({rollout.episode_length} < {min_episode_length} frames), skipping...")
             continue
 
         # ===== 2. COMPUTE ADVANTAGES =====
+        print(f"[GAE] Computing advantages for {rollout.episode_length} frames...")
+        gae_start = time.perf_counter()
+
         rewards = torch.tensor(
             [s.reward for s in rollout.steps], dtype=torch.float32
         )
@@ -1008,21 +1579,30 @@ def main():
 
         rollout.advantages = advantages
         rollout.returns = returns
+        gae_elapsed = time.perf_counter() - gae_start
+        print(f"[GAE] Done in {gae_elapsed:.2f}s")
 
         # ===== 3. PPO TRAINING (K epochs) =====
+        num_batches = (rollout.episode_length + ppo_config.mini_batch_size - 1) // ppo_config.mini_batch_size
+        print(f"[Training] Starting {ppo_config.num_epochs} PPO epochs "
+              f"({num_batches} batches/epoch, batch_size={ppo_config.mini_batch_size})")
+        train_start = time.perf_counter()
+
         loss_components = None
         for epoch in range(ppo_config.num_epochs):
-            # Compute loss
-            loss_components = compute_ppo_loss(
+            epoch_start = time.perf_counter()
+
+            # Process rollout in mini-batches with gradient accumulation
+            optimizer.zero_grad()
+
+            loss_components = compute_ppo_loss_with_gradient_accumulation(
                 rollout=rollout,
                 model=model,
                 column_map=engine.colmap,
                 ppo_config=ppo_config,
+                optimizer=optimizer,
+                seq_len=seq_len,
             )
-
-            # Backward pass
-            optimizer.zero_grad()
-            loss_components.total_loss.backward()
 
             # Gradient clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -1033,9 +1613,29 @@ def main():
 
             optimizer.step()
 
+            epoch_elapsed = time.perf_counter() - epoch_start
+            print(f"  Epoch {epoch+1}/{ppo_config.num_epochs}: "
+                  f"loss={loss_components.total_loss.item():.4f}, "
+                  f"policy={loss_components.policy_loss.item():.4f}, "
+                  f"value={loss_components.value_loss.item():.4f}, "
+                  f"time={epoch_elapsed:.2f}s")
+
+        train_elapsed = time.perf_counter() - train_start
+        print(f"[Training] Complete in {train_elapsed:.2f}s")
+
         # ===== 4. LOGGING =====
         if episode_count % ppo_config.log_interval == 0 and loss_components is not None:
             print_ppo_metrics(episode_count, rollout, loss_components)
+
+        # ===== MEMORY CLEANUP =====
+        # Note: Don't call torch.mps.empty_cache() here - it's expensive and
+        # unnecessary on MPS. The caching allocator handles memory efficiently.
+        # Only call empty_cache() if you encounter actual OOM errors.
+
+        # Delete rollout and loss components to free memory
+        del rollout
+        if loss_components is not None:
+            del loss_components
 
         # ===== 5. CHECKPOINTING =====
         if episode_count % ppo_config.checkpoint_interval == 0:

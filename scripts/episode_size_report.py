@@ -20,7 +20,7 @@ def main() -> None:
     rss0 = psutil.Process().memory_info().rss / 1024**2
     print(f"[rss] before dataset init: {rss0:.2f} MiB")
     ds = WindowDataset(
-        str(root), in_memory=False, in_memory_shared=False, episode_cache_size=0
+        str(root), in_memory=False
     )
     print(f"[step] dataset created at {time.time():.2f}")
     rss1 = psutil.Process().memory_info().rss / 1024**2

@@ -211,19 +211,7 @@ def initialize_training_components(
     scaler_device = amp.device_type if use_grad_scaler else "cpu"
     scaler = GradScaler(device=scaler_device, enabled=use_grad_scaler)
 
-    if ds._total_chunks:
-        stride = config.train.stride
-        batch_size = config.train.batch_size
-        steps_per_epoch = 0
-        for epoch_mod in range(max(1, stride)):
-            steps_per_epoch = max(
-                steps_per_epoch,
-                ds.total_batches_for_epoch(
-                    stride=stride, batch_size=batch_size, epoch=epoch_mod
-                ),
-            )
-    else:
-        steps_per_epoch = math.ceil(len(loader))
+    steps_per_epoch = math.ceil(len(loader))
     total_steps = config.train.epochs * steps_per_epoch
 
     out_dir = Path(config.train.out_dir)

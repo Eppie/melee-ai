@@ -58,14 +58,6 @@ def parse_args() -> argparse.Namespace:
         help="Load each episode fully into RAM on first access to bypass zarr I/O.",
     )
     parser.add_argument(
-        "--in-memory-shared",
-        action="store_true",
-        help=(
-            "Eagerly load all episodes into torch shared memory so multiple workers "
-            "can reuse a single copy."
-        ),
-    )
-    parser.add_argument(
         "--num-workers",
         type=int,
         default=0,
@@ -98,7 +90,6 @@ def build_loader(args: argparse.Namespace) -> torch.utils.data.DataLoader:
     dataset = WindowDataset(
         args.dataset_root,
         in_memory=args.in_memory,
-        in_memory_shared=args.in_memory_shared,
     )
     sampler = RandomWindowSampler(index=dataset.index, stride=stride)
     sampler.set_epoch(0)

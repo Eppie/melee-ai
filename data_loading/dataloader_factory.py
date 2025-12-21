@@ -136,10 +136,10 @@ class DataLoaderFactory:
         dataset: Dataset,
         config: "Config",
     ) -> Optional[int]:
-        """Calculate prefetch_factor respecting memory budget.
+        """Calculate prefetch_factor.
 
         Args:
-            dataset: Dataset to estimate batch size for
+            dataset: Dataset (unused, kept for API compatibility)
             config: Training configuration
 
         Returns:
@@ -150,59 +150,4 @@ class DataLoaderFactory:
         if not num_workers or num_workers <= 0:
             return None
 
-        prefetch_factor = config.train.prefetch_factor
-        max_prefetch_mb = config.train.max_loader_prefetch_mb
-
-        if not max_prefetch_mb:
-            return prefetch_factor
-
-        # Estimate batch size in bytes
-        batch_bytes = DataLoaderFactory._estimate_batch_bytes(dataset, config)
-
-        # Calculate budget
-        max_prefetch_bytes = max_prefetch_mb * 1024 * 1024
-        total_batches_budget = max_prefetch_bytes // max(1, batch_bytes)
-
-        # Handle edge cases
-        budget_saturated = False
-        if total_batches_budget == 0:
-            total_batches_budget = 1
-            budget_saturated = True
-
-        allowed_per_worker = total_batches_budget // num_workers
-        if allowed_per_worker == 0:
-            allowed_per_worker = 1
-            budget_saturated = True
-
-        # Reduce prefetch_factor if it exceeds budget
-        if allowed_per_worker < prefetch_factor:
-            approx_batch_mb = batch_bytes / (1024**2)
-            print(
-                "[dataloader] Reducing prefetch_factor from "
-                f"{prefetch_factor} to {allowed_per_worker} to honor "
-                f"{max_prefetch_mb} MiB prefetch budget (batch ≈ "
-                f"{approx_batch_mb:.2f} MiB)."
-            )
-            if budget_saturated:
-                print(
-                    "[dataloader] Consider lowering train.num_workers or "
-                    "batch_size, or increase train.max_loader_prefetch_mb "
-                    "if you need more throughput."
-                )
-            prefetch_factor = allowed_per_worker
-
-        return prefetch_factor
-
-    @staticmethod
-    def _estimate_batch_bytes(dataset: Dataset, config: "Config") -> int:
-        """Estimate memory usage of a single batch.
-
-        Args:
-            dataset: Dataset to estimate from
-            config: Training configuration
-
-        Returns:
-            Estimated bytes per batch
-        """
-        # The dataset is always a WindowDataset, which implements estimate_batch_bytes.
-        return max(1, dataset.estimate_batch_bytes(config.train.batch_size))
+        return config.train.prefetch_factor

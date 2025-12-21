@@ -46,10 +46,10 @@ LEGAL_TOURNAMENT_STAGES = [
 
 SUPPORTED_CHARS = [
     Character.FOX,
-    #    Character.FALCO,
-    #    Character.CPTFALCON,
-    #    Character.JIGGLYPUFF,
-    #    Character.MARTH,
+       Character.FALCO,
+       Character.CPTFALCON,
+       Character.JIGGLYPUFF,
+       Character.MARTH,
     #    Character.SHEIK,
 ]
 

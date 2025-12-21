@@ -192,28 +192,8 @@ def _compute_player_rewards(
     prev_slice = slice(None, -1)  # indices 0 .. L-2
     curr_slice = slice(1, None)  # indices 1 .. L-1
 
-    if player == "p1":
-        # Current player deals damage to opponent
-        opp_percent_idx = idx.p2_percent
-        # Opponent dying
-        opp_action_idx = idx.p2_action
-        # Hitlag rewards/penalties
-        opp_hitlag_idx = idx.p2_is_in_hitlag
-        opp_def_hitlag_idx = idx.p2_is_defender_in_hitlag
-        # Shield penalty
-        shield_idx = idx.p1_shield_strength
-    else:  # player == "p2"
-        # Current player deals damage to opponent
-        opp_percent_idx = idx.p1_percent
-        # Opponent dying
-        opp_action_idx = idx.p1_action
-        # Hitlag rewards/penalties
-        opp_hitlag_idx = idx.p1_is_in_hitlag
-        opp_def_hitlag_idx = idx.p1_is_defender_in_hitlag
-        # Shield penalty
-        shield_idx = idx.p2_shield_strength
-
-    # --- Damage deltas (current player deals damage to opponent/opponent to player) ---
+    # --- Damage deltas (current player deals damage to opponent) ---
+    opp_percent_idx = getattr(idx, f"{opponent}_percent")
     d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
     d_opp.clamp_min_(0.0)
     rewards[:, prev_slice].add_(d_opp.mul_(reward_cfg.reward_damage_dealt))
@@ -235,11 +215,11 @@ def _compute_player_rewards(
     stock_taken = opp_deaths.to(dtype)  # Convert bool to float
     rewards[:, prev_slice].add_(stock_taken.mul_(reward_cfg.reward_stock_taken))
 
-    # --- Hitlag rewards/penalties (per-frame) ---
-    opp_hitlag_idx = getattr(idx, f"{opponent}_is_in_hitlag")
+    # --- Hitlag rewards (per-frame) ---
+    # Reward when opponent is in defensive hitlag (they got hit by us)
     opp_def_hitlag_idx = getattr(idx, f"{opponent}_is_defender_in_hitlag")
-    opp_metric = X[:, :, opp_hitlag_idx] - X[:, :, opp_def_hitlag_idx]
-    hitlag_reward = (opp_metric == 1).to(dtype).mul_(reward_cfg.reward_hitlag_opponent)
+    opp_in_def_hitlag = (X[:, :, opp_def_hitlag_idx] > 0.5).to(dtype)
+    hitlag_reward = opp_in_def_hitlag.mul_(reward_cfg.reward_hitlag_opponent)
     rewards[:, prev_slice].add_(hitlag_reward[:, curr_slice])
 
     # --- Shield penalty (per-frame) ---
@@ -302,14 +282,12 @@ def _compute_player_reward_components(
     if player == "p1":
         opp_percent_idx = idx.p2_percent
         opp_action_idx = idx.p2_action
-        opp_hitlag_idx = idx.p2_is_in_hitlag
         opp_def_hitlag_idx = idx.p2_is_defender_in_hitlag
         shield_idx = idx.p1_shield_strength
         opp_hitstun_idx = idx.p2_is_in_hitstun
     else:
         opp_percent_idx = idx.p1_percent
         opp_action_idx = idx.p1_action
-        opp_hitlag_idx = idx.p1_is_in_hitlag
         opp_def_hitlag_idx = idx.p1_is_defender_in_hitlag
         shield_idx = idx.p2_shield_strength
         opp_hitstun_idx = idx.p1_is_in_hitstun
@@ -329,10 +307,9 @@ def _compute_player_reward_components(
         opp_deaths.to(dtype).mul_(reward_cfg.reward_stock_taken)
     )
 
-    opp_hitlag = X[:, :, opp_hitlag_idx]
     opp_def_hitlag = X[:, :, opp_def_hitlag_idx]
-    opp_metric = opp_hitlag - opp_def_hitlag
-    hitlag_reward = (opp_metric == 1).to(dtype).mul_(reward_cfg.reward_hitlag_opponent)
+    opp_in_def_hitlag = (opp_def_hitlag > 0.5).to(dtype)
+    hitlag_reward = opp_in_def_hitlag.mul_(reward_cfg.reward_hitlag_opponent)
     components["hitlag"][:, prev_slice].add_(hitlag_reward[:, curr_slice])
 
     shield = X[:, :, shield_idx]

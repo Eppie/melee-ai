@@ -38,10 +38,11 @@ class RewardConfig(BaseModel):
         ),
     )
     reward_hitlag_opponent: float = Field(
-        default=0.08,
+        default=0.0001,
         description=(
-            "Reward per frame opponent is in hitlag. Encourages landing hits. "
-            "Reasonable range: [0.01, 0.2]. Similar scale to damage reward."
+            "Reward per frame opponent is in defensive hitlag (got hit). "
+            "Encourages landing hits. Since damage is /100 scaled, this is much smaller. "
+            "Reasonable range: [0.00005, 0.0005]."
         ),
     )
     reward_low_shield: float = Field(

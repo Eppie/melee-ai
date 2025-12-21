@@ -88,13 +88,15 @@ def test_reward_stock_taken_on_death_transition() -> None:
 
 
 def test_reward_hitlag_positive_when_opponent_in_hitlag() -> None:
+    """Reward when opponent is in defensive hitlag (they got hit)."""
     colmap, idx = _build_colmap_and_idx()
     assert idx.p2_is_in_hitlag is not None
     assert idx.p2_is_defender_in_hitlag is not None
     cfg = RewardConfig()
     X = _make_base_features(num_frames=2, colmap=colmap, idx=idx)
+    # p2 is in hitlag as defender (got hit by p1)
     X[0, 1, idx.p2_is_in_hitlag] = 1.0
-    X[0, 1, idx.p2_is_defender_in_hitlag] = 0.0
+    X[0, 1, idx.p2_is_defender_in_hitlag] = 1.0
 
     rewards = compute_frame_rewards(X, idx, cfg)
 

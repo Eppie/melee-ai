@@ -145,7 +145,7 @@ def test_compute_frame_rewards_shield_penalty(reward_setup):
 
 
 def test_compute_frame_rewards_hitlag_terms(reward_setup):
-    """Attacking frames award the configured opponent hitlag bonus."""
+    """Attacking frames award the configured opponent hitlag bonus when opponent is defender."""
     colmap, idx, reward_cfg = reward_setup
     assert idx.p1_is_in_hitlag is not None
     assert idx.p1_is_defender_in_hitlag is not None
@@ -155,10 +155,12 @@ def test_compute_frame_rewards_hitlag_terms(reward_setup):
     seq_len = 3
     X = _zeros_feature_tensor(colmap, seq_len)
 
-    # Frame 1: p1 hits p2 (opponent hitlag metric == 1).
+    # Frame 1: p1 hits p2 (p2 is defender in hitlag).
     X[0, 1, idx.p2_is_in_hitlag] = 1.0
-    # Frame 2: roles swap, p2 hits p1.
+    X[0, 1, idx.p2_is_defender_in_hitlag] = 1.0
+    # Frame 2: roles swap, p2 hits p1 (p1 is defender in hitlag).
     X[0, 2, idx.p1_is_in_hitlag] = 1.0
+    X[0, 2, idx.p1_is_defender_in_hitlag] = 1.0
 
     rewards = compute_frame_rewards(X, idx=idx, reward_cfg=reward_cfg).squeeze(0)
 
@@ -325,19 +327,19 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
 def test_replay_rewards_shape_and_sparsity(replay_reward_data):
     rewards = replay_reward_data["rewards"]
     assert rewards.shape[0] == 6956
-    # Updated count includes hitstun rewards (was 382 before hitstun rewards added)
-    assert torch.count_nonzero(rewards).item() == 1450
+    # Updated count includes hitstun rewards and fixed hitlag logic
+    assert torch.count_nonzero(rewards).item() == 1469
 
 
 @pytest.mark.parametrize(
     ("frame", "value"),
     [
-        (31, -0.0784),
-        (36, -0.0784),
-        (
-            6917,
-            -1.0,
-        ),  # Updated: action-based death detection at frame 6918 gives reward at 6917 (reward_stock_taken=1.0)
+        # Damage dealt + hitlag reward (opponent got hit)
+        # 0.0017 = damage_dealt (0.0016) + hitlag (0.0001)
+        (31, 0.0017),
+        (36, 0.0017),
+        # Stock taken (opponent died)
+        (6917, -1.0),
     ],
 )
 def test_replay_rewards_matches_known_frames(replay_reward_data, frame, value):

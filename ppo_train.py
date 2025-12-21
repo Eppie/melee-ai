@@ -831,7 +831,8 @@ def compute_ppo_loss_with_gradient_accumulation(
 ) -> PPOLossComponents:
     """Compute PPO loss with gradient accumulation across mini-batches.
 
-    Calls backward() after each mini-batch to avoid OOM from large computation graphs.
+    Only trains on steps that have full seq_len history (no padding needed).
+    Windows are shuffled for better training dynamics.
 
     Args:
         rollout: Complete rollout with advantages and returns
@@ -843,8 +844,37 @@ def compute_ppo_loss_with_gradient_accumulation(
     """
     device = next(model.parameters()).device
     L = len(rollout.steps)
-    mini_batch_size = min(ppo_config.mini_batch_size, L)
-    num_batches = (L + mini_batch_size - 1) // mini_batch_size
+
+    # ===== IDENTIFY VALID TRAINING INDICES =====
+    # Only train on steps that have full seq_len history
+    # Step i is valid if we can get seq_len frames ending at i: [i-seq_len+1, i]
+    # This requires (i - seq_len + 1) >= 0, i.e., i >= seq_len - 1
+    first_valid_idx = seq_len - 1
+    if first_valid_idx >= L:
+        print(f"    [Warning] Episode too short for training: {L} steps < {seq_len} seq_len")
+        # Return dummy loss components
+        return PPOLossComponents(
+            total_loss=torch.tensor(0.0),
+            policy_loss=torch.tensor(0.0),
+            value_loss=torch.tensor(0.0),
+            entropy=torch.tensor(0.0),
+            main_policy_loss=torch.tensor(0.0),
+            c_policy_loss=torch.tensor(0.0),
+            buttons_policy_loss=torch.tensor(0.0),
+            shoulder_policy_loss=torch.tensor(0.0),
+            main_entropy=0.0, c_entropy=0.0, buttons_entropy=0.0, shoulder_entropy=0.0,
+            main_clip_frac=0.0, c_clip_frac=0.0, buttons_clip_frac=0.0, shoulder_clip_frac=0.0,
+            approx_kl=0.0, grad_norm=0.0,
+        )
+
+    valid_indices = list(range(first_valid_idx, L))
+    num_valid = len(valid_indices)
+
+    # Shuffle for better training dynamics (like imitation learning)
+    random.shuffle(valid_indices)
+
+    mini_batch_size = min(ppo_config.mini_batch_size, num_valid)
+    num_batches = (num_valid + mini_batch_size - 1) // mini_batch_size
 
     # Accumulate metrics (scalars only, no tensors!)
     total_policy_losses = {"main": 0.0, "c": 0.0, "buttons": 0.0, "shoulder": 0.0}
@@ -853,48 +883,33 @@ def compute_ppo_loss_with_gradient_accumulation(
     total_clip_fracs = {"main": 0.0, "c": 0.0, "buttons": 0.0, "shoulder": 0.0}
     total_kl = 0.0
 
-    # ===== PRE-COMPUTE ALL SEQUENCES ONCE =====
-    # This is the expensive operation - do it once, not every batch/epoch
-    # Use the configured rollout/training sequence length.
+    # ===== PRE-COMPUTE ALL FEATURES ONCE =====
     precompute_start = time.perf_counter()
 
-    # Stack all features into a single tensor first
+    # Stack all features into a single contiguous tensor
     all_features = torch.stack([s.features for s in rollout.steps], dim=0)  # [L, F]
 
-    # Pre-allocate output tensor [L, seq_len, F]
-    F = all_features.shape[1]
-    all_sequences = torch.zeros(L, seq_len, F, device=all_features.device)
-
-    # Build sequences efficiently using tensor operations
-    for i in range(L):
-        start_frame_idx = max(0, i - seq_len + 1)
-        seq_slice = all_features[start_frame_idx:i + 1]  # [actual_len, F]
-        actual_len = seq_slice.shape[0]
-
-        if actual_len < seq_len:
-            # Pad by repeating first frame
-            num_pad = seq_len - actual_len
-            all_sequences[i, :num_pad] = seq_slice[0]  # Repeat first frame
-            all_sequences[i, num_pad:] = seq_slice
-        else:
-            all_sequences[i] = seq_slice
-
-    # Move to device once
-    all_sequences = all_sequences.to(device)
-
     precompute_elapsed = time.perf_counter() - precompute_start
-    print(f"    [Precompute] Built {L} sequences of length {seq_len} in {precompute_elapsed:.2f}s")
+    print(f"    [Precompute] Stacked {L} frames, {num_valid} valid training windows "
+          f"(steps {first_valid_idx}-{L-1}) in {precompute_elapsed:.3f}s")
 
     for batch_idx in range(num_batches):
         batch_start = time.perf_counter()
 
-        start_idx = batch_idx * mini_batch_size
-        end_idx = min(start_idx + mini_batch_size, L)
-        batch_steps = rollout.steps[start_idx:end_idx]
-        batch_len = len(batch_steps)
+        # Get shuffled indices for this batch
+        batch_start_pos = batch_idx * mini_batch_size
+        batch_end_pos = min(batch_start_pos + mini_batch_size, num_valid)
+        batch_indices = valid_indices[batch_start_pos:batch_end_pos]
+        batch_len = len(batch_indices)
 
-        # Slice pre-computed sequences (fast!)
-        features_batch = all_sequences[start_idx:end_idx]  # [batch_len, seq_len, F]
+        # Build sequences for this batch: for each valid index i, window is [i-seq_len+1 : i+1]
+        sequences = []
+        for idx in batch_indices:
+            start = idx - seq_len + 1
+            end = idx + 1
+            seq = all_features[start:end]  # [seq_len, F]
+            sequences.append(seq)
+        features_batch = torch.stack(sequences, dim=0).to(device)  # [batch_len, seq_len, F]
         inputs_td = build_model_inputs(features_batch, column_map)
 
         build_time = time.perf_counter() - batch_start
@@ -905,15 +920,20 @@ def compute_ppo_loss_with_gradient_accumulation(
             outputs = model(inputs_td)
         fwd_time = time.perf_counter() - fwd_start
 
-        # Create mini-rollout
+        # Gather steps, advantages, returns for this batch (using shuffled indices)
+        batch_steps = [rollout.steps[i] for i in batch_indices]
+        batch_advantages = rollout.advantages[batch_indices]
+        batch_returns = rollout.returns[batch_indices]
+
+        # Create mini-rollout for loss computation
         mini_rollout = Rollout(
             steps=batch_steps,
             episode_length=batch_len,
             total_reward=0.0,
             winner=0,
         )
-        mini_rollout.advantages = rollout.advantages[start_idx:end_idx]
-        mini_rollout.returns = rollout.returns[start_idx:end_idx]
+        mini_rollout.advantages = batch_advantages
+        mini_rollout.returns = batch_returns
 
         # Compute losses for this batch
         loss_start = time.perf_counter()
@@ -944,20 +964,20 @@ def compute_ppo_loss_with_gradient_accumulation(
               f"total={batch_total:.2f}s")
 
         # Free memory (let Python GC handle it - empty_cache() is expensive on MPS)
-        del outputs, inputs_td, batch_loss_components
+        del outputs, inputs_td, batch_loss_components, features_batch, sequences
 
-    # Free pre-computed sequences
-    del all_sequences, all_features
+    # Free stacked features
+    del all_features
 
-    # Average metrics
+    # Average metrics over num_valid (not L)
     for key in total_policy_losses:
-        total_policy_losses[key] /= L
-    total_value_loss /= L
+        total_policy_losses[key] /= num_valid
+    total_value_loss /= num_valid
     for key in total_entropy:
-        total_entropy[key] /= L
+        total_entropy[key] /= num_valid
     for key in total_clip_fracs:
-        total_clip_fracs[key] /= L
-    total_kl /= L
+        total_clip_fracs[key] /= num_valid
+    total_kl /= num_valid
 
     # Return components (as scalars/floats for logging)
     total_policy_loss = sum(total_policy_losses.values())
@@ -1075,6 +1095,9 @@ def compute_ppo_loss(
 ) -> PPOLossComponents:
     """Compute PPO loss for a rollout using mini-batches.
 
+    Only trains on steps that have full seq_len history.
+    Windows are shuffled for better training dynamics.
+
     Args:
         rollout: Complete rollout with advantages and returns
         model: GPT model
@@ -1087,10 +1110,32 @@ def compute_ppo_loss(
     """
     device = next(model.parameters()).device
     L = len(rollout.steps)
-    mini_batch_size = min(ppo_config.mini_batch_size, L)
+
+    first_valid_idx = seq_len - 1
+    if first_valid_idx >= L:
+        print(f"    [Warning] Episode too short for training: {L} steps < {seq_len} seq_len")
+        return PPOLossComponents(
+            total_loss=torch.tensor(0.0, device=device),
+            policy_loss=torch.tensor(0.0, device=device),
+            value_loss=torch.tensor(0.0, device=device),
+            entropy=torch.tensor(0.0, device=device),
+            main_policy_loss=torch.tensor(0.0, device=device),
+            c_policy_loss=torch.tensor(0.0, device=device),
+            buttons_policy_loss=torch.tensor(0.0, device=device),
+            shoulder_policy_loss=torch.tensor(0.0, device=device),
+            main_entropy=0.0, c_entropy=0.0, buttons_entropy=0.0, shoulder_entropy=0.0,
+            main_clip_frac=0.0, c_clip_frac=0.0, buttons_clip_frac=0.0, shoulder_clip_frac=0.0,
+            approx_kl=0.0, grad_norm=0.0,
+        )
+
+    valid_indices = list(range(first_valid_idx, L))
+    num_valid = len(valid_indices)
+    random.shuffle(valid_indices)
+
+    mini_batch_size = min(ppo_config.mini_batch_size, num_valid)
 
     # Split rollout into mini-batches
-    num_batches = (L + mini_batch_size - 1) // mini_batch_size
+    num_batches = (num_valid + mini_batch_size - 1) // mini_batch_size
 
     # Accumulate losses as tensors (for gradient tracking)
     accumulated_policy_losses = {"main": [], "c": [], "buttons": [], "shoulder": []}
@@ -1100,36 +1145,23 @@ def compute_ppo_loss(
     accumulated_kl = []
     batch_sizes = []
 
+    all_features = torch.stack([s.features for s in rollout.steps], dim=0)  # [L, F]
+
     for batch_idx in range(num_batches):
-        start_idx = batch_idx * mini_batch_size
-        end_idx = min(start_idx + mini_batch_size, L)
-        batch_steps = rollout.steps[start_idx:end_idx]
-        batch_len = len(batch_steps)
+        batch_start_pos = batch_idx * mini_batch_size
+        batch_end_pos = min(batch_start_pos + mini_batch_size, num_valid)
+        batch_indices = valid_indices[batch_start_pos:batch_end_pos]
+        batch_len = len(batch_indices)
 
         # Reconstruct sequences for each timestep in the batch
         # For each step i, we need frames [i-seq_len+1 : i+1]
         # Use the configured rollout/training sequence length.
         sequences = []
 
-        for idx in range(len(batch_steps)):
-            global_idx = start_idx + idx
-            # Get seq_len frames ending at global_idx
-            start_frame_idx = max(0, global_idx - seq_len + 1)
-            end_frame_idx = global_idx + 1
-
-            # Extract frames for this sequence
-            frame_slice = rollout.steps[start_frame_idx:end_frame_idx]
-            frames = torch.stack([s.features for s in frame_slice], dim=0)  # [actual_len, F]
-
-            # Pad if needed (for early frames)
-            if len(frames) < seq_len:
-                # Pad by repeating the first frame (not zeros - zeros cause NaN with AMP)
-                first_frame = frames[0:1]  # Keep dim: [1, F]
-                num_pad = seq_len - len(frames)
-                padding = first_frame.expand(num_pad, -1)  # [num_pad, F]
-                frames = torch.cat([padding, frames], dim=0)
-
-            sequences.append(frames)
+        for idx in batch_indices:
+            start_frame_idx = idx - seq_len + 1
+            end_frame_idx = idx + 1
+            sequences.append(all_features[start_frame_idx:end_frame_idx])
 
         features_batch = torch.stack(sequences, dim=0).to(device)  # [batch_len, seq_len, F]
         inputs_td = build_model_inputs(features_batch, column_map)
@@ -1139,14 +1171,15 @@ def compute_ppo_loss(
             outputs = model(inputs_td)
 
         # Create a mini-rollout for this batch
+        batch_steps = [rollout.steps[i] for i in batch_indices]
         mini_rollout = Rollout(
             steps=batch_steps,
             episode_length=batch_len,
             total_reward=0.0,
             winner=0,
         )
-        mini_rollout.advantages = rollout.advantages[start_idx:end_idx]
-        mini_rollout.returns = rollout.returns[start_idx:end_idx]
+        mini_rollout.advantages = rollout.advantages[batch_indices]
+        mini_rollout.returns = rollout.returns[batch_indices]
 
         # Compute new log probabilities for this batch
         new_log_probs = compute_log_probs_for_actions(outputs, mini_rollout, device)
@@ -1229,22 +1262,24 @@ def compute_ppo_loss(
         # Free memory (let Python GC handle it - empty_cache() is expensive on MPS)
         del outputs, features_batch, inputs_td
 
+    del all_features
+
     # Average across all timesteps by summing weighted losses
     total_policy_losses = {}
     for key in accumulated_policy_losses:
-        total_policy_losses[key] = sum(accumulated_policy_losses[key]) / L
+        total_policy_losses[key] = sum(accumulated_policy_losses[key]) / num_valid
 
-    total_value_loss = sum(accumulated_value_losses) / L
+    total_value_loss = sum(accumulated_value_losses) / num_valid
 
     total_entropy = {}
     for key in accumulated_entropies:
-        total_entropy[key] = sum(accumulated_entropies[key]) / L
+        total_entropy[key] = sum(accumulated_entropies[key]) / num_valid
 
     total_clip_fracs = {}
     for key in accumulated_clip_fracs:
-        total_clip_fracs[key] = (sum(accumulated_clip_fracs[key]) / L).item()
+        total_clip_fracs[key] = (sum(accumulated_clip_fracs[key]) / num_valid).item()
 
-    total_kl = (sum(accumulated_kl) / L).item()
+    total_kl = (sum(accumulated_kl) / num_valid).item()
 
     # Compute total loss (as tensor with grad)
     total_policy_loss = sum(total_policy_losses.values())
@@ -1583,9 +1618,15 @@ def main():
         print(f"[GAE] Done in {gae_elapsed:.2f}s")
 
         # ===== 3. PPO TRAINING (K epochs) =====
-        num_batches = (rollout.episode_length + ppo_config.mini_batch_size - 1) // ppo_config.mini_batch_size
+        first_valid_idx = seq_len - 1
+        num_valid = max(0, rollout.episode_length - first_valid_idx)
+        if num_valid > 0:
+            num_batches = (num_valid + ppo_config.mini_batch_size - 1) // ppo_config.mini_batch_size
+        else:
+            num_batches = 0
         print(f"[Training] Starting {ppo_config.num_epochs} PPO epochs "
-              f"({num_batches} batches/epoch, batch_size={ppo_config.mini_batch_size})")
+              f"({num_batches} batches/epoch, batch_size={ppo_config.mini_batch_size}, "
+              f"valid_windows={num_valid})")
         train_start = time.perf_counter()
 
         loss_components = None

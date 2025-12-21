@@ -15,32 +15,60 @@ from column_map import ColumnMap
 from data_loading.instrumentation import DataLoadingMetrics
 from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
+from train.nvtx_utils import NVTXContext
 from train.wandb_utils import WandbLogger
 from utils import Profiler
 
 
 @dataclass
 class VarianceTracker:
-    """Tracks running variance of scalar values using a sliding window."""
+    """Tracks running variance of scalar values using a sliding window.
+
+    This version keeps values on GPU to avoid synchronization overhead.
+    Only transfers to CPU when variance/std is actually computed.
+    """
 
     window_size: int = 100
-    values: Deque[float] = field(default_factory=lambda: deque(maxlen=100))
+    values: Deque[torch.Tensor] = field(default_factory=lambda: deque(maxlen=100))
+    _pinned_buffer: Optional[torch.Tensor] = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
         """Fix maxlen after dataclass initialization."""
         self.values = deque(maxlen=self.window_size)
+        # Create pinned memory buffer for efficient CPU transfer
+        self._pinned_buffer = torch.empty(self.window_size, dtype=torch.float32, pin_memory=True)
 
-    def add(self, value: float) -> None:
-        """Add a new value to the tracker."""
-        self.values.append(value)
+    def add(self, value: torch.Tensor | float) -> None:
+        """Add a new value to the tracker.
+
+        Args:
+            value: Can be a GPU tensor (preferred) or float. If a tensor,
+                   it will be detached and kept on GPU.
+        """
+        if isinstance(value, torch.Tensor):
+            # Detach and keep on GPU (no sync!)
+            self.values.append(value.detach().reshape(()))
+        else:
+            # Legacy support for float values
+            device = self.values[0].device if self.values else torch.device('cpu')
+            self.values.append(torch.tensor(value, device=device))
 
     def get_variance(self) -> float:
-        """Compute variance of stored values."""
+        """Compute variance of stored values.
+
+        This WILL sync to transfer values from GPU to CPU, but only
+        when variance is actually needed (typically during logging).
+        """
         if len(self.values) < 2:
             return 0.0
-        mean = sum(self.values) / len(self.values)
-        variance = sum((x - mean) ** 2 for x in self.values) / (len(self.values) - 1)
-        return variance
+
+        # Stack all GPU tensors and compute on GPU
+        stacked = torch.stack(list(self.values))
+        mean = stacked.mean()
+        variance = stacked.var(unbiased=True)
+
+        # Single sync for the final result
+        return float(variance.item())
 
     def get_std(self) -> float:
         """Compute standard deviation of stored values."""
@@ -50,10 +78,19 @@ class VarianceTracker:
         """Compute coefficient of variation (std / mean)."""
         if len(self.values) < 2:
             return 0.0
-        mean = sum(self.values) / len(self.values)
-        if abs(mean) < 1e-9:
+
+        # Stack and compute on GPU
+        stacked = torch.stack(list(self.values))
+        mean = stacked.mean()
+        std = stacked.std(unbiased=True)
+
+        # Single sync for both values
+        mean_val = float(mean.item())
+        std_val = float(std.item())
+
+        if abs(mean_val) < 1e-9:
             return 0.0
-        return self.get_std() / abs(mean)
+        return std_val / abs(mean_val)
 
 
 @dataclass
@@ -120,6 +157,8 @@ class TrainingComponents:
     profiling_enabled: bool = True
     profiling_step_count: int = 0
     profilers: Dict[str, Profiler] = field(default_factory=dict)
+    # NVTX instrumentation for profiling tools (Nsight Systems, etc.)
+    nvtx_context: NVTXContext = field(default_factory=lambda: NVTXContext(enabled=True))
     # Data loading metrics
     dataloader_metrics: DataLoadingMetrics = field(default_factory=DataLoadingMetrics)
 

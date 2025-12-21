@@ -220,12 +220,25 @@ def compute_topk_accuracy(
     # Check if target is in top-k for each k
     targets_expanded = targets_flat.unsqueeze(-1)  # [B*L, 1]
 
-    results = {}
+    # Compute all accuracies on GPU first (no sync in loop!)
+    accs_gpu = []
     for k in valid_k:
         # Check if target in top k
         in_topk = (topk_indices[:, :k] == targets_expanded).any(dim=-1)
         acc = in_topk.float().mean()
-        results[f"accuracy/{head_name}/top{k}"] = float(acc.cpu().item())
+        accs_gpu.append(acc)
+
+    # Single batched transfer for all k values (one sync instead of len(valid_k) syncs!)
+    if accs_gpu:
+        accs_stacked = torch.stack(accs_gpu)
+        accs_cpu = accs_stacked.cpu().tolist()
+    else:
+        accs_cpu = []
+
+    # Build results dictionary
+    results = {}
+    for i, k in enumerate(valid_k):
+        results[f"accuracy/{head_name}/top{k}"] = accs_cpu[i]
 
     return results
 
@@ -265,7 +278,8 @@ def compute_frequency_stats(
     # Higher = more diverse, lower = mode collapse
     diversity = 1.0 - (props**2).sum()
 
-    # Single GPU->CPU transfer
+    # Batch all GPU->CPU transfers (3 syncs -> 1 sync)
+    # Stack scalar and array together for single transfer
     topk_props_cpu = topk_props.cpu().tolist()
     topk_classes_cpu = topk_classes.cpu().tolist()
     diversity_cpu = float(diversity.cpu().item())

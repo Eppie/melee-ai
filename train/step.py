@@ -17,6 +17,7 @@ from train.batch_utils import (
 from train.components import ForwardPassResult, TrainingComponents
 from train.gradients import collect_gradient_diagnostics
 from train.imitation_weights import compute_imitation_weights
+from train.nvtx_utils import nvtx_range
 from train.value_head import compute_value_targets
 
 
@@ -93,7 +94,8 @@ def perform_forward_pass(
         dtype=amp.dtype,
         enabled=amp.enabled,
     ):
-        inputs_td = build_model_inputs(X, components.column_map)
+        with nvtx_range("build_model_inputs"):
+            inputs_td = build_model_inputs(X, components.column_map)
         if (
             components.column_map.y_main_idx is None
             or components.column_map.y_c_idx is None
@@ -105,19 +107,21 @@ def perform_forward_pass(
             )
         head_dims = components.config.model.target_shapes_by_head
 
-        target_info = {
-            "main_idx": Y[..., components.column_map.y_main_idx].to(torch.long),
-            "c_idx": Y[..., components.column_map.y_c_idx].to(torch.long),
-            "shoulder_idx": Y[..., components.column_map.y_shoulder_idx].to(torch.long),
-            "buttons": Y[..., components.column_map.y_buttons].to(torch.float32),
-            "main_K": int(head_dims["main_stick"]),  # should align with palette size
-            "c_K": int(head_dims["c_stick"]),
-            "buttons_K": len(components.column_map.y_buttons),
-            "shoulder_K": int(head_dims["shoulder"]),
-        }
-        pred = components.model(inputs_td)
-        # Clone to prevent CUDA graph overwriting when using torch.compile()
-        pred = pred.clone()
+        with nvtx_range("prepare_targets"):
+            target_info = {
+                "main_idx": Y[..., components.column_map.y_main_idx].to(torch.long),
+                "c_idx": Y[..., components.column_map.y_c_idx].to(torch.long),
+                "shoulder_idx": Y[..., components.column_map.y_shoulder_idx].to(torch.long),
+                "buttons": Y[..., components.column_map.y_buttons].to(torch.float32),
+                "main_K": int(head_dims["main_stick"]),  # should align with palette size
+                "c_K": int(head_dims["c_stick"]),
+                "buttons_K": len(components.column_map.y_buttons),
+                "shoulder_K": int(head_dims["shoulder"]),
+            }
+        with nvtx_range("model_inference"):
+            pred = components.model(inputs_td)
+            # Clone to prevent CUDA graph overwriting when using torch.compile()
+            pred = pred.clone()
 
         base_smoothing = config.train.label_smoothing
         final_smoothing = 0.5 * base_smoothing
@@ -161,67 +165,72 @@ def perform_forward_pass(
         )
 
         # Compute change-based weights (focus on action changes)
-        change_weights = compute_component_sample_weights(
-            target_info,
-            components.device,
-            ratios=components.ratios,
-            button_names=CONTROLLER_KEY_GROUPS["buttons"],
-            change_scale=imbalance_scale,
-        )
+        with nvtx_range("compute_sample_weights"):
+            change_weights = compute_component_sample_weights(
+                target_info,
+                components.device,
+                ratios=components.ratios,
+                button_names=CONTROLLER_KEY_GROUPS["buttons"],
+                change_scale=imbalance_scale,
+            )
 
         # Compute value-based weights (focus on high-value states)
         # This weights frames by their value_target to emphasize learning from winning play
-        imitation_weights_tensor = compute_imitation_weights(
-            X, components.value_idx, config.imitation
-        )
+        with nvtx_range("compute_imitation_weights"):
+            imitation_weights_tensor = compute_imitation_weights(
+                X, components.value_idx, config.imitation
+            )
 
         # Combine change-based and value-based weights
         # Apply value weights to all components
-        combined_weights = {}
-        for key, change_w in change_weights.items():
-            # Multiply change weights by value weights
-            # Handle broadcasting: change_w might be [B, L] or [B, L, num_classes]
-            # imitation_weights is [B, L], so reshape to [B, L, 1] for broadcasting if needed
-            if change_w.ndim == 3:
-                # change_w is [B, L, C], so broadcast imitation weights to [B, L, 1]
-                combined_weights[key] = change_w * imitation_weights_tensor.unsqueeze(
-                    -1
-                )
-            else:
-                # change_w is [B, L], direct multiplication
-                combined_weights[key] = change_w * imitation_weights_tensor
+        with nvtx_range("combine_weights"):
+            combined_weights = {}
+            for key, change_w in change_weights.items():
+                # Multiply change weights by value weights
+                # Handle broadcasting: change_w might be [B, L] or [B, L, num_classes]
+                # imitation_weights is [B, L], so reshape to [B, L, 1] for broadcasting if needed
+                if change_w.ndim == 3:
+                    # change_w is [B, L, C], so broadcast imitation weights to [B, L, 1]
+                    combined_weights[key] = change_w * imitation_weights_tensor.unsqueeze(
+                        -1
+                    )
+                else:
+                    # change_w is [B, L], direct multiplication
+                    combined_weights[key] = change_w * imitation_weights_tensor
 
-        policy_loss_components = compute_loss_components(
-            pred,
-            target_info,
-            label_smoothing=label_smoothing,
-            sample_weights=combined_weights,
-            loss_config=config.loss_weights,
-            ce_weight_scale=imbalance_scale,
-            pos_weight_scale=imbalance_scale,
-        )
-        loss = policy_loss_components["total"]
-        loss_components = dict(policy_loss_components)
+        with nvtx_range("compute_policy_loss"):
+            policy_loss_components = compute_loss_components(
+                pred,
+                target_info,
+                label_smoothing=label_smoothing,
+                sample_weights=combined_weights,
+                loss_config=config.loss_weights,
+                ce_weight_scale=imbalance_scale,
+                pos_weight_scale=imbalance_scale,
+            )
+            loss = policy_loss_components["total"]
+            loss_components = dict(policy_loss_components)
 
-        value_pred = pred["value"]
-        value_target = compute_value_targets(
-            X,
-            components.column_map,
-            gamma=config.rl.gamma,
-            reward_idx=components.value_idx,
-        )
-        value_loss_raw = torch.nn.functional.mse_loss(
-            value_pred, value_target, reduction="none"
-        ).squeeze(-1)
+        with nvtx_range("compute_value_loss"):
+            value_pred = pred["value"]
+            value_target = compute_value_targets(
+                X,
+                components.column_map,
+                gamma=config.rl.gamma,
+                reward_idx=components.value_idx,
+            )
+            value_loss_raw = torch.nn.functional.mse_loss(
+                value_pred, value_target, reduction="none"
+            ).squeeze(-1)
 
-        # CRITICAL: Value head trains on FULL distribution (not filtered)
-        # Policy heads use combined_weights (filtered for high-value states)
-        # This prevents value head from learning biased estimator while
-        # policy heads still benefit from focusing on winning play
-        loss_value = value_loss_raw.mean()  # Uniform weighting
+            # CRITICAL: Value head trains on FULL distribution (not filtered)
+            # Policy heads use combined_weights (filtered for high-value states)
+            # This prevents value head from learning biased estimator while
+            # policy heads still benefit from focusing on winning play
+            loss_value = value_loss_raw.mean()  # Uniform weighting
 
-        loss = loss + config.rl.value_loss_coef * loss_value
-        loss_components["value"] = loss_value
+            loss = loss + config.rl.value_loss_coef * loss_value
+            loss_components["value"] = loss_value
 
     batch_targets = {
         "main": target_info["main_idx"],
@@ -280,37 +289,48 @@ def perform_backward_pass(
         print(f"Warning: Non-finite loss ({loss_value}); skipping backward step")
         return {}
 
-    optimizer.zero_grad(set_to_none=True)
+    with nvtx_range("zero_grad"):
+        optimizer.zero_grad(set_to_none=True)
 
     # Use gradient scaling only if scaler is enabled (float16)
-    if scaler.is_enabled():
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-    else:
-        # bfloat16 or full precision - no scaling needed
-        loss.backward()
+    with nvtx_range("backward"):
+        if scaler.is_enabled():
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+        else:
+            # bfloat16 or full precision - no scaling needed
+            loss.backward()
 
     # Clip value head gradients separately BEFORE global clipping
     # This prevents value head from corrupting transformer even if it has large errors
-    value_head_grad_norm = float(
-        clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
-    )
-
     grad_clip = components.config.train.grad_clip
-    pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
-
     grad_stats: Dict[str, float] = {}
-    if collect_grad_stats:
-        grad_stats = collect_gradient_diagnostics(components.model)
-        grad_stats["total_norm_pre_clip"] = pre_clip_norm
-        grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
-        grad_stats["value_head_norm_pre_clip"] = value_head_grad_norm
-        grad_stats["value_head_norm_post_clip"] = min(value_head_grad_norm, 1.0)
 
-    if scaler.is_enabled():
-        scaler.step(optimizer)
-        scaler.update()
+    if collect_grad_stats:
+        # Slow path: Compute gradient norms for logging (causes CPU-GPU sync)
+        with nvtx_range("grad_clip_with_stats"):
+            value_head_grad_norm = float(
+                clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
+            )
+            pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
+
+        with nvtx_range("collect_grad_stats"):
+            grad_stats = collect_gradient_diagnostics(components.model)
+            grad_stats["total_norm_pre_clip"] = pre_clip_norm
+            grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
+            grad_stats["value_head_norm_pre_clip"] = value_head_grad_norm
+            grad_stats["value_head_norm_post_clip"] = min(value_head_grad_norm, 1.0)
     else:
-        optimizer.step()
+        # Fast path: Just clip without computing norms (no sync!)
+        with nvtx_range("grad_clip_fast"):
+            clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
+            clip_grad_norm_(components.model.parameters(), grad_clip)
+
+    with nvtx_range("optimizer_step"):
+        if scaler.is_enabled():
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
 
     return grad_stats

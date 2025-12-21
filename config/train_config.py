@@ -26,7 +26,7 @@ class TrainConfig(BaseModel):
         ),
     )
     epochs: int = Field(
-        default=32,
+        default=1,
         ge=1,
         description=(
             "Number of training epochs. One epoch = one pass through the entire dataset. "
@@ -153,7 +153,7 @@ class TrainConfig(BaseModel):
         description="Keep dataloader workers alive between epochs. Faster but uses more memory.",
     )
     stride: int = Field(
-        default=8,
+        default=64,
         ge=1,
         description=(
             "Stride between consecutive training windows. Lower stride = more overlapping windows = "
@@ -285,7 +285,7 @@ class TrainConfig(BaseModel):
 
     # Checkpointing
     out_dir: str = Field(
-        default="../checkpoints",
+        default="checkpoints",
         description="Directory for saving model checkpoints during training.",
     )
     allow_partial_checkpoint_load: bool = Field(
@@ -388,4 +388,5 @@ def _should_enable_torch_compile() -> bool:
     Auto-detect if torch.compile should be enabled.
     Only enable on CUDA devices; disable on MPS/CPU.
     """
+    return False
     return bool(hasattr(torch.backends, "cuda") and torch.cuda.is_available())

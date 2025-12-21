@@ -13,6 +13,7 @@ from train.checkpoint import maybe_checkpoint_batch, maybe_checkpoint_epoch
 from train.components import EpochContext, TrainingState
 from train.logging import emit_logging, prepare_logging_bundle
 from train.lr_schedule import _update_learning_rate
+from train.nvtx_utils import nvtx_range
 from train.profiling import print_profiling_results
 from train.setup import initialize_training_components, print_config
 from train.step import perform_backward_pass, perform_forward_pass
@@ -71,6 +72,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
     components = state.components
     config = components.config
     dataset = components.dataset
+    nvtx = components.nvtx_context
     chunked = (
         dataset is not None
         and dataset._total_chunks is not None
@@ -233,14 +235,15 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
 
             try:
                 # Load chunks (supports multi-chunk overlap) with timing
-                chunk_load_start = time.time()
-                dataset.load_chunks(chunk_indices)
-                chunk_load_duration = time.time() - chunk_load_start
+                with nvtx(f"epoch_{epoch+1}_chunk_load_{iteration_idx}"):
+                    chunk_load_start = time.time()
+                    dataset.load_chunks(chunk_indices)
+                    chunk_load_duration = time.time() - chunk_load_start
 
-                # Record chunk load time
-                components.dataloader_metrics.record_chunk_load(
-                    chunk_load_duration, iteration=iteration_idx
-                )
+                    # Record chunk load time
+                    components.dataloader_metrics.record_chunk_load(
+                        chunk_load_duration, iteration=iteration_idx
+                    )
 
                 # Update sampler with active episodes
                 components.sampler.set_active_episodes(
@@ -257,7 +260,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 )
                 continue
 
-            loader = _build_loader_for_chunk()
+            with nvtx(f"epoch_{epoch+1}_build_loader_{iteration_idx}"):
+                loader = _build_loader_for_chunk()
 
             for batch in loader:
                 # Record batch start for idle time tracking
@@ -273,9 +277,9 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 prof = components.profilers
                 ctx = lambda name: prof[name] if should_profile else nullcontext()
 
-                with ctx("total_step"):
+                with ctx("total_step"), nvtx(f"train_step"):
                     # Data preparation with timing
-                    with ctx("data_prep"):
+                    with ctx("data_prep"), nvtx("data_transfer"):
                         batch_prep_start = time.time()
                         batch_tensors = _prepare_batch(batch, components.device)
                         batch_prep_duration = time.time() - batch_prep_start
@@ -295,7 +299,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         )
 
                     # Forward pass
-                    with ctx("forward"):
+                    with ctx("forward"), nvtx("forward_pass"):
                         forward_result = perform_forward_pass(
                             components,
                             batch_tensors,
@@ -311,7 +315,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         lr = _update_learning_rate(components, state.global_step)
 
                     # Backward pass
-                    with ctx("backward"):
+                    with ctx("backward"), nvtx("backward_pass"):
                         grad_stats = perform_backward_pass(
                             components,
                             forward_result.loss,
@@ -326,9 +330,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         _update_epoch_statistics(epoch_ctx, forward_result)
                         state.global_step += 1
 
-                        # Update variance trackers
-                        loss_value = float(forward_result.loss.detach().cpu().item())
-                        components.loss_variance_tracker.add(loss_value)
+                        # Update variance trackers (keep on GPU - no sync!)
+                        components.loss_variance_tracker.add(forward_result.loss.detach())
                         if grad_stats and "total_norm" in grad_stats:
                             components.gradient_variance_tracker.add(
                                 grad_stats["total_norm"]
@@ -338,7 +341,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     completed_batches = (
                         epoch_ctx.applied_skip + epoch_ctx.iters_processed
                     )
-                    with ctx("checkpoint"):
+                    with ctx("checkpoint"), nvtx("checkpoint"):
                         maybe_checkpoint_batch(
                             components,
                             epoch,
@@ -349,7 +352,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
 
                     # Logging
                     if log_this_iter:
-                        with ctx("logging"):
+                        with ctx("logging"), nvtx("logging"):
                             now = time.time()
                             dt = max(1e-9, now - epoch_ctx.last_log_time)
                             frames_per_s = epoch_ctx.frames_since_last_log / dt
@@ -383,6 +386,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     if components.profiling_step_count >= 1000:
                         logger.info("PROFILING COMPLETE - 1000 steps profiled")
                         print_profiling_results(components.profilers)
+                        exit(0)
 
                 # Record batch end for timing metrics
                 components.dataloader_metrics.record_batch_end()
@@ -408,9 +412,9 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                 prof = components.profilers
                 ctx = lambda name: prof[name] if should_profile else nullcontext()
 
-                with ctx("total_step"):
+                with ctx("total_step"), nvtx("train_step"):
                     # Data preparation
-                    with ctx("data_prep"):
+                    with ctx("data_prep"), nvtx("data_transfer"):
                         batch_tensors = _prepare_batch(batch, components.device)
 
                     # Progress computation
@@ -425,7 +429,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         )
 
                     # Forward pass
-                    with ctx("forward"):
+                    with ctx("forward"), nvtx("forward_pass"):
                         forward_result = perform_forward_pass(
                             components,
                             batch_tensors,
@@ -441,7 +445,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         lr = _update_learning_rate(components, state.global_step)
 
                     # Backward pass
-                    with ctx("backward"):
+                    with ctx("backward"), nvtx("backward_pass"):
                         grad_stats = perform_backward_pass(
                             components,
                             forward_result.loss,
@@ -456,9 +460,8 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                         _update_epoch_statistics(epoch_ctx, forward_result)
                         state.global_step += 1
 
-                        # Update variance trackers
-                        loss_value = float(forward_result.loss.detach().cpu().item())
-                        components.loss_variance_tracker.add(loss_value)
+                        # Update variance trackers (keep on GPU - no sync!)
+                        components.loss_variance_tracker.add(forward_result.loss.detach())
                         if grad_stats and "total_norm" in grad_stats:
                             components.gradient_variance_tracker.add(
                                 grad_stats["total_norm"]
@@ -468,7 +471,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     completed_batches = (
                         epoch_ctx.applied_skip + epoch_ctx.iters_processed
                     )
-                    with ctx("checkpoint"):
+                    with ctx("checkpoint"), nvtx("checkpoint"):
                         maybe_checkpoint_batch(
                             components,
                             epoch,
@@ -479,7 +482,7 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
 
                     # Logging
                     if log_this_iter:
-                        with ctx("logging"):
+                        with ctx("logging"), nvtx("logging"):
                             now = time.time()
                             dt = max(1e-9, now - epoch_ctx.last_log_time)
                             frames_per_s = epoch_ctx.frames_since_last_log / dt
@@ -539,71 +542,73 @@ def train_loop(
     *,
     debug: bool = False,
 ) -> None:
-    components, start_epoch, global_step, start_iter = initialize_training_components(
-        model, loader, ds, sampler, debug
-    )
-    config = components.config
-
-    def _total_batches_for_epoch(epoch: int) -> int:
-        dataset = components.dataset
-        chunked = (
-            dataset is not None
-            and dataset._total_chunks is not None
-            and dataset._total_chunks > 1
+    with nvtx_range("train_loop"):
+        components, start_epoch, global_step, start_iter = initialize_training_components(
+            model, loader, ds, sampler, debug
         )
-        if chunked:
-            return max(
-                1,
-                dataset.total_batches_for_epoch(
-                    stride=config.train.stride,
-                    batch_size=config.train.batch_size,
-                    epoch=epoch,
-                ),
+        config = components.config
+
+        def _total_batches_for_epoch(epoch: int) -> int:
+            dataset = components.dataset
+            chunked = (
+                dataset is not None
+                and dataset._total_chunks is not None
+                and dataset._total_chunks > 1
             )
-        try:
-            return max(int(len(components.loader)), 1)
-        except Exception:
-            return 1
+            if chunked:
+                return max(
+                    1,
+                    dataset.total_batches_for_epoch(
+                        stride=config.train.stride,
+                        batch_size=config.train.batch_size,
+                        epoch=epoch,
+                    ),
+                )
+            try:
+                return max(int(len(components.loader)), 1)
+            except Exception:
+                return 1
 
-    # If resume_iter is beyond the current epoch length, advance epochs accordingly
-    while start_epoch < config.train.epochs:
-        tb = _total_batches_for_epoch(start_epoch)
-        if start_iter < tb:
-            break
-        logger.warning(
-            f"[resume] resume_iter {start_iter} exceeds total_batches {tb} for epoch {start_epoch + 1}; "
-            "advancing to next epoch."
+        # If resume_iter is beyond the current epoch length, advance epochs accordingly
+        while start_epoch < config.train.epochs:
+            tb = _total_batches_for_epoch(start_epoch)
+            if start_iter < tb:
+                break
+            logger.warning(
+                f"[resume] resume_iter {start_iter} exceeds total_batches {tb} for epoch {start_epoch + 1}; "
+                "advancing to next epoch."
+            )
+            start_iter -= tb
+            start_epoch += 1
+
+        if start_epoch >= config.train.epochs:
+            logger.info(
+                f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting."
+            )
+            if not debug:
+                finish_wandb()
+            return
+
+        state = TrainingState(
+            components=components,
+            global_step=global_step,
+            resume_epoch=start_epoch,
+            resume_iter=start_iter,
         )
-        start_iter -= tb
-        start_epoch += 1
 
-    if start_epoch >= config.train.epochs:
-        logger.info(
-            f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting."
-        )
-        if not debug:
-            finish_wandb()
-        return
+        if start_epoch >= config.train.epochs:
+            logger.info(
+                f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting."
+            )
+            if not components.debug:
+                finish_wandb()
+            return
 
-    state = TrainingState(
-        components=components,
-        global_step=global_step,
-        resume_epoch=start_epoch,
-        resume_iter=start_iter,
-    )
+        print_config(config)
 
-    if start_epoch >= config.train.epochs:
-        logger.info(
-            f"All requested epochs ({config.train.epochs}) already completed (start_epoch={start_epoch}); exiting."
-        )
+        with nvtx_range("training_epochs"):
+            for epoch in range(start_epoch, config.train.epochs):
+                state = run_epoch(state, epoch)
+
         if not components.debug:
             finish_wandb()
-        return
-
-    print_config(config)
-
-    for epoch in range(start_epoch, config.train.epochs):
-        state = run_epoch(state, epoch)
-
-    if not components.debug:
-        finish_wandb()

@@ -27,6 +27,12 @@ def _get_default_paths() -> Tuple[str, str, str]:
             "/home/eppie/melee-ai/processed_data_1000",
             "/home/eppie/melee-ai/validation_set",
         )
+    elif system == "Windows":
+        return (
+                r"C:\eppie\hal\FOX",
+                r"C:\melee-ai\processed_data_1000",
+                r"C:\melee-ai\validation_set",
+        )
     raise ValueError(f"Unknown operating system: {system}")
 
 
@@ -62,7 +68,7 @@ class ZarrConfig(BaseModel):
         ),
     )
     episode_count: int = Field(
-        default=3500,
+        default=10,
         ge=1,
         description=(
             "Number of episodes (replay files) to process for training dataset. "

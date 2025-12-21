@@ -36,7 +36,6 @@ def main() -> None:
     config = get_config()
 
     model = GPT(config)
-    print_model_diagram(model)
 
     train_loop(model, loader, ds, sampler, debug=args.debug)
 

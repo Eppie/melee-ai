@@ -292,31 +292,76 @@ class MetricsAccumulator:
         Returns:
             Dictionary of scalar metrics such as ``acc_main`` and ``btn_f1_micro``.
         """
+        # Batch ALL scalar transfers into a single GPU->CPU operation
+        # This replaces 16+ individual .item() calls with ONE transfer
+        scalar_tensors = [
+            self.main.correct,
+            self.main.total,
+            self.main.maj_correct,
+            self.c.correct,
+            self.c.total,
+            self.c.maj_correct,
+            self.btn_em_correct,
+            self.btn_total,
+            self.btn_maj_em_correct,
+        ]
+
+        # Add shoulder metrics if present
+        if self.K_shoulder > 0:
+            scalar_tensors.extend([
+                self.shoulder.correct,
+                self.shoulder.total,
+                self.shoulder.maj_correct,
+            ])
+
+        # Single batched transfer (ONE sync instead of 16+)
+        scalars_stacked = torch.stack([t.float() for t in scalar_tensors])
+        scalars_cpu = scalars_stacked.cpu().tolist()
+
+        # Unpack values (no syncs!)
+        idx = 0
+        main_correct = scalars_cpu[idx]; idx += 1
+        main_total = scalars_cpu[idx]; idx += 1
+        main_maj_correct = scalars_cpu[idx]; idx += 1
+        c_correct = scalars_cpu[idx]; idx += 1
+        c_total = scalars_cpu[idx]; idx += 1
+        c_maj_correct = scalars_cpu[idx]; idx += 1
+        btn_em_correct = scalars_cpu[idx]; idx += 1
+        btn_total = scalars_cpu[idx]; idx += 1
+        btn_maj_em_correct = scalars_cpu[idx]; idx += 1
+
+        if self.K_shoulder > 0:
+            shoulder_correct = scalars_cpu[idx]; idx += 1
+            shoulder_total = scalars_cpu[idx]; idx += 1
+            shoulder_maj_correct = scalars_cpu[idx]; idx += 1
+
+        # Main stick metrics
         summary = {
-            "acc_main": float(self.main.correct.item())
-            / max(1.0, float(self.main.total.item())),
-            "acc_main_maj": float(self.main.maj_correct.item())
-            / max(1.0, float(self.main.total.item())),
+            "acc_main": main_correct / max(1.0, main_total),
+            "acc_main_maj": main_maj_correct / max(1.0, main_total),
         }
 
-        # C-stick
-        summary["acc_c"] = float(self.c.correct.item()) / max(
-            1.0, float(self.c.total.item())
-        )
-        summary["acc_c_maj"] = float(self.c.maj_correct.item()) / max(
-            1.0, float(self.c.total.item())
-        )
+        # C-stick metrics
+        summary["acc_c"] = c_correct / max(1.0, c_total)
+        summary["acc_c_maj"] = c_maj_correct / max(1.0, c_total)
 
-        # Buttons
-        tp: np.ndarray = self.btn_true_positives.cpu().numpy()
-        fp: np.ndarray = self.btn_false_positives.cpu().numpy()
-        fn: np.ndarray = self.btn_false_negatives.cpu().numpy()
+        # Button metrics - batch array transfers too
+        # Stack all button arrays and transfer once (3 syncs -> 1 sync)
+        btn_arrays_stacked = torch.stack([
+            self.btn_true_positives,
+            self.btn_false_positives,
+            self.btn_false_negatives,
+        ])
+        btn_arrays_cpu = btn_arrays_stacked.cpu().numpy()
 
-        # Micro-averaged
+        tp = btn_arrays_cpu[0]
+        fp = btn_arrays_cpu[1]
+        fn = btn_arrays_cpu[2]
+
+        # Micro-averaged metrics (computed on CPU after single transfer)
         tp_sum = tp.sum()
         fp_sum = fp.sum()
         fn_sum = fn.sum()
-        # TODO: Why are these conditionals needed?
         prec_micro = tp_sum / (tp_sum + fp_sum) if (tp_sum + fp_sum) > 0 else 0.0
         rec_micro = tp_sum / (tp_sum + fn_sum) if (tp_sum + fn_sum) > 0 else 0.0
         f1_micro = (
@@ -325,7 +370,7 @@ class MetricsAccumulator:
             else 0.0
         )
 
-        # Macro-averaged
+        # Macro-averaged metrics
         prec_per_button = np.divide(
             tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0
         )
@@ -340,25 +385,17 @@ class MetricsAccumulator:
         )
         f1_macro = f1_per_button.mean()
 
-        summary["btn_em"] = float(self.btn_em_correct.item()) / max(
-            1.0, float(self.btn_total.item())
-        )
+        summary["btn_em"] = btn_em_correct / max(1.0, btn_total)
         summary["btn_prec_micro"] = float(prec_micro)
         summary["btn_rec_micro"] = float(rec_micro)
         summary["btn_f1_micro"] = float(f1_micro)
         summary["btn_f1_macro"] = float(f1_macro)
-        summary["btn_em_maj"] = float(self.btn_maj_em_correct.item()) / max(
-            1.0, float(self.btn_total.item())
-        )
+        summary["btn_em_maj"] = btn_maj_em_correct / max(1.0, btn_total)
 
-        # Shoulder
+        # Shoulder metrics
         if self.K_shoulder > 0:
-            summary["acc_shoulder"] = float(self.shoulder.correct.item()) / max(
-                1.0, float(self.shoulder.total.item())
-            )
-            summary["acc_shoulder_maj"] = float(self.shoulder.maj_correct.item()) / max(
-                1.0, float(self.shoulder.total.item())
-            )
+            summary["acc_shoulder"] = shoulder_correct / max(1.0, shoulder_total)
+            summary["acc_shoulder_maj"] = shoulder_maj_correct / max(1.0, shoulder_total)
 
         return summary
 
@@ -497,27 +534,42 @@ def multilabel_prf(
     t = true_labels.bool()
     p = pred_labels.bool()
 
-    # Micro metrics
-    tp = (t & p).sum().item()
-    fp = ((~t) & p).sum().item()
-    fn = (t & (~p)).sum().item()
+    # Compute all metrics on GPU first
+    tp_micro = (t & p).sum()
+    fp_micro = ((~t) & p).sum()
+    fn_micro = (t & (~p)).sum()
+    tp_per_class = (t & p).sum(dim=(0, 1))
+    fp_per_class = ((~t) & p).sum(dim=(0, 1))
+    fn_per_class = (t & (~p)).sum(dim=(0, 1))
+    em_gpu = (pred_labels == true_labels).all(dim=-1).float().mean()
 
+    # Batch ALL transfers: scalars + per-class arrays in one go
+    # Stack scalars and transfer
+    scalars = torch.stack([tp_micro, fp_micro, fn_micro, em_gpu]).float()
+    scalars_cpu = scalars.cpu().tolist()
+    tp = scalars_cpu[0]
+    fp = scalars_cpu[1]
+    fn = scalars_cpu[2]
+    em = scalars_cpu[3]
+
+    # Batch per-class arrays
+    per_class_stacked = torch.stack([tp_per_class, fp_per_class, fn_per_class])
+    per_class_cpu = per_class_stacked.cpu().numpy()
+    tp_c = per_class_cpu[0]
+    fp_c = per_class_cpu[1]
+    fn_c = per_class_cpu[2]
+
+    # Micro metrics (computed on CPU after single transfer)
     prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
 
     # Macro metrics (per class)
-    tp_c: np.ndarray = (t & p).sum(dim=(0, 1)).cpu().numpy()
-    fp_c: np.ndarray = ((~t) & p).sum(dim=(0, 1)).cpu().numpy()
-    fn_c: np.ndarray = (t & (~p)).sum(dim=(0, 1)).cpu().numpy()
     f1_c = []
     for a, b, c in zip(tp_c, fp_c, fn_c):
         pr = a / (a + b) if (a + b) > 0 else 0.0
         rc = a / (a + c) if (a + c) > 0 else 0.0
         f1_c.append(2 * pr * rc / (pr + rc) if (pr + rc) > 0 else 0.0)
     f1_macro = float(np.mean(f1_c) if len(f1_c) else 0.0)
-
-    # Exact match
-    em = float((pred_labels == true_labels).all(dim=-1).float().mean().item())
 
     return em, float(prec), float(rec), float(f1), f1_macro

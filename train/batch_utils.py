@@ -224,19 +224,21 @@ def compute_component_sample_weights(
     )
     btn_change[:, 1:, :] = btn_t[:, 1:, :] != btn_t[:, :-1, :]
 
-    # Build per-button change ratios
-    base_button = float(_blend(ratios.buttons_change_default).item())
+    # Build per-button change ratios (keep as tensors to avoid sync!)
+    base_button_weight = _blend(ratios.buttons_change_default)
     per_button_ratio = torch.full(
         (K,),
-        base_button,
+        1.0,  # Temporary placeholder
         device=device,
         dtype=torch.float32,
     )
+    # Fill with base weight (no .item() call!)
+    per_button_ratio[:] = base_button_weight
+
+    # Override specific buttons (still no .item()!)
     for k, name in enumerate(button_names):
         if name in ratios.buttons_change_per_key:
-            per_button_ratio[k] = float(
-                _blend(ratios.buttons_change_per_key[name]).item()
-            )
+            per_button_ratio[k] = _blend(ratios.buttons_change_per_key[name])
 
     # weights = hold_base on holds; ratio_k on changes of button k
     w_buttons = torch.where(

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nsys stats:*)",
+      "Bash(sqlite3:*)",
+      "Bash(nsys export:*)"
+    ]
+  }
+}

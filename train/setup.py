@@ -21,6 +21,7 @@ from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
 from train.checkpoint import _load_latest_checkpoint
 from train.components import AMPContext, TrainingComponents
+from train.nvtx_utils import nvtx_range
 from train.wandb_utils import WandbConfig, WandbLogger, init_wandb
 from utils import _resolve_device, Profiler
 
@@ -168,48 +169,54 @@ def initialize_training_components(
     """
     Initializes and wires together the objects needed for training.
     """
-    config = get_config()
-    device = _resolve_device(None)
-    model = model.to(device)
+    with nvtx_range("training_initialization"):
+        config = get_config()
+        device = _resolve_device(None)
 
-    # Configure global performance settings (cudnn.benchmark, etc.)
-    configure_performance_settings(config, device)
+        with nvtx_range("model_to_device"):
+            model = model.to(device)
 
-    # Optionally compile model with torch.compile for faster execution
-    model = maybe_torch_compile(
-        model,
-        label="GPT",
-        enable=config.train.torch_compile,
-        mode=config.train.torch_compile_mode,
-    )
+        # Configure global performance settings (cudnn.benchmark, etc.)
+        with nvtx_range("configure_performance"):
+            configure_performance_settings(config, device)
 
-    amp = configure_amp(config, device)
+        # Optionally compile model with torch.compile for faster execution
+        with nvtx_range("torch_compile"):
+            model = maybe_torch_compile(
+                model,
+                label="GPT",
+                enable=config.train.torch_compile,
+                mode=config.train.torch_compile_mode,
+            )
 
-    column_map = ColumnMap.from_dataset(ds)
-    value_idx = column_map.value_idx
-    lw_cfg = config.loss_weights
-    button_overrides = {
-        "button_z": lw_cfg.button_z,
-        "button_b": lw_cfg.button_b,
-        "button_a": lw_cfg.button_a,
-        "button_xy": lw_cfg.button_xy,
-        "button_lr": lw_cfg.button_lr,
-    }
-    ratios = SampleWeightRatios(
-        main_change=lw_cfg.main_change,
-        c_change=lw_cfg.c_change,
-        shoulder_change=lw_cfg.shoulder_change,
-        buttons_change_default=lw_cfg.buttons_change_default,
-        buttons_change_per_key=button_overrides,
-        hold_base=lw_cfg.hold_base,
-        value_change=lw_cfg.value_change,
-    )
+        amp = configure_amp(config, device)
 
-    optimizer = build_optimizer(model, config)
-    # GradScaler is only needed for float16, not bfloat16
-    use_grad_scaler = amp.enabled and amp.dtype == torch.float16
-    scaler_device = amp.device_type if use_grad_scaler else "cpu"
-    scaler = GradScaler(device=scaler_device, enabled=use_grad_scaler)
+        column_map = ColumnMap.from_dataset(ds)
+        value_idx = column_map.value_idx
+        lw_cfg = config.loss_weights
+        button_overrides = {
+            "button_z": lw_cfg.button_z,
+            "button_b": lw_cfg.button_b,
+            "button_a": lw_cfg.button_a,
+            "button_xy": lw_cfg.button_xy,
+            "button_lr": lw_cfg.button_lr,
+        }
+        ratios = SampleWeightRatios(
+            main_change=lw_cfg.main_change,
+            c_change=lw_cfg.c_change,
+            shoulder_change=lw_cfg.shoulder_change,
+            buttons_change_default=lw_cfg.buttons_change_default,
+            buttons_change_per_key=button_overrides,
+            hold_base=lw_cfg.hold_base,
+            value_change=lw_cfg.value_change,
+        )
+
+        with nvtx_range("build_optimizer"):
+            optimizer = build_optimizer(model, config)
+        # GradScaler is only needed for float16, not bfloat16
+        use_grad_scaler = amp.enabled and amp.dtype == torch.float16
+        scaler_device = amp.device_type if use_grad_scaler else "cpu"
+        scaler = GradScaler(device=scaler_device, enabled=use_grad_scaler)
 
     if ds._total_chunks:
         stride = config.train.stride
@@ -232,31 +239,33 @@ def initialize_training_components(
 
     wandb_run = None
     if not debug:
-        wandb_cfg = WandbConfig(
-            project=config.train.wandb_project,
-            name=config.train.run_name,
-            mode=config.train.wandb_mode,
-        )
-        wandb_run = init_wandb(
-            config=wandb_cfg,
-            run_dir=out_dir,
-            hyperparameters={
-                "train": dict(vars(config.train)),
-                "model": dict(vars(config.model)),
-                "seq_len": config.seq_len,
-            },
-        )
+        with nvtx_range("init_wandb"):
+            wandb_cfg = WandbConfig(
+                project=config.train.wandb_project,
+                name=config.train.run_name,
+                mode=config.train.wandb_mode,
+            )
+            wandb_run = init_wandb(
+                config=wandb_cfg,
+                run_dir=out_dir,
+                hyperparameters={
+                    "train": dict(vars(config.train)),
+                    "model": dict(vars(config.model)),
+                    "seq_len": config.seq_len,
+                },
+            )
     logger = WandbLogger(wandb_run, enabled=not debug and wandb_run is not None)
 
     allow_partial_load = config.train.allow_partial_checkpoint_load
-    start_epoch, global_step, start_iter = _load_latest_checkpoint(
-        out_dir,
-        model,
-        optimizer,
-        scaler,
-        device,
-        allow_partial_load=allow_partial_load,
-    )
+    with nvtx_range("load_checkpoint"):
+        start_epoch, global_step, start_iter = _load_latest_checkpoint(
+            out_dir,
+            model,
+            optimizer,
+            scaler,
+            device,
+            allow_partial_load=allow_partial_load,
+        )
     try:
         if last_step_file.exists():
             persisted = int(last_step_file.read_text().strip())

@@ -25,8 +25,8 @@ from typing import Dict, List, Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from contextlib import nullcontext
 from tensordict import TensorDict
+from torch.amp import autocast
 from torch.distributions import Bernoulli, Categorical
 
 # Add repo root to path
@@ -36,6 +36,13 @@ sys.path.append(str(REPO_ROOT))
 from column_map import ColumnMap
 from config.config import init_config, get_config
 from config.reward_config import RewardConfig
+from constants import (
+    LEGAL_TOURNAMENT_STAGES,
+    SUPPORTED_CHARS,
+    BOT_PORT,
+    OPP_PORT,
+    MIN_EPISODE_LENGTH,
+)
 from controller_utils import (
     CONTROL_STICK_QUANTIZED,
     C_STICK_QUANTIZED,
@@ -61,6 +68,7 @@ from model_interface import (
 )
 from train import find_latest_checkpoint
 from train.batch_utils import build_model_inputs
+from train.setup import configure_amp, parse_cli_overrides
 from train.value_head import (
     build_reward_feature_index,
     compute_frame_rewards,
@@ -104,45 +112,6 @@ class PPOConfig:
 
     # Logging
     log_interval: int = 1  # Log every episode
-
-
-def get_amp_context(device: torch.device, use_amp: bool):
-    """Get the appropriate AMP context manager for the device.
-
-    For MPS (Apple Silicon), uses float16 which is well-optimized for AMX units.
-    For CUDA, uses bfloat16 if available, else float16.
-    Returns nullcontext if AMP is disabled or device is CPU.
-    """
-    if not use_amp:
-        return nullcontext()
-
-    device_type = device.type
-
-    if device_type == "mps":
-        # MPS: float16 is well-supported and optimized for Apple Silicon
-        return torch.amp.autocast(device_type="mps", dtype=torch.float16)
-    elif device_type == "cuda":
-        # CUDA: prefer bfloat16 if available (better numerical stability)
-        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        return torch.amp.autocast(device_type="cuda", dtype=dtype)
-    else:
-        # CPU: no benefit from AMP
-        return nullcontext()
-
-
-LEGAL_TOURNAMENT_STAGES = [
-    Stage.BATTLEFIELD,
-    Stage.YOSHIS_STORY,
-    Stage.POKEMON_STADIUM,
-    Stage.DREAMLAND,
-    Stage.FINAL_DESTINATION,
-    Stage.FOUNTAIN_OF_DREAMS,
-]
-
-SUPPORTED_CHARS = [Character.FOX]
-
-BOT_PORT = 1
-OPP_PORT = 2
 
 
 # ============================================================================
@@ -423,7 +392,7 @@ def collect_rollout(
     bot_char: Character,
     opp_char: Character,
     action_selection: ActionSelection,
-    use_amp: bool = True,
+    amp_ctx,
 ) -> Rollout:
     """Collect a complete episode rollout.
 
@@ -563,7 +532,9 @@ def collect_rollout(
         device = next(model.parameters()).device
 
         # Forward pass with optional AMP (float16 on MPS for Apple Silicon optimization)
-        with torch.inference_mode(), get_amp_context(device, use_amp):
+        with torch.inference_mode(), autocast(
+            device_type=amp_ctx.device_type, dtype=amp_ctx.dtype, enabled=amp_ctx.enabled
+        ):
             outputs = model(inputs_td)
 
         # Sample or select actions and get log probs
@@ -828,6 +799,7 @@ def compute_ppo_loss_with_gradient_accumulation(
     ppo_config: PPOConfig,
     optimizer: torch.optim.Optimizer,
     seq_len: int,
+    amp_ctx,
 ) -> PPOLossComponents:
     """Compute PPO loss with gradient accumulation across mini-batches.
 
@@ -916,7 +888,9 @@ def compute_ppo_loss_with_gradient_accumulation(
 
         # Forward pass with AMP
         fwd_start = time.perf_counter()
-        with get_amp_context(device, ppo_config.use_amp):
+        with autocast(
+            device_type=amp_ctx.device_type, dtype=amp_ctx.dtype, enabled=amp_ctx.enabled
+        ):
             outputs = model(inputs_td)
         fwd_time = time.perf_counter() - fwd_start
 
@@ -1092,6 +1066,7 @@ def compute_ppo_loss(
     column_map: ColumnMap,
     ppo_config: PPOConfig,
     seq_len: int,
+    amp_ctx,
 ) -> PPOLossComponents:
     """Compute PPO loss for a rollout using mini-batches.
 
@@ -1167,7 +1142,9 @@ def compute_ppo_loss(
         inputs_td = build_model_inputs(features_batch, column_map)
 
         # Forward pass with AMP
-        with get_amp_context(device, ppo_config.use_amp):
+        with autocast(
+            device_type=amp_ctx.device_type, dtype=amp_ctx.dtype, enabled=amp_ctx.enabled
+        ):
             outputs = model(inputs_td)
 
         # Create a mini-rollout for this batch
@@ -1462,10 +1439,11 @@ def main():
         default="stochastic",
         help="Action selection during rollouts: stochastic (policy sampling) or greedy (argmax).",
     )
-    args = parser.parse_args()
+    args, remaining = parser.parse_known_args()
 
-    # Initialize config
-    init_config()
+    # Initialize config with CLI overrides (--set key=value)
+    overrides = parse_cli_overrides(remaining)
+    init_config(overrides=overrides)
     config = get_config()
     ppo_config = PPOConfig()
     seq_len = config.seq_len
@@ -1490,7 +1468,16 @@ def main():
     model = engine.model
     model.train()  # Switch to training mode
 
-    print(f"Model loaded. Device: {next(model.parameters()).device}")
+    device = next(model.parameters()).device
+    print(f"Model loaded. Device: {device}")
+
+    # Configure AMP for mixed precision training
+    # Override config's use_amp with PPO's setting
+    original_use_amp = config.train.use_amp
+    config.train.use_amp = ppo_config.use_amp
+    amp_ctx = configure_amp(config, device)
+    config.train.use_amp = original_use_amp  # Restore
+
     if seq_len > model.block_size:
         raise ValueError(
             f"Sequence length {seq_len} exceeds model.block_size {model.block_size}."
@@ -1580,17 +1567,15 @@ def main():
             bot_char=bot_char,
             opp_char=opp_char,
             action_selection=args.rollout_mode,
-            use_amp=ppo_config.use_amp,
+            amp_ctx=amp_ctx,
         )
         model.train()
 
         episode_count += 1
 
         # Check if episode is long enough for meaningful training
-        # Need at least 64 frames (~1 second) for reasonable gradient estimates
-        min_episode_length = 64
-        if rollout.episode_length < min_episode_length:
-            print(f"Episode {episode_count} too short ({rollout.episode_length} < {min_episode_length} frames), skipping...")
+        if rollout.episode_length < MIN_EPISODE_LENGTH:
+            print(f"Episode {episode_count} too short ({rollout.episode_length} < {MIN_EPISODE_LENGTH} frames), skipping...")
             continue
 
         # ===== 2. COMPUTE ADVANTAGES =====
@@ -1643,6 +1628,7 @@ def main():
                 ppo_config=ppo_config,
                 optimizer=optimizer,
                 seq_len=seq_len,
+                amp_ctx=amp_ctx,
             )
 
             # Gradient clipping

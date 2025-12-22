@@ -2,12 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
-# Optimize Zarr/Blosc decompression for multi-process dataloading
-# Prevents thread oversubscription when using multiple workers
-os.environ["BLOSC_NTHREADS"] = "1"
-
 import argparse
 
 from config import get_config, init_config

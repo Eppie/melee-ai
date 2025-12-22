@@ -11,6 +11,34 @@ from controller_utils import (
     SHOULDER_QUANTIZED,
 )
 
+# Game-specific constants
+try:
+    from libmelee.melee.enums import Character, Stage
+
+    # Legal tournament stages for competitive Melee
+    LEGAL_TOURNAMENT_STAGES = [
+        Stage.BATTLEFIELD,
+        Stage.YOSHIS_STORY,
+        Stage.POKEMON_STADIUM,
+        Stage.DREAMLAND,
+        Stage.FINAL_DESTINATION,
+        Stage.FOUNTAIN_OF_DREAMS,
+    ]
+
+    # Supported characters for training
+    SUPPORTED_CHARS = [Character.FOX]
+except ImportError:
+    # Fallback if libmelee not available
+    LEGAL_TOURNAMENT_STAGES = []
+    SUPPORTED_CHARS = []
+
+# Port assignments
+BOT_PORT = 1  # Port for AI-controlled player
+OPP_PORT = 2  # Port for opponent
+
+# Training constants
+MIN_EPISODE_LENGTH = 64  # Minimum frames (~1 second) for meaningful training
+
 CONTROLLER_KEY_GROUPS = {
     "main": ("main_stick_x", "main_stick_y"),
     "c": ("c_stick_x", "c_stick_y"),

@@ -463,6 +463,18 @@ class Action(Enum):
     LIFT_WALK_1 = 0xAF
     LIFT_WALK_2 = 0xB0
     LIFT_TURN = 0xB1
+    """
+    ┌──────────────────┬───────────────────┬──────────────┐
+    │ is_shield_active │ hex(action_state) │ count_star() │
+    ├──────────────────┼───────────────────┼──────────────┤
+    │ true             │ B2                │ 75473        │
+    │ true             │ B3                │ 102492       │
+    │ false            │ B4                │ 14063        │
+    │ true             │ B5                │ 64927        │
+    │ false            │ B6                │ 3167         │
+    │ true             │ B6                │ 30358        │
+    └──────────────────┴───────────────────┴──────────────┘
+    """
     SHIELD_START = 0xB2  # Shield startup
     SHIELD = 0xB3  # Holding shield
     SHIELD_RELEASE = 0xB4

@@ -3,7 +3,6 @@
 import torch
 import numpy as np
 from train.metrics import MetricsAccumulator, multilabel_prf
-from train.logging import compute_topk_accuracy
 
 
 def test_metrics_accumulator_batched_transfers():
@@ -125,79 +124,12 @@ def test_multilabel_prf_perfect():
     print("✅ multilabel_prf() perfect predictions test passed")
 
 
-def test_compute_topk_accuracy_batched():
-    """Test that compute_topk_accuracy batches accuracy transfers."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Create test data
-    B, L, K = 8, 16, 100
-    logits = torch.randn(B, L, K, device=device)
-    targets = torch.randint(0, K, (B, L), device=device)
-
-    # Make some predictions correct
-    for i in range(B):
-        for j in range(L):
-            if i < 4:  # Make first half correct
-                logits[i, j, targets[i, j]] += 10.0  # Ensure it's top-1
-
-    # Test with multiple k values
-    k_values = [1, 3, 5, 10]
-    results = compute_topk_accuracy(
-        logits=logits, targets=targets, head_name="test", k_values=k_values
-    )
-
-    # Verify we got all k values
-    for k in k_values:
-        key = f"accuracy/test/top{k}"
-        assert key in results, f"Missing {key}"
-        assert isinstance(results[key], float)
-        assert 0.0 <= results[key] <= 1.0
-
-    # Top-1 should be ~0.5 since we made first half correct
-    top1_acc = results["accuracy/test/top1"]
-    assert 0.4 <= top1_acc <= 0.6, f"Expected ~0.5 top-1 accuracy, got {top1_acc}"
-
-    # Top-k should be >= top-1 for all k > 1
-    assert results["accuracy/test/top3"] >= top1_acc
-    assert results["accuracy/test/top5"] >= results["accuracy/test/top3"]
-    assert results["accuracy/test/top10"] >= results["accuracy/test/top5"]
-
-    print("✅ compute_topk_accuracy() test passed")
-
-
-def test_compute_topk_accuracy_edge_cases():
-    """Test edge cases for compute_topk_accuracy."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Small K
-    B, L, K = 2, 4, 3
-    logits = torch.randn(B, L, K, device=device)
-    targets = torch.randint(0, K, (B, L), device=device)
-
-    # Request k > K (should be filtered out)
-    k_values = [1, 2, 3, 5, 10]  # 5 and 10 are > K
-    results = compute_topk_accuracy(
-        logits=logits, targets=targets, head_name="test", k_values=k_values
-    )
-
-    # Should only get results for k <= K
-    assert "accuracy/test/top1" in results
-    assert "accuracy/test/top2" in results
-    assert "accuracy/test/top3" in results
-    assert "accuracy/test/top5" not in results
-    assert "accuracy/test/top10" not in results
-
-    print("✅ compute_topk_accuracy() edge cases test passed")
-
-
 if __name__ == "__main__":
     print("Running async metrics tests...\n")
 
     test_metrics_accumulator_batched_transfers()
     test_multilabel_prf_batched()
     test_multilabel_prf_perfect()
-    test_compute_topk_accuracy_batched()
-    test_compute_topk_accuracy_edge_cases()
 
     print("\n" + "=" * 60)
     print("✅ All async metrics tests passed!")

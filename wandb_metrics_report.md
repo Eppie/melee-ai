@@ -179,7 +179,7 @@ This document details all metrics logged to wandb during `train.py` execution. U
 ### `metrics/acc_main_batch`
 - **Description**: Overall main stick prediction accuracy across full batch
 - **Range**: 0.0-1.0, typically 0.05-0.70
-- **Related metrics**: `metrics/acc_main_change`, `metrics/acc_main_hold`, `accuracy/main_stick/top3`
+- **Related metrics**: `metrics/acc_main_change`, `metrics/acc_main_hold`
 - **Interpretation**:
   - % of frames where predicted stick position exactly matches target
   - Random baseline ≈ 1/64 ≈ 0.016
@@ -247,78 +247,7 @@ This document details all metrics logged to wandb during `train.py` execution. U
 
 ---
 
-## 7. CONFIDENCE & ENTROPY METRICS
-
-Per head: `main_stick`, `c_stick`, `shoulder`
-
-### `confidence/{head}/avg_maxprob`
-- **Description**: Average maximum probability across all predictions
-- **Range**: 0.0-1.0, typically 0.3-0.9
-- **Interpretation**: How confident is the model?
-- **Should increase during training**
-
-### `confidence/{head}/avg_maxprob_correct`
-- **Description**: Average max probability only when prediction is correct
-- **Range**: Should be higher than avg_maxprob
-- **Interpretation**: Model should be more confident when correct (calibration)
-- **Ideal gap**: 0.1-0.3 higher than avg_maxprob
-
-### `entropy/{head}/mean`
-- **Description**: Average Shannon entropy of predictions (in nats)
-- **Range**: 0.0 to ln(num_classes)
-- **Interpretation**: Prediction uncertainty
-- **Should decrease during training**
-- **Too low too quickly**: Possible mode collapse
-
-**Calibration check:**
-- **Low entropy + high accuracy**: Confident and correct ✓
-- **Low entropy + low accuracy**: "Confidently wrong" (poor calibration!)
-
----
-
-## 8. TOP-K ACCURACY
-
-Per head: `main_stick`, `c_stick`, `shoulder`
-
-### `accuracy/{head}/top3`, `accuracy/{head}/top5`
-- **Description**: Fraction where target is in top-K predictions
-- **Interpretation**:
-  - **top5 >> top1**: Model has partial understanding but not precise
-  - **top5 ≈ top1**: Model very confident or very wrong
-- **Utility**: Shows if model is "close" even when not exactly right
-
----
-
-## 9. FREQUENCY STATISTICS (MODE COLLAPSE DETECTION)
-
-Per head for both predictions (`freq`) and targets (`tgt_freq`)
-
-### `freq/{head}/top1_class`, `freq/{head}/top1_prop`
-- **Description**: Most frequent class and its proportion
-- **CRITICAL**: If `top1_prop → 1.0`, model has MODE COLLAPSED!
-- **Compare pred vs target**: Should match; if not, model is biased
-
-### `freq/{head}/diversity`
-- **Description**: Gini-Simpson diversity index (1 - Σp²)
-- **Range**: 0.0-1.0 (higher = more diverse)
-- **CRITICAL**:
-  - **→ 0**: Mode collapse!
-  - **< 0.3**: Very low diversity
-  - **> 0.7**: Good diversity
-- **Compare pred vs target diversity**
-
-**Example red flag:**
-
-```
-freq/main_stick/top1_prop = 0.85  # Bad: 85% neutral
-tgt_freq/main_stick/top1_prop = 0.25  # Data only 25% neutral
-freq/main_stick/diversity = 0.25  # Very low
-# → Model defaulting to neutral (lazy learning!)
-```
-
----
-
-## 10. TEMPORAL CONSISTENCY
+## 7. TEMPORAL CONSISTENCY
 
 Per head: `main_stick`, `c_stick`, `shoulder`, `buttons`
 
@@ -335,7 +264,7 @@ Per head: `main_stick`, `c_stick`, `shoulder`, `buttons`
 
 ---
 
-## 11. IMITATION WEIGHT STATISTICS
+## 8. IMITATION WEIGHT STATISTICS
 
 ### `imitation/weight_mean`, `imitation/weight_std`, `imitation/weight_max/min`, `imitation/weight_p95/p05`
 - Value-based sample weighting statistics
@@ -352,7 +281,7 @@ Per head: `main_stick`, `c_stick`, `shoulder`, `buttons`
 
 ---
 
-## 12. GRADIENT VARIANCE (STABILITY)
+## 9. GRADIENT VARIANCE (STABILITY)
 
 ### `gradients/total_norm_variance`, `gradients/total_norm_std`, `gradients/total_norm_cv`
 - **Description**: Variance/std/CV of gradient norms across last 100 batches
@@ -372,7 +301,7 @@ Per head: `main_stick`, `c_stick`, `shoulder`, `buttons`
 
 ---
 
-## 13. WEIGHT DRIFT
+## 10. WEIGHT DRIFT
 
 ### `params/total_norm`
 - Current parameter L2 norm
@@ -389,7 +318,7 @@ Per head: `main_stick`, `c_stick`, `shoulder`, `buttons`
 
 ---
 
-## 14. LOGIT & BIAS DIAGNOSTICS
+## 11. LOGIT & BIAS DIAGNOSTICS
 
 ### `logits/{head}_mean/std/max/min`
 - Statistics of raw logits (pre-softmax/sigmoid)
@@ -406,7 +335,7 @@ Per head: `main_stick`, `c_stick`, `shoulder`, `buttons`
 
 ---
 
-## 15. PERFORMANCE
+## 12. PERFORMANCE
 
 ### `throughput/frames_per_s`
 - Training throughput
@@ -419,19 +348,6 @@ Per head: `main_stick`, `c_stick`, `shoulder`, `buttons`
 ---
 
 ## CRITICAL MONITORING CHECKLIST
-
-**Mode Collapse Detection:**
-
-```python
-freq/{head}/diversity < 0.5
-freq/{head}/top1_prop > 0.8
-```
-
-**Calibration Check:**
-
-```python
-confidence/{head}/avg_maxprob_correct - confidence/{head}/avg_maxprob < 0.05
-```
 
 **Instability Detection:**
 
@@ -463,17 +379,14 @@ consistency/{head}/change_rate_ratio far from 1.0
 **Most Critical:**
 
 1. `loss/total` and `loss/total_std/cv`
-2. `freq/{head}/diversity` and `freq/{head}/top1_prop` (mode collapse!)
-3. `confidence/{head}/avg_maxprob_correct` (calibration)
-4. `consistency/{head}/change_rate_ratio` (temporal stability)
-5. `gradients/total_norm_cv` and `gradients/nan_count` (optimization health)
-6. `imitation/effective_batch_fraction` (data usage)
-7. `params/total_norm_velocity` (parameter stability)
-8. `loss_fraction/{component}` (head balance)
+2. `consistency/{head}/change_rate_ratio` (temporal stability)
+3. `gradients/total_norm_cv` and `gradients/nan_count` (optimization health)
+4. `imitation/effective_batch_fraction` (data usage)
+5. `params/total_norm_velocity` (parameter stability)
+6. `loss_fraction/{component}` (head balance)
 
 **Primary Accuracy Metrics:**
 - `metrics/acc_main_change` (harder than hold)
 - `metrics/buttons_em_change` (button timing quality)
-- `accuracy/{head}/top5` (partial credit)
 
 *Last updated: Post-implementation of comprehensive metrics suite*

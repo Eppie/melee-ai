@@ -41,12 +41,6 @@ class ColumnMap:
             self.opp_action_idx,
             *self.controller_idxs,
         }
-        # Drop stock features from model inputs; they remain in the dataset but are not consumed
-        stock_cols = [
-            name2idx.get("p1_stock"),
-            name2idx.get("p2_stock"),
-        ]
-        excluded.update(idx for idx in stock_cols if idx is not None)
         if self.value_idx is not None:
             excluded.add(self.value_idx)
         self.gamestate_idxs = [

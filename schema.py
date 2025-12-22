@@ -36,9 +36,8 @@ PLAYER_SPEC = [
     # Geometry
     ("position_x", np.float32),
     ("position_y", np.float32),
-    # Damage/stock & state bits
+    # Damage & state bits
     ("percent", np.int32),
-    ("stock", np.int32),
     ("facing", np.float32),
     ("on_ground", np.float32),
     # Buttons
@@ -121,7 +120,6 @@ def _extract_player_values(player: PlayerState) -> tuple[Any, ...]:
         player.position.x,
         player.position.y,
         int(player.percent),
-        int(player.stock),
         float(player.facing),
         float(player.on_ground),
         float(buttons[_BUTTON_A]),

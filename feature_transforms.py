@@ -27,7 +27,6 @@ _C_PALETTE_NORM = np.sum(C_PALETTE**2, axis=1, keepdims=True)
 _SCALE_FACTORS: Dict[str, float] = {
     "percent": 1 / 100.0,
     "shield_strength": 1.0 / 60.0,
-    "stock": 1 / 4.0,
     "position_x": 1 / 20.0,
     "position_y": 1 / 20.0,
     "jumps_left": 1 / 6.0,
@@ -88,7 +87,6 @@ def apply_feature_transforms(
     - facing: scale by 2.0, offset by -1.0
     - percent: scale by 1/100
     - shield_strength: scale by 1/60
-    - stock: scale by 1/4
     - position_x, position_y: scale by 1/20
     - jumps_left: scale by 1/6
     """

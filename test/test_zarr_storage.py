@@ -37,7 +37,7 @@ def test_process_episode_task_emits_original_and_flipped_perspectives():
 
     name2idx = {name: idx for idx, name in enumerate(orig.feature_names)}
     frame_idx = -1  # inspect final available frame to avoid pre-game padding
-    for base_field in ("percent", "stock", "action"):
+    for base_field in ("percent", "action"):
         p1_key = f"p1_{base_field}"
         p2_key = f"p2_{base_field}"
         orig_p1 = orig.features[frame_idx, name2idx[p1_key]]

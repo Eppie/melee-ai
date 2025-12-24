@@ -5,10 +5,10 @@ Trains a GPT model to play Super Smash Bros. Melee using Proximal Policy Optimiz
 Self-contained single-file implementation with:
 - Single Dolphin emulator instance
 - Fox vs CPU Fox (level 9)
-- Episodes end on stock loss
-- Online learning (train after each episode)
+- Rollouts end on stock change (either player loses a stock)
+- Online learning (train after each stock exchange)
 - 4 PPO epochs per rollout
-- Checkpoint saving every N episodes
+- Checkpoint saving every N rollouts
 """
 
 from __future__ import annotations
@@ -34,7 +34,8 @@ REPO_ROOT = Path(__file__).resolve().parent
 sys.path.append(str(REPO_ROOT))
 
 from column_map import ColumnMap
-from config.config import init_config, get_config
+from config.config import init_config, get_config, init_config_from_checkpoint
+from utils import match_state_dict_keys
 from config.reward_config import RewardConfig
 from constants import (
     LEGAL_TOURNAMENT_STAGES,
@@ -85,7 +86,7 @@ class PPOConfig:
     """PPO-specific hyperparameters."""
 
     # Learning
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-5  # Very low for online RL fine-tuning from imitation
 
     # PPO parameters
     clip_epsilon: float = 0.2  # Clipping range for policy ratio
@@ -99,19 +100,23 @@ class PPOConfig:
     # float16 benefits. The autocast context manager overhead at 60Hz is significant.
     use_amp: bool = False
 
-    # GAE parameters
-    gae_lambda: float = 0.95  # Lambda for GAE
+    # Note: We use simple discounted returns (like slippi-ai), not GAE
 
     # Training stability
     grad_clip: float = 0.5  # Gradient clipping max norm
     normalize_advantages: bool = True  # Normalize advantages
+    max_kl: float = 0.05  # Stop epoch early if mean KL exceeds this threshold
+    clip_value_loss: bool = True  # Clip value function updates (prevents value collapse)
+
+    # Teacher KL penalty (keeps policy close to imitation behavior)
+    kl_teacher_weight: float = 0.1  # Weight for KL(policy || teacher), 0 to disable
 
     # Checkpointing
-    checkpoint_interval: int = 10  # Save checkpoint every N episodes
+    checkpoint_interval: int = 10  # Save checkpoint every N rollouts (stocks)
     checkpoint_dir: Path = Path("checkpoints_ppo")
 
     # Logging
-    log_interval: int = 1  # Log every episode
+    log_interval: int = 1  # Log every rollout (each rollout = one stock taken)
 
 
 # ============================================================================
@@ -155,7 +160,7 @@ class RolloutStep:
 
 @dataclass
 class Rollout:
-    """Complete episode rollout."""
+    """Complete rollout data for one stock exchange (not a full game)."""
 
     steps: List[RolloutStep]
     episode_length: int
@@ -165,6 +170,12 @@ class Rollout:
     # Computed after collection
     advantages: Optional[torch.Tensor] = None
     returns: Optional[torch.Tensor] = None
+
+    # Raw advantage statistics (before normalization)
+    raw_advantage_mean: float = 0.0
+    raw_advantage_std: float = 0.0
+    raw_advantage_min: float = 0.0
+    raw_advantage_max: float = 0.0
 
 
 @dataclass
@@ -195,6 +206,89 @@ class PPOLossComponents:
 
     approx_kl: float
     grad_norm: float
+
+    # Value function diagnostics
+    value_pred_mean: float = 0.0
+    value_pred_std: float = 0.0
+    returns_mean: float = 0.0
+    returns_std: float = 0.0
+    uev: float = 1.0  # Unexplained Variance: value_loss / var(returns), lower is better
+
+    # Raw advantage statistics (before normalization)
+    raw_advantage_mean: float = 0.0
+    raw_advantage_std: float = 0.0
+    raw_advantage_min: float = 0.0
+    raw_advantage_max: float = 0.0
+
+    # Teacher KL penalty (if using teacher model)
+    teacher_kl: float = 0.0
+
+
+@dataclass
+class TrainingStats:
+    """Rolling training statistics across rollouts (each rollout = one stock taken)."""
+
+    episode_returns: deque  # Last N rollout total rewards
+    episode_lengths: deque  # Last N rollout lengths (frames)
+    win_count: int = 0  # Stocks taken by bot
+    loss_count: int = 0  # Stocks lost by bot
+    kl_history: deque = None  # Last N KL values
+
+    def __post_init__(self):
+        if self.kl_history is None:
+            self.kl_history = deque(maxlen=100)
+
+    @classmethod
+    def create(cls, window_size: int = 100) -> "TrainingStats":
+        """Create new TrainingStats with given window size."""
+        return cls(
+            episode_returns=deque(maxlen=window_size),
+            episode_lengths=deque(maxlen=window_size),
+            win_count=0,
+            loss_count=0,
+            kl_history=deque(maxlen=window_size),
+        )
+
+    def update(self, rollout: "Rollout", loss_components: "PPOLossComponents", bot_port: int):
+        """Update stats with results from an episode."""
+        self.episode_returns.append(rollout.total_reward)
+        self.episode_lengths.append(rollout.episode_length)
+        if rollout.winner == bot_port:
+            self.win_count += 1
+        else:
+            self.loss_count += 1
+        self.kl_history.append(loss_components.approx_kl)
+
+    @property
+    def win_rate(self) -> float:
+        """Win rate as a fraction [0, 1]."""
+        total = self.win_count + self.loss_count
+        return self.win_count / total if total > 0 else 0.0
+
+    @property
+    def avg_return(self) -> float:
+        """Average return over recent episodes."""
+        return sum(self.episode_returns) / len(self.episode_returns) if self.episode_returns else 0.0
+
+    @property
+    def avg_length(self) -> float:
+        """Average episode length over recent episodes."""
+        return sum(self.episode_lengths) / len(self.episode_lengths) if self.episode_lengths else 0.0
+
+    @property
+    def avg_kl(self) -> float:
+        """Average KL over recent episodes."""
+        return sum(self.kl_history) / len(self.kl_history) if self.kl_history else 0.0
+
+    def summary(self) -> str:
+        """One-line summary of training progress."""
+        total_stocks = self.win_count + self.loss_count
+        return (
+            f"Stocks Taken: {self.win_rate:.1%} ({self.win_count}/{total_stocks}) | "
+            f"Avg Return: {self.avg_return:+.2f} | "
+            f"Avg Length: {self.avg_length:.0f} frames | "
+            f"Avg KL: {self.avg_kl:.4f}"
+        )
 
 
 # ============================================================================
@@ -394,7 +488,7 @@ def collect_rollout(
     action_selection: ActionSelection,
     amp_ctx,
 ) -> Rollout:
-    """Collect a complete episode rollout.
+    """Collect a complete rollout (one stock exchange).
 
     Args:
         console: Dolphin console
@@ -524,7 +618,7 @@ def collect_rollout(
             apply_model_outputs_to_game(controllers[BOT_PORT], controller_state)
 
             if done:
-                # Episode ended during warmup (very rare)
+                # Rollout ended during warmup (very rare)
                 break
             continue
 
@@ -560,7 +654,7 @@ def collect_rollout(
     # Now compute rewards and transfer to CPU
     warmup = engine.warmup_frames
     total_frames = frame_count
-    print(f"\n[Episode ended] Total: {total_frames} frames ({warmup} warmup + {len(steps)} collected)")
+    print(f"\n[Rollout ended] Total: {total_frames} frames ({warmup} warmup + {len(steps)} collected)")
     print("[Post-process] Computing rewards...")
     post_start = time.perf_counter()
     device = next(model.parameters()).device
@@ -612,50 +706,75 @@ def collect_rollout(
 
 
 # ============================================================================
-# Advantage Computation (GAE)
+# Advantage Computation (Simple Discounted Returns)
 # ============================================================================
 
-def compute_gae_advantages(
+@dataclass
+class AdvantageResult:
+    """Result of advantage computation with diagnostics."""
+    advantages: torch.Tensor  # [L] normalized advantages for policy gradient
+    returns: torch.Tensor  # [L] returns for value training
+    raw_advantage_mean: float
+    raw_advantage_std: float
+    raw_advantage_min: float
+    raw_advantage_max: float
+
+
+def compute_advantages(
     rewards: torch.Tensor,
     values: torch.Tensor,
     gamma: float,
-    gae_lambda: float,
     normalize: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute Generalized Advantage Estimation (GAE) advantages and returns.
+) -> AdvantageResult:
+    """Compute discounted returns and advantages (slippi-ai approach).
+
+    Uses simple discounted returns with bootstrapping:
+      Return[t] = reward[t] + gamma * Return[t+1]
+      Advantage[t] = Return[t] - Value[t]
+
+    This is simpler and more stable than GAE.
 
     Args:
         rewards: [L] per-frame rewards
         values: [L] value predictions
         gamma: Discount factor
-        gae_lambda: GAE lambda parameter
         normalize: Whether to normalize advantages
 
     Returns:
-        Tuple of (advantages [L], returns [L])
+        AdvantageResult with advantages, returns, and raw advantage statistics
     """
     L = len(rewards)
-    advantages = torch.zeros(L, device=rewards.device)
+    device = rewards.device
 
-    # Compute TD errors: δ_t = r_t + γV(s_{t+1}) - V(s_t)
-    deltas = torch.zeros(L, device=rewards.device)
-    deltas[:-1] = rewards[:-1] + gamma * values[1:] - values[:-1]
-    deltas[-1] = rewards[-1] - values[-1]  # Terminal state
-
-    # Compute GAE: A_t = Σ_{i=0}^{∞} (γλ)^i δ_{t+i}
-    gae = 0.0
+    # Compute discounted returns (backward pass)
+    # Terminal state has no bootstrap value (episode ends on stock loss)
+    returns = torch.zeros(L, device=device, dtype=rewards.dtype)
+    running_return = 0.0
     for t in reversed(range(L)):
-        gae = deltas[t] + gamma * gae_lambda * gae
-        advantages[t] = gae
+        running_return = rewards[t].item() + gamma * running_return
+        returns[t] = running_return
 
-    # Compute returns: R_t = A_t + V(s_t)
-    returns = advantages + values
+    # Advantages = Returns - Values (simple TD advantage)
+    advantages = returns - values
+
+    # Store raw advantage statistics before normalization
+    raw_advantage_mean = advantages.mean().item()
+    raw_advantage_std = advantages.std().item()
+    raw_advantage_min = advantages.min().item()
+    raw_advantage_max = advantages.max().item()
 
     # Normalize advantages (critical for stability)
     if normalize:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-    return advantages, returns
+    return AdvantageResult(
+        advantages=advantages,
+        returns=returns,
+        raw_advantage_mean=raw_advantage_mean,
+        raw_advantage_std=raw_advantage_std,
+        raw_advantage_min=raw_advantage_min,
+        raw_advantage_max=raw_advantage_max,
+    )
 
 
 def compute_transition_reward(
@@ -800,6 +919,7 @@ def compute_ppo_loss_with_gradient_accumulation(
     optimizer: torch.optim.Optimizer,
     seq_len: int,
     amp_ctx,
+    teacher_model: Optional[GPT] = None,
 ) -> PPOLossComponents:
     """Compute PPO loss with gradient accumulation across mini-batches.
 
@@ -813,6 +933,7 @@ def compute_ppo_loss_with_gradient_accumulation(
         ppo_config: PPO configuration
         optimizer: Optimizer used for updates
         seq_len: Sequence length for training windows
+        teacher_model: Optional frozen teacher model for KL penalty
     """
     device = next(model.parameters()).device
     L = len(rollout.steps)
@@ -823,7 +944,7 @@ def compute_ppo_loss_with_gradient_accumulation(
     # This requires (i - seq_len + 1) >= 0, i.e., i >= seq_len - 1
     first_valid_idx = seq_len - 1
     if first_valid_idx >= L:
-        print(f"    [Warning] Episode too short for training: {L} steps < {seq_len} seq_len")
+        print(f"    [Warning] Rollout too short for training: {L} steps < {seq_len} seq_len")
         # Return dummy loss components
         return PPOLossComponents(
             total_loss=torch.tensor(0.0),
@@ -854,6 +975,13 @@ def compute_ppo_loss_with_gradient_accumulation(
     total_entropy = {"main": 0.0, "c": 0.0, "buttons": 0.0, "shoulder": 0.0}
     total_clip_fracs = {"main": 0.0, "c": 0.0, "buttons": 0.0, "shoulder": 0.0}
     total_kl = 0.0
+    total_teacher_kl = 0.0
+    # Value function diagnostics
+    total_value_pred_mean = 0.0
+    total_value_pred_std = 0.0
+    total_returns_mean = 0.0
+    total_returns_std = 0.0
+    total_uev = 0.0
 
     # ===== PRE-COMPUTE ALL FEATURES ONCE =====
     precompute_start = time.perf_counter()
@@ -892,6 +1020,14 @@ def compute_ppo_loss_with_gradient_accumulation(
             device_type=amp_ctx.device_type, dtype=amp_ctx.dtype, enabled=amp_ctx.enabled
         ):
             outputs = model(inputs_td)
+
+        # Teacher forward pass (if using teacher model)
+        teacher_outputs = None
+        if teacher_model is not None:
+            with torch.no_grad(), autocast(
+                device_type=amp_ctx.device_type, dtype=amp_ctx.dtype, enabled=amp_ctx.enabled
+            ):
+                teacher_outputs = teacher_model(inputs_td)
         fwd_time = time.perf_counter() - fwd_start
 
         # Gather steps, advantages, returns for this batch (using shuffled indices)
@@ -912,7 +1048,7 @@ def compute_ppo_loss_with_gradient_accumulation(
         # Compute losses for this batch
         loss_start = time.perf_counter()
         batch_loss_components = _compute_batch_loss(
-            outputs, mini_rollout, device, ppo_config
+            outputs, mini_rollout, device, ppo_config, teacher_outputs
         )
         loss_time = time.perf_counter() - loss_start
 
@@ -931,6 +1067,13 @@ def compute_ppo_loss_with_gradient_accumulation(
         for key in total_clip_fracs:
             total_clip_fracs[key] += batch_loss_components["clip_fracs"][key] * batch_len
         total_kl += batch_loss_components["kl"] * batch_len
+        total_teacher_kl += batch_loss_components["teacher_kl"] * batch_len
+        # Value diagnostics
+        total_value_pred_mean += batch_loss_components["value_pred_mean"] * batch_len
+        total_value_pred_std += batch_loss_components["value_pred_std"] * batch_len
+        total_returns_mean += batch_loss_components["returns_mean"] * batch_len
+        total_returns_std += batch_loss_components["returns_std"] * batch_len
+        total_uev += batch_loss_components["uev"] * batch_len
 
         batch_total = time.perf_counter() - batch_start
         print(f"      Batch {batch_idx+1}/{num_batches}: "
@@ -952,6 +1095,13 @@ def compute_ppo_loss_with_gradient_accumulation(
     for key in total_clip_fracs:
         total_clip_fracs[key] /= num_valid
     total_kl /= num_valid
+    total_teacher_kl /= num_valid
+    # Value diagnostics
+    total_value_pred_mean /= num_valid
+    total_value_pred_std /= num_valid
+    total_returns_mean /= num_valid
+    total_returns_std /= num_valid
+    total_uev /= num_valid
 
     # Return components (as scalars/floats for logging)
     total_policy_loss = sum(total_policy_losses.values())
@@ -977,6 +1127,14 @@ def compute_ppo_loss_with_gradient_accumulation(
         shoulder_clip_frac=total_clip_fracs["shoulder"],
         approx_kl=total_kl,
         grad_norm=0.0,
+        # Value function diagnostics
+        value_pred_mean=total_value_pred_mean,
+        value_pred_std=total_value_pred_std,
+        returns_mean=total_returns_mean,
+        returns_std=total_returns_std,
+        uev=total_uev,
+        # Teacher KL
+        teacher_kl=total_teacher_kl,
     )
 
 
@@ -985,8 +1143,17 @@ def _compute_batch_loss(
     mini_rollout: Rollout,
     device: torch.device,
     ppo_config: PPOConfig,
+    teacher_outputs: Optional[TensorDict] = None,
 ) -> dict:
-    """Compute loss for a single mini-batch."""
+    """Compute loss for a single mini-batch.
+
+    Args:
+        outputs: Model outputs for current policy
+        mini_rollout: Mini-batch rollout with actions and advantages
+        device: Computation device
+        ppo_config: PPO configuration
+        teacher_outputs: Optional outputs from frozen teacher model for KL penalty
+    """
     # Compute new log probabilities
     new_log_probs = compute_log_probs_for_actions(outputs, mini_rollout, device)
 
@@ -1031,32 +1198,84 @@ def _compute_batch_loss(
     policy_losses["buttons"] = -torch.min(button_surr1, button_surr2).mean()
     clip_fracs["buttons"] = (torch.abs(button_ratio - 1.0) > ppo_config.clip_epsilon).float().mean().item()
 
-    # Value loss
+    # Value loss (with optional clipping)
     value_preds = outputs["value"][:, -1, 0]
     value_targets = mini_rollout.returns.to(device)
-    value_loss = ((value_preds - value_targets) ** 2).mean()
+
+    if ppo_config.clip_value_loss:
+        # Extract old value predictions from rollout
+        old_values = torch.tensor(
+            [s.value_pred for s in mini_rollout.steps], device=device, dtype=value_preds.dtype
+        )
+        # Clip value predictions to be within clip_epsilon of old values
+        value_pred_clipped = old_values + torch.clamp(
+            value_preds - old_values,
+            -ppo_config.clip_epsilon,
+            ppo_config.clip_epsilon,
+        )
+        # Use max of clipped and unclipped losses (pessimistic)
+        value_losses = (value_preds - value_targets) ** 2
+        value_losses_clipped = (value_pred_clipped - value_targets) ** 2
+        value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+    else:
+        value_loss = ((value_preds - value_targets) ** 2).mean()
+
+    # Value function diagnostics
+    value_pred_mean = value_preds.mean().item()
+    value_pred_std = value_preds.std().item()
+    returns_mean = value_targets.mean().item()
+    returns_std = value_targets.std().item()
+    # UEV = value_loss / variance(returns), lower is better (0 = perfect, 1 = predicting mean)
+    returns_var = value_targets.var().item() + 1e-8
+    uev = value_loss.item() / returns_var
 
     # Entropy
     entropies = compute_policy_entropy(outputs)
 
-    # KL divergence
-    kl = 0.5 * sum(
-        ((new_log_probs[k] - old_log_probs[k]) ** 2).mean().item()
-        for k in ["main", "c", "shoulder"]
-    ) + 0.5 * ((new_log_probs["buttons"] - old_log_probs["buttons"]) ** 2).mean().item()
+    # KL divergence (improved approximation using Schulman's formula)
+    kl = 0.0
+    for k in ["main", "c", "shoulder"]:
+        log_ratio = new_log_probs[k] - old_log_probs[k]
+        ratio = torch.exp(log_ratio)
+        kl += ((ratio - 1) - log_ratio).mean().item()  # More accurate KL approx
+    # Buttons
+    log_ratio_btn = new_log_probs["buttons"] - old_log_probs["buttons"]
+    ratio_btn = torch.exp(log_ratio_btn)
+    kl += ((ratio_btn - 1) - log_ratio_btn).mean().item()
+
+    # Teacher KL penalty (if using teacher model)
+    teacher_kl = 0.0
+    if teacher_outputs is not None:
+        teacher_log_probs = compute_log_probs_for_actions(teacher_outputs, mini_rollout, device)
+        for k in ["main", "c", "shoulder"]:
+            # Forward KL: KL(policy || teacher) = E_policy[log(policy) - log(teacher)]
+            teacher_kl += (new_log_probs[k] - teacher_log_probs[k]).mean().item()
+        teacher_kl += (new_log_probs["buttons"] - teacher_log_probs["buttons"]).mean().item()
 
     # Total loss
     total_policy_loss = sum(policy_losses.values())
     total_entropy = sum(entropies.values())
-    total_loss = total_policy_loss + ppo_config.value_coef * value_loss - ppo_config.entropy_coef * total_entropy
+    total_loss = (
+        total_policy_loss
+        + ppo_config.value_coef * value_loss
+        - ppo_config.entropy_coef * total_entropy
+        + ppo_config.kl_teacher_weight * teacher_kl
+    )
 
     return {
         "total_loss": total_loss,
+        "teacher_kl": teacher_kl,
         "policy_losses": policy_losses,
         "value_loss": value_loss,
         "entropies": entropies,
         "clip_fracs": clip_fracs,
         "kl": kl,
+        # Value diagnostics
+        "value_pred_mean": value_pred_mean,
+        "value_pred_std": value_pred_std,
+        "returns_mean": returns_mean,
+        "returns_std": returns_std,
+        "uev": uev,
     }
 
 
@@ -1088,7 +1307,7 @@ def compute_ppo_loss(
 
     first_valid_idx = seq_len - 1
     if first_valid_idx >= L:
-        print(f"    [Warning] Episode too short for training: {L} steps < {seq_len} seq_len")
+        print(f"    [Warning] Rollout too short for training: {L} steps < {seq_len} seq_len")
         return PPOLossComponents(
             total_loss=torch.tensor(0.0, device=device),
             policy_loss=torch.tensor(0.0, device=device),
@@ -1216,10 +1435,27 @@ def compute_ppo_loss(
         clip_frac = (torch.abs(button_ratio - 1.0) > ppo_config.clip_epsilon).float().mean()
         accumulated_clip_fracs["buttons"].append(clip_frac * batch_len)
 
-        # ===== VALUE LOSS =====
+        # ===== VALUE LOSS (with optional clipping) =====
         value_preds = outputs["value"][:, -1, 0]
         value_targets = mini_rollout.returns.to(device)
-        value_loss = ((value_preds - value_targets) ** 2).mean()
+
+        if ppo_config.clip_value_loss:
+            # Extract old value predictions from rollout
+            old_values = torch.tensor(
+                [s.value_pred for s in batch_steps], device=device, dtype=value_preds.dtype
+            )
+            # Clip value predictions to be within clip_epsilon of old values
+            value_pred_clipped = old_values + torch.clamp(
+                value_preds - old_values,
+                -ppo_config.clip_epsilon,
+                ppo_config.clip_epsilon,
+            )
+            # Use max of clipped and unclipped losses (pessimistic)
+            value_losses = (value_preds - value_targets) ** 2
+            value_losses_clipped = (value_pred_clipped - value_targets) ** 2
+            value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+        else:
+            value_loss = ((value_preds - value_targets) ** 2).mean()
         accumulated_value_losses.append(value_loss * batch_len)
 
         # ===== ENTROPY =====
@@ -1317,15 +1553,16 @@ def print_ppo_metrics(
     """Print detailed PPO training metrics.
 
     Args:
-        episode_count: Current episode number
-        rollout: Episode rollout
+        episode_count: Current rollout number (each rollout = one stock taken)
+        rollout: Rollout data (one stock exchange)
         loss_components: Loss components from training
     """
-    winner_str = f"Bot (P{BOT_PORT})" if rollout.winner == BOT_PORT else f"CPU (P{OPP_PORT})"
+    # Each "rollout" ends when a stock is taken (by either player)
+    stock_taker = "Bot" if rollout.winner == BOT_PORT else "CPU"
 
     print(f"\n{'='*80}")
-    print(f"Episode {episode_count:04d} | Length: {rollout.episode_length:3d} frames | "
-          f"Reward: {rollout.total_reward:+7.2f} | Winner: {winner_str}")
+    print(f"Rollout {episode_count:04d} | Length: {rollout.episode_length:3d} frames | "
+          f"Reward: {rollout.total_reward:+7.2f} | Stock taken by: {stock_taker}")
     print(f"{'='*80}")
 
     # Loss components
@@ -1365,6 +1602,18 @@ def print_ppo_metrics(
           f"Total: {disc_total:+.4f} | Mean: {disc_mean:+.6f} | "
           f"Min/Max: {disc_min:+.4f}/{disc_max:+.4f}")
 
+    # Value function diagnostics
+    print(f"Value Function:")
+    print(f"  Predictions: mean={loss_components.value_pred_mean:+.4f}, std={loss_components.value_pred_std:.4f}")
+    print(f"  Returns:     mean={loss_components.returns_mean:+.4f}, std={loss_components.returns_std:.4f}")
+    uev_quality = "good" if loss_components.uev < 0.5 else "ok" if loss_components.uev < 1.0 else "poor"
+    print(f"  UEV:         {loss_components.uev:.4f} ({uev_quality}, lower is better)")
+
+    # Raw advantage statistics
+    print(f"Advantages (raw, before normalization):")
+    print(f"  Mean: {rollout.raw_advantage_mean:+.4f}, Std: {rollout.raw_advantage_std:.4f}")
+    print(f"  Min/Max: {rollout.raw_advantage_min:+.4f}/{rollout.raw_advantage_max:+.4f}")
+
     # Diagnostics
     print(f"Diagnostics:")
     print(f"  Clip Fractions: main={loss_components.main_clip_frac:.3f}, "
@@ -1373,8 +1622,103 @@ def print_ppo_metrics(
           f"shoulder={loss_components.shoulder_clip_frac:.3f}")
     print(f"  Approx KL:      {loss_components.approx_kl:.6f}")
     print(f"  Grad Norm:      {loss_components.grad_norm:.4f}")
+    if loss_components.teacher_kl != 0.0:
+        print(f"  Teacher KL:     {loss_components.teacher_kl:+.6f}")
 
     print(f"{'='*80}\n")
+
+
+# Button names for diagnostics
+BUTTON_NAMES = ["A", "B", "X/Y", "Z", "L/R"]
+
+
+def print_action_diagnostics(rollout: Rollout):
+    """Print detailed action diagnostics for a rollout (one stock exchange).
+
+    Shows:
+    - Button press statistics (count and percentage for each button)
+    - Shoulder value distribution (percentage for each of 5 values)
+    - Top 4 stick positions for main and c stick (in [0,1] domain)
+
+    Args:
+        rollout: Rollout data (one stock exchange) containing steps with action_info
+    """
+    if not rollout.steps:
+        return
+
+    n_frames = len(rollout.steps)
+
+    # ===== BUTTON STATISTICS =====
+    button_counts = [0] * 5
+    for step in rollout.steps:
+        buttons = step.action_info.buttons
+        for i in range(5):
+            if buttons[i].item() > 0.5:
+                button_counts[i] += 1
+
+    print("Action Diagnostics:")
+    print("  Buttons:")
+    for i, name in enumerate(BUTTON_NAMES):
+        count = button_counts[i]
+        pct = 100.0 * count / n_frames if n_frames > 0 else 0.0
+        print(f"    {name:4s}: {count:4d} frames ({pct:5.1f}%)")
+
+    # ===== SHOULDER STATISTICS =====
+    shoulder_counts = [0] * 5  # 5 discrete values
+    for step in rollout.steps:
+        idx = step.action_info.shoulder_idx
+        if 0 <= idx < 5:
+            shoulder_counts[idx] += 1
+
+    print("  Shoulder:")
+    shoulder_values = [0.0, 0.31, 0.42, 0.55, 1.0]
+    for i, val in enumerate(shoulder_values):
+        count = shoulder_counts[i]
+        pct = 100.0 * count / n_frames if n_frames > 0 else 0.0
+        print(f"    {val:.2f}: {count:4d} frames ({pct:5.1f}%)")
+
+    # ===== MAIN STICK STATISTICS =====
+    from collections import Counter
+    main_stick_counts = Counter()
+    for step in rollout.steps:
+        idx = step.action_info.main_stick_idx
+        main_stick_counts[idx] += 1
+
+    # Get top 4 positions
+    top_main = main_stick_counts.most_common(4)
+    print("  Main Stick (top 4):")
+    for idx, count in top_main:
+        pct = 100.0 * count / n_frames if n_frames > 0 else 0.0
+        # Get stick position in [-1, 1] then convert to [0, 1]
+        if idx < len(CONTROL_STICK_QUANTIZED):
+            x, y = CONTROL_STICK_QUANTIZED[idx]
+            x_01 = (x + 1.0) / 2.0
+            y_01 = (y + 1.0) / 2.0
+            print(f"    idx {idx:2d}: ({x_01:.2f}, {y_01:.2f}) - {count:4d} frames ({pct:5.1f}%)")
+        else:
+            print(f"    idx {idx:2d}: (unknown) - {count:4d} frames ({pct:5.1f}%)")
+
+    # ===== C STICK STATISTICS =====
+    c_stick_counts = Counter()
+    for step in rollout.steps:
+        idx = step.action_info.c_stick_idx
+        c_stick_counts[idx] += 1
+
+    # Get top 4 positions
+    top_c = c_stick_counts.most_common(4)
+    print("  C Stick (top 4):")
+    for idx, count in top_c:
+        pct = 100.0 * count / n_frames if n_frames > 0 else 0.0
+        # Get stick position in [-1, 1] then convert to [0, 1]
+        if idx < len(C_STICK_QUANTIZED):
+            x, y = C_STICK_QUANTIZED[idx]
+            x_01 = (x + 1.0) / 2.0
+            y_01 = (y + 1.0) / 2.0
+            print(f"    idx {idx:2d}: ({x_01:.2f}, {y_01:.2f}) - {count:4d} frames ({pct:5.1f}%)")
+        else:
+            print(f"    idx {idx:2d}: (unknown) - {count:4d} frames ({pct:5.1f}%)")
+
+    print()
 
 
 def save_ppo_checkpoint(
@@ -1441,18 +1785,7 @@ def main():
     )
     args, remaining = parser.parse_known_args()
 
-    # Initialize config with CLI overrides (--set key=value)
-    overrides = parse_cli_overrides(remaining)
-    init_config(overrides=overrides)
-    config = get_config()
-    ppo_config = PPOConfig()
-    seq_len = config.seq_len
-    if seq_len != 256:
-        raise ValueError(
-            f"Expected config.seq_len=256 for PPO, got {seq_len}."
-        )
-
-    # Load model from checkpoint
+    # Determine checkpoint path first (needed for config loading)
     checkpoint_path = args.checkpoint
     if checkpoint_path is None:
         default_dir = Path("checkpoints")
@@ -1463,6 +1796,35 @@ def main():
             )
         checkpoint_path = latest
 
+    # Initialize config FROM CHECKPOINT (important: uses same reward config as training)
+    overrides = parse_cli_overrides(remaining)
+    init_config_from_checkpoint(checkpoint_path, overrides=overrides)
+    config = get_config()
+
+    # Print full reward configuration
+    rc = config.reward
+    print("\n" + "=" * 60)
+    print("REWARD CONFIGURATION (from checkpoint)")
+    print("=" * 60)
+    print(f"  gamma:                  {rc.gamma}")
+    print(f"  reward_damage_dealt:    {rc.reward_damage_dealt}")
+    print(f"  reward_stock_taken:     {rc.reward_stock_taken}")
+    print(f"  reward_hitlag_opponent: {rc.reward_hitlag_opponent}")
+    print(f"  reward_low_shield:      {rc.reward_low_shield}")
+    print(f"  reward_hitstun_min_frames:  {rc.reward_hitstun_min_frames}")
+    print(f"  reward_hitstun_peak_frames: {rc.reward_hitstun_peak_frames}")
+    print(f"  reward_hitstun_max_frames:  {rc.reward_hitstun_max_frames}")
+    print(f"  reward_hitstun_peak_value:  {rc.reward_hitstun_peak_value}")
+    print("=" * 60 + "\n")
+
+    ppo_config = PPOConfig()
+    seq_len = config.seq_len
+    if seq_len != 256:
+        raise ValueError(
+            f"Expected config.seq_len=256 for PPO, got {seq_len}."
+        )
+
+    # Load model from checkpoint
     print(f"Loading model from: {checkpoint_path}")
     engine = GPTInferenceEngine(checkpoint_path=checkpoint_path)
     model = engine.model
@@ -1470,6 +1832,24 @@ def main():
 
     device = next(model.parameters()).device
     print(f"Model loaded. Device: {device}")
+
+    # Load frozen teacher model for KL penalty (if enabled)
+    teacher_model: Optional[GPT] = None
+    if ppo_config.kl_teacher_weight > 0:
+        print(f"Loading frozen teacher model for KL penalty (weight={ppo_config.kl_teacher_weight})...")
+        # Create a new model instance with the same config
+        teacher_model = GPT(config)
+        # Load the same checkpoint weights (handle torch.compile prefix mismatch)
+        checkpoint_data = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        model_state = checkpoint_data.get("model", checkpoint_data)
+        model_state = match_state_dict_keys(model_state, teacher_model)
+        teacher_model.load_state_dict(model_state)
+        teacher_model.to(device)
+        teacher_model.eval()  # Always in eval mode
+        # Freeze all parameters
+        for param in teacher_model.parameters():
+            param.requires_grad = False
+        print("Teacher model loaded and frozen.")
 
     # Configure AMP for mixed precision training
     # Override config's use_amp with PPO's setting
@@ -1543,6 +1923,7 @@ def main():
 
     # Training loop
     episode_count = 0
+    training_stats = TrainingStats.create(window_size=100)
 
     # Random stage and characters
     current_stage = random.choice(LEGAL_TOURNAMENT_STAGES)
@@ -1575,11 +1956,11 @@ def main():
 
         # Check if episode is long enough for meaningful training
         if rollout.episode_length < MIN_EPISODE_LENGTH:
-            print(f"Episode {episode_count} too short ({rollout.episode_length} < {MIN_EPISODE_LENGTH} frames), skipping...")
+            print(f"Rollout {episode_count} too short ({rollout.episode_length} < {MIN_EPISODE_LENGTH} frames), skipping...")
             continue
 
         # ===== 2. COMPUTE ADVANTAGES =====
-        print(f"[GAE] Computing advantages for {rollout.episode_length} frames...")
+        print(f"[Advantages] Computing for {rollout.episode_length} frames...")
         gae_start = time.perf_counter()
 
         rewards = torch.tensor(
@@ -1589,18 +1970,23 @@ def main():
             [s.value_pred for s in rollout.steps], dtype=torch.float32
         )
 
-        advantages, returns = compute_gae_advantages(
+        adv_result = compute_advantages(
             rewards=rewards,
             values=values,
             gamma=config.reward.gamma,
-            gae_lambda=ppo_config.gae_lambda,
             normalize=ppo_config.normalize_advantages,
         )
 
-        rollout.advantages = advantages
-        rollout.returns = returns
-        gae_elapsed = time.perf_counter() - gae_start
-        print(f"[GAE] Done in {gae_elapsed:.2f}s")
+        rollout.advantages = adv_result.advantages
+        rollout.returns = adv_result.returns
+        rollout.raw_advantage_mean = adv_result.raw_advantage_mean
+        rollout.raw_advantage_std = adv_result.raw_advantage_std
+        rollout.raw_advantage_min = adv_result.raw_advantage_min
+        rollout.raw_advantage_max = adv_result.raw_advantage_max
+        adv_elapsed = time.perf_counter() - gae_start
+        print(f"[Advantages] Done in {adv_elapsed:.2f}s "
+              f"(raw: mean={adv_result.raw_advantage_mean:+.4f}, "
+              f"std={adv_result.raw_advantage_std:.4f})")
 
         # ===== 3. PPO TRAINING (K epochs) =====
         first_valid_idx = seq_len - 1
@@ -1629,6 +2015,7 @@ def main():
                 optimizer=optimizer,
                 seq_len=seq_len,
                 amp_ctx=amp_ctx,
+                teacher_model=teacher_model,
             )
 
             # Gradient clipping
@@ -1645,14 +2032,27 @@ def main():
                   f"loss={loss_components.total_loss.item():.4f}, "
                   f"policy={loss_components.policy_loss.item():.4f}, "
                   f"value={loss_components.value_loss.item():.4f}, "
+                  f"kl={loss_components.approx_kl:.4f}, "
                   f"time={epoch_elapsed:.2f}s")
 
+            # KL-based early stopping
+            if loss_components.approx_kl > ppo_config.max_kl:
+                print(f"  [Early Stop] KL {loss_components.approx_kl:.4f} > max_kl {ppo_config.max_kl}")
+                break
+
         train_elapsed = time.perf_counter() - train_start
-        print(f"[Training] Complete in {train_elapsed:.2f}s")
+        epochs_completed = epoch + 1
+        print(f"[Training] Complete in {train_elapsed:.2f}s ({epochs_completed}/{ppo_config.num_epochs} epochs)")
 
         # ===== 4. LOGGING =====
+        if loss_components is not None:
+            training_stats.update(rollout, loss_components, BOT_PORT)
+
         if episode_count % ppo_config.log_interval == 0 and loss_components is not None:
             print_ppo_metrics(episode_count, rollout, loss_components)
+            print_action_diagnostics(rollout)
+            print(f"Training Progress: {training_stats.summary()}")
+            print()
 
         # ===== MEMORY CLEANUP =====
         # Note: Don't call torch.mps.empty_cache() here - it's expensive and

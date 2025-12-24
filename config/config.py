@@ -332,6 +332,37 @@ def init_config_from_checkpoint(
         )
         config_dict = {"train": config_dict}
 
+    # Filter out unknown fields from sub-configs (handles legacy checkpoints with removed fields)
+    def filter_known_fields(data: dict, model_class) -> dict:
+        """Keep only fields that exist in the model class."""
+        if not isinstance(data, dict):
+            return data
+        known_fields = set(model_class.model_fields.keys())
+        filtered = {k: v for k, v in data.items() if k in known_fields}
+        removed = set(data.keys()) - known_fields
+        if removed:
+            from loguru import logger
+            logger.warning(f"Ignoring unknown fields in {model_class.__name__}: {removed}")
+        return filtered
+
+    # Filter each sub-config
+    if "train" in config_dict and isinstance(config_dict["train"], dict):
+        config_dict["train"] = filter_known_fields(config_dict["train"], TrainConfig)
+    if "model" in config_dict and isinstance(config_dict["model"], dict):
+        config_dict["model"] = filter_known_fields(config_dict["model"], GPTConfig)
+    if "zarr" in config_dict and isinstance(config_dict["zarr"], dict):
+        config_dict["zarr"] = filter_known_fields(config_dict["zarr"], ZarrConfig)
+    if "reward" in config_dict and isinstance(config_dict["reward"], dict):
+        config_dict["reward"] = filter_known_fields(config_dict["reward"], RewardConfig)
+    if "rl" in config_dict and isinstance(config_dict["rl"], dict):
+        config_dict["rl"] = filter_known_fields(config_dict["rl"], RLConfig)
+    if "loss_weights" in config_dict and isinstance(config_dict["loss_weights"], dict):
+        config_dict["loss_weights"] = filter_known_fields(config_dict["loss_weights"], LossConfig)
+    if "features" in config_dict and isinstance(config_dict["features"], dict):
+        config_dict["features"] = filter_known_fields(config_dict["features"], FeatureConfig)
+    if "imitation" in config_dict and isinstance(config_dict["imitation"], dict):
+        config_dict["imitation"] = filter_known_fields(config_dict["imitation"], ImitationConfig)
+
     cfg = Config.model_validate(config_dict)
 
     if overrides:

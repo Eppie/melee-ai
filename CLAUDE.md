@@ -176,3 +176,9 @@ Analysis and utilities:
 - Tests in `test/test_*.py`, use `test/test.slp` for replay fixtures
 - Run `pytest -q` before pushing
 - Add regression tests when changing quantization tables or loss math
+
+## Common Pitfalls
+
+- **Config attribute names**: The main `Config` class uses `config.model` for GPTConfig, not `config.gpt`. Always verify attribute names by reading the config class definition.
+- **Constructor signatures**: Check what type a class constructor expects. For example, `GPT(config)` expects the full `Config` object, not a sub-config like `GPTConfig`. The class internally accesses `config.model`.
+- **Nested config access**: When working with Pydantic configs, read the actual class definition to confirm attribute names rather than guessing from context.

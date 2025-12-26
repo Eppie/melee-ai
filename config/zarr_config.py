@@ -17,7 +17,7 @@ def _get_default_paths() -> Tuple[str, str, str]:
 
     if system == "Darwin":
         return (
-            "/Users/eppie/Downloads/ALL_REPLAYS/ALL",
+            "/Users/eppie/Downloads/ALL_REPLAYS/replays_sorted/FOX_vs_FOX",
             "/Users/eppie/PycharmProjects/nano-melee/processed_data_1000",
             "/Users/eppie/PycharmProjects/nano-melee/validation_set",
         )

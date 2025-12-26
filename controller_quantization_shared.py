@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import Any, Literal
 
 import numpy as np
@@ -83,7 +84,10 @@ def _quantize_from_unit11(xy11: Any, palette: Any, palette_norm_sq: Any):
     V = xy11.reshape(-1, 2)
     palette_np = np.asarray(palette, dtype=np.float32)
     palette_norm = np.asarray(palette_norm_sq, dtype=np.float32).reshape(-1)
-    dot = V @ palette_np.T
+    # Suppress spurious warnings from Apple Accelerate BLAS on Apple Silicon
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*matmul.*")
+        dot = V @ palette_np.T
     norm = np.sum(V * V, axis=1, keepdims=True)
     d2 = norm - 2.0 * dot + palette_norm.reshape(1, -1)
     idx = np.argmin(d2, axis=1)

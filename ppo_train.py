@@ -1750,6 +1750,58 @@ def save_ppo_checkpoint(
     print(f"Saved checkpoint: {checkpoint_path}")
 
 
+def find_latest_ppo_checkpoint(directory: Path) -> Optional[Path]:
+    """Find the newest PPO checkpoint in directory.
+
+    Args:
+        directory: Directory to search for PPO checkpoints.
+
+    Returns:
+        Path to the most recent PPO checkpoint or None if not found.
+    """
+    directory = directory.expanduser()
+    if not directory.exists():
+        return None
+    candidates = [p for p in directory.glob("ppo_ep*.pt") if p.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def load_ppo_checkpoint(
+    checkpoint_path: Path,
+    model: GPT,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> int:
+    """Load PPO training checkpoint.
+
+    Args:
+        checkpoint_path: Path to PPO checkpoint file.
+        model: GPT model to load weights into.
+        optimizer: Optimizer to load state into.
+        device: Device to load tensors to.
+
+    Returns:
+        Episode count from checkpoint.
+    """
+    print(f"Loading PPO checkpoint: {checkpoint_path}")
+    checkpoint_data = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    # Load model weights (handle torch.compile prefix mismatch)
+    model_state = checkpoint_data["model_state_dict"]
+    model_state = match_state_dict_keys(model_state, model)
+    model.load_state_dict(model_state)
+
+    # Load optimizer state
+    optimizer.load_state_dict(checkpoint_data["optimizer_state_dict"])
+
+    episode_count = checkpoint_data.get("episode", 0)
+    print(f"Resumed from episode {episode_count}")
+
+    return episode_count
+
+
 # ============================================================================
 # Main Training Loop
 # ============================================================================
@@ -1782,6 +1834,20 @@ def main():
         choices=("stochastic", "greedy"),
         default="stochastic",
         help="Action selection during rollouts: stochastic (policy sampling) or greedy (argmax).",
+    )
+    parser.add_argument(
+        "--resume",
+        "-r",
+        type=Path,
+        default=None,
+        help="Path to PPO checkpoint to resume from (or 'latest' to find most recent in checkpoints_ppo/)",
+    )
+    parser.add_argument(
+        "--teacher",
+        "-t",
+        type=Path,
+        default=None,
+        help="Path to teacher model checkpoint for KL penalty (defaults to --checkpoint)",
     )
     args, remaining = parser.parse_known_args()
 
@@ -1836,11 +1902,13 @@ def main():
     # Load frozen teacher model for KL penalty (if enabled)
     teacher_model: Optional[GPT] = None
     if ppo_config.kl_teacher_weight > 0:
+        teacher_checkpoint = args.teacher if args.teacher is not None else checkpoint_path
         print(f"Loading frozen teacher model for KL penalty (weight={ppo_config.kl_teacher_weight})...")
+        print(f"  Teacher checkpoint: {teacher_checkpoint}")
         # Create a new model instance with the same config
         teacher_model = GPT(config)
-        # Load the same checkpoint weights (handle torch.compile prefix mismatch)
-        checkpoint_data = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        # Load checkpoint weights (handle torch.compile prefix mismatch)
+        checkpoint_data = torch.load(teacher_checkpoint, map_location=device, weights_only=False)
         model_state = checkpoint_data.get("model", checkpoint_data)
         model_state = match_state_dict_keys(model_state, teacher_model)
         teacher_model.load_state_dict(model_state)
@@ -1869,6 +1937,28 @@ def main():
         lr=ppo_config.learning_rate,
         eps=1e-5,
     )
+
+    # Handle PPO checkpoint resume
+    resume_episode = 0
+    if args.resume is not None:
+        # Handle 'latest' as special value
+        if str(args.resume) == "latest":
+            resume_path = find_latest_ppo_checkpoint(ppo_config.checkpoint_dir)
+            if resume_path is None:
+                raise FileNotFoundError(
+                    f"No PPO checkpoint found in {ppo_config.checkpoint_dir.resolve()}"
+                )
+        else:
+            resume_path = args.resume
+            if not resume_path.exists():
+                raise FileNotFoundError(f"PPO checkpoint not found: {resume_path}")
+
+        resume_episode = load_ppo_checkpoint(
+            checkpoint_path=resume_path,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+        )
 
     # Setup Dolphin console
     console = Console(
@@ -1922,7 +2012,7 @@ def main():
     print("Controllers connected")
 
     # Training loop
-    episode_count = 0
+    episode_count = resume_episode
     training_stats = TrainingStats.create(window_size=100)
 
     # Random stage and characters

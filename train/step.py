@@ -21,7 +21,9 @@ from train.value_head import compute_value_targets
 
 
 def collect_head_diagnostics(
-    model: torch.nn.Module, pred: Dict[str, torch.Tensor]
+    model: torch.nn.Module,
+    pred: Dict[str, torch.Tensor],
+    value_pred: torch.Tensor = None,
 ) -> Dict[str, float]:
     """Collect per-head diagnostic metrics for instability detection.
 
@@ -36,6 +38,7 @@ def collect_head_diagnostics(
     Args:
         model: The GPT model with output heads
         pred: Dictionary of model predictions
+        value_pred: Value predictions from the separate value network
 
     Returns:
         Dictionary of diagnostic metrics with keys like:
@@ -46,7 +49,7 @@ def collect_head_diagnostics(
 
     # Logit max_abs statistics (cheap - already in memory)
     # Note: mean/std already logged in gather_logit_and_bias_metrics_batched()
-    head_names = ["main_stick", "c_stick", "buttons", "shoulder", "value"]
+    head_names = ["main_stick", "c_stick", "buttons", "shoulder"]
     for head in head_names:
         if head in pred:
             logits = pred[head]
@@ -54,14 +57,20 @@ def collect_head_diagnostics(
                 logits.abs().max().detach()
             )
 
+    # Add value predictions from separate network
+    if value_pred is not None:
+        diagnostics[f"head_logits/value/max_abs"] = float(
+            value_pred.abs().max().detach()
+        )
+
     # Output layer bias max_abs statistics (very cheap - small tensors)
     # Note: mean already logged in gather_logit_and_bias_metrics_batched()
+    # Value head bias is now in the separate ValueNetwork, not here
     bias_keys = {
         "main_stick": "_orig_mod.main_stick_head.fc2.bias",
         "c_stick": "_orig_mod.c_stick_head.fc2.bias",
         "buttons": "_orig_mod.button_head.fc2.bias",
         "shoulder": "_orig_mod.shoulder_head.fc2.bias",
-        "value": "_orig_mod.value_head.fc2.bias",
     }
 
     state_dict = model.state_dict()
@@ -126,8 +135,18 @@ def perform_forward_pass(
             "shoulder_K": int(head_dims["shoulder"]),
         }
         pred = components.model(inputs_td)
-        # Clone to prevent CUDA graph overwriting when using torch.compile()
+        # Clone policy outputs before running value network to prevent CUDA graph overwriting
         pred = pred.clone()
+
+        # Forward pass through separate value network
+        # Note: Value network uses mode="default" (no CUDA graphs) to avoid interference
+        if components.value_network is not None:
+            value_pred, _ = components.value_network(inputs_td, hidden=None)
+        else:
+            raise RuntimeError(
+                "Value network is required but not initialized. "
+                "Check that config.value_network.enabled is True."
+            )
 
         base_smoothing = config.train.label_smoothing
         final_smoothing = 0.5 * base_smoothing
@@ -170,8 +189,7 @@ def perform_forward_pass(
             )
         )
 
-        # Get value predictions and targets FIRST (needed for model-dependent advantages)
-        value_pred = pred["value"]
+        # Get value targets (value_pred already computed from separate network above)
         value_target = compute_value_targets(
             X,
             components.column_map,
@@ -267,7 +285,7 @@ def perform_forward_pass(
     # CRITICAL: Only on logging steps! Each float() call causes GPU sync
     head_diagnostics = {}
     if collect_diagnostics:
-        head_diagnostics = collect_head_diagnostics(components.model, pred)
+        head_diagnostics = collect_head_diagnostics(components.model, pred, value_pred)
 
         # Add value head prediction bias (mean and target_mean are logged elsewhere)
         head_diagnostics["value_pred_bias"] = float(
@@ -326,26 +344,36 @@ def perform_backward_pass(
         # bfloat16 or full precision - no scaling needed
         loss.backward()
 
-    # Clip value head gradients separately BEFORE global clipping
-    # This prevents value head from corrupting transformer even if it has large errors
+    # Clip value network gradients separately BEFORE global clipping
+    # This prevents value network from corrupting policy model even if it has large errors
     grad_clip = components.config.train.grad_clip
+    value_grad_clip = components.config.value_network.grad_clip
     grad_stats: Dict[str, float] = {}
 
     if collect_grad_stats:
         # Slow path: Compute gradient norms for logging (causes CPU-GPU sync)
-        value_head_grad_norm = float(
-            clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
-        )
+        if components.value_network is not None:
+            value_network_grad_norm = float(
+                clip_grad_norm_(
+                    components.value_network.parameters(), max_norm=value_grad_clip
+                )
+            )
+            grad_stats["value_network_norm_pre_clip"] = value_network_grad_norm
+            grad_stats["value_network_norm_post_clip"] = min(
+                value_network_grad_norm, value_grad_clip
+            )
+
         pre_clip_norm = float(clip_grad_norm_(components.model.parameters(), grad_clip))
 
-        grad_stats = collect_gradient_diagnostics(components.model)
+        grad_stats.update(collect_gradient_diagnostics(components.model))
         grad_stats["total_norm_pre_clip"] = pre_clip_norm
         grad_stats["total_norm_post_clip"] = min(pre_clip_norm, grad_clip)
-        grad_stats["value_head_norm_pre_clip"] = value_head_grad_norm
-        grad_stats["value_head_norm_post_clip"] = min(value_head_grad_norm, 1.0)
     else:
         # Fast path: Just clip without computing norms (no sync!)
-        clip_grad_norm_(components.model.value_head.parameters(), max_norm=1.0)
+        if components.value_network is not None:
+            clip_grad_norm_(
+                components.value_network.parameters(), max_norm=value_grad_clip
+            )
         clip_grad_norm_(components.model.parameters(), grad_clip)
 
     if scaler.is_enabled():

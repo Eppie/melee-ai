@@ -75,6 +75,7 @@ def gather_logit_and_bias_metrics_batched(
         )
 
     # Collect all tensors we need stats for
+    # Note: Value head is now in a separate ValueNetwork, not part of the GPT model
     tensor_names = [
         "logits/main",
         "logits/c",
@@ -85,7 +86,6 @@ def gather_logit_and_bias_metrics_batched(
         "bias/main_stick_out",
         "bias/c_stick_out",
         "bias/shoulder_out",
-        "bias/value_out",
     ]
     tensors = [
         pred["main_stick"],
@@ -97,7 +97,6 @@ def gather_logit_and_bias_metrics_batched(
         get_head_bias(model.main_stick_head),
         get_head_bias(model.c_stick_head),
         get_head_bias(model.shoulder_head),
-        get_head_bias(model.value_head),
     ]
 
     # Compute all stats on GPU, then transfer once

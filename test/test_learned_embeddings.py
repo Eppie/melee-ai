@@ -37,10 +37,10 @@ class TestLearnedEmbeddings:
 
         return inputs
 
-    def test_learned_embeddings_enabled_by_default(self):
-        """Test that learned embeddings are enabled by default."""
+    def test_learned_embeddings_disabled_by_default(self):
+        """Test that learned embeddings are disabled by default (one-hot is the default)."""
         config = init_config()
-        assert config.model.use_learned_embeddings is True
+        assert config.model.use_learned_embeddings is False
 
     def test_model_with_learned_embeddings(self, sample_inputs):
         """Test model creation and forward pass with learned embeddings."""
@@ -76,9 +76,8 @@ class TestLearnedEmbeddings:
         # Check that outputs are valid
         batch_size, sequence_length = sample_inputs.batch_size
         assert outputs["buttons"].shape[:2] == (batch_size, sequence_length)
-        assert outputs["value"].shape == (batch_size, sequence_length, 1)
+        # Note: Value is now computed by separate ValueNetwork, not GPT
         assert torch.isfinite(outputs["buttons"]).all()
-        assert torch.isfinite(outputs["value"]).all()
 
     def test_model_with_one_hot_encoding(self, sample_inputs):
         """Test model creation and forward pass with one-hot encoding."""
@@ -106,9 +105,8 @@ class TestLearnedEmbeddings:
         # Check that outputs are valid
         batch_size, sequence_length = sample_inputs.batch_size
         assert outputs["buttons"].shape[:2] == (batch_size, sequence_length)
-        assert outputs["value"].shape == (batch_size, sequence_length, 1)
+        # Note: Value is now computed by separate ValueNetwork, not GPT
         assert torch.isfinite(outputs["buttons"]).all()
-        assert torch.isfinite(outputs["value"]).all()
 
     def test_input_size_difference(self):
         """Test that learned embeddings produce smaller input_size than one-hot."""
@@ -196,12 +194,12 @@ class TestLearnedEmbeddings:
         outputs = model(sample_inputs)
 
         # Create a dummy loss from all outputs
+        # Note: Value is now computed by separate ValueNetwork, not GPT
         loss = (
             outputs["buttons"].sum()
             + outputs["main_stick"].sum()
             + outputs["c_stick"].sum()
             + outputs["shoulder"].sum()
-            + outputs["value"].sum()
         )
         loss.backward()
 
@@ -237,12 +235,12 @@ class TestLearnedEmbeddings:
         outputs = model(sample_inputs)
 
         # Create a dummy loss from all outputs
+        # Note: Value is now computed by separate ValueNetwork, not GPT
         loss = (
             outputs["buttons"].sum()
             + outputs["main_stick"].sum()
             + outputs["c_stick"].sum()
             + outputs["shoulder"].sum()
-            + outputs["value"].sum()
         )
         loss.backward()
 
@@ -280,7 +278,7 @@ class TestLearnedEmbeddings:
             outputs = model(sample_inputs)
 
         assert torch.isfinite(outputs["buttons"]).all()
-        assert torch.isfinite(outputs["value"]).all()
+        # Note: Value is now computed by separate ValueNetwork, not GPT
 
     def test_outputs_have_same_shapes(self, sample_inputs):
         """Test that both modes produce outputs with the same shapes."""
@@ -313,7 +311,8 @@ class TestLearnedEmbeddings:
             outputs_onehot = model_onehot(sample_inputs)
 
         # Output shapes should be identical
-        for key in ["buttons", "main_stick", "c_stick", "shoulder", "value"]:
+        # Note: Value is now computed by separate ValueNetwork, not GPT
+        for key in ["buttons", "main_stick", "c_stick", "shoulder"]:
             assert (
                 outputs_learned[key].shape == outputs_onehot[key].shape
             ), f"Shape mismatch for {key}"
@@ -338,21 +337,20 @@ class TestLearnedEmbeddings:
                 outputs = model(sample_inputs)
 
             assert "buttons" in outputs
-            assert "value" in outputs
+            # Note: Value is now computed by separate ValueNetwork, not GPT
             assert torch.isfinite(outputs["buttons"]).all()
-            assert torch.isfinite(outputs["value"]).all()
 
     def test_config_override_via_cli(self):
         """Test that use_learned_embeddings can be set via CLI override."""
-        # Test enabling (default)
+        # Test default (disabled)
         config = init_config()
-        assert config.model.use_learned_embeddings is True
+        assert config.model.use_learned_embeddings is False
 
         reset_config()
 
-        # Test disabling
-        config = init_config(overrides={"model.use_learned_embeddings": "false"})
-        assert config.model.use_learned_embeddings is False
+        # Test enabling via override
+        config = init_config(overrides={"model.use_learned_embeddings": "true"})
+        assert config.model.use_learned_embeddings is True
 
         reset_config()
 

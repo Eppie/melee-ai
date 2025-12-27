@@ -20,11 +20,18 @@ def build_training_components() -> TrainingComponents:
     model = mock.MagicMock()
     model.parameters.return_value = [torch.ones(1, requires_grad=True)]
 
+    # Mock value network
+    value_network = mock.MagicMock()
+    value_network.parameters.return_value = [torch.ones(1, requires_grad=True)]
+
     # TrainingComponents signature expects a dataset; tests do not use it, so inject None.
     dataset = None
 
     return TrainingComponents(
-        config=SimpleNamespace(train=SimpleNamespace(grad_clip=1.0)),
+        config=SimpleNamespace(
+            train=SimpleNamespace(grad_clip=1.0),
+            value_network=SimpleNamespace(grad_clip=1.0),
+        ),
         model=model,
         optimizer=optimizer,
         scaler=scaler,
@@ -41,6 +48,8 @@ def build_training_components() -> TrainingComponents:
         out_dir=Path("."),
         last_step_file=Path("last-step.txt"),
         debug=False,
+        value_network=value_network,
+        local_logger=None,
     )
 
 

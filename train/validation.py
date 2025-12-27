@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import torch
+from torch.amp import autocast
 from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
@@ -24,6 +25,7 @@ from window_dataset import RandomWindowSampler
 
 if TYPE_CHECKING:
     from model.nano_gpt import GPT
+    from model.value_network import ValueNetwork
     from train.components import TrainingComponents
 
 # Global cache for validation dataset and dataloader
@@ -109,6 +111,7 @@ def run_validation(
     max_batches: Optional[int] = None,
     batch_size: Optional[int] = None,
     imbalance_scale: float = 1.0,
+    value_network: Optional["ValueNetwork"] = None,
 ) -> Dict[str, float]:
     """Run validation and return metrics dictionary suitable for wandb logging.
 
@@ -119,6 +122,7 @@ def run_validation(
         max_batches: Maximum number of batches to evaluate (None for all).
         batch_size: Override batch size (defaults to config.train.batch_size).
         imbalance_scale: Current imbalance scale from training (default 1.0).
+        value_network: Optional separate value network for value predictions.
 
     Returns:
         Dictionary of validation metrics with "val/" prefix.
@@ -144,9 +148,17 @@ def run_validation(
     start_time = time.time()
 
     model.eval()
+    if value_network is not None:
+        value_network.eval()
     total_batches = len(loader)
 
-    with torch.inference_mode():
+    # Determine AMP settings from config
+    amp_dtype_str = getattr(config.train, "amp_dtype", "bfloat16")
+    amp_dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+    amp_dtype = amp_dtype_map.get(amp_dtype_str, torch.bfloat16)
+    use_amp = getattr(config.train, "use_amp", True) and device.type in ("cuda", "mps")
+
+    with torch.inference_mode(), autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
         for batch_idx, batch in enumerate(loader, start=1):
             if max_batches is not None and batch_idx > max_batches:
                 break
@@ -184,6 +196,8 @@ def run_validation(
             )
 
             pred = model(inputs_td)
+            # Clone policy outputs before running value network to prevent CUDA graph overwriting
+            pred = pred.clone()
 
             logits_main = pred["main_stick"]
             logits_c = pred["c_stick"]
@@ -203,22 +217,24 @@ def run_validation(
             for key, value in loss_components.items():
                 loss_sums[key] += value.item()
 
-            # Compute value loss (same as training)
-            value_pred = pred["value"]
+            # Compute value loss (same as training) using separate value network
             value_target = compute_value_targets(
                 X,
                 colmap,
                 reward_cfg=config.reward,
                 reward_idx=value_idx,
             )
-            value_loss_raw = torch.nn.functional.mse_loss(
-                value_pred, value_target, reduction="none"
-            ).squeeze(-1)
-            value_w = weights.get("global", weights["main"])
-            loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(
-                1e-12
-            )
-            loss_sums["value"] += loss_value.item()
+            if value_network is not None:
+                value_pred, _ = value_network(inputs_td, hidden=None)
+                value_loss_raw = torch.nn.functional.mse_loss(
+                    value_pred, value_target, reduction="none"
+                ).squeeze(-1)
+                # Value head trains on full distribution (uniform weighting)
+                loss_value = value_loss_raw.mean()
+                loss_sums["value"] += loss_value.item()
+            else:
+                # No value network provided, skip value loss
+                pass
 
             pred_main_idx = logits_main.argmax(dim=-1)
             pred_c_idx = logits_c.argmax(dim=-1)
@@ -349,6 +365,7 @@ def maybe_run_validation(
             config=components.config,
             max_batches=None,  # Run on full validation set
             imbalance_scale=imbalance_scale,
+            value_network=components.value_network,
         )
 
         # Log to wandb
@@ -372,5 +389,7 @@ def maybe_run_validation(
     except Exception as e:
         print(f"[validation] Error: {e}")
 
-    # Restore model to training mode
+    # Restore models to training mode
     components.model.train()
+    if components.value_network is not None:
+        components.value_network.train()

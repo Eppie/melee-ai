@@ -14,6 +14,7 @@ from torch.amp import GradScaler
 from column_map import ColumnMap
 from data_loading.instrumentation import DataLoadingMetrics
 from model.nano_gpt import GPT
+from model.value_network import ValueNetwork
 from train.batch_utils import SampleWeightRatios
 from train.async_transfer import DeferredScalarAccumulator, PinnedMemoryPool
 from train.wandb_utils import LocalLogger, WandbLogger
@@ -95,6 +96,7 @@ class AMPContext:
 class TrainingComponents:
     config: Any
     model: GPT
+    value_network: Optional[ValueNetwork]
     optimizer: torch.optim.Optimizer
     scaler: GradScaler
     logger: WandbLogger

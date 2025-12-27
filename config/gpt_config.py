@@ -70,7 +70,7 @@ class GPTConfig(BaseModel):
         ),
     )
     n_layer: int = Field(
-        default=4,
+        default=8,
         ge=1,
         description=(
             "Number of transformer layers. Controls model depth and abstraction capability. "

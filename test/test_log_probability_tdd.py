@@ -442,12 +442,12 @@ class TestIntegrationLogProbabilityWorkflow:
 
         # Step 3: Recompute log probs (simulating PPO update)
         # Create outputs with same logits repeated in batch
+        # Note: Value is now computed by separate ValueNetwork, not GPT
         recompute_outputs = TensorDict({
             "main_stick": mock_outputs["main_stick"].expand(1, -1, -1),
             "c_stick": mock_outputs["c_stick"].expand(1, -1, -1),
             "buttons": mock_outputs["buttons"].expand(1, -1, -1),
             "shoulder": mock_outputs["shoulder"].expand(1, -1, -1),
-            "value": mock_outputs["value"].expand(1, -1, -1),
         }, batch_size=(1, 256))
 
         device = mock_outputs.device

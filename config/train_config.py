@@ -16,7 +16,7 @@ class TrainConfig(BaseModel):
     )
 
     batch_size: int = Field(
-        default=256,
+        default=512,
         ge=1,
         description=(
             "Training batch size. Number of sequences per gradient update. "

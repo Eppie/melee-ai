@@ -18,11 +18,12 @@ from column_map import ColumnMap
 from config.config import get_config
 from model.compile_utils import maybe_torch_compile
 from model.nano_gpt import GPT
+from model.value_network import ValueNetwork
 from train.batch_utils import SampleWeightRatios
 from train.checkpoint import _load_latest_checkpoint
 from train.components import AMPContext, TrainingComponents
 from train.wandb_utils import LocalLogger, WandbConfig, WandbLogger, init_wandb
-from utils import _resolve_device, Profiler
+from utils import _resolve_device, Profiler, print_model_diagram
 
 
 def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
@@ -122,17 +123,23 @@ def configure_performance_settings(config, device: torch.device) -> None:
         logger.info("cudnn.benchmark enabled for faster CUDA operations")
 
 
-def build_optimizer(model: GPT, config) -> torch.optim.Optimizer:
+def build_optimizer(
+    model: GPT,
+    config,
+    value_network: ValueNetwork = None,
+) -> torch.optim.Optimizer:
     """
     Builds the AdamW optimizer with proper weight decay handling.
 
-    Separates parameters into two groups:
-    1. Decayed: Weights of Linear and Embedding layers
-    2. No Decay: Biases, LayerNorm/RMSNorm weights, and other 1D tensors
+    Separates parameters into groups:
+    1. Policy decay: Weights of Linear and Embedding layers in policy model
+    2. Policy no-decay: Biases, LayerNorm/RMSNorm weights in policy model
+    3. Value decay: Weights in value network (if enabled)
+    4. Value no-decay: Biases in value network (if enabled)
     """
-    # Separate parameters into decay and no-decay groups
-    decay_params = []
-    nodecay_params = []
+    # Separate policy model parameters into decay and no-decay groups
+    policy_decay_params = []
+    policy_nodecay_params = []
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -140,14 +147,33 @@ def build_optimizer(model: GPT, config) -> torch.optim.Optimizer:
 
         # Common heuristic: decay 2D+ tensors (weights), skip 1D (biases, layernorms)
         if param.dim() >= 2:
-            decay_params.append(param)
+            policy_decay_params.append(param)
         else:
-            nodecay_params.append(param)
+            policy_nodecay_params.append(param)
 
     optim_groups = [
-        {"params": decay_params, "weight_decay": config.train.weight_decay},
-        {"params": nodecay_params, "weight_decay": 0.0},
+        {"params": policy_decay_params, "weight_decay": config.train.weight_decay},
+        {"params": policy_nodecay_params, "weight_decay": 0.0},
     ]
+
+    # Add value network parameters if enabled
+    if value_network is not None:
+        value_decay_params = []
+        value_nodecay_params = []
+
+        for name, param in value_network.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            if param.dim() >= 2:
+                value_decay_params.append(param)
+            else:
+                value_nodecay_params.append(param)
+
+        optim_groups.extend([
+            {"params": value_decay_params, "weight_decay": config.train.weight_decay},
+            {"params": value_nodecay_params, "weight_decay": 0.0},
+        ])
 
     fused = torch.cuda.is_available()
     return torch.optim.AdamW(
@@ -183,6 +209,26 @@ def initialize_training_components(
         mode=config.train.torch_compile_mode,
     )
 
+    # Create value network if enabled
+    # NOTE: Value network uses mode="default" (no CUDA graphs) to avoid interference
+    # with the main GPT model's CUDA graphs. LSTMs are also problematic with CUDA graphs.
+    value_network = None
+    if config.value_network.enabled:
+        value_network = ValueNetwork(config).to(device)
+        value_network = maybe_torch_compile(
+            value_network,
+            label="ValueNetwork",
+            enable=config.train.torch_compile,
+            mode="default",  # Avoid CUDA graphs - causes memory interference with GPT model
+        )
+        logger.info(
+            f"Value network initialized: hidden_dim={config.value_network.hidden_dim}, "
+            f"lstm_layers={config.value_network.lstm_num_layers}"
+        )
+        # Print value network architecture diagram
+        print("\n=== Value Network Architecture ===")
+        print_model_diagram(value_network)
+
     amp = configure_amp(config, device)
 
     column_map = ColumnMap.from_dataset(ds)
@@ -205,7 +251,7 @@ def initialize_training_components(
         value_change=lw_cfg.value_change,
     )
 
-    optimizer = build_optimizer(model, config)
+    optimizer = build_optimizer(model, config, value_network)
     # GradScaler is only needed for float16, not bfloat16
     use_grad_scaler = amp.enabled and amp.dtype == torch.float16
     scaler_device = amp.device_type if use_grad_scaler else "cpu"
@@ -247,6 +293,7 @@ def initialize_training_components(
         optimizer,
         scaler,
         device,
+        value_network=value_network,
         allow_partial_load=allow_partial_load,
     )
     try:
@@ -259,6 +306,7 @@ def initialize_training_components(
     components = TrainingComponents(
         config=config,
         model=model,
+        value_network=value_network,
         optimizer=optimizer,
         scaler=scaler,
         logger=wandb_logger,

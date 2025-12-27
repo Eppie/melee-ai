@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+from torch.amp import autocast
 from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
@@ -26,6 +27,7 @@ from controller_utils import (
 from libmelee.melee.enums import Action
 from loss import compute_loss_components
 from model.nano_gpt import GPT
+from model.value_network import ValueNetwork
 from train import find_latest_checkpoint
 from train.batch_utils import (
     SampleWeightRatios,
@@ -1307,6 +1309,7 @@ def _evaluate(
     device: torch.device,
     progress: bool,
     max_batches: Optional[int] = None,
+    value_network: Optional[ValueNetwork] = None,
 ) -> Dict[str, object]:
     config = get_config()
     value_col_idx = colmap.value_idx
@@ -1354,10 +1357,18 @@ def _evaluate(
     }
 
     model.eval()
+    if value_network is not None:
+        value_network.eval()
     total_batches = len(loader)
     results: Dict[str, object] = {}
 
-    with torch.inference_mode():
+    # Determine AMP settings from config
+    amp_dtype_str = getattr(config.train, "amp_dtype", "bfloat16")
+    amp_dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+    amp_dtype = amp_dtype_map.get(amp_dtype_str, torch.bfloat16)
+    use_amp = getattr(config.train, "use_amp", True) and device.type in ("cuda", "mps")
+
+    with torch.inference_mode(), autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
         for batch_idx, batch in enumerate(loader, start=1):
             if max_batches is not None and batch_idx > max_batches:
                 break
@@ -1395,6 +1406,8 @@ def _evaluate(
             )
 
             pred = model(inputs_td)
+            # Clone policy outputs before running value network to prevent CUDA graph overwriting
+            pred = pred.clone()
 
             logits_main = pred["main_stick"]
             logits_c = pred["c_stick"]
@@ -1460,8 +1473,10 @@ def _evaluate(
             btn_hold_mask = ~btn_change_mask
             change_stats_buttons.update(btn_exact_match, btn_change_mask, btn_hold_mask)
 
-            # Extract value prediction if available
-            value_pred = pred.get("value")  # [B, L, 1] or None
+            # Get value prediction from separate value network
+            value_pred = None
+            if value_network is not None:
+                value_pred, _ = value_network(inputs_td, hidden=None)  # [B, L, 1]
 
             # Update enhanced metrics
             (
@@ -2196,6 +2211,18 @@ def main() -> None:
     model.load_state_dict(model_state)
     model.to(device)
 
+    # Create and load value network if enabled and present in checkpoint
+    value_network = None
+    if config.value_network.enabled:
+        value_network = ValueNetwork(config)
+        if "value_network" in ckpt:
+            value_state = match_state_dict_keys(ckpt["value_network"], value_network)
+            value_network.load_state_dict(value_state)
+            print("Value network loaded from checkpoint")
+        else:
+            print("Warning: Value network enabled but not found in checkpoint (using fresh init)")
+        value_network.to(device)
+
     if "optimizer" in ckpt:
         del ckpt["optimizer"]
     if "scaler" in ckpt:
@@ -2212,6 +2239,7 @@ def main() -> None:
         device,
         progress=not args.no_progress,
         max_batches=args.max_batches,
+        value_network=value_network,
     )
 
     _print_final_summary(results, checkpoint_path, data_root, colmap)

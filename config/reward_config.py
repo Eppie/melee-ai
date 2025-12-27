@@ -10,15 +10,16 @@ class RewardConfig(BaseModel):
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     gamma: float = Field(
-        default=0.995,
+        default=0.9971,
         ge=0,
         le=1,
         description=(
             "Discount factor for future rewards. Controls how much the agent values future vs immediate rewards. "
             "Effect: Higher gamma (0.99-0.999) makes the agent more far-sighted, optimizing for long-term reward; "
             "lower gamma (0.9-0.98) makes it more myopic, focusing on immediate reward. "
-            "At 60 FPS, gamma=0.995 gives effective horizon of ~200 frames (~3.3 seconds). "
-            "Reasonable range: [0.99, 0.999]. Formula: effective_horizon ≈ 1/(1-gamma) frames. "
+            "At 60 FPS, gamma=0.9971 gives a half-life of 4 seconds (240 frames). "
+            "Formula: gamma = 0.5^(1/(halflife_seconds * 60)). "
+            "Reasonable range: [0.99, 0.999]. "
             "Interacts with: reward magnitudes (higher gamma amplifies cumulative rewards), "
             "gae_lambda in PPO (both affect advantage estimation), episode length (longer episodes need higher gamma)."
         ),

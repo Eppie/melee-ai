@@ -15,6 +15,7 @@ from .loss_config import LossConfig
 from .reward_config import RewardConfig
 from .rl_config import RLConfig
 from .train_config import TrainConfig
+from .value_network_config import ValueNetworkConfig
 from .zarr_config import ZarrConfig
 
 class Config(BaseModel):
@@ -35,6 +36,7 @@ class Config(BaseModel):
     rl: RLConfig = Field(default_factory=RLConfig)
     loss_weights: LossConfig = Field(default_factory=LossConfig)
     imitation: ImitationConfig = Field(default_factory=ImitationConfig)
+    value_network: ValueNetworkConfig = Field(default_factory=ValueNetworkConfig)
 
     def freeze(self) -> None:
         """Make config immutable."""
@@ -362,6 +364,8 @@ def init_config_from_checkpoint(
         config_dict["features"] = filter_known_fields(config_dict["features"], FeatureConfig)
     if "imitation" in config_dict and isinstance(config_dict["imitation"], dict):
         config_dict["imitation"] = filter_known_fields(config_dict["imitation"], ImitationConfig)
+    if "value_network" in config_dict and isinstance(config_dict["value_network"], dict):
+        config_dict["value_network"] = filter_known_fields(config_dict["value_network"], ValueNetworkConfig)
 
     cfg = Config.model_validate(config_dict)
 

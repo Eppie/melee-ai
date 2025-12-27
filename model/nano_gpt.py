@@ -151,7 +151,8 @@ class GPT(nn.Module):
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
         )
 
-        self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
+        # Note: Value head has been moved to a separate ValueNetwork class
+        # to prevent value estimation from interfering with policy learning
 
         # Precompute positional encodings: either RoPE or ALiBi
         self.use_alibi = model_config.use_alibi
@@ -352,7 +353,6 @@ class GPT(nn.Module):
             batch_size=(batch_size, sequence_length),
         )
 
-        value = self.value_head(hidden_states)
-        outputs.set("value", value)
+        # Note: Value is now computed by the separate ValueNetwork class
 
         return outputs

@@ -149,6 +149,7 @@ def _load_latest_checkpoint(
     scaler: GradScaler,
     device: torch.device,
     *,
+    value_network: nn.Module = None,
     allow_partial_load: bool = False,
 ) -> Tuple[int, int, int]:
     """Load the newest checkpoint and restore model, optimizer, and scaler state.
@@ -227,6 +228,35 @@ def _load_latest_checkpoint(
     if scaler_state:
         scaler.load_state_dict(scaler_state)
 
+    # Load value network state if present
+    if value_network is not None:
+        value_state = ckpt.get("value_network")
+        if value_state:
+            # Handle torch.compile() prefix mismatch
+            value_state = match_state_dict_keys(value_state, value_network)
+            try:
+                value_network.load_state_dict(value_state, strict=True)
+                print("Value network state loaded from checkpoint")
+            except RuntimeError as err:
+                if not allow_partial_load:
+                    raise RuntimeError(
+                        "Value network checkpoint parameters do not match. "
+                        "Set train.allow_partial_checkpoint_load=True if this is intentional."
+                    ) from err
+                # Partial load: filter to matching keys and shapes
+                target_state = value_network.state_dict()
+                filtered_state = {
+                    k: v
+                    for k, v in value_state.items()
+                    if k in target_state and v.shape == target_state[k].shape
+                }
+                value_network.load_state_dict(filtered_state, strict=False)
+                print(
+                    f"Value network partially loaded ({len(filtered_state)}/{len(target_state)} params)"
+                )
+        else:
+            print("No value_network state in checkpoint; initializing fresh")
+
     resume_epoch = ckpt["resume_epoch"]
     resume_iter = ckpt["resume_iter"]
 
@@ -242,6 +272,7 @@ def save_checkpoint(
     config: Union[Dict[str, Any], "Config"],
     optimizer: Optional[Optimizer] = None,
     scaler: Optional[GradScaler] = None,
+    value_network: nn.Module = None,
     epoch: int = 0,
     global_step: int = 0,
     **kwargs,
@@ -290,6 +321,10 @@ def save_checkpoint(
     if scaler is not None:
         ckpt["scaler"] = scaler.state_dict()
 
+    # Save value network if present
+    if value_network is not None:
+        ckpt["value_network"] = value_network.state_dict()
+
     # Add any extra kwargs
     ckpt.update(kwargs)
 
@@ -316,6 +351,7 @@ def maybe_checkpoint_batch(
         config=components.config,
         optimizer=components.optimizer,
         scaler=components.scaler,
+        value_network=components.value_network,
         epoch=epoch + 1,
         global_step=global_step,
         resume_epoch=epoch,
@@ -341,6 +377,7 @@ def maybe_checkpoint_epoch(
         config=components.config,
         optimizer=components.optimizer,
         scaler=components.scaler,
+        value_network=components.value_network,
         epoch=epoch + 1,
         global_step=global_step,
         resume_epoch=epoch + 1,

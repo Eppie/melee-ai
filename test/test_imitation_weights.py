@@ -84,13 +84,12 @@ def test_compute_value_filter_weights_soft(dummy_values):
 
 
 def test_compute_advantage_weights_n_step(dummy_values):
-    # n_step = 1
-    # adv[t] = V[t+1] - V[t]
+    # Simple TD advantage: adv[t] = V[t+1] - V[t]
     # Row 0: 0.1, 0.2... diffs are +0.1. Positive advantage.
     # Row 1: 0.5, 0.4... diffs are -0.1. Negative advantage.
 
     weights = compute_advantage_weights(
-        dummy_values, n_steps=1, alpha=1.0, use_gae=False
+        dummy_values, alpha=1.0, use_gae=False
     )
 
     assert weights.shape == dummy_values.shape
@@ -116,7 +115,7 @@ def test_compute_advantage_weights_n_step(dummy_values):
 
 def test_compute_advantage_weights_gae(dummy_values):
     weights = compute_advantage_weights(
-        dummy_values, n_steps=5, alpha=1.0, use_gae=True, gamma=0.99, gae_lambda=0.95
+        dummy_values, alpha=1.0, use_gae=True, gamma=0.99, gae_lambda=0.95
     )
     assert weights.shape == dummy_values.shape
     assert torch.all(weights >= 0)
@@ -217,12 +216,11 @@ def test_numerical_stability_large_values():
 
 
 def test_short_sequence_advantage():
-    # L=1, n_steps=5
+    # L=1, short sequence
     values = torch.tensor([[0.5]], dtype=torch.float32)
-    # n = min(5, 0) = 0
-    # advantages all 0
+    # For single-frame sequence, advantages are all 0
     # weights all 1.0
-    weights = compute_advantage_weights(values, n_steps=5, alpha=1.0)
+    weights = compute_advantage_weights(values, alpha=1.0)
     assert weights.shape == values.shape
     assert torch.all(weights == 1.0)
 

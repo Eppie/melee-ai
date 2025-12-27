@@ -218,7 +218,7 @@ class TestModelWithAlibi:
             sequence_length,
             config_rope.model.target_shapes_by_head["main_stick"],
         )
-        assert outputs["value"].shape == (batch_size, sequence_length, 1)
+        # Note: Value is now computed by separate ValueNetwork, not GPT
 
     def test_forward_pass_alibi(self, config_alibi, sample_inputs):
         """Test forward pass with ALiBi."""
@@ -240,7 +240,7 @@ class TestModelWithAlibi:
             sequence_length,
             config_alibi.model.target_shapes_by_head["main_stick"],
         )
-        assert outputs["value"].shape == (batch_size, sequence_length, 1)
+        # Note: Value is now computed by separate ValueNetwork, not GPT
 
     def test_outputs_are_different(self, config_rope, config_alibi, sample_inputs):
         """Test that RoPE and ALiBi both produce valid outputs."""
@@ -261,8 +261,7 @@ class TestModelWithAlibi:
         # Note: With zero inputs, outputs may be identical, which is fine
         assert torch.isfinite(outputs_rope["buttons"]).all()
         assert torch.isfinite(outputs_alibi["buttons"]).all()
-        assert torch.isfinite(outputs_rope["value"]).all()
-        assert torch.isfinite(outputs_alibi["value"]).all()
+        # Note: Value is now computed by separate ValueNetwork, not GPT
 
     def test_gradient_flow_alibi(self, config_alibi, sample_inputs):
         """Test that gradients flow correctly with ALiBi."""
@@ -272,12 +271,12 @@ class TestModelWithAlibi:
         outputs = model(sample_inputs)
 
         # Create a dummy loss from all outputs to ensure gradients flow everywhere
+        # Note: Value is now computed by separate ValueNetwork, not GPT
         loss = (
             outputs["buttons"].sum()
             + outputs["main_stick"].sum()
             + outputs["c_stick"].sum()
             + outputs["shoulder"].sum()
-            + outputs["value"].sum()
         )
 
         loss.backward()

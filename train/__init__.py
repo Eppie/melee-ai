@@ -27,7 +27,6 @@ from train.checkpoint import (
 )
 from train.display import (
     format_confusion_matrix,
-    format_metrics_dict,
 )
 from train.gradients import (
     _move_optimizer_state_to_device as move_optimizer_state_to_device,
@@ -102,7 +101,6 @@ __all__ = [
     "compute_value_targets",
     # Display
     "format_confusion_matrix",
-    "format_metrics_dict",
     # Setup helpers
     "parse_cli_overrides",
     "print_config",

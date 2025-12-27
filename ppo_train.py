@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
@@ -49,6 +50,7 @@ from controller_utils import (
     C_STICK_QUANTIZED,
     SHOULDER_QUANTIZED,
 )
+from model.sampling import action_info_to_controller_state
 from libmelee.melee.console import Console
 from libmelee.melee.controller import Controller
 from libmelee.melee.enums import (
@@ -74,6 +76,8 @@ from train.value_head import (
     build_reward_feature_index,
     compute_frame_rewards,
     compute_reward_components,
+    compute_tech_rewards,
+    compute_tech_reward_components,
 )
 
 
@@ -105,11 +109,11 @@ class PPOConfig:
     # Training stability
     grad_clip: float = 0.5  # Gradient clipping max norm
     normalize_advantages: bool = True  # Normalize advantages
-    max_kl: float = 0.05  # Stop epoch early if mean KL exceeds this threshold
+    max_kl: float = float('inf')  # KL threshold DISABLED for tech experiment (was 0.05)
     clip_value_loss: bool = True  # Clip value function updates (prevents value collapse)
 
     # Teacher KL penalty (keeps policy close to imitation behavior)
-    kl_teacher_weight: float = 0.1  # Weight for KL(policy || teacher), 0 to disable
+    kl_teacher_weight: float = 0.0  # DISABLED for tech experiment (was 0.1)
 
     # Checkpointing
     checkpoint_interval: int = 10  # Save checkpoint every N rollouts (stocks)
@@ -432,45 +436,6 @@ def select_actions_with_logprobs(
     raise ValueError(f"Unknown action selection mode: {mode}")
 
 
-def action_info_to_controller_state(
-    action_info: ActionInfo,
-    engine: GPTInferenceEngine,
-) -> ControllerState:
-    """Convert ActionInfo to ControllerState for game application.
-
-    Args:
-        action_info: Sampled actions
-        engine: Inference engine with quantization tables
-
-    Returns:
-        ControllerState with normalized [0, 1] values
-    """
-    # Convert stick indices to coordinates using quantization tables
-    main_coords = CONTROL_STICK_QUANTIZED[action_info.main_stick_idx]
-    c_coords = C_STICK_QUANTIZED[action_info.c_stick_idx]
-    shoulder_val = SHOULDER_QUANTIZED[action_info.shoulder_idx]
-
-    # Convert to Dolphin [0, 1] coordinates
-    main_x, main_y = model_to_dolphin01(main_coords)
-    c_x, c_y = model_to_dolphin01(c_coords)
-
-    # Extract button values
-    buttons = action_info.buttons
-
-    return ControllerState(
-        main_stick_x=main_x,
-        main_stick_y=main_y,
-        c_stick_x=c_x,
-        c_stick_y=c_y,
-        shoulder_analog=shoulder_val,
-        button_a=bool(buttons[0].item()),
-        button_b=bool(buttons[1].item()),
-        button_xy=bool(buttons[2].item()),
-        button_z=bool(buttons[3].item()),
-        button_lr=bool(buttons[4].item()),
-    )
-
-
 # ============================================================================
 # Rollout Collection
 # ============================================================================
@@ -635,7 +600,7 @@ def collect_rollout(
         action_info = select_actions_with_logprobs(outputs, action_selection)
 
         # Apply to game
-        controller_state = action_info_to_controller_state(action_info, engine)
+        controller_state = action_info_to_controller_state(action_info)
         apply_model_outputs_to_game(controllers[BOT_PORT], controller_state)
 
         # Store step - ONLY store current frame [F], not full sequence!
@@ -652,22 +617,24 @@ def collect_rollout(
 
     # ===== POST-EPISODE PROCESSING =====
     # Now compute rewards and transfer to CPU
+    # TECH-ONLY REWARD: Using compute_tech_rewards instead of compute_frame_rewards
     warmup = engine.warmup_frames
     total_frames = frame_count
     print(f"\n[Rollout ended] Total: {total_frames} frames ({warmup} warmup + {len(steps)} collected)")
-    print("[Post-process] Computing rewards...")
+    print("[Post-process] Computing TECH-ONLY rewards...")
     post_start = time.perf_counter()
     device = next(model.parameters()).device
     rewards = torch.zeros(len(steps), dtype=torch.float32)
     if steps:
         features = torch.stack([s.features for s in steps], dim=0)  # [L, F]
         features_device = features.to(device)
-        rewards_tensor = compute_frame_rewards(
-            features_device.unsqueeze(0), reward_idx, reward_config
+        # TECH-ONLY: Use tech rewards instead of full reward function
+        rewards_tensor = compute_tech_rewards(
+            features_device.unsqueeze(0), reward_idx
         )
         rewards = rewards_tensor[0].detach().cpu()
-        components = compute_reward_components(
-            features_device.unsqueeze(0), reward_idx, reward_config
+        components = compute_tech_reward_components(
+            features_device.unsqueeze(0), reward_idx
         )
         components_cpu = {key: value[0].detach().cpu() for key, value in components.items()}
     else:
@@ -682,20 +649,18 @@ def collect_rollout(
     post_elapsed = time.perf_counter() - post_start
     print(f"[Rewards computed] {post_elapsed:.2f}s | Total reward: {total_reward:+.2f}")
     if components_cpu:
-        print("[Reward breakdown]")
-        for key in ("damage", "stock", "hitlag", "low_shield", "hitstun"):
+        print("[TECH Reward breakdown]")
+        for key in ("p1_tech_success", "p1_tech_miss", "p2_tech_success", "p2_tech_miss"):
             values = components_cpu.get(key)
             if values is None:
                 continue
             nonzero = int((values != 0).sum().item())
             total = float(values.sum().item())
-            abs_total = float(values.abs().sum().item())
             print(
-                f"  {key:>10}: sum={total:+.4f} | "
-                f"abs_sum={abs_total:.4f} | nonzero={nonzero:4d}"
+                f"  {key:>16}: count={int(total):2d} (frames={nonzero:4d})"
             )
         total_components = float(components_cpu["total"].sum().item())
-        print(f"  {'total':>10}: sum={total_components:+.4f}")
+        print(f"  {'total':>16}: sum={total_components:+.2f}")
 
     return Rollout(
         steps=steps,
@@ -1849,38 +1814,128 @@ def main():
         default=None,
         help="Path to teacher model checkpoint for KL penalty (defaults to --checkpoint)",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Start from a fresh untrained model (random weights) instead of a checkpoint",
+    )
     args, remaining = parser.parse_known_args()
 
-    # Determine checkpoint path first (needed for config loading)
-    checkpoint_path = args.checkpoint
-    if checkpoint_path is None:
-        default_dir = Path("checkpoints")
-        latest = find_latest_checkpoint(default_dir)
-        if latest is None:
-            raise FileNotFoundError(
-                f"No checkpoint provided and none found in {default_dir.resolve()}"
-            )
-        checkpoint_path = latest
-
-    # Initialize config FROM CHECKPOINT (important: uses same reward config as training)
+    # Parse CLI overrides
     overrides = parse_cli_overrides(remaining)
-    init_config_from_checkpoint(checkpoint_path, overrides=overrides)
-    config = get_config()
 
-    # Print full reward configuration
+    # Handle --fresh flag vs checkpoint loading
+    if args.fresh:
+        # ===== FRESH MODEL: Start from random weights =====
+        print("\n" + "=" * 60)
+        print("FRESH MODEL - Starting from random weights!")
+        print("=" * 60)
+
+        # Initialize config with defaults (not from checkpoint)
+        init_config(overrides=overrides)
+        config = get_config()
+        checkpoint_path = None
+
+        # Create fresh model
+        model = GPT(config)
+
+        # Determine device
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+
+        model = model.to(device)
+        model.train()
+        print(f"Fresh model created. Device: {device}")
+        print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+        # Create column map from default feature/target names
+        from model_interface import _DEFAULT_FEATURE_NAMES, _DEFAULT_TARGET_NAMES
+        feature_names = list(_DEFAULT_FEATURE_NAMES)
+        target_names = list(_DEFAULT_TARGET_NAMES)
+        colmap = ColumnMap(feature_names, target_names)
+
+        # Create a minimal engine-like object for inference
+        class FreshEngine:
+            def __init__(self, model, colmap, device, seq_len=256):
+                self.model = model
+                self.colmap = colmap
+                self.device = device
+                self.seq_len = seq_len
+                self.warmup_frames = 256
+                self.buffer: deque[torch.Tensor] = deque(maxlen=seq_len)
+                self.frame_history: deque = deque(maxlen=seq_len)
+                self.feature_names = colmap.feat_names
+                self.feature_dim = len(colmap.feat_names)
+
+            def prepare_inputs(self, raw_inputs):
+                """Prepare model inputs from transformed features dict."""
+                # Convert dict to tensor (same as GPTInferenceEngine._frame_to_tensor)
+                frame = torch.zeros(self.feature_dim, dtype=torch.float32)
+                for idx, name in enumerate(self.feature_names):
+                    frame[idx] = raw_inputs[name]
+
+                self.buffer.append(frame)
+
+                if len(self.buffer) < self.warmup_frames:
+                    return None
+
+                # Stack and build model inputs
+                stacked = torch.stack(list(self.buffer), dim=0)  # [seq_len, F]
+                batch = stacked.unsqueeze(0).to(self.device)  # [1, seq_len, F]
+
+                from train.batch_utils import build_model_inputs
+                return build_model_inputs(batch, self.colmap)
+
+        engine = FreshEngine(model, colmap, device, seq_len=config.seq_len)
+
+    else:
+        # ===== CHECKPOINT MODEL: Load from existing checkpoint =====
+        checkpoint_path = args.checkpoint
+        if checkpoint_path is None:
+            default_dir = Path("checkpoints")
+            latest = find_latest_checkpoint(default_dir)
+            if latest is None:
+                raise FileNotFoundError(
+                    f"No checkpoint provided and none found in {default_dir.resolve()}"
+                )
+            checkpoint_path = latest
+
+        # Initialize config FROM CHECKPOINT
+        init_config_from_checkpoint(checkpoint_path, overrides=overrides)
+        config = get_config()
+
+        # Load model from checkpoint
+        print(f"Loading model from: {checkpoint_path}")
+        engine = GPTInferenceEngine(checkpoint_path=checkpoint_path)
+        model = engine.model
+        model.train()  # Switch to training mode
+        colmap = engine.colmap
+
+        device = next(model.parameters()).device
+        print(f"Model loaded. Device: {device}")
+
+    # Print reward configuration
     rc = config.reward
     print("\n" + "=" * 60)
-    print("REWARD CONFIGURATION (from checkpoint)")
+    print("TECH-ONLY REWARD EXPERIMENT")
     print("=" * 60)
-    print(f"  gamma:                  {rc.gamma}")
-    print(f"  reward_damage_dealt:    {rc.reward_damage_dealt}")
-    print(f"  reward_stock_taken:     {rc.reward_stock_taken}")
-    print(f"  reward_hitlag_opponent: {rc.reward_hitlag_opponent}")
-    print(f"  reward_low_shield:      {rc.reward_low_shield}")
-    print(f"  reward_hitstun_min_frames:  {rc.reward_hitstun_min_frames}")
-    print(f"  reward_hitstun_peak_frames: {rc.reward_hitstun_peak_frames}")
-    print(f"  reward_hitstun_max_frames:  {rc.reward_hitstun_max_frames}")
-    print(f"  reward_hitstun_peak_value:  {rc.reward_hitstun_peak_value}")
+    print("  Reward function: compute_tech_rewards()")
+    print("  +1 for successful tech (neutral, forward, backward, wall, ceiling)")
+    print("  -1 for missed tech (DownBoundU, DownBoundD)")
+    print("  Zero-sum: ego rewards minus opponent rewards")
+    print("")
+    print("  Settings:")
+    print(f"    gamma:            {rc.gamma}")
+    print(f"    max_kl:           DISABLED (inf)")
+    print(f"    kl_teacher_weight: DISABLED (0.0)")
+    if args.fresh:
+        print("    model:            FRESH (random weights)")
+    else:
+        print(f"    model:            {checkpoint_path}")
     print("=" * 60 + "\n")
 
     ppo_config = PPOConfig()
@@ -1889,15 +1944,6 @@ def main():
         raise ValueError(
             f"Expected config.seq_len=256 for PPO, got {seq_len}."
         )
-
-    # Load model from checkpoint
-    print(f"Loading model from: {checkpoint_path}")
-    engine = GPTInferenceEngine(checkpoint_path=checkpoint_path)
-    model = engine.model
-    model.train()  # Switch to training mode
-
-    device = next(model.parameters()).device
-    print(f"Model loaded. Device: {device}")
 
     # Load frozen teacher model for KL penalty (if enabled)
     teacher_model: Optional[GPT] = None
@@ -2032,7 +2078,7 @@ def main():
             controllers=controllers,
             engine=engine,
             model=model,
-            column_map=engine.colmap,
+            column_map=colmap,
             reward_config=config.reward,
             current_stage=current_stage,
             bot_char=bot_char,
@@ -2100,7 +2146,7 @@ def main():
             loss_components = compute_ppo_loss_with_gradient_accumulation(
                 rollout=rollout,
                 model=model,
-                column_map=engine.colmap,
+                column_map=colmap,
                 ppo_config=ppo_config,
                 optimizer=optimizer,
                 seq_len=seq_len,

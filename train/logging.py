@@ -643,10 +643,6 @@ def prepare_logging_bundle(
         )
         log_payload.update(weight_drift_metrics)
 
-    # 9. Data loading metrics (chunk load time, GPU idle time, etc.)
-    dataloader_metrics = components.dataloader_metrics.get_summary()
-    log_payload.update(dataloader_metrics)
-
     return LoggingBundle(log_lines=log_lines, payload=log_payload)
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
@@ -24,25 +24,12 @@ def _schema_feature_dims() -> Tuple[int, int]:
 
 
 def _compute_categorical_size(
-    use_learned_embeddings: bool,
     num_stages: int,
     num_characters: int,
     num_actions: int,
-    embedding_dim_stage: int,
-    embedding_dim_character: int,
-    embedding_dim_action: int,
 ) -> int:
-    """Helper to compute categorical feature size."""
-    if use_learned_embeddings:
-        # With learned embeddings: stage_emb + char_emb*2 + action_emb*2
-        return (
-            embedding_dim_stage
-            + embedding_dim_character * 2  # ego + opponent
-            + embedding_dim_action * 2  # ego + opponent
-        )
-    else:
-        # With one-hot encoding: num_stages + num_characters*2 + num_actions*2
-        return num_stages + num_characters * 2 + num_actions * 2
+    """Helper to compute categorical feature size (one-hot encoding)."""
+    return num_stages + num_characters * 2 + num_actions * 2
 
 
 class GPTConfig(BaseModel):
@@ -70,7 +57,7 @@ class GPTConfig(BaseModel):
         ),
     )
     n_layer: int = Field(
-        default=4,
+        default=6,
         ge=1,
         description=(
             "Number of transformer layers. Controls model depth and abstraction capability. "
@@ -124,18 +111,6 @@ class GPTConfig(BaseModel):
         ge=1,
         description="Number of possible action states (one-hot encoded). Default 396 covers all Melee action states.",
     )
-    gamma: float = Field(
-        default=0.999,
-        ge=0,
-        le=1,
-        description=(
-            "Discount factor for value head bootstrapping. Used when computing value targets. "
-            "Effect: Higher gamma (0.999-0.9995) = value head considers longer horizons; "
-            "lower gamma (0.99-0.995) = more myopic value estimates. Reasonable range: [0.99, 0.9995]. "
-            "Note: This is separate from rl_config.gamma which is used for PPO. "
-            "Interacts with: value head training, reward scaling."
-        ),
-    )
     n_kv_head: Optional[int] = Field(
         default=8,
         ge=1,
@@ -145,53 +120,6 @@ class GPTConfig(BaseModel):
             "Effect: Lower n_kv_head (1-4) = less memory/compute, slightly lower quality; "
             "n_kv_head = n_head = standard attention. Reasonable values: 1 (MQA), n_head/2, n_head (standard). "
             "Interacts with: n_head (must be divisible by n_kv_head)."
-        ),
-    )
-    use_alibi: bool = Field(
-        default=False,
-        description=(
-            "Use ALiBi (Attention with Linear Biases) instead of RoPE (Rotary Position Embeddings). "
-            "ALiBi adds position-dependent biases to attention scores, allowing better length extrapolation. "
-            "Effect: When True, disables RoPE and uses ALiBi biases; when False (default), uses RoPE. "
-            "ALiBi may improve performance on sequences longer than training length. "
-            "Cannot be used simultaneously with RoPE - this is a mutually exclusive choice."
-        ),
-    )
-    use_learned_embeddings: bool = Field(
-        default=False,
-        description=(
-            "Use learned embeddings for categorical features (stage, ego_character, opponent_character, "
-            "ego_action, opponent_action) instead of one-hot encoding. "
-            "Effect: When True (default), uses compact learned embeddings with embedding_dim dimensions; "
-            "when False, uses one-hot encoding (num_stages + num_characters*2 + num_actions*2 dimensions). "
-            "Learned embeddings are more parameter-efficient and can capture semantic relationships. "
-            "Embedding dimensions: stage=8, character=16, action=32. "
-            "Interacts with: input_size (smaller with embeddings), model capacity."
-        ),
-    )
-    embedding_dim_stage: int = Field(
-        default=8,
-        ge=1,
-        description="Embedding dimension for stage when use_learned_embeddings=True. Default 8 for 6 stages.",
-    )
-    embedding_dim_character: int = Field(
-        default=16,
-        ge=1,
-        description="Embedding dimension for characters when use_learned_embeddings=True. Default 16 for 26 characters.",
-    )
-    embedding_dim_action: int = Field(
-        default=32,
-        ge=1,
-        description="Embedding dimension for action states when use_learned_embeddings=True. Default 32 for 396 actions.",
-    )
-    head_flow: Literal["sequential", "parallel"] = Field(
-        default="sequential",
-        description=(
-            "Output head computation mode. Controls how output heads (main_stick, c_stick, buttons, shoulder) "
-            "interact. Options: 'sequential' = heads computed in order, each receiving concatenated outputs from "
-            "previous heads (allows information flow between heads), 'parallel' = all heads computed independently "
-            "on base features (faster but no inter-head communication). Reasonable: 'sequential' for better accuracy, "
-            "'parallel' for speed."
         ),
     )
     target_shapes_by_head: Dict[str, int] = Field(
@@ -207,46 +135,6 @@ class GPTConfig(BaseModel):
         ),
     )
 
-    def __setattr__(self, name, value):
-        """Override to recalculate input_size when use_learned_embeddings changes."""
-        # Call parent setattr first
-        super().__setattr__(name, value)
-
-        # If use_learned_embeddings or related fields changed, recalculate input_size
-        if name in (
-            "use_learned_embeddings",
-            "embedding_dim_stage",
-            "embedding_dim_character",
-            "embedding_dim_action",
-            "num_stages",
-            "num_characters",
-            "num_actions",
-        ):
-            # Only recalculate if input_size was auto-computed (not explicitly set)
-            # We check if it's been set by seeing if it exists
-            if hasattr(self, "_input_size_auto_computed"):
-                self._recalculate_input_size()
-
-    def _recalculate_input_size(self):
-        """Recalculate input_size based on current settings."""
-        default_gamestate, default_controller = _schema_feature_dims()
-
-        categorical_size = _compute_categorical_size(
-            self.use_learned_embeddings,
-            self.num_stages,
-            self.num_characters,
-            self.num_actions,
-            self.embedding_dim_stage,
-            self.embedding_dim_character,
-            self.embedding_dim_action,
-        )
-
-        new_input_size = categorical_size + default_gamestate + default_controller
-
-        # Use object.__setattr__ to avoid recursion
-        object.__setattr__(self, "input_size", new_input_size)
-
-    # TODO: This wasn't working before, so we might have implemented the same logic elsewhere, find it and remove it
     @model_validator(mode="after")
     def compute_input_size(self, info: ValidationInfo):
         """Dynamically compute input_size if not explicitly set."""
@@ -264,22 +152,15 @@ class GPTConfig(BaseModel):
             controller_dim = controller_dim or default_controller
 
         categorical_size = _compute_categorical_size(
-            self.use_learned_embeddings,
             self.num_stages,
             self.num_characters,
             self.num_actions,
-            self.embedding_dim_stage,
-            self.embedding_dim_character,
-            self.embedding_dim_action,
         )
 
         # Use object.__setattr__ to bypass Pydantic's validation since we're in a validator
         object.__setattr__(
             self, "input_size", categorical_size + gamestate_dim + controller_dim
         )
-
-        # Mark that input_size was auto-computed so we can recalculate it later
-        object.__setattr__(self, "_input_size_auto_computed", True)
 
         return self
 

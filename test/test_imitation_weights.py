@@ -83,43 +83,23 @@ def test_compute_value_filter_weights_soft(dummy_values):
     assert weights[0, 0] < weights[0, 4]
 
 
-def test_compute_advantage_weights_n_step(dummy_values):
-    # n_step = 1
-    # adv[t] = V[t+1] - V[t]
-    # Row 0: 0.1, 0.2... diffs are +0.1. Positive advantage.
-    # Row 1: 0.5, 0.4... diffs are -0.1. Negative advantage.
+def test_compute_advantage_weights(dummy_values):
+    # Row 0: 0.1, 0.2... increasing values -> positive advantage
+    # Row 1: 0.5, 0.4... decreasing values -> negative advantage
 
-    weights = compute_advantage_weights(
-        dummy_values, n_steps=1, alpha=1.0, use_gae=False
-    )
+    weights = compute_advantage_weights(dummy_values, alpha=1.0)
 
     assert weights.shape == dummy_values.shape
-
-    # Last step has 0 advantage by definition in the implementation (or handled gracefully)
+    assert torch.all(weights >= 0)
 
     # Row 0: increasing values -> positive advantage -> weight > 1.0 (boosted)
-    # n=1, so it compares 0 vs 1, 1 vs 2.
-    # implementation: advantages[:, :-n] = values[:, n:] - values[:, :-n]
-    # values[0] is [0.1, 0.2, 0.3, 0.4, 0.5]
-    # adv will be [0.1, 0.1, 0.1, 0.1, 0.0] (approx)
-    # weights = 1 + alpha * adv = 1 + 1.0 * 0.1 = 1.1
     assert torch.all(weights[0, :-1] > 1.0)
 
     # Row 1: decreasing values -> negative advantage -> weight < 1.0 (suppressed)
-    # adv will be [-0.1, -0.1, -0.1, -0.1, 0.0]
-    # weights = 1 / (1 + alpha * 0.5 * |adv|) = 1 / (1 + 1.0 * 0.5 * 0.1) = 1/1.05 ≈ 0.952
     assert torch.all(weights[1, :-1] < 1.0)
-    assert (
-        weights[0, 0] > weights[1, 0]
-    )  # Positive advantage weighted much higher than negative
 
-
-def test_compute_advantage_weights_gae(dummy_values):
-    weights = compute_advantage_weights(
-        dummy_values, n_steps=5, alpha=1.0, use_gae=True, gamma=0.99, gae_lambda=0.95
-    )
-    assert weights.shape == dummy_values.shape
-    assert torch.all(weights >= 0)
+    # Positive advantage weighted higher than negative
+    assert weights[0, 0] > weights[1, 0]
 
 
 def test_compute_hybrid_weights(dummy_values):
@@ -178,7 +158,7 @@ def test_compute_imitation_weights_integration(dummy_values):
     assert weights_filter.shape == (B, L)
 
     # Test value_advantage
-    config_adv = ImitationConfig(strategy="value_advantage", advantage_n_steps=2)
+    config_adv = ImitationConfig(strategy="value_advantage")
     weights_adv = compute_imitation_weights(X, value_idx, config_adv)
     assert weights_adv.shape == (B, L)
 
@@ -217,12 +197,10 @@ def test_numerical_stability_large_values():
 
 
 def test_short_sequence_advantage():
-    # L=1, n_steps=5
+    # L=1: no temporal difference possible
     values = torch.tensor([[0.5]], dtype=torch.float32)
-    # n = min(5, 0) = 0
-    # advantages all 0
-    # weights all 1.0
-    weights = compute_advantage_weights(values, n_steps=5, alpha=1.0)
+    # advantages all 0 -> weights all 1.0
+    weights = compute_advantage_weights(values, alpha=1.0)
     assert weights.shape == values.shape
     assert torch.all(weights == 1.0)
 
@@ -258,11 +236,7 @@ def test_hybrid_weights_with_advantage(dummy_values):
     class MockConfig:
         hybrid_strategies = ["value_advantage"]
         hybrid_weights = [1.0]
-        advantage_n_steps = 2
         advantage_alpha = 1.0
-        advantage_use_gae = False
-        gae_gamma = 0.99  # needed if use_gae=True, but harmless here
-        gae_lambda = 0.95  # needed if use_gae=True, but harmless here
 
     weights = compute_hybrid_weights(dummy_values, MockConfig())
     assert weights.shape == dummy_values.shape

@@ -21,7 +21,6 @@ from tensordict import TensorDict
 from model.attention import CausalSelfAttention
 from model.norm import norm
 from model.output_head import SimpleHead
-from model.positional_encoding import get_alibi_biases
 from utils import _resolve_device
 
 
@@ -50,12 +49,11 @@ class Block(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cos: torch.Tensor = None,
-        sin: torch.Tensor = None,
-        alibi_bias: torch.Tensor = None,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
     ) -> torch.Tensor:
         hidden_states = hidden_states + self.attention(
-            norm(hidden_states), cos=cos, sin=sin, alibi_bias=alibi_bias
+            norm(hidden_states), cos=cos, sin=sin
         )
         hidden_states = hidden_states + self.mlp_dropout(self.mlp(norm(hidden_states)))
         return hidden_states
@@ -69,20 +67,6 @@ class GPT(nn.Module):
         self.block_size = model_config.block_size
         self.embedding_dim: int = model_config.n_embd
         self.input_size: int = model_config.input_size
-
-        # Categorical embeddings: use learned embeddings or one-hot encoding
-        self.use_learned_embeddings = model_config.use_learned_embeddings
-        if self.use_learned_embeddings:
-            # Create embedding layers for categorical features
-            self.stage_embedding = nn.Embedding(
-                model_config.num_stages, model_config.embedding_dim_stage
-            )
-            self.character_embedding = nn.Embedding(
-                model_config.num_characters, model_config.embedding_dim_character
-            )
-            self.action_embedding = nn.Embedding(
-                model_config.num_actions, model_config.embedding_dim_action
-            )
 
         self.projection_down = nn.Linear(self.input_size, self.embedding_dim, bias=True)
         self.dropout = nn.Dropout(model_config.dropout)
@@ -108,35 +92,21 @@ class GPT(nn.Module):
         # TODO: Move this to config
         head_hidden_dim = 128
 
-        # Controller output heads - input sizes depend on head_flow mode
-        self.head_flow = model_config.head_flow
-
-        if self.head_flow == "sequential":
-            # Sequential mode: each head receives concatenated outputs from previous heads
-            # Order: buttons → main_stick → c_stick → shoulder
-            button_input_size = self.embedding_dim
-            main_stick_input_size = self.embedding_dim + self.button_output_size
-            c_stick_input_size = (
-                self.embedding_dim
-                + self.button_output_size
-                + self.main_stick_output_size
-            )
-            shoulder_input_size = (
-                self.embedding_dim
-                + self.button_output_size
-                + self.main_stick_output_size
-                + self.c_stick_output_size
-            )
-        elif self.head_flow == "parallel":
-            # Parallel mode: all heads receive same base features
-            button_input_size = self.embedding_dim
-            main_stick_input_size = self.embedding_dim
-            c_stick_input_size = self.embedding_dim
-            shoulder_input_size = self.embedding_dim
-        else:
-            raise ValueError(
-                f"Unknown head_flow mode: {self.head_flow}. Valid options: 'sequential', 'parallel'"
-            )
+        # Sequential output heads: each head receives concatenated outputs from previous heads
+        # Order: buttons → main_stick → c_stick → shoulder
+        button_input_size = self.embedding_dim
+        main_stick_input_size = self.embedding_dim + self.button_output_size
+        c_stick_input_size = (
+            self.embedding_dim
+            + self.button_output_size
+            + self.main_stick_output_size
+        )
+        shoulder_input_size = (
+            self.embedding_dim
+            + self.button_output_size
+            + self.main_stick_output_size
+            + self.c_stick_output_size
+        )
 
         self.button_head = SimpleHead(
             button_input_size, self.button_output_size, hidden=head_hidden_dim
@@ -153,34 +123,15 @@ class GPT(nn.Module):
 
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
 
-        # Precompute positional encodings: either RoPE or ALiBi
-        self.use_alibi = model_config.use_alibi
-        if self.use_alibi:
-            # Use ALiBi instead of RoPE
-            # Precompute ALiBi biases for maximum sequence length
-            alibi_bias = get_alibi_biases(
-                num_heads=model_config.n_head,
-                max_seq_len=self.block_size,
-                device=torch.device(
-                    "cpu"
-                ),  # Will be moved to correct device with model.to(device)
-            )
-            self.register_buffer("alibi_bias", alibi_bias, persistent=False)
-            # Still register cos/sin as None for compatibility
-            self.register_buffer("cos", None, persistent=False)
-            self.register_buffer("sin", None, persistent=False)
-        else:
-            # Use RoPE (default)
-            # TODO: Do we need this multiplier?
-            self.rotary_sequence_length = self.block_size * 2
-            head_dim = model_config.n_embd // model_config.n_head
-            cos, sin = self._precompute_rotary_embeddings(
-                self.rotary_sequence_length, head_dim
-            )
-            self.register_buffer("cos", cos, persistent=False)
-            self.register_buffer("sin", sin, persistent=False)
-            # Register alibi_bias as None for compatibility
-            self.register_buffer("alibi_bias", None, persistent=False)
+        # Precompute RoPE positional encodings
+        # TODO: Do we need this multiplier?
+        self.rotary_sequence_length = self.block_size * 2
+        head_dim = model_config.n_embd // model_config.n_head
+        cos, sin = self._precompute_rotary_embeddings(
+            self.rotary_sequence_length, head_dim
+        )
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
 
         self.apply(self._init_weights)
 
@@ -219,45 +170,30 @@ class GPT(nn.Module):
         )  # add batch and head dims for later broadcasting
         return cos, sin
 
-    # TODO: Is there a way to pre-compute and cache the one-hot results?
-    # TODO: Why do we need the `.long()` calls?
     def _embed_inputs(self, inputs: TensorDict) -> torch.Tensor:
-        """Includes categorical embeddings (learned or one-hot), and numerical features."""
-        if self.use_learned_embeddings:
-            # Use learned embeddings for categorical features
-            categorical_features = [
-                self.stage_embedding(inputs["stage"].squeeze(-1).long()),
-                self.character_embedding(inputs["ego_character"].squeeze(-1).long()),
-                self.character_embedding(
-                    inputs["opponent_character"].squeeze(-1).long()
-                ),
-                self.action_embedding(inputs["ego_action"].squeeze(-1).long()),
-                self.action_embedding(inputs["opponent_action"].squeeze(-1).long()),
-            ]
-        else:
-            # Use one-hot encoding for categorical features
-            categorical_features = [
-                F.one_hot(
-                    inputs["stage"].squeeze(-1).long(),
-                    num_classes=self.config.model.num_stages,
-                ).float(),
-                F.one_hot(
-                    inputs["ego_character"].squeeze(-1).long(),
-                    num_classes=self.config.model.num_characters,
-                ).float(),
-                F.one_hot(
-                    inputs["opponent_character"].squeeze(-1).long(),
-                    num_classes=self.config.model.num_characters,
-                ).float(),
-                F.one_hot(
-                    inputs["ego_action"].squeeze(-1).long(),
-                    num_classes=self.config.model.num_actions,
-                ).float(),
-                F.one_hot(
-                    inputs["opponent_action"].squeeze(-1).long(),
-                    num_classes=self.config.model.num_actions,
-                ).float(),
-            ]
+        """One-hot encode categorical features and concatenate with numerical features."""
+        categorical_features = [
+            F.one_hot(
+                inputs["stage"].squeeze(-1).long(),
+                num_classes=self.config.model.num_stages,
+            ).float(),
+            F.one_hot(
+                inputs["ego_character"].squeeze(-1).long(),
+                num_classes=self.config.model.num_characters,
+            ).float(),
+            F.one_hot(
+                inputs["opponent_character"].squeeze(-1).long(),
+                num_classes=self.config.model.num_characters,
+            ).float(),
+            F.one_hot(
+                inputs["ego_action"].squeeze(-1).long(),
+                num_classes=self.config.model.num_actions,
+            ).float(),
+            F.one_hot(
+                inputs["opponent_action"].squeeze(-1).long(),
+                num_classes=self.config.model.num_actions,
+            ).float(),
+        ]
 
         return torch.cat(
             categorical_features
@@ -278,66 +214,41 @@ class GPT(nn.Module):
         hidden_states = self.projection_down(combined_inputs)
         hidden_states = self.dropout(hidden_states)
 
-        # Prepare positional encodings based on use_alibi
-        if self.use_alibi:
-            # Use ALiBi - no need to slice, attention layer handles it
-            cos = None
-            sin = None
-            alibi_bias = self.alibi_bias
-        else:
-            # Use RoPE
-            cos = self.cos[:, :sequence_length]
-            sin = self.sin[:, :sequence_length]
-            alibi_bias = None
+        # Slice RoPE embeddings to sequence length
+        cos = self.cos[:, :sequence_length]
+        sin = self.sin[:, :sequence_length]
 
         for block in self.blocks:
-            hidden_states = block(
-                hidden_states, cos=cos, sin=sin, alibi_bias=alibi_bias
-            )
+            hidden_states = block(hidden_states, cos=cos, sin=sin)
 
         hidden_states = norm(hidden_states)
 
-        base_hidden_states = hidden_states
+        # Sequential heads: each head receives concatenated outputs from previous heads
+        # Order: buttons → main_stick → c_stick → shoulder
+        button_logits = self.button_head(hidden_states)
 
-        if self.head_flow == "parallel":
-            # Parallel heads: each head operates independently on base features
-            button_logits = self.button_head(base_hidden_states)
-            main_stick = self.main_stick_head(base_hidden_states)
-            c_stick = self.c_stick_head(base_hidden_states)
-            shoulder = self.shoulder_head(base_hidden_states)
+        main_stick = self.main_stick_head(
+            torch.cat((hidden_states, button_logits.detach()), dim=-1)
+        )
 
-        elif self.head_flow == "sequential":
-            # Sequential heads: each head receives concatenated outputs from previous heads
-            # Order: buttons → main_stick → c_stick → shoulder
-            button_logits = self.button_head(base_hidden_states)
-
-            main_stick = self.main_stick_head(
-                torch.cat((base_hidden_states, button_logits.detach()), dim=-1)
+        c_stick = self.c_stick_head(
+            torch.cat(
+                (hidden_states, button_logits.detach(), main_stick.detach()),
+                dim=-1,
             )
+        )
 
-            c_stick = self.c_stick_head(
-                torch.cat(
-                    (base_hidden_states, button_logits.detach(), main_stick.detach()),
-                    dim=-1,
-                )
+        shoulder = self.shoulder_head(
+            torch.cat(
+                (
+                    hidden_states,
+                    button_logits.detach(),
+                    main_stick.detach(),
+                    c_stick.detach(),
+                ),
+                dim=-1,
             )
-
-            shoulder = self.shoulder_head(
-                torch.cat(
-                    (
-                        base_hidden_states,
-                        button_logits.detach(),
-                        main_stick.detach(),
-                        c_stick.detach(),
-                    ),
-                    dim=-1,
-                )
-            )
-
-        else:
-            raise ValueError(
-                f"Unknown head_flow mode: {self.head_flow}. Valid options: 'sequential', 'parallel'"
-            )
+        )
 
         # Build output dict with controller heads
         outputs_dict = {

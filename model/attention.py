@@ -34,9 +34,8 @@ class CausalSelfAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cos: torch.Tensor = None,
-        sin: torch.Tensor = None,
-        alibi_bias: torch.Tensor = None,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
     ) -> torch.Tensor:
         batch_size, sequence_length, channels = hidden_states.size()
 
@@ -51,30 +50,9 @@ class CausalSelfAttention(nn.Module):
             batch_size, sequence_length, self.num_key_value_heads, self.head_dim
         )
 
-        # Apply positional encoding: either RoPE or ALiBi
-        if alibi_bias is None:
-            # Use RoPE (default)
-            query_states = apply_rotary_emb(query_states, cos, sin)
-            key_states = apply_rotary_emb(key_states, cos, sin)
-            attn_mask = None
-            is_causal = True
-        else:
-            # Use ALiBi - no rotary embeddings needed
-            # Slice alibi_bias to current sequence length and make causal
-            # alibi_bias shape: (1, num_heads, max_seq_len, max_seq_len)
-            attn_mask = alibi_bias[:, :, :sequence_length, :sequence_length]
-
-            # Apply causal mask by setting future positions to -inf
-            # Create causal mask: lower triangular matrix (1 where valid, 0 where invalid)
-            causal_mask = torch.tril(
-                torch.ones(
-                    sequence_length, sequence_length, device=hidden_states.device
-                )
-            )
-            # Expand to match attn_mask shape and apply
-            causal_mask = causal_mask.view(1, 1, sequence_length, sequence_length)
-            attn_mask = attn_mask.masked_fill(causal_mask == 0, float("-inf"))
-            is_causal = False  # We've already applied causal masking
+        # Apply RoPE
+        query_states = apply_rotary_emb(query_states, cos, sin)
+        key_states = apply_rotary_emb(key_states, cos, sin)
 
         # Normalize queries and keys
         query_states = norm(query_states)
@@ -90,16 +68,12 @@ class CausalSelfAttention(nn.Module):
         key_states = repeat_key_value_heads(key_states, num_repetitions)
         value_states = repeat_key_value_heads(value_states, num_repetitions)
 
-        # Note: ALiBi bias is already sized for all query heads (num_query_heads),
-        # so no repetition needed even with MQA/GQA
-
         attention_output = F.scaled_dot_product_attention(
             query_states,
             key_states,
             value_states,
-            attn_mask=attn_mask,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=is_causal,
+            is_causal=True,
         )
 
         # Reshape back to (batch_size, sequence_length, embedding_dim)

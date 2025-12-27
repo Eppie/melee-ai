@@ -459,11 +459,9 @@ def make_dataloader(
         stride=stride,
     )
 
-    # Use DataLoaderFactory for consistent configuration
     loader = DataLoaderFactory.create(
         dataset=ds,
         sampler=sampler,
         config=config,
-        is_chunked_mode=False,  # Initial loader is not in chunked mode
     )
     return loader, ds, sampler

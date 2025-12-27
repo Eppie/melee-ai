@@ -97,7 +97,7 @@ Architecture features:
 - Multi-Query Attention (configurable `n_kv_head`)
 - One-hot encoding for categoricals (stage, character, action)
 - 5 output heads: `main_stick`, `c_stick`, `buttons`, `shoulder`, `value`
-- Two output head modes: sequential (heads receive concatenated outputs from previous heads) or parallel (independent)
+- Sequential head flow: each head receives concatenated outputs from previous heads
 
 ### Controller Quantization (`controller_quantization.py`)
 - **Main stick**: 64 discrete positions (wavedash angles, DI, Firefox angles, etc.)
@@ -112,7 +112,6 @@ Modular Pydantic configs split by domain:
 - `train_config.py` - `TrainConfig` for training hyperparameters
 - `gpt_config.py` - `GPTConfig` for model architecture
 - `loss_config.py` - `LossConfig` for loss function weights
-- `feature_config.py` - `FeatureConfig` for feature engineering
 - `rl_config.py` - `RLConfig` for reinforcement learning
 - `imitation_config.py` - `ImitationConfig` for imitation learning
 

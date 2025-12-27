@@ -116,7 +116,6 @@ def test_save_checkpoint_saves_full_config(tmp_path: Path) -> None:
     # Verify other sub-configs are present
     assert "zarr" in config_dict
     assert "loss_weights" in config_dict
-    assert "features" in config_dict
 
 
 def test_load_config_from_checkpoint(tmp_path: Path) -> None:

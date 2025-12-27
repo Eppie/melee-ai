@@ -37,6 +37,3 @@ def setup_logging():
     )
 
     logger.info("Loguru logging configured.")
-
-
-# The function will be called by config/config.py

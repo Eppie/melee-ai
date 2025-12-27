@@ -8,7 +8,6 @@ from pydantic_settings import SettingsConfigDict
 
 from .logging_config import setup_logging
 
-from .feature_config import FeatureConfig
 from .gpt_config import GPTConfig, _schema_feature_dims
 from .imitation_config import ImitationConfig
 from .loss_config import LossConfig
@@ -30,7 +29,6 @@ class Config(BaseModel):
     zarr: ZarrConfig = Field(default_factory=ZarrConfig)
     train: TrainConfig = Field(default_factory=TrainConfig)
     model: GPTConfig = Field(default_factory=GPTConfig)
-    features: FeatureConfig = Field(default_factory=FeatureConfig)
     reward: RewardConfig = Field(default_factory=RewardConfig)
     rl: RLConfig = Field(default_factory=RLConfig)
     loss_weights: LossConfig = Field(default_factory=LossConfig)
@@ -358,8 +356,6 @@ def init_config_from_checkpoint(
         config_dict["rl"] = filter_known_fields(config_dict["rl"], RLConfig)
     if "loss_weights" in config_dict and isinstance(config_dict["loss_weights"], dict):
         config_dict["loss_weights"] = filter_known_fields(config_dict["loss_weights"], LossConfig)
-    if "features" in config_dict and isinstance(config_dict["features"], dict):
-        config_dict["features"] = filter_known_fields(config_dict["features"], FeatureConfig)
     if "imitation" in config_dict and isinstance(config_dict["imitation"], dict):
         config_dict["imitation"] = filter_known_fields(config_dict["imitation"], ImitationConfig)
 

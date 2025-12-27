@@ -36,39 +36,6 @@ class StickMetrics:
         self.maj_correct.zero_()
 
 
-class PositionMetrics:
-    def __init__(self, K: int, device: torch.device):
-        self.correct = torch.tensor(0, dtype=torch.long, device=device)
-        self.total = torch.tensor(0, dtype=torch.long, device=device)
-        self.label_counts = torch.zeros(K, dtype=torch.long, device=device)
-        self.maj_correct = torch.tensor(0, dtype=torch.long, device=device)
-        self.spatial_error_sum = torch.tensor(0.0, dtype=torch.float32, device=device)
-
-    def update(
-        self,
-        pred_idx: torch.Tensor,
-        true_idx: torch.Tensor,
-        majority_baseline: int,
-        spatial_error_sum: torch.Tensor,
-    ):
-        pred_flat = pred_idx.reshape(-1)
-        true_flat = true_idx.reshape(-1)
-
-        self.correct += (pred_flat == true_flat).sum()
-        self.total += true_flat.numel()
-        bincount = torch.bincount(true_flat, minlength=self.label_counts.shape[0])
-        self.label_counts += bincount[: self.label_counts.shape[0]]
-        self.maj_correct += (true_flat == majority_baseline).sum()
-        self.spatial_error_sum += spatial_error_sum
-
-    def reset(self):
-        self.correct.zero_()
-        self.total.zero_()
-        self.label_counts.zero_()
-        self.maj_correct.zero_()
-        self.spatial_error_sum.zero_()
-
-
 # TODO: Do we really need this? Check sweep.py.
 class MetricsAccumulator:
     """Stateful metrics tracker for training/validation.

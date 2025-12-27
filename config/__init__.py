@@ -11,7 +11,6 @@ from .config import (
     reset_config,
     set_config,
 )
-from .feature_config import FeatureConfig
 from .gpt_config import GPTConfig
 from .imitation_config import ImitationConfig
 from .loss_config import LossConfig
@@ -28,7 +27,6 @@ __all__: List[str] = [
     "init_config_from_checkpoint",
     "reset_config",
     "set_config",
-    "FeatureConfig",
     "GPTConfig",
     "ImitationConfig",
     "LossConfig",

@@ -11,6 +11,30 @@ from column_map import ColumnMap
 from config.reward_config import RewardConfig
 
 
+# ============================================================================
+# Tech State Constants (from libmelee/melee/enums.py)
+# ============================================================================
+
+# Missed tech states - player bounces on ground without teching
+TECH_MISS_UP = 0xB7    # DownBoundU - missed tech, facing up
+TECH_MISS_DOWN = 0xBF  # DownBoundD - missed tech, facing down
+
+MISSED_TECH_STATES = frozenset([TECH_MISS_UP, TECH_MISS_DOWN])
+
+# Successful tech states - player successfully techs
+NEUTRAL_TECH = 0xC7      # Passive - tech in place
+FORWARD_TECH = 0xC8      # PassiveStandF - tech roll forward
+BACKWARD_TECH = 0xC9     # PassiveStandB - tech roll backward
+WALL_TECH = 0xCA         # PassiveWall
+WALL_TECH_JUMP = 0xCB    # PassiveWallJump
+CEILING_TECH = 0xCC      # PassiveCeil
+
+SUCCESSFUL_TECH_STATES = frozenset([
+    NEUTRAL_TECH, FORWARD_TECH, BACKWARD_TECH,
+    WALL_TECH, WALL_TECH_JUMP, CEILING_TECH
+])
+
+
 @dataclass(frozen=True)
 class RewardFeatureIdx:
     """Cached indices for reward computation features."""
@@ -373,6 +397,146 @@ def compute_reward_components(
         components[key] = ego[key] - opp[key]
 
     components["total"] = sum(components.values())
+    return components
+
+
+# ============================================================================
+# Tech-Only Reward Function (for PPO experiments)
+# ============================================================================
+
+
+def compute_tech_rewards(
+    X: torch.Tensor,
+    idx: RewardFeatureIdx,
+) -> torch.Tensor:
+    """Compute per-frame rewards based ONLY on tech success/failure.
+
+    This is a simplified reward function for PPO experiments that gives:
+    - +1 for transitioning INTO a successful tech state (ego player techs)
+    - -1 for transitioning INTO a missed tech state (ego player misses tech)
+    - Symmetric: opponent teching/missing gives opposite rewards
+
+    The reward is zero-sum: ego tech rewards minus opponent tech rewards.
+
+    Args:
+        X: ``[B, L, F]`` input feature tensor.
+        idx: Cached feature indices from :func:`build_reward_feature_index`.
+
+    Returns:
+        ``[B, L]`` tensor of per-frame rewards.
+    """
+    B, L, _F = X.shape
+    device = X.device
+    dtype = X.dtype
+
+    rewards = torch.zeros(B, L, device=device, dtype=dtype)
+
+    if L <= 1:
+        return rewards
+
+    # Get action states for both players
+    p1_action = X[:, :, idx.p1_action]  # [B, L]
+    p2_action = X[:, :, idx.p2_action]  # [B, L]
+
+    # Previous and current frames for transition detection
+    p1_prev = p1_action[:, :-1]  # [B, L-1]
+    p1_curr = p1_action[:, 1:]   # [B, L-1]
+    p2_prev = p2_action[:, :-1]  # [B, L-1]
+    p2_curr = p2_action[:, 1:]   # [B, L-1]
+
+    # Detect transitions INTO tech states (was not in state, now is)
+    # Successful tech transitions for P1
+    p1_tech_success = torch.zeros(B, L - 1, device=device, dtype=dtype)
+    for state in SUCCESSFUL_TECH_STATES:
+        entered = (p1_prev != state) & (p1_curr == state)
+        p1_tech_success += entered.to(dtype)
+
+    # Missed tech transitions for P1
+    p1_tech_miss = torch.zeros(B, L - 1, device=device, dtype=dtype)
+    for state in MISSED_TECH_STATES:
+        entered = (p1_prev != state) & (p1_curr == state)
+        p1_tech_miss += entered.to(dtype)
+
+    # Successful tech transitions for P2
+    p2_tech_success = torch.zeros(B, L - 1, device=device, dtype=dtype)
+    for state in SUCCESSFUL_TECH_STATES:
+        entered = (p2_prev != state) & (p2_curr == state)
+        p2_tech_success += entered.to(dtype)
+
+    # Missed tech transitions for P2
+    p2_tech_miss = torch.zeros(B, L - 1, device=device, dtype=dtype)
+    for state in MISSED_TECH_STATES:
+        entered = (p2_prev != state) & (p2_curr == state)
+        p2_tech_miss += entered.to(dtype)
+
+    # P1's perspective (ego):
+    # +1 for P1 successful tech, -1 for P1 missed tech
+    # -1 for P2 successful tech (opponent saved), +1 for P2 missed tech (we punish)
+    p1_reward = p1_tech_success - p1_tech_miss - p2_tech_success + p2_tech_miss
+
+    # Assign rewards to the PREVIOUS frame (transition reward)
+    rewards[:, :-1] = p1_reward
+
+    return rewards
+
+
+def compute_tech_reward_components(
+    X: torch.Tensor,
+    idx: RewardFeatureIdx,
+) -> Dict[str, torch.Tensor]:
+    """Compute tech reward components for logging/debugging.
+
+    Returns:
+        Dict with keys: "p1_tech_success", "p1_tech_miss", "p2_tech_success",
+        "p2_tech_miss", "total"
+    """
+    B, L, _F = X.shape
+    device = X.device
+    dtype = X.dtype
+
+    components = {
+        "p1_tech_success": torch.zeros(B, L, device=device, dtype=dtype),
+        "p1_tech_miss": torch.zeros(B, L, device=device, dtype=dtype),
+        "p2_tech_success": torch.zeros(B, L, device=device, dtype=dtype),
+        "p2_tech_miss": torch.zeros(B, L, device=device, dtype=dtype),
+    }
+
+    if L <= 1:
+        components["total"] = torch.zeros(B, L, device=device, dtype=dtype)
+        return components
+
+    p1_action = X[:, :, idx.p1_action]
+    p2_action = X[:, :, idx.p2_action]
+
+    p1_prev = p1_action[:, :-1]
+    p1_curr = p1_action[:, 1:]
+    p2_prev = p2_action[:, :-1]
+    p2_curr = p2_action[:, 1:]
+
+    for state in SUCCESSFUL_TECH_STATES:
+        entered = (p1_prev != state) & (p1_curr == state)
+        components["p1_tech_success"][:, :-1] += entered.to(dtype)
+
+    for state in MISSED_TECH_STATES:
+        entered = (p1_prev != state) & (p1_curr == state)
+        components["p1_tech_miss"][:, :-1] += entered.to(dtype)
+
+    for state in SUCCESSFUL_TECH_STATES:
+        entered = (p2_prev != state) & (p2_curr == state)
+        components["p2_tech_success"][:, :-1] += entered.to(dtype)
+
+    for state in MISSED_TECH_STATES:
+        entered = (p2_prev != state) & (p2_curr == state)
+        components["p2_tech_miss"][:, :-1] += entered.to(dtype)
+
+    # Total reward from P1's perspective
+    components["total"] = (
+        components["p1_tech_success"]
+        - components["p1_tech_miss"]
+        - components["p2_tech_success"]
+        + components["p2_tech_miss"]
+    )
+
     return components
 
 

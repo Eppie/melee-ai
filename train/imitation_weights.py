@@ -87,20 +87,16 @@ def compute_advantage_weights(
     values: Tensor,
     *,
     alpha: float,
-    use_gae: bool = False,
-    gamma: float = 0.995,
-    gae_lambda: float = 0.95,
     return_advantages: bool = False,
 ):
     """Weight by advantage (temporal difference in value).
 
     Frames where value increases (good decisions) get higher weight.
+    Uses GAE (Generalized Advantage Estimation) with gamma=0.995, lambda=0.95.
 
     Args:
         values: [B, L] value targets
         alpha: Scaling factor for advantage weighting
-        gamma: Discount factor for GAE
-        gae_lambda: Lambda for GAE
         return_advantages: If True, return (weights, advantages); else just weights
 
     Returns:
@@ -112,7 +108,10 @@ def compute_advantage_weights(
 
     B, L = values.shape
 
-    # GAE advantage estimation (more sophisticated)
+    # GAE advantage estimation
+    gamma = 0.995
+    gae_lambda = 0.95
+
     advantages = torch.zeros_like(values)
     deltas = torch.zeros_like(values)
 

@@ -247,23 +247,3 @@ def format_confusion_matrix(
         )
     lines.append("diag% per row: " + " ".join(f"{p:>5.1f}" for p in diag_pct))
     return "\n".join(lines)
-
-
-def format_metrics_dict(metrics: Dict[str, float], precision: int = 3) -> str:
-    """Serialize metric key-value pairs into a comma-separated string.
-
-    Example:
-        For ``metrics = {"loss": 1.23456, "acc": 0.98765}`` and ``precision=2``, the helper sorts
-        the keys alphabetically, formats each number to two decimals, and joins them to produce
-        ``"acc=0.99, loss=1.23"``. This shows how each metric passes through formatting before being
-        returned.
-
-    Args:
-        metrics: Dictionary of metric names to values.
-        precision: Number of decimal places to display.
-
-    Returns:
-        Comma-separated ``key=value`` pairs sorted by key.
-    """
-    parts = [f"{key}={value:.{precision}f}" for key, value in sorted(metrics.items())]
-    return ", ".join(parts)

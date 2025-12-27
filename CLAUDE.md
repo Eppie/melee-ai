@@ -9,10 +9,12 @@ Nano-Melee trains a GPT-style transformer to play Super Smash Bros. Melee. The m
 
 ## Commands
 
-**Always activate the shared venv before running any Python command:**
+**On macOS only**, activate the shared venv before running Python commands:
 ```bash
 source ~/.venvs/slippi312/bin/activate
 ```
+
+On Linux/WSL, the system Python environment is already configured.
 
 ```bash
 # Tests
@@ -50,6 +52,27 @@ python scripts/benchmark_dataloader.py
 - ISO: `/home/eppie/melee-ai/melee.iso`
 - Checkpoints: `/home/eppie/checkpoints/`
 - Latest checkpoint: `/home/eppie/checkpoints/model_ep032_005001.pt`
+- Training metrics log: `/home/eppie/checkpoints/training_metrics.jsonl`
+
+## Training Metrics Log
+
+Training metrics are logged to `{out_dir}/training_metrics.jsonl` in JSON Lines format. Each line is a JSON object with:
+- `timestamp`: ISO 8601 UTC timestamp
+- `step`: Global training step
+- `type`: Entry type (`"train"`, `"val"`, or `"gradient"`)
+- All metrics from that logging event
+
+**To check training progress**, read the last few entries:
+```bash
+tail -5 /home/eppie/checkpoints/training_metrics.jsonl | python -m json.tool --indent 2
+```
+
+**Key metrics to monitor:**
+- `loss/total`: Overall training loss
+- `metrics/acc_main_batch`: Main stick accuracy
+- `metrics/acc_main_change`: Accuracy on stick changes (harder)
+- `val/loss`: Validation loss (logged with type="val")
+- `val/acc_main`: Validation main stick accuracy
 
 ## Architecture
 

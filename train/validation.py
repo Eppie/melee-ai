@@ -354,6 +354,10 @@ def maybe_run_validation(
         # Log to wandb
         components.logger.log_metrics(val_metrics, step=global_step, commit=True)
 
+        # Log to local file (training_metrics.jsonl)
+        if components.local_logger.enabled:
+            components.local_logger.log_metrics(val_metrics, step=global_step, log_type="val")
+
         elapsed = time.time() - start_time
         print(
             f"[validation] Completed in {elapsed:.1f}s: "

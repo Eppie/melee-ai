@@ -531,7 +531,7 @@ def prepare_logging_bundle(
 
     # 5. Sample weight statistics (imitation learning weights)
     if forward_result.imitation_weights is not None:
-        weights = forward_result.imitation_weights  # [B, L]
+        weights = forward_result.imitation_weights.float()  # [B, L], ensure float32 for quantile
         weights_sq = weights**2
 
         # Compute effective batch size: (sum w)^2 / sum(w^2)
@@ -662,6 +662,7 @@ def emit_logging(
 ) -> None:
     logger.info("\n" + "\n".join(bundle.log_lines))
 
+    # Log to wandb
     if components.logger.enabled:
         components.logger.log_gradients(grad_stats, step=global_step)
         components.logger.log_metrics(bundle.payload, step=global_step)
@@ -669,6 +670,11 @@ def emit_logging(
             components.last_step_file.write_text(str(global_step))
         except Exception:
             pass
+
+    # Log to local file (training_metrics.jsonl)
+    if components.local_logger.enabled:
+        components.local_logger.log_gradients(grad_stats, step=global_step)
+        components.local_logger.log_metrics(bundle.payload, step=global_step, log_type="train")
 
     epoch_ctx.last_log_time = time.time()
     epoch_ctx.frames_since_last_log = 0.0

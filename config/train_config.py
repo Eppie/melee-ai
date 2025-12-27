@@ -26,7 +26,7 @@ class TrainConfig(BaseModel):
         ),
     )
     epochs: int = Field(
-        default=64,
+        default=128,
         ge=1,
         description=(
             "Number of training epochs. One epoch = one pass through the entire dataset. "
@@ -68,7 +68,7 @@ class TrainConfig(BaseModel):
         ),
     )
     warmup_steps: int = Field(
-        default=7500,
+        default=5000,
         ge=0,
         description="Number of optimizer steps to linearly warm up learning rate from 0 to lr. Helps stabilize early training.",
     )
@@ -91,7 +91,7 @@ class TrainConfig(BaseModel):
         description="Keep dataloader workers alive between epochs. Faster but uses more memory.",
     )
     stride: int = Field(
-        default=16,
+        default=8,
         ge=1,
         description=(
             "Stride between consecutive training windows. Lower stride = more overlapping windows = "

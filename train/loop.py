@@ -290,6 +290,7 @@ def train_loop(
         )
         if not debug:
             finish_wandb()
+            components.local_logger.close()
         return
 
     state = TrainingState(
@@ -305,6 +306,7 @@ def train_loop(
         )
         if not components.debug:
             finish_wandb()
+            components.local_logger.close()
         return
 
     print_config(config)
@@ -314,3 +316,4 @@ def train_loop(
 
     if not components.debug:
         finish_wandb()
+        components.local_logger.close()

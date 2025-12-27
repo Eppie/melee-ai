@@ -2120,7 +2120,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    init_config()
+    init_config(freeze=False)
     config = get_config()
     args = parse_args()
 

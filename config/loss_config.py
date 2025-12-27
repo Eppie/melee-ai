@@ -11,7 +11,7 @@ class LossConfig(BaseModel):
 
     # Class balancing controls
     enable_class_balancing: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Enable class balancing for cross-entropy losses (stick/shoulder outputs). "
             "When enabled, rare classes get higher weights. Helps with imbalanced datasets "
@@ -19,7 +19,7 @@ class LossConfig(BaseModel):
         ),
     )
     ce_weight_min: float = Field(
-        default=0.5,
+        default=0.3,
         gt=0,
         description=(
             "Minimum class weight for cross-entropy balancing. Prevents over-penalizing very common classes. "
@@ -29,7 +29,7 @@ class LossConfig(BaseModel):
         ),
     )
     ce_weight_max: float = Field(
-        default=3.0,
+        default=5.0,
         gt=0,
         description=(
             "Maximum class weight for cross-entropy balancing. Prevents over-emphasizing very rare classes. "
@@ -65,7 +65,7 @@ class LossConfig(BaseModel):
 
     # Change-based loss weights (multiplied by sample_weights from change detection)
     main_change: float = Field(
-        default=10.0,
+        default=5.0,
         gt=0,
         description=(
             "Weight multiplier for main stick when it changes. Encourages model to predict stick movements. "
@@ -75,7 +75,7 @@ class LossConfig(BaseModel):
         ),
     )
     c_change: float = Field(
-        default=10.0,
+        default=8.0,
         gt=0,
         description=(
             "Weight multiplier for C-stick when it changes. C-stick moves are rare and important (smash attacks). "
@@ -93,7 +93,7 @@ class LossConfig(BaseModel):
         ),
     )
     buttons_change_default: float = Field(
-        default=5.0,
+        default=3.0,
         gt=0,
         description=(
             "Default weight multiplier for button state changes (when no button-specific weight applies). "

@@ -21,7 +21,7 @@ from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
 from train.checkpoint import _load_latest_checkpoint
 from train.components import AMPContext, TrainingComponents
-from train.wandb_utils import WandbConfig, WandbLogger, init_wandb
+from train.wandb_utils import LocalLogger, WandbConfig, WandbLogger, init_wandb
 from utils import _resolve_device, Profiler
 
 
@@ -234,7 +234,11 @@ def initialize_training_components(
                 "seq_len": config.seq_len,
             },
         )
-    logger = WandbLogger(wandb_run, enabled=not debug and wandb_run is not None)
+    wandb_logger = WandbLogger(wandb_run, enabled=not debug and wandb_run is not None)
+
+    # Initialize local file logger for training metrics
+    local_log_path = out_dir / "training_metrics.jsonl"
+    local_logger = LocalLogger(local_log_path, enabled=not debug)
 
     allow_partial_load = config.train.allow_partial_checkpoint_load
     start_epoch, global_step, start_iter = _load_latest_checkpoint(
@@ -257,7 +261,8 @@ def initialize_training_components(
         model=model,
         optimizer=optimizer,
         scaler=scaler,
-        logger=logger,
+        logger=wandb_logger,
+        local_logger=local_logger,
         device=device,
         amp=amp,
         ratios=ratios,

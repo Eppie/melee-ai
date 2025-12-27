@@ -16,7 +16,7 @@ from data_loading.instrumentation import DataLoadingMetrics
 from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
 from train.async_transfer import DeferredScalarAccumulator, PinnedMemoryPool
-from train.wandb_utils import WandbLogger
+from train.wandb_utils import LocalLogger, WandbLogger
 from utils import Profiler
 
 
@@ -98,6 +98,7 @@ class TrainingComponents:
     optimizer: torch.optim.Optimizer
     scaler: GradScaler
     logger: WandbLogger
+    local_logger: LocalLogger
     device: torch.device
     amp: AMPContext
     ratios: SampleWeightRatios

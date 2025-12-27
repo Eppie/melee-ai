@@ -61,7 +61,7 @@ class RewardConfig(BaseModel):
         ),
     )
     reward_hitstun_peak_frames: int = Field(
-        default=400,
+        default=300,
         ge=1,
         description=(
             "Consecutive hitstun frames where per-frame reward reaches maximum. "
@@ -69,7 +69,7 @@ class RewardConfig(BaseModel):
         ),
     )
     reward_hitstun_max_frames: int = Field(
-        default=600,
+        default=400,
         ge=1,
         description=(
             "Consecutive hitstun frames where per-frame reward returns to zero. "
@@ -77,7 +77,7 @@ class RewardConfig(BaseModel):
         ),
     )
     reward_hitstun_peak_value: float = Field(
-        default=0.04,
+        default=0.0004,
         description=(
             "Maximum per-frame reward at peak hitstun length. "
             "Should be smaller than damage reward (typically ~0.5x damage reward). "

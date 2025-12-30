@@ -12,7 +12,7 @@ class ImitationConfig(BaseModel):
     strategy: Literal[
         "uniform", "value_weighted", "value_advantage", "value_filter", "hybrid"
     ] = Field(
-        default="value_filter",
+        default="hybrid",
         description=(
             "Imitation learning sampling strategy. Controls how training samples are weighted/selected. "
             "Options: 'uniform' = all frames equally likely (baseline); "
@@ -20,8 +20,7 @@ class ImitationConfig(BaseModel):
             "'value_advantage' = weight by MODEL-DEPENDENT advantage (learn from frames where expert beat model's expectations); "
             "'value_filter' = filter to top percentile by value (only learn from best states); "
             "'hybrid' = combine multiple strategies (see hybrid_strategies/hybrid_weights). "
-            "Default 'value_filter' focuses training on high-value game states, "
-            "avoiding low-value situations where expert behavior may be suboptimal or noisy."
+            "Default 'hybrid' combines value_weighted and value_filter for balanced learning."
         ),
     )
     value_k: float = Field(

@@ -59,14 +59,10 @@ def collect_gradient_diagnostics(
             "std": 0.0,
             "max_abs": 0.0,
             "zero_fraction": 0.0,
-            "zero_count": 0.0,
             "nan_count": 0.0,
             "inf_count": 0.0,
             "param_total_norm": 0.0,
             "param_max_abs": 0.0,
-            "grad_param_ratio_mean": 0.0,
-            "grad_param_ratio_max": 0.0,
-            "grad_param_ratio_min": 0.0,
             "grad_to_param_norm_ratio": 0.0,
         }
 
@@ -109,28 +105,6 @@ def collect_gradient_diagnostics(
     total_param_sq = stats_cpu[7]
     max_param_abs = stats_cpu[8]
 
-    # Compute per-parameter ratios (requires per-param stats)
-    # This is less critical since it's O(num_params) not O(num_elements)
-    ratio_sum = 0.0
-    ratio_max = 0.0
-    ratio_min = float("inf")
-    ratio_count = 0
-
-    for g, p in zip(grads, params):
-        numel = g.numel()
-        if numel == 0:
-            continue
-        # Batch these two means into one transfer per param
-        means = torch.stack([g.abs().mean(), p.abs().mean()]).cpu().tolist()
-        grad_abs_mean, param_abs_mean = means[0], means[1]
-
-        if param_abs_mean > eps:
-            ratio = grad_abs_mean / max(param_abs_mean, eps)
-            ratio_sum += ratio
-            ratio_count += 1
-            ratio_max = max(ratio_max, ratio)
-            ratio_min = min(ratio_min, ratio)
-
     # Compute derived statistics
     total_norm = math.sqrt(total_sq) if total_sq > 0 else 0.0
     mean_abs = total_abs / max(1, grad_elems)
@@ -141,8 +115,6 @@ def collect_gradient_diagnostics(
     zero_fraction = zero_elems / max(1, grad_elems)
 
     param_total_norm = math.sqrt(total_param_sq) if total_param_sq > 0 else 0.0
-    ratio_avg = ratio_sum / ratio_count if ratio_count else 0.0
-    ratio_min = ratio_min if ratio_count else 0.0
     grad_to_param_ratio = total_norm / max(param_total_norm, eps)
 
     return {
@@ -152,13 +124,9 @@ def collect_gradient_diagnostics(
         "std": float(std_val),
         "max_abs": float(max_grad_abs),
         "zero_fraction": float(zero_fraction),
-        "zero_count": float(zero_elems),
         "nan_count": float(nan_elems),
         "inf_count": float(inf_elems),
         "param_total_norm": float(param_total_norm),
         "param_max_abs": float(max_param_abs),
-        "grad_param_ratio_mean": float(ratio_avg),
-        "grad_param_ratio_max": float(ratio_max if ratio_count else 0.0),
-        "grad_param_ratio_min": float(ratio_min),
         "grad_to_param_norm_ratio": float(grad_to_param_ratio),
     }

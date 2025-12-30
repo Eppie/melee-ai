@@ -146,7 +146,6 @@ def run_epoch(state: TrainingState, epoch: int) -> TrainingState:
                     batch_tensors,
                     progress=progress,
                     in_warmup=epoch < config.train.schedule_warmup_epochs,
-                    collect_diagnostics=log_this_iter,
                 )
 
             # Learning rate update

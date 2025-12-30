@@ -74,8 +74,8 @@ class LocalLogger:
         if not self.enabled:
             return
 
-        # Prefix with "gradients/" for consistency with wandb
-        prefixed = {f"gradients/{k}": v for k, v in grad_stats.items()}
+        # Prefix with "grad/" for consistency with wandb
+        prefixed = {f"grad/{k}": v for k, v in grad_stats.items()}
         self.log_metrics(prefixed, step, log_type="gradient")
 
     def close(self) -> None:
@@ -274,11 +274,11 @@ class WandbLogger:
             pass
 
     def log_gradients(self, grad_stats: Dict[str, float], step: int) -> None:
-        """Prefix gradient statistics with ``gradients/`` and log them via :meth:`log_metrics`.
+        """Prefix gradient statistics with ``grad/`` and log them via :meth:`log_metrics`.
 
         Example:
             Given ``grad_stats={"total_norm": 3.2}`` and ``step=50``, the method first builds
-            ``{"gradients/total_norm": 3.2}`` and then calls ``log_metrics(..., commit=False)`` so the
+            ``{"grad/total_norm": 3.2}`` and then calls ``log_metrics(..., commit=False)`` so the
             gradient entry is batched with other logs. If logging is disabled the method exits without
             modification. The example shows the exact transformation of keys and subsequent logging.
 
@@ -289,6 +289,6 @@ class WandbLogger:
         if not self.enabled:
             return
 
-        # Prefix with "gradients/" for organization
-        prefixed = {f"gradients/{k}": v for k, v in grad_stats.items()}
+        # Prefix with "grad/" for organization
+        prefixed = {f"grad/{k}": v for k, v in grad_stats.items()}
         self.log_metrics(prefixed, step, commit=False)

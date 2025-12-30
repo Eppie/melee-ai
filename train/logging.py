@@ -80,12 +80,12 @@ def gather_logit_and_bias_metrics_batched(
         "logits/c",
         "logits/buttons",
         "logits/shoulder",
-        "bias/input_projection",
-        "bias/buttons_out",
-        "bias/main_stick_out",
-        "bias/c_stick_out",
-        "bias/shoulder_out",
-        "bias/value_out",
+        "bias/proj",
+        "bias/buttons",
+        "bias/main",
+        "bias/c",
+        "bias/shoulder",
+        "bias/value",
     ]
     tensors = [
         pred["main_stick"],
@@ -166,9 +166,9 @@ def compute_temporal_consistency(
     stats = torch.stack([pred_changes, target_changes, ratio]).cpu().tolist()
 
     return {
-        f"consistency/{head_name}/pred_change_rate": stats[0],
-        f"consistency/{head_name}/target_change_rate": stats[1],
-        f"consistency/{head_name}/change_rate_ratio": stats[2],
+        f"consistency/{head_name}/pred_rate": stats[0],
+        f"consistency/{head_name}/target_rate": stats[1],
+        f"consistency/{head_name}/ratio": stats[2],
     }
 
 
@@ -224,6 +224,15 @@ def prepare_logging_bundle(
     btn_hold_mask = ~btn_change_mask
     btn_hold_mask[:, 0] = True
 
+    # Shoulder change/hold masks
+    sh_true_idx_2d = target_info["shoulder_idx"]  # [B, L]
+    sh_change_mask = torch.zeros(
+        (batch_size, sequence_length), dtype=torch.bool, device=device
+    )
+    sh_change_mask[:, 1:] = sh_true_idx_2d[:, 1:] != sh_true_idx_2d[:, :-1]
+    sh_hold_mask = ~sh_change_mask
+    sh_hold_mask[:, 0] = True
+
     rep_mask = torch.ones(
         (batch_size, sequence_length), dtype=torch.bool, device=device
     )
@@ -243,7 +252,6 @@ def prepare_logging_bundle(
 
     # Shoulder predictions
     sh_logits = pred["shoulder"]
-    sh_true_idx = target_info["shoulder_idx"]
     sh_pred_idx = sh_logits.argmax(dim=-1)
 
     # Compute all accuracy metrics on GPU and batch them
@@ -269,7 +277,9 @@ def prepare_logging_bundle(
                 btn_hold_mask,
             ),
             # Shoulder accuracies
-            (sh_pred_idx == sh_true_idx).float().mean(),
+            (sh_pred_idx == sh_true_idx_2d).float().mean(),
+            _compute_masked_accuracy(sh_pred_idx, sh_true_idx_2d, sh_change_mask),
+            _compute_masked_accuracy(sh_pred_idx, sh_true_idx_2d, sh_hold_mask),
         ]
     )
 
@@ -322,10 +332,10 @@ def prepare_logging_bundle(
     )
 
     # Shoulder majority label
-    sh_flat = sh_true_idx.reshape(-1)
+    sh_flat = sh_true_idx_2d.reshape(-1)
     sh_bincount = torch.bincount(sh_flat.to(torch.int64), minlength=sh_logits.shape[-1])
     sh_major_lbl = sh_bincount.argmax()
-    acc_sh_maj = (sh_true_idx == sh_major_lbl).float().mean()
+    acc_sh_maj = (sh_true_idx_2d == sh_major_lbl).float().mean()
 
     # Batch all GPU tensor metrics for single GPU->CPU transfer
     all_scalars = torch.cat(
@@ -355,8 +365,8 @@ def prepare_logging_bundle(
     idx += 3
     em_btn_chg, em_btn_hold = all_scalars_cpu[idx : idx + 2]
     idx += 2
-    acc_sh = all_scalars_cpu[idx]
-    idx += 1
+    acc_sh, acc_sh_chg, acc_sh_hold = all_scalars_cpu[idx : idx + 3]
+    idx += 3
     (
         value_pred_mean,
         value_target_mean,
@@ -429,25 +439,31 @@ def prepare_logging_bundle(
     log_lines.append(btn_line2)
     log_lines.append("            " + " | ".join(per_button))
     log_lines.append("            " + " | ".join(per_button_rates))
-    log_lines.append(f"  SHOULDER: acc {acc_sh:.3f} | maj {acc_sh_maj:.3f}")
+    log_lines.append(f"  SHOULDER: acc {acc_sh:.3f} (chg: {acc_sh_chg:.3f}, hold: {acc_sh_hold:.3f}) | maj {acc_sh_maj:.3f}")
     log_lines.append(
         f"  VALUE:    pred {value_pred_mean:.3f} | targ {value_target_mean:.3f} | "
         f"MSE {value_mse:.4f} | MAE {value_mae:.4f} | corr {correlation:.3f}"
     )
 
     # Add advantage metrics if available (value_advantage strategy)
+    # Values will be computed later with batched GPU->CPU transfer
+    adv_display_stats = None
     if forward_result.advantages is not None:
         advantages = forward_result.advantages
-        adv_mean = float(advantages.mean().cpu())
-        adv_std = float(advantages.std().cpu())
-        adv_max = float(advantages.max().cpu())
-        adv_min = float(advantages.min().cpu())
         positive_mask = advantages > 0
-        frac_positive = float(positive_mask.sum().cpu()) / advantages.numel()
+        # Batch stats for single GPU->CPU transfer
+        adv_stats = torch.stack([
+            advantages.mean(),
+            advantages.std(),
+            advantages.max(),
+            advantages.min(),
+            positive_mask.sum().float() / advantages.numel(),
+        ]).cpu().tolist()
+        adv_display_stats = adv_stats
 
         log_lines.append(
-            f"  ADVANTAGE: μ {adv_mean:.4f} | σ {adv_std:.4f} | "
-            f"range [{adv_min:.4f}, {adv_max:.4f}] | pos {frac_positive:.1%}"
+            f"  ADVANTAGE: μ {adv_stats[0]:.4f} | σ {adv_stats[1]:.4f} | "
+            f"range [{adv_stats[3]:.4f}, {adv_stats[2]:.4f}] | pos {adv_stats[4]:.1%}"
         )
 
     # Build payload
@@ -462,17 +478,21 @@ def prepare_logging_bundle(
         "loss/buttons": loss_summary["buttons"],
         "loss/shoulder": loss_summary["shoulder"],
         "loss/value": loss_summary["value"],
-        "metrics/acc_main_batch": acc_main_b,
-        "metrics/acc_main_change": acc_main_chg,
-        "metrics/acc_main_hold": acc_main_hold,
-        "metrics/acc_c_batch": acc_c_b,
-        "metrics/acc_c_change": acc_c_chg,
-        "metrics/acc_c_hold": acc_c_hold,
-        "metrics/buttons_em_batch": em_b,
-        "metrics/buttons_em_change": em_btn_chg,
-        "metrics/buttons_em_hold": em_btn_hold,
-        "metrics/buttons_f1_micro_batch": f1_b,
-        "metrics/buttons_f1_micro_maj": f1_maj,
+        "acc/main": acc_main_b,
+        "acc/main_change": acc_main_chg,
+        "acc/main_hold": acc_main_hold,
+        "acc/c": acc_c_b,
+        "acc/c_change": acc_c_chg,
+        "acc/c_hold": acc_c_hold,
+        "acc/buttons_em": em_b,
+        "acc/buttons_em_change": em_btn_chg,
+        "acc/buttons_em_hold": em_btn_hold,
+        "acc/buttons_f1": f1_b,
+        "acc/buttons_f1_maj": f1_maj,
+        "acc/shoulder": acc_sh,
+        "acc/shoulder_change": acc_sh_chg,
+        "acc/shoulder_hold": acc_sh_hold,
+        "acc/shoulder_maj": acc_sh_maj,
         "throughput/frames_per_s": frames_per_s,
         "schedule/label_smoothing": float(forward_result.label_smoothing),
         "schedule/change_weight_scale": float(forward_result.change_scale),
@@ -481,9 +501,17 @@ def prepare_logging_bundle(
     # Logit and bias metrics (single transfer)
     log_payload.update(gather_logit_and_bias_metrics_batched(pred, components.model))
 
-    # Per-head diagnostic metrics for instability detection
-    if forward_result.head_diagnostics is not None:
-        log_payload.update(forward_result.head_diagnostics)
+    # Value prediction bias (how far off are value predictions on average)
+    log_payload["value/bias"] = value_pred_mean - value_target_mean
+
+    # Loss component fractions (what % of total loss from each head)
+    total_loss_val = forward_result.loss.detach()
+    if total_loss_val > 1e-6:
+        for key, component in forward_result.loss_components.items():
+            log_key = "policy" if key == "total" else key
+            log_payload[f"loss_fraction/{log_key}"] = (
+                float(component.detach()) / float(total_loss_val)
+            )
 
     log_payload["optimizer/loss_scale"] = float(components.scaler.get_scale())
 
@@ -517,7 +545,7 @@ def prepare_logging_bundle(
     )
     log_payload.update(compute_temporal_consistency(c_pred, target_c_2d, "c_stick"))
     log_payload.update(
-        compute_temporal_consistency(sh_pred_idx, sh_true_idx, "shoulder")
+        compute_temporal_consistency(sh_pred_idx, sh_true_idx_2d, "shoulder")
     )
 
     # Button temporal consistency
@@ -560,12 +588,13 @@ def prepare_logging_bundle(
                 "imitation/weight_min": weight_stats_cpu[3],
                 "imitation/weight_p95": weight_stats_cpu[4],
                 "imitation/weight_p05": weight_stats_cpu[5],
-                "imitation/effective_batch_fraction": weight_stats_cpu[6],
+                "imitation/eff_batch_frac": weight_stats_cpu[6],
             }
         )
 
     # 5b. Advantage statistics (only for value_advantage strategy)
-    if forward_result.advantages is not None:
+    # Uses stats already computed for display (adv_display_stats) plus additional stats
+    if forward_result.advantages is not None and adv_display_stats is not None:
         advantages = forward_result.advantages  # [B, L]
 
         # Count positive vs negative advantages
@@ -579,12 +608,9 @@ def prepare_logging_bundle(
         positive_advantages = advantages[positive_mask]
         negative_advantages = advantages[negative_mask]
 
-        advantage_stats_tensor = torch.stack(
+        # Compute additional stats not in display (p95, p05, mean_positive, mean_negative, mean_abs)
+        additional_stats = torch.stack(
             [
-                advantages.mean(),
-                advantages.std(),
-                advantages.max(),
-                advantages.min(),
                 torch.quantile(advantages.flatten(), 0.95),
                 torch.quantile(advantages.flatten(), 0.05),
                 num_positive.float() / (total_nonzero + 1e-9),  # Fraction positive
@@ -600,21 +626,21 @@ def prepare_logging_bundle(
                 ),
                 torch.abs(advantages).mean(),  # Mean absolute advantage
             ]
-        )
-        advantage_stats_cpu = advantage_stats_tensor.cpu().tolist()
+        ).cpu().tolist()
 
+        # Reuse display stats: [mean, std, max, min, frac_positive]
         log_payload.update(
             {
-                "advantage/mean": advantage_stats_cpu[0],
-                "advantage/std": advantage_stats_cpu[1],
-                "advantage/max": advantage_stats_cpu[2],
-                "advantage/min": advantage_stats_cpu[3],
-                "advantage/p95": advantage_stats_cpu[4],
-                "advantage/p05": advantage_stats_cpu[5],
-                "advantage/frac_positive": advantage_stats_cpu[6],
-                "advantage/mean_positive": advantage_stats_cpu[7],
-                "advantage/mean_negative": advantage_stats_cpu[8],
-                "advantage/mean_abs": advantage_stats_cpu[9],
+                "advantage/mean": adv_display_stats[0],
+                "advantage/std": adv_display_stats[1],
+                "advantage/max": adv_display_stats[2],
+                "advantage/min": adv_display_stats[3],
+                "advantage/p95": additional_stats[0],
+                "advantage/p05": additional_stats[1],
+                "advantage/frac_positive": additional_stats[2],
+                "advantage/mean_positive": additional_stats[3],
+                "advantage/mean_negative": additional_stats[4],
+                "advantage/mean_abs": additional_stats[5],
             }
         )
 
@@ -631,9 +657,9 @@ def prepare_logging_bundle(
 
     # 7. Gradient variance (gradient stability across batches)
     grad_variance_metrics = {
-        "gradients/total_norm_variance": components.gradient_variance_tracker.get_variance(),
-        "gradients/total_norm_std": components.gradient_variance_tracker.get_std(),
-        "gradients/total_norm_cv": components.gradient_variance_tracker.get_cv(),
+        "grad/norm_variance": components.gradient_variance_tracker.get_variance(),
+        "grad/norm_std": components.gradient_variance_tracker.get_std(),
+        "grad/norm_cv": components.gradient_variance_tracker.get_cv(),
     }
     log_payload.update(grad_variance_metrics)
 

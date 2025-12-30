@@ -38,12 +38,11 @@ class LossConfig(BaseModel):
         ),
     )
     enable_pos_weighting: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Enable positive class weighting for binary cross-entropy (button outputs). "
             "When enabled, button presses (positive class) get weighted by neg/pos ratio. "
             "Helps when buttons are pressed rarely (e.g., Z button). "
-            "Disabled by default; use focal loss instead for better handling of class imbalance."
         ),
     )
     pos_weight_max: float = Field(
@@ -67,7 +66,7 @@ class LossConfig(BaseModel):
     # Change-based loss weights (multiplied by sample_weights from change detection)
     # Set to 1.0 to disable change-based weighting; use focal loss instead
     main_change: float = Field(
-        default=1.0,
+        default=5.0,
         gt=0,
         description=(
             "Weight multiplier for main stick when it changes. Encourages model to predict stick movements. "
@@ -77,7 +76,7 @@ class LossConfig(BaseModel):
         ),
     )
     c_change: float = Field(
-        default=1.0,
+        default=5.0,
         gt=0,
         description=(
             "Weight multiplier for C-stick when it changes. C-stick moves are rare and important (smash attacks). "
@@ -86,7 +85,7 @@ class LossConfig(BaseModel):
         ),
     )
     shoulder_change: float = Field(
-        default=1.0,
+        default=8.0,
         gt=0,
         description=(
             "Weight multiplier for shoulder buttons when they change. "
@@ -95,7 +94,7 @@ class LossConfig(BaseModel):
         ),
     )
     buttons_change_default: float = Field(
-        default=1.0,
+        default=3.0,
         gt=0,
         description=(
             "Default weight multiplier for button state changes (when no button-specific weight applies). "
@@ -106,7 +105,7 @@ class LossConfig(BaseModel):
     # Button-specific weights (applied when button state changes)
     # Set to 1.0 to disable change-based weighting; use focal loss instead
     button_z: float = Field(
-        default=1.0,
+        default=6.0,
         gt=0,
         description=(
             "Weight for Z button (grab). Z is rare but critical. "
@@ -114,7 +113,7 @@ class LossConfig(BaseModel):
         ),
     )
     button_b: float = Field(
-        default=1.0,
+        default=3.0,
         gt=0,
         description=(
             "Weight for B button (special moves). Important for recovery, projectiles, etc. "
@@ -122,7 +121,7 @@ class LossConfig(BaseModel):
         ),
     )
     button_a: float = Field(
-        default=1.0,
+        default=2.0,
         gt=0,
         description=(
             "Weight for A button (standard attacks). Common but important. "
@@ -130,7 +129,7 @@ class LossConfig(BaseModel):
         ),
     )
     button_xy: float = Field(
-        default=1.0,
+        default=2.0,
         gt=0,
         description=(
             "Weight for X/Y buttons (jump). Very common, slightly lower weight. "
@@ -138,7 +137,7 @@ class LossConfig(BaseModel):
         ),
     )
     button_lr: float = Field(
-        default=1.0,
+        default=3.0,
         gt=0,
         description=(
             "Weight for L/R digital press (shield/airdodge when combined with shoulder analog). "
@@ -148,11 +147,11 @@ class LossConfig(BaseModel):
 
     # Focal loss settings
     use_focal_loss: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Use focal loss instead of standard cross-entropy. Focal loss down-weights "
             "well-classified examples and focuses on hard examples. "
-            "Helps with class imbalance without explicit class weighting."
+            "Disabled by default; use pos_weighting and change weights instead."
         ),
     )
     focal_gamma: float = Field(

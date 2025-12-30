@@ -20,68 +20,12 @@ from train.imitation_weights import compute_imitation_weights
 from train.value_head import compute_value_targets
 
 
-def collect_head_diagnostics(
-    model: torch.nn.Module, pred: Dict[str, torch.Tensor]
-) -> Dict[str, float]:
-    """Collect per-head diagnostic metrics for instability detection.
-
-    Tracks logit statistics and output layer biases to catch early warning signs
-    of gradient explosion or head divergence.
-
-    Note: Only collects metrics NOT already logged elsewhere to avoid duplication.
-    - Logit mean/std are logged via gather_logit_and_bias_metrics_batched()
-    - Bias mean is logged via gather_logit_and_bias_metrics_batched()
-    - We only add max_abs metrics here which are unique
-
-    Args:
-        model: The GPT model with output heads
-        pred: Dictionary of model predictions
-
-    Returns:
-        Dictionary of diagnostic metrics with keys like:
-        - head_logits/{head}/max_abs
-        - head_bias/{head}/max_abs
-    """
-    diagnostics = {}
-
-    # Logit max_abs statistics (cheap - already in memory)
-    # Note: mean/std already logged in gather_logit_and_bias_metrics_batched()
-    head_names = ["main_stick", "c_stick", "buttons", "shoulder", "value"]
-    for head in head_names:
-        if head in pred:
-            logits = pred[head]
-            diagnostics[f"head_logits/{head}/max_abs"] = float(
-                logits.abs().max().detach()
-            )
-
-    # Output layer bias max_abs statistics (very cheap - small tensors)
-    # Note: mean already logged in gather_logit_and_bias_metrics_batched()
-    bias_keys = {
-        "main_stick": "_orig_mod.main_stick_head.fc2.bias",
-        "c_stick": "_orig_mod.c_stick_head.fc2.bias",
-        "buttons": "_orig_mod.button_head.fc2.bias",
-        "shoulder": "_orig_mod.shoulder_head.fc2.bias",
-        "value": "_orig_mod.value_head.fc2.bias",
-    }
-
-    state_dict = model.state_dict()
-    for head, key in bias_keys.items():
-        # Handle both compiled (_orig_mod) and non-compiled models
-        actual_key = key if key in state_dict else key.replace("_orig_mod.", "")
-        if actual_key in state_dict:
-            bias = state_dict[actual_key]
-            diagnostics[f"head_bias/{head}/max_abs"] = float(bias.abs().max().detach())
-
-    return diagnostics
-
-
 def perform_forward_pass(
     components: TrainingComponents,
     batch_tensors: Dict[str, torch.Tensor],
     *,
     progress: float,
     in_warmup: bool,
-    collect_diagnostics: bool = False,
 ) -> ForwardPassResult:
     """Runs the model forward pass and computes losses/targets.
 
@@ -90,8 +34,6 @@ def perform_forward_pass(
         batch_tensors: Input batch
         progress: Training progress [0, 1]
         in_warmup: Whether in warmup phase
-        collect_diagnostics: If True, collect head diagnostics (causes GPU sync).
-                            Only set to True on logging steps to avoid sync overhead.
     """
     X = batch_tensors["X"]
     Y = batch_tensors["Y"]
@@ -263,25 +205,6 @@ def perform_forward_pass(
     }
     batch_inputs = {"X": X}
 
-    # Collect per-head diagnostics for instability detection
-    # CRITICAL: Only on logging steps! Each float() call causes GPU sync
-    head_diagnostics = {}
-    if collect_diagnostics:
-        head_diagnostics = collect_head_diagnostics(components.model, pred)
-
-        # Add value head prediction bias (mean and target_mean are logged elsewhere)
-        head_diagnostics["value_pred_bias"] = float(
-            (value_pred.mean() - value_target.mean()).detach()
-        )
-
-        # Add loss component breakdown (what % of total loss from each head?)
-        total_loss_val = float(loss.detach())
-        if total_loss_val > 1e-6:  # Avoid division by zero
-            for key, component in loss_components.items():
-                head_diagnostics[f"loss_fraction/{key}"] = (
-                    float(component.detach()) / total_loss_val
-                )
-
     return ForwardPassResult(
         pred=pred,
         target_info=target_info,
@@ -294,7 +217,6 @@ def perform_forward_pass(
         batch_targets=batch_targets,
         label_smoothing=label_smoothing,
         change_scale=imbalance_scale,
-        head_diagnostics=head_diagnostics,
         imitation_weights=imitation_weights_tensor,
         advantages=advantages_tensor,
     )

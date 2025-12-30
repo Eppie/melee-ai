@@ -11,13 +11,14 @@ import torch
 from torch.utils.data import DataLoader
 
 from column_map import ColumnMap
-from constants import CONTROLLER_KEY_GROUPS
+from constants import CONTROLLER_KEY_GROUPS, _BUTTON_PRETTY
 from loss import compute_loss_components
 from train.batch_utils import (
     SampleWeightRatios,
     build_model_inputs,
     compute_component_sample_weights,
 )
+from train.imitation_weights import compute_imitation_weights, compute_model_advantage_weights
 from train.metrics import multilabel_prf
 from train.value_head import compute_value_targets
 from window_dataset import RandomWindowSampler
@@ -175,7 +176,7 @@ def run_validation(
                 "buttons_K": len(colmap.y_buttons),
                 "shoulder_K": int(head_dims["shoulder"]),
             }
-            weights = compute_component_sample_weights(
+            change_weights = compute_component_sample_weights(
                 target_info,
                 device,
                 ratios=ratios,
@@ -184,6 +185,36 @@ def run_validation(
             )
 
             pred = model(inputs_td)
+
+            # Compute value predictions and targets (needed for model-dependent advantages)
+            value_pred = pred["value"]
+            value_target = compute_value_targets(
+                X,
+                colmap,
+                reward_cfg=config.reward,
+                reward_idx=value_idx,
+            )
+
+            # Compute value-based imitation weights (matching training)
+            if config.imitation.strategy == "value_advantage":
+                imitation_weights_tensor, _ = compute_model_advantage_weights(
+                    value_pred=value_pred.squeeze(-1),
+                    value_target=value_target.squeeze(-1),
+                    alpha=config.imitation.advantage_alpha,
+                    return_advantages=True,
+                )
+            else:
+                imitation_weights_tensor = compute_imitation_weights(
+                    X, value_idx, config.imitation
+                )
+
+            # Combine change-based and value-based weights (matching training)
+            weights = {}
+            for key, change_w in change_weights.items():
+                if change_w.ndim == 3:
+                    weights[key] = change_w * imitation_weights_tensor.unsqueeze(-1)
+                else:
+                    weights[key] = change_w * imitation_weights_tensor
 
             logits_main = pred["main_stick"]
             logits_c = pred["c_stick"]
@@ -203,21 +234,11 @@ def run_validation(
             for key, value in loss_components.items():
                 loss_sums[key] += value.item()
 
-            # Compute value loss (same as training)
-            value_pred = pred["value"]
-            value_target = compute_value_targets(
-                X,
-                colmap,
-                reward_cfg=config.reward,
-                reward_idx=value_idx,
-            )
+            # Compute value loss (same as training - uses uniform weighting)
             value_loss_raw = torch.nn.functional.mse_loss(
                 value_pred, value_target, reduction="none"
             ).squeeze(-1)
-            value_w = weights.get("global", weights["main"])
-            loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(
-                1e-12
-            )
+            loss_value = value_loss_raw.mean()  # Uniform weighting, matching training
             loss_sums["value"] += loss_value.item()
 
             pred_main_idx = logits_main.argmax(dim=-1)
@@ -242,6 +263,60 @@ def run_validation(
             metrics["btn_total"] += B * L
             metrics["btn_f1_micro_sum"] += f1_b * B * L
             metrics["btn_f1_macro_sum"] += f1_macro_b * B * L
+
+            # Per-button metrics
+            btn_true_flat = target_btn.reshape(-1, target_btn.shape[-1]).float()
+            btn_pred_flat = btn_pred.reshape(-1, btn_pred.shape[-1]).float()
+            num_samples = btn_true_flat.shape[0]
+
+            for i, name in enumerate(CONTROLLER_KEY_GROUPS["buttons"]):
+                btn_true_i = btn_true_flat[:, i]
+                btn_pred_i = btn_pred_flat[:, i]
+
+                # Accuracy
+                correct = (btn_true_i == btn_pred_i).float().sum().item()
+                metrics[f"btn_{name}_correct"] = metrics.get(f"btn_{name}_correct", 0.0) + correct
+                metrics[f"btn_{name}_total"] = metrics.get(f"btn_{name}_total", 0.0) + num_samples
+
+                # TP, FP, FN for precision/recall/f1
+                tp = (btn_true_i * btn_pred_i).sum().item()
+                fp = ((1.0 - btn_true_i) * btn_pred_i).sum().item()
+                fn = (btn_true_i * (1.0 - btn_pred_i)).sum().item()
+                metrics[f"btn_{name}_tp"] = metrics.get(f"btn_{name}_tp", 0.0) + tp
+                metrics[f"btn_{name}_fp"] = metrics.get(f"btn_{name}_fp", 0.0) + fp
+                metrics[f"btn_{name}_fn"] = metrics.get(f"btn_{name}_fn", 0.0) + fn
+
+                # Rate (how often button is pressed in ground truth)
+                rate_sum = btn_true_i.sum().item()
+                metrics[f"btn_{name}_rate_sum"] = metrics.get(f"btn_{name}_rate_sum", 0.0) + rate_sum
+
+            # Shoulder accuracy and change/hold
+            sh_logits = pred["shoulder"]
+            sh_true_idx = target_info["shoulder_idx"]
+            sh_pred_idx = sh_logits.argmax(dim=-1)
+
+            sh_correct = (sh_pred_idx == sh_true_idx).float().sum().item()
+            metrics["sh_correct"] = metrics.get("sh_correct", 0.0) + sh_correct
+            metrics["sh_total"] = metrics.get("sh_total", 0.0) + B * L
+
+            # Shoulder change/hold masks
+            sh_change_mask = torch.zeros_like(sh_true_idx, dtype=torch.bool)
+            sh_change_mask[:, 1:] = sh_true_idx[:, 1:] != sh_true_idx[:, :-1]
+            sh_correct_mask = sh_pred_idx == sh_true_idx
+
+            if sh_change_mask.any():
+                metrics["sh_change_correct"] = metrics.get("sh_change_correct", 0.0) + (
+                    sh_correct_mask[sh_change_mask].float().sum().item()
+                )
+                metrics["sh_change_total"] = metrics.get("sh_change_total", 0.0) + sh_change_mask.sum().item()
+
+            sh_hold_mask = ~sh_change_mask
+            sh_hold_mask[:, 0] = True
+            if sh_hold_mask.any():
+                metrics["sh_hold_correct"] = metrics.get("sh_hold_correct", 0.0) + (
+                    sh_correct_mask[sh_hold_mask].float().sum().item()
+                )
+                metrics["sh_hold_total"] = metrics.get("sh_hold_total", 0.0) + sh_hold_mask.sum().item()
 
             # Change accuracy for main stick
             main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
@@ -293,6 +368,45 @@ def run_validation(
         result["val/acc_main_change"] = (
             metrics["main_change_correct"] / metrics["main_change_total"]
         )
+
+    # Shoulder accuracy
+    if metrics.get("sh_total", 0) > 0:
+        result["val/acc_shoulder"] = metrics["sh_correct"] / metrics["sh_total"]
+    if metrics.get("sh_change_total", 0) > 0:
+        result["val/acc_shoulder_change"] = (
+            metrics["sh_change_correct"] / metrics["sh_change_total"]
+        )
+    if metrics.get("sh_hold_total", 0) > 0:
+        result["val/acc_shoulder_hold"] = (
+            metrics["sh_hold_correct"] / metrics["sh_hold_total"]
+        )
+
+    # Per-button metrics
+    eps = 1e-9
+    for name in CONTROLLER_KEY_GROUPS["buttons"]:
+        label = _BUTTON_PRETTY.get(name, name)
+
+        # Accuracy
+        btn_total = metrics.get(f"btn_{name}_total", 0.0)
+        if btn_total > 0:
+            result[f"val/button/{label}/acc"] = metrics[f"btn_{name}_correct"] / btn_total
+
+        # Precision, Recall, F1
+        tp = metrics.get(f"btn_{name}_tp", 0.0)
+        fp = metrics.get(f"btn_{name}_fp", 0.0)
+        fn = metrics.get(f"btn_{name}_fn", 0.0)
+
+        precision = tp / (tp + fp + eps)
+        recall = tp / (tp + fn + eps)
+        f1 = 2 * precision * recall / (precision + recall + eps)
+
+        result[f"val/button/{label}/precision"] = precision
+        result[f"val/button/{label}/recall"] = recall
+        result[f"val/button/{label}/f1"] = f1
+
+        # Rate
+        if btn_total > 0:
+            result[f"val/button/{label}/rate"] = metrics[f"btn_{name}_rate_sum"] / btn_total
 
     # Metadata
     result["val/batches"] = float(batches_processed)

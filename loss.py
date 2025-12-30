@@ -265,6 +265,10 @@ def compute_loss_components(
     # --- BUTTONS (per-label weighting)
     target_btn = target_info["buttons"]
 
+    # Compute pos_weight for class imbalance (applies to both focal and standard BCE)
+    pos_weight = _compute_pos_weights(target_btn, loss_config)  # [K_btn] or None
+    pos_weight = _blend_weights(pos_weight, pos_weight_scale)
+
     if loss_config.use_focal_loss:
         loss_btn_all = focal_binary_cross_entropy(
             logits_btn,
@@ -273,9 +277,10 @@ def compute_loss_components(
             alpha=loss_config.focal_alpha,
             reduction="none",
         )  # [B, L, K_btn]
+        # Apply pos_weight on top of focal loss for class imbalance correction
+        if pos_weight is not None:
+            loss_btn_all = loss_btn_all * pos_weight  # [B, L, K_btn] * [K_btn] broadcasts
     else:
-        pos_weight = _compute_pos_weights(target_btn, loss_config)  # [K_btn] or None
-        pos_weight = _blend_weights(pos_weight, pos_weight_scale)
         loss_btn_all = F.binary_cross_entropy_with_logits(
             logits_btn, target_btn, reduction="none", pos_weight=pos_weight
         )  # [B, L, K_btn]

@@ -48,8 +48,7 @@ PLAYER_SPEC = [
     ("c_stick_x", np.float32),
     ("c_stick_y", np.float32),
     ("shoulder_analog", np.float32),  # game treats L/R shoulder identically
-    # Additional state
-    ("shield_strength", np.float32),
+    # Additional state (shield_strength removed - redundant with is_shield_active and action states)
     ("is_fastfalling", np.float32),
     ("is_defender_in_hitlag", np.float32),
     ("is_in_hitlag", np.float32),
@@ -132,7 +131,7 @@ def _extract_player_values(player: PlayerState) -> tuple[Any, ...]:
         c_stick_x,
         c_stick_y,
         controller.l_shoulder,
-        player.shield_strength,
+        # shield_strength removed - redundant with is_shield_active and action states
         float(player.is_fastfalling),
         float(player.is_defender_in_hitlag),
         float(player.is_in_hitlag),

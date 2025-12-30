@@ -47,10 +47,9 @@ class RewardFeatureIdx:
     p2_is_in_hitlag: Optional[int] = None
     p1_is_defender_in_hitlag: Optional[int] = None
     p2_is_defender_in_hitlag: Optional[int] = None
-    p1_shield_strength: Optional[int] = None
-    p2_shield_strength: Optional[int] = None
     p1_is_in_hitstun: Optional[int] = None
     p2_is_in_hitstun: Optional[int] = None
+    # Note: shield_strength removed - use is_shield_active instead
 
 
 def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
@@ -83,8 +82,6 @@ def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
         p2_is_in_hitlag=idx("p2_is_in_hitlag"),
         p1_is_defender_in_hitlag=idx("p1_is_defender_in_hitlag"),
         p2_is_defender_in_hitlag=idx("p2_is_defender_in_hitlag"),
-        p1_shield_strength=idx("p1_shield_strength"),
-        p2_shield_strength=idx("p2_shield_strength"),
         p1_is_in_hitstun=idx("p1_is_in_hitstun"),
         p2_is_in_hitstun=idx("p2_is_in_hitstun"),
     )
@@ -246,11 +243,7 @@ def _compute_player_rewards(
     hitlag_reward = opp_in_def_hitlag.mul_(reward_cfg.reward_hitlag_opponent)
     rewards[:, prev_slice].add_(hitlag_reward[:, curr_slice])
 
-    # --- Shield penalty (per-frame) ---
-    shield_idx = getattr(idx, f"{player}_shield_strength")
-    shield = X[:, :, shield_idx]
-    penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
-    rewards[:, prev_slice].add_(penalty[:, curr_slice].mul_(reward_cfg.reward_low_shield))
+    # Note: Shield penalty removed - shield_strength feature was removed from schema
 
     # --- Hitstun combo reward (per-frame, with length-based curve) ---
     opp_hitstun_idx = getattr(idx, f"{opponent}_is_in_hitstun")
@@ -293,7 +286,6 @@ def _compute_player_reward_components(
         "damage": torch.zeros(B, L, device=device, dtype=dtype),
         "stock": torch.zeros(B, L, device=device, dtype=dtype),
         "hitlag": torch.zeros(B, L, device=device, dtype=dtype),
-        "low_shield": torch.zeros(B, L, device=device, dtype=dtype),
         "hitstun": torch.zeros(B, L, device=device, dtype=dtype),
     }
 
@@ -307,13 +299,11 @@ def _compute_player_reward_components(
         opp_percent_idx = idx.p2_percent
         opp_action_idx = idx.p2_action
         opp_def_hitlag_idx = idx.p2_is_defender_in_hitlag
-        shield_idx = idx.p1_shield_strength
         opp_hitstun_idx = idx.p2_is_in_hitstun
     else:
         opp_percent_idx = idx.p1_percent
         opp_action_idx = idx.p1_action
         opp_def_hitlag_idx = idx.p1_is_defender_in_hitlag
-        shield_idx = idx.p2_shield_strength
         opp_hitstun_idx = idx.p1_is_in_hitstun
 
     d_opp = torch.diff(X[:, :, opp_percent_idx], dim=1)  # [B, L-1]
@@ -336,11 +326,7 @@ def _compute_player_reward_components(
     hitlag_reward = opp_in_def_hitlag.mul_(reward_cfg.reward_hitlag_opponent)
     components["hitlag"][:, prev_slice].add_(hitlag_reward[:, curr_slice])
 
-    shield = X[:, :, shield_idx]
-    penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
-    components["low_shield"][:, prev_slice].add_(
-        penalty[:, curr_slice].mul_(reward_cfg.reward_low_shield)
-    )
+    # Note: Shield penalty removed - shield_strength feature was removed from schema
 
     if opp_hitstun_idx is not None:
         opp_in_hitstun = X[:, :, opp_hitstun_idx] > 0.5

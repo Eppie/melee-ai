@@ -38,15 +38,16 @@ class LossConfig(BaseModel):
         ),
     )
     enable_pos_weighting: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Enable positive class weighting for binary cross-entropy (button outputs). "
             "When enabled, button presses (positive class) get weighted by neg/pos ratio. "
-            "Helps when buttons are pressed rarely (e.g., Z button)."
+            "Helps when buttons are pressed rarely (e.g., Z button). "
+            "Disabled by default; use focal loss instead for better handling of class imbalance."
         ),
     )
     pos_weight_max: float = Field(
-        default=4.0,
+        default=10.0,
         gt=0,
         description=(
             "Maximum positive class weight for BCE. Caps how much button presses are up-weighted. "
@@ -64,83 +65,111 @@ class LossConfig(BaseModel):
     )
 
     # Change-based loss weights (multiplied by sample_weights from change detection)
+    # Set to 1.0 to disable change-based weighting; use focal loss instead
     main_change: float = Field(
-        default=5.0,
+        default=1.0,
         gt=0,
         description=(
             "Weight multiplier for main stick when it changes. Encourages model to predict stick movements. "
             "Effect: Higher values (10.0-20.0) = stronger focus on movement vs holding position; "
             "lower values (2.0-5.0) = more balanced. Reasonable range: [2.0, 20.0]. "
-            "Interacts with: hold_base (weight for unchanged frames), imbalance_scale (global scaling)."
+            "Set to 1.0 to disable change-based weighting."
         ),
     )
     c_change: float = Field(
-        default=8.0,
+        default=1.0,
         gt=0,
         description=(
             "Weight multiplier for C-stick when it changes. C-stick moves are rare and important (smash attacks). "
             "Effect: Higher values (15.0-30.0) heavily prioritize C-stick usage; lower values (5.0-10.0) reduce emphasis. "
-            "Reasonable range: [5.0, 30.0]. Usually higher than main_change since C-stick is rarer."
+            "Reasonable range: [5.0, 30.0]. Set to 1.0 to disable change-based weighting."
         ),
     )
     shoulder_change: float = Field(
-        default=2.0,
+        default=1.0,
         gt=0,
         description=(
             "Weight multiplier for shoulder buttons when they change. "
             "Effect: Higher values (10.0-20.0) emphasize shield/lightshield/airdodge initiation; "
-            "lower values (2.0-5.0) reduce emphasis. Reasonable range: [2.0, 20.0]."
+            "lower values (2.0-5.0) reduce emphasis. Set to 1.0 to disable change-based weighting."
         ),
     )
     buttons_change_default: float = Field(
-        default=3.0,
+        default=1.0,
         gt=0,
         description=(
             "Default weight multiplier for button state changes (when no button-specific weight applies). "
-            "Fallback for any buttons without explicit weights. Reasonable range: [5.0, 20.0]."
+            "Fallback for any buttons without explicit weights. Set to 1.0 to disable change-based weighting."
         ),
     )
 
     # Button-specific weights (applied when button state changes)
+    # Set to 1.0 to disable change-based weighting; use focal loss instead
     button_z: float = Field(
-        default=10.0,
+        default=1.0,
         gt=0,
         description=(
             "Weight for Z button (grab). Z is rare but critical. "
-            "Effect: Higher values (20.0-40.0) heavily prioritize grab usage; lower values (10.0-15.0) reduce emphasis. "
-            "Reasonable range: [10.0, 40.0]. Often highest button weight due to rarity and importance."
+            "Set to 1.0 to disable change-based weighting; use focal loss instead."
         ),
     )
     button_b: float = Field(
-        default=8.0,
+        default=1.0,
         gt=0,
         description=(
             "Weight for B button (special moves). Important for recovery, projectiles, etc. "
-            "Reasonable range: [8.0, 20.0]."
+            "Set to 1.0 to disable change-based weighting."
         ),
     )
     button_a: float = Field(
-        default=8.0,
+        default=1.0,
         gt=0,
         description=(
             "Weight for A button (standard attacks). Common but important. "
-            "Reasonable range: [8.0, 20.0]."
+            "Set to 1.0 to disable change-based weighting."
         ),
     )
     button_xy: float = Field(
-        default=5.0,
+        default=1.0,
         gt=0,
         description=(
             "Weight for X/Y buttons (jump). Very common, slightly lower weight. "
-            "Reasonable range: [5.0, 15.0]."
+            "Set to 1.0 to disable change-based weighting."
         ),
     )
     button_lr: float = Field(
-        default=2.0,
+        default=1.0,
         gt=0,
         description=(
             "Weight for L/R digital press (shield/airdodge when combined with shoulder analog). "
-            "Reasonable range: [5.0, 15.0]."
+            "Set to 1.0 to disable change-based weighting."
+        ),
+    )
+
+    # Focal loss settings
+    use_focal_loss: bool = Field(
+        default=True,
+        description=(
+            "Use focal loss instead of standard cross-entropy. Focal loss down-weights "
+            "well-classified examples and focuses on hard examples. "
+            "Helps with class imbalance without explicit class weighting."
+        ),
+    )
+    focal_gamma: float = Field(
+        default=2.0,
+        ge=0,
+        description=(
+            "Focusing parameter for focal loss. Higher values focus more on hard examples. "
+            "gamma=0 is equivalent to standard cross-entropy. Typical values: 1.0-3.0."
+        ),
+    )
+    focal_alpha: float = Field(
+        default=0.25,
+        ge=0,
+        le=1,
+        description=(
+            "Alpha parameter for focal loss (used for binary classification). "
+            "Balances positive vs negative class. 0.25 is common for imbalanced data."
         ),
     )
 

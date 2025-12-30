@@ -250,6 +250,14 @@ class GPT(nn.Module):
             )
         )
 
+        # Clamp logits to prevent extreme values that cause numerical issues
+        # This bounds the log-odds to [-15, 15], corresponding to probabilities ~3e-7 to ~1-3e-7
+        logit_min, logit_max = -15.0, 15.0
+        button_logits = button_logits.clamp(logit_min, logit_max)
+        main_stick = main_stick.clamp(logit_min, logit_max)
+        c_stick = c_stick.clamp(logit_min, logit_max)
+        shoulder = shoulder.clamp(logit_min, logit_max)
+
         # Build output dict with controller heads
         outputs_dict = {
             "buttons": button_logits,

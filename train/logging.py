@@ -520,13 +520,14 @@ def prepare_logging_bundle(
         compute_temporal_consistency(sh_pred_idx, sh_true_idx, "shoulder")
     )
 
-    # Button temporal consistency (use exact match as binary signal)
+    # Button temporal consistency
+    # Encode 5 buttons as a composite index (treat as 5-bit number)
+    # This allows tracking when ANY button state changes
+    btn_powers = torch.tensor([1, 2, 4, 8, 16], device=device, dtype=torch.int32)
+    btn_pred_idx = (btn_pred.int() * btn_powers).sum(dim=-1)  # [B, L]
+    btn_target_idx = (target_btn.int() * btn_powers).sum(dim=-1)  # [B, L]
     log_payload.update(
-        compute_temporal_consistency(
-            correct_btn_em.int(),
-            torch.ones_like(correct_btn_em, dtype=torch.int32),
-            "buttons",
-        )
+        compute_temporal_consistency(btn_pred_idx, btn_target_idx, "buttons")
     )
 
     # 5. Sample weight statistics (imitation learning weights)

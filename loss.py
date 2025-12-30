@@ -12,6 +12,110 @@ if TYPE_CHECKING:
     from config import LossConfig
 
 
+def focal_cross_entropy(
+    logits: Tensor,
+    targets: Tensor,
+    gamma: float = 2.0,
+    weight: Optional[Tensor] = None,
+    label_smoothing: float = 0.0,
+    reduction: str = "none",
+) -> Tensor:
+    """Focal loss for multi-class classification.
+
+    FL(p_t) = -(1 - p_t)^gamma * log(p_t)
+
+    Args:
+        logits: [N, C] unnormalized logits
+        targets: [N] class indices
+        gamma: focusing parameter (0 = standard CE)
+        weight: [C] per-class weights
+        label_smoothing: label smoothing factor
+        reduction: 'none', 'mean', or 'sum'
+
+    Returns:
+        Focal loss values
+    """
+    # Compute softmax probabilities
+    log_probs = F.log_softmax(logits, dim=-1)
+    probs = log_probs.exp()
+
+    # Get probability of correct class
+    targets_one_hot = F.one_hot(targets, num_classes=logits.size(-1)).float()
+
+    # Apply label smoothing if requested
+    if label_smoothing > 0:
+        targets_one_hot = targets_one_hot * (1 - label_smoothing) + label_smoothing / logits.size(-1)
+
+    # p_t = probability assigned to true class
+    p_t = (probs * targets_one_hot).sum(dim=-1)
+
+    # Focal weight: (1 - p_t)^gamma
+    focal_weight = (1 - p_t) ** gamma
+
+    # Standard cross-entropy: -log(p_t)
+    ce_loss = -(log_probs * targets_one_hot).sum(dim=-1)
+
+    # Apply focal weighting
+    loss = focal_weight * ce_loss
+
+    # Apply class weights if provided
+    if weight is not None:
+        class_weights = weight[targets]
+        loss = loss * class_weights
+
+    if reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    return loss
+
+
+def focal_binary_cross_entropy(
+    logits: Tensor,
+    targets: Tensor,
+    gamma: float = 2.0,
+    alpha: float = 0.25,
+    reduction: str = "none",
+) -> Tensor:
+    """Focal loss for binary/multi-label classification.
+
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    Args:
+        logits: [...] unnormalized logits
+        targets: [...] binary targets (0 or 1)
+        gamma: focusing parameter (0 = standard BCE)
+        alpha: weight for positive class (1-alpha for negative)
+        reduction: 'none', 'mean', or 'sum'
+
+    Returns:
+        Focal loss values
+    """
+    # Compute probabilities
+    probs = torch.sigmoid(logits)
+
+    # p_t = p if y=1, else 1-p
+    p_t = probs * targets + (1 - probs) * (1 - targets)
+
+    # alpha_t = alpha if y=1, else 1-alpha
+    alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+
+    # Focal weight: (1 - p_t)^gamma
+    focal_weight = (1 - p_t) ** gamma
+
+    # Standard BCE
+    bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+
+    # Apply focal weighting
+    loss = alpha_t * focal_weight * bce_loss
+
+    if reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    return loss
+
+
 def _compute_ce_weights(
     labels: Tensor, num_classes: int, loss_config: "LossConfig"
 ) -> Optional[Tensor]:
@@ -113,13 +217,24 @@ def compute_loss_components(
         main_targets, int(target_info["main_K"]), loss_config
     )
     main_weights = _blend_weights(main_weights, ce_weight_scale)
-    loss_main_vec = F.cross_entropy(
-        main_logits,
-        main_targets,
-        reduction="none",
-        label_smoothing=label_smoothing,
-        weight=main_weights,
-    ).reshape(B, L)
+
+    if loss_config.use_focal_loss:
+        loss_main_vec = focal_cross_entropy(
+            main_logits,
+            main_targets,
+            gamma=loss_config.focal_gamma,
+            weight=main_weights,
+            label_smoothing=label_smoothing,
+            reduction="none",
+        ).reshape(B, L)
+    else:
+        loss_main_vec = F.cross_entropy(
+            main_logits,
+            main_targets,
+            reduction="none",
+            label_smoothing=label_smoothing,
+            weight=main_weights,
+        ).reshape(B, L)
     loss_main = _mean_with_weights(loss_main_vec, w_main, loss_config)
 
     # --- C-STICK ---
@@ -127,22 +242,43 @@ def compute_loss_components(
     c_logits = logits_c.reshape(B * L, -1)
     c_weights = _compute_ce_weights(c_targets, int(target_info["c_K"]), loss_config)
     c_weights = _blend_weights(c_weights, ce_weight_scale)
-    loss_c_vec = F.cross_entropy(
-        c_logits,
-        c_targets,
-        reduction="none",
-        label_smoothing=label_smoothing,
-        weight=c_weights,
-    ).reshape(B, L)
+
+    if loss_config.use_focal_loss:
+        loss_c_vec = focal_cross_entropy(
+            c_logits,
+            c_targets,
+            gamma=loss_config.focal_gamma,
+            weight=c_weights,
+            label_smoothing=label_smoothing,
+            reduction="none",
+        ).reshape(B, L)
+    else:
+        loss_c_vec = F.cross_entropy(
+            c_logits,
+            c_targets,
+            reduction="none",
+            label_smoothing=label_smoothing,
+            weight=c_weights,
+        ).reshape(B, L)
     loss_c = _mean_with_weights(loss_c_vec, w_c, loss_config)
 
     # --- BUTTONS (per-label weighting)
     target_btn = target_info["buttons"]
-    pos_weight = _compute_pos_weights(target_btn, loss_config)  # [K_btn] or None
-    pos_weight = _blend_weights(pos_weight, pos_weight_scale)
-    loss_btn_all = F.binary_cross_entropy_with_logits(
-        logits_btn, target_btn, reduction="none", pos_weight=pos_weight
-    )  # [B, L, K_btn]
+
+    if loss_config.use_focal_loss:
+        loss_btn_all = focal_binary_cross_entropy(
+            logits_btn,
+            target_btn,
+            gamma=loss_config.focal_gamma,
+            alpha=loss_config.focal_alpha,
+            reduction="none",
+        )  # [B, L, K_btn]
+    else:
+        pos_weight = _compute_pos_weights(target_btn, loss_config)  # [K_btn] or None
+        pos_weight = _blend_weights(pos_weight, pos_weight_scale)
+        loss_btn_all = F.binary_cross_entropy_with_logits(
+            logits_btn, target_btn, reduction="none", pos_weight=pos_weight
+        )  # [B, L, K_btn]
 
     if w_buttons is not None:
         # true weighted mean over all dims
@@ -151,13 +287,23 @@ def compute_loss_components(
         # original behavior (mean over label dim, then batch/time)
         loss_buttons = loss_btn_all.mean()
 
+    # --- SHOULDER ---
     shoulder_idx = target_info.get("shoulder_idx")
-    sh_vec = F.cross_entropy(
-        shoulder_logits.reshape(B * L, -1),
-        shoulder_idx.reshape(B * L),
-        reduction="none",
-        label_smoothing=label_smoothing,
-    ).reshape(B, L)
+    if loss_config.use_focal_loss:
+        sh_vec = focal_cross_entropy(
+            shoulder_logits.reshape(B * L, -1),
+            shoulder_idx.reshape(B * L),
+            gamma=loss_config.focal_gamma,
+            label_smoothing=label_smoothing,
+            reduction="none",
+        ).reshape(B, L)
+    else:
+        sh_vec = F.cross_entropy(
+            shoulder_logits.reshape(B * L, -1),
+            shoulder_idx.reshape(B * L),
+            reduction="none",
+            label_smoothing=label_smoothing,
+        ).reshape(B, L)
     loss_shoulder = _mean_with_weights(sh_vec, w_shoulder, loss_config)
 
     total_loss = loss_main + loss_c + loss_buttons + loss_shoulder

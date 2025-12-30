@@ -36,7 +36,7 @@ class TrainConfig(BaseModel):
         ),
     )
     lr: float = Field(
-        default=2e-4,
+        default=3e-4,
         gt=0,
         description=(
             "Learning rate for AdamW optimizer. Reduced from 3e-4 to 2e-4 for more stable imitation learning. "
@@ -45,13 +45,13 @@ class TrainConfig(BaseModel):
         ),
     )
     weight_decay: float = Field(
-        default=0.002,
+        default=0.03,
         ge=0,
         description=(
             "L2 regularization strength for AdamW optimizer. Prevents overfitting by "
             "penalizing large weights. Effect: Higher values (0.01-0.1) increase regularization "
             "and may reduce overfitting but can hurt capacity; lower values (0.0001-0.005) reduce "
-            "regularization. Reasonable range: [0.0001, 0.1]. Interacts with: lr (higher lr often "
+            "regularization. Reasonable range: [0.01, 0.1]. Interacts with: lr (higher lr often "
             "needs higher weight_decay), model size (larger models may need more regularization)."
         ),
     )
@@ -68,12 +68,12 @@ class TrainConfig(BaseModel):
         ),
     )
     warmup_steps: int = Field(
-        default=5000,
+        default=9000,
         ge=0,
         description="Number of optimizer steps to linearly warm up learning rate from 0 to lr. Helps stabilize early training.",
     )
     num_workers: int = Field(
-        default=24,
+        default=32,
         ge=0,
         description="Number of dataloader worker processes. More workers = faster data loading but more memory.",
     )
@@ -113,7 +113,7 @@ class TrainConfig(BaseModel):
 
     # Losses
     grad_clip: float = Field(
-        default=1.0,
+        default=2.0,
         gt=0,
         description=(
             "Maximum gradient norm for GLOBAL gradient clipping. Prevents exploding gradients. "
@@ -233,6 +233,16 @@ class TrainConfig(BaseModel):
             "Effect: True = load matching parameters, skip mismatched ones (useful for architecture changes); "
             "False = strict loading, fail if any mismatch (safer). "
             "Recommended: False for normal training, True for transfer learning or architecture experiments."
+        ),
+    )
+    reset_projection_outliers: bool = Field(
+        default=False,
+        description=(
+            "Reset outlier dimensions in projection_down layer after loading checkpoint. "
+            "Use this to recover from training runs where certain embedding dimensions have "
+            "developed pathologically large biases. When enabled, identifies dimensions with "
+            "|bias| > 5.0 and resets their biases to zero while scaling down corresponding weights. "
+            "This is a one-time fix that should be disabled after the first resumed epoch."
         ),
     )
 

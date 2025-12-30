@@ -25,6 +25,82 @@ from train.wandb_utils import LocalLogger, WandbConfig, WandbLogger, init_wandb
 from utils import _resolve_device, Profiler
 
 
+def reset_projection_outlier_dimensions(
+    model: torch.nn.Module,
+    bias_threshold: float = 5.0,
+    weight_scale: float = 0.1,
+) -> int:
+    """Reset outlier dimensions in projection_down layer.
+
+    Identifies embedding dimensions where the projection_down bias has grown
+    pathologically large (|bias| > threshold), then:
+    1. Resets the bias to zero
+    2. Scales down the corresponding weight row
+
+    This is a surgical fix for training runs where weak weight decay allowed
+    certain dimensions to dominate the embedding space.
+
+    Args:
+        model: The GPT model (may be wrapped by torch.compile)
+        bias_threshold: Reset dimensions where |bias| exceeds this value
+        weight_scale: Scale factor for weight rows of reset dimensions
+
+    Returns:
+        Number of dimensions that were reset
+    """
+    # Handle torch.compile wrapper
+    base_model = model
+    if hasattr(model, "_orig_mod"):
+        base_model = model._orig_mod
+
+    if not hasattr(base_model, "projection_down"):
+        logger.warning("Model has no projection_down layer; skipping outlier reset")
+        return 0
+
+    proj = base_model.projection_down
+    if proj.bias is None:
+        logger.info("projection_down has no bias; skipping outlier reset")
+        return 0
+
+    with torch.no_grad():
+        bias = proj.bias
+        weight = proj.weight
+
+        # Find outlier dimensions
+        outlier_mask = bias.abs() > bias_threshold
+        outlier_dims = torch.where(outlier_mask)[0].tolist()
+
+        if not outlier_dims:
+            logger.info(
+                f"No outlier dimensions found (threshold={bias_threshold}); "
+                "no reset needed"
+            )
+            return 0
+
+        # Log details before reset
+        for dim in outlier_dims:
+            old_bias = bias[dim].item()
+            old_weight_norm = weight[dim].norm().item()
+            logger.info(
+                f"Resetting dim {dim}: bias={old_bias:.4f}, "
+                f"weight_norm={old_weight_norm:.2f}"
+            )
+
+        # Reset biases to zero
+        bias[outlier_dims] = 0.0
+
+        # Scale down corresponding weight rows
+        weight[outlier_dims] *= weight_scale
+
+        # Log summary
+        logger.info(
+            f"Reset {len(outlier_dims)} outlier dimensions in projection_down: "
+            f"{outlier_dims}"
+        )
+
+        return len(outlier_dims)
+
+
 def parse_cli_overrides(argv: Sequence[str]) -> Dict[str, str]:
     """
     Parses CLI arguments for --set KEY=VALUE overrides.
@@ -126,20 +202,36 @@ def build_optimizer(model: GPT, config) -> torch.optim.Optimizer:
     """
     Builds the AdamW optimizer with proper weight decay handling.
 
-    Separates parameters into two groups:
-    1. Decayed: Weights of Linear and Embedding layers
-    2. No Decay: Biases, LayerNorm/RMSNorm weights, and other 1D tensors
+    Separates parameters into three groups:
+    1. Decayed: Weights of Linear and Embedding layers (full weight_decay)
+    2. Projection bias: projection_down.bias only (small weight_decay to prevent explosion)
+    3. No Decay: Other biases, LayerNorm/RMSNorm weights, and other 1D tensors
     """
-    # Separate parameters into decay and no-decay groups
+    # Separate parameters into decay, projection bias, and no-decay groups
     decay_params = []
+    projection_bias_params = []
     nodecay_params = []
+
+    # Handle torch.compile wrapper
+    base_model = model
+    if hasattr(model, "_orig_mod"):
+        base_model = model._orig_mod
+
+    # Get the projection_down.bias parameter for special handling
+    projection_bias_id = None
+    if hasattr(base_model, "projection_down") and base_model.projection_down.bias is not None:
+        projection_bias_id = id(base_model.projection_down.bias)
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
 
+        # Special case: projection_down.bias gets small weight decay
+        if projection_bias_id is not None and id(param) == projection_bias_id:
+            projection_bias_params.append(param)
+            logger.info(f"Adding projection_down.bias to regularized group (wd=0.001)")
         # Common heuristic: decay 2D+ tensors (weights), skip 1D (biases, layernorms)
-        if param.dim() >= 2:
+        elif param.dim() >= 2:
             decay_params.append(param)
         else:
             nodecay_params.append(param)
@@ -147,6 +239,7 @@ def build_optimizer(model: GPT, config) -> torch.optim.Optimizer:
     optim_groups = [
         {"params": decay_params, "weight_decay": config.train.weight_decay},
         {"params": nodecay_params, "weight_decay": 0.0},
+        {"params": projection_bias_params, "weight_decay": 0.001},  # Small regularization
     ]
 
     fused = torch.cuda.is_available()
@@ -255,6 +348,15 @@ def initialize_training_components(
             global_step = max(global_step, persisted)
     except Exception:
         pass
+
+    # Optionally reset outlier dimensions in projection_down after checkpoint load
+    if config.train.reset_projection_outliers and start_epoch > 0:
+        num_reset = reset_projection_outlier_dimensions(model)
+        if num_reset > 0:
+            logger.info(
+                f"Reset {num_reset} outlier projection dimensions. "
+                "Consider setting reset_projection_outliers=False for subsequent runs."
+            )
 
     components = TrainingComponents(
         config=config,

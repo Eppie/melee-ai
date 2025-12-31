@@ -9,7 +9,7 @@ Nano-Melee trains a GPT-style transformer to play Super Smash Bros. Melee. The m
 
 ## Commands
 
-**Always activate the shared venv before running any Python command:**
+**On macOS only**, activate the shared venv before running Python commands:
 ```bash
 source ~/.venvs/slippi312/bin/activate
 ```

@@ -106,7 +106,11 @@ def perform_forward_pass(
         combined_weights = {}
         for key, change_w in change_weights.items():
             # Multiply change weights by value weights
-            combined_weights[key] = change_w * imitation_weights_tensor
+            # Buttons has shape [B, L, K] so we need to unsqueeze imitation weights
+            if change_w.dim() == 3:
+                combined_weights[key] = change_w * imitation_weights_tensor.unsqueeze(-1)
+            else:
+                combined_weights[key] = change_w * imitation_weights_tensor
 
         policy_loss_components = compute_loss_components(
             pred,
@@ -127,11 +131,8 @@ def perform_forward_pass(
             gamma=config.rl.gamma,
             reward_idx=components.value_idx,
         )
-        value_loss_raw = torch.nn.functional.mse_loss(
-            value_pred, value_target, reduction="none"
-        ).squeeze(-1)
-        value_w = combined_weights.get("global", combined_weights["main"])
-        loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(1e-12)
+        # Unweighted loss so value head learns to predict all states, not just high-value ones
+        loss_value = torch.nn.functional.mse_loss(value_pred, value_target)
         loss = loss + config.rl.value_loss_coef * loss_value
         loss_components["value"] = loss_value
 
@@ -146,7 +147,7 @@ def perform_forward_pass(
     return ForwardPassResult(
         pred=pred,
         target_info=target_info,
-        weights=weights,
+        weights=combined_weights,
         loss=loss,
         loss_components=loss_components,
         value_pred=value_pred,

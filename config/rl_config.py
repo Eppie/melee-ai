@@ -22,13 +22,13 @@ class RLConfig(BaseModel):
         ),
     )
     value_loss_coef: float = Field(
-        default=0.5,
+        default=1.0,
         ge=0,
         description=(
             "Coefficient for value function loss in multi-task learning. Balances policy gradient loss vs value prediction loss. "
             "Effect: Higher values (0.5-2.0) prioritize accurate value estimation, improving advantage estimates but "
             "potentially slowing policy learning; lower values (0.1-0.5) prioritize policy learning. "
-            "Reasonable range: [0.1, 2.0]. Common values: 0.5 (default), 1.0 (equal weighting). "
+            "Reasonable range: [0.1, 2.0]. Common values: 0.5, 1.0 (equal weighting). "
             "Interacts with: learning rate (affects how quickly value head adapts)."
         ),
     )

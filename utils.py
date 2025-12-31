@@ -1,10 +1,36 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+
+
+def get_git_commit_hash() -> Optional[str]:
+    """Get the current git commit hash.
+
+    Returns:
+        The short (7-character) git commit hash, or None if not in a git repo
+        or git is not available.
+
+    Example:
+        >>> hash = get_git_commit_hash()
+        >>> print(hash)  # e.g., "f7128a4"
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
 
 
 def strip_compiled_prefix(state_dict: Dict[str, Any]) -> Dict[str, Any]:

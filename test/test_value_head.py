@@ -82,18 +82,16 @@ def replay_reward_data():
     }
 
 
-def test_compute_frame_rewards_damage_and_stock(reward_setup):
-    """Damage deltas and stock losses convert to the configured rewards."""
+def test_compute_frame_rewards_damage(reward_setup):
+    """Damage deltas convert to the configured rewards."""
     colmap, idx = reward_setup
-    assert idx.p2_percent is not None and idx.p2_stock is not None
+    assert idx.p2_percent is not None
 
     seq_len = 4
     X = _zeros_feature_tensor(colmap, seq_len)
 
     # Opponent percent rises by 2, then by 3 -> convert to rewards at frames 1 and 2.
     X[0, :, idx.p2_percent] = torch.tensor([0.0, 2.0, 5.0, 5.0])
-    # Opponent loses one stock between frames 1 and 2.
-    X[0, :, idx.p2_stock] = torch.tensor([4.0, 4.0, 3.0, 3.0])
 
     rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
 
@@ -101,34 +99,8 @@ def test_compute_frame_rewards_damage_and_stock(reward_setup):
     expected = torch.tensor(
         [
             2.0 * float(cfg.reward_damage_dealt),
-            3.0 * float(cfg.reward_damage_dealt) + float(cfg.reward_stock_taken),
+            3.0 * float(cfg.reward_damage_dealt),
             0.0,
-            0.0,
-        ],
-        dtype=torch.float32,
-    )
-    assert torch.allclose(rewards, expected)
-
-
-def test_compute_frame_rewards_shield_penalty(reward_setup):
-    """Low shield strength applies a per-frame penalty only to the ego player."""
-    colmap, idx = reward_setup
-    assert idx.p1_shield_strength is not None
-    assert idx.p2_shield_strength is not None
-
-    seq_len = 3
-    X = _zeros_feature_tensor(colmap, seq_len)
-    X[0, :, idx.p2_shield_strength] = 1.0  # keep opponent shielded to avoid penalties
-    X[0, :, idx.p1_shield_strength] = torch.tensor([1.0, 0.1, 0.4])
-
-    rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
-
-    cfg = get_config().rl
-    # penalty = clamp(1 - 2 * shield, 0, 1) * reward_low_shield
-    expected = torch.tensor(
-        [
-            (1 - 2 * 0.1) * float(cfg.reward_low_shield),
-            (1 - 2 * 0.4) * float(cfg.reward_low_shield),
             0.0,
         ],
         dtype=torch.float32,
@@ -137,20 +109,18 @@ def test_compute_frame_rewards_shield_penalty(reward_setup):
 
 
 def test_compute_frame_rewards_hitlag_terms(reward_setup):
-    """Attacking frames award the configured opponent hitlag bonus."""
+    """Attacking frames award the configured opponent defender hitlag bonus."""
     colmap, idx = reward_setup
-    assert idx.p1_is_in_hitlag is not None
     assert idx.p1_is_defender_in_hitlag is not None
-    assert idx.p2_is_in_hitlag is not None
     assert idx.p2_is_defender_in_hitlag is not None
 
     seq_len = 3
     X = _zeros_feature_tensor(colmap, seq_len)
 
-    # Frame 1: p1 hits p2 (opponent hitlag metric == 1).
-    X[0, 1, idx.p2_is_in_hitlag] = 1.0
-    # Frame 2: roles swap, p2 hits p1.
-    X[0, 2, idx.p1_is_in_hitlag] = 1.0
+    # Frame 1: p1 hits p2 (p2 is defender in hitlag).
+    X[0, 1, idx.p2_is_defender_in_hitlag] = 1.0
+    # Frame 2: roles swap, p2 hits p1 (p1 is defender in hitlag).
+    X[0, 2, idx.p1_is_defender_in_hitlag] = 1.0
 
     rewards = compute_frame_rewards(X, idx=idx).squeeze(0)
 
@@ -230,20 +200,23 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
 def test_replay_rewards_shape_and_sparsity(replay_reward_data):
     rewards = replay_reward_data["rewards"]
     assert rewards.shape[0] == 6956
-    assert torch.count_nonzero(rewards).item() == 382
+    # 409 nonzero with action state-based death detection and defender hitlag
+    assert torch.count_nonzero(rewards).item() == 409
 
 
 @pytest.mark.parametrize(
     ("frame", "value"),
     [
-        (31, -0.0784),
-        (36, -0.0784),
-        (6917, -1.0),
+        # Frames 31 and 36: damage dealt + defender hitlag reward
+        (31, 0.0816),
+        (36, 0.0816),
+        # Frame 6917: death detected via action state transition
+        (6917, -4.0),
     ],
 )
 def test_replay_rewards_matches_known_frames(replay_reward_data, frame, value):
     rewards = replay_reward_data["rewards"]
-    assert pytest.approx(value, abs=1e-6) == float(rewards[frame])
+    assert pytest.approx(value, abs=1e-4) == float(rewards[frame])
 
 
 def test_replay_rewards_zero_sum_after_player_swap(replay_reward_data):

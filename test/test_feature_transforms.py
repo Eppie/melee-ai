@@ -77,18 +77,16 @@ def test_apply_feature_transforms_basic():
         "p1_c_stick_y",
         "p1_facing",
         "p1_percent",
-        "p1_shield_strength",
-        "p1_stock",
         "p1_position_x",
         "p1_position_y",
         "p1_jumps_left",
     ]
 
-    # Create test data: 2 frames, 11 features
+    # Create test data: 2 frames, 9 features
     features = np.array(
         [
-            [0.5, 0.5, 0.5, 0.5, 1.0, 50.0, 60.0, 4.0, 20.0, 10.0, 6.0],
-            [1.0, 0.5, 0.5, 0.5, 0.0, 100.0, 30.0, 2.0, 0.0, 0.0, 3.0],
+            [0.5, 0.5, 0.5, 0.5, 1.0, 50.0, 20.0, 10.0, 6.0],
+            [1.0, 0.5, 0.5, 0.5, 0.0, 100.0, 0.0, 0.0, 3.0],
         ],
         dtype=np.float32,
     )
@@ -109,17 +107,11 @@ def test_apply_feature_transforms_basic():
     # Check percent: 50.0 / 100 = 0.5
     assert np.allclose(result[0, 5], 0.5)
 
-    # Check shield_strength: 60.0 / 60 = 1.0
+    # Check position_x: 20.0 / 20 = 1.0
     assert np.allclose(result[0, 6], 1.0)
 
-    # Check stock: 4.0 / 4 = 1.0
-    assert np.allclose(result[0, 7], 1.0)
-
-    # Check position_x: 20.0 / 20 = 1.0
-    assert np.allclose(result[0, 8], 1.0)
-
     # Check jumps_left: 6.0 / 6 = 1.0
-    assert np.allclose(result[0, 10], 1.0)
+    assert np.allclose(result[0, 8], 1.0)
 
 
 def test_apply_feature_transforms_dict_basic():
@@ -131,8 +123,6 @@ def test_apply_feature_transforms_dict_basic():
         "p1_c_stick_y": 0.5,
         "p1_facing": 1.0,
         "p1_percent": 50.0,
-        "p1_shield_strength": 60.0,
-        "p1_stock": 4.0,
         "p1_position_x": 20.0,
         "p1_position_y": 10.0,
         "p1_jumps_left": 6.0,
@@ -160,8 +150,6 @@ def test_train_inference_parity():
         "p1_c_stick_y",
         "p1_facing",
         "p1_percent",
-        "p1_shield_strength",
-        "p1_stock",
         "p1_position_x",
         "p1_position_y",
         "p1_jumps_left",
@@ -169,14 +157,12 @@ def test_train_inference_parity():
 
     # Test with random values
     np.random.seed(42)
-    features_array = np.random.rand(1, 11).astype(np.float32)
+    features_array = np.random.rand(1, 9).astype(np.float32)
     features_array[0, 4] = 1.0  # facing in [0, 1]
     features_array[0, 5] = 75.0  # percent
-    features_array[0, 6] = 45.0  # shield_strength
-    features_array[0, 7] = 3.0  # stock
-    features_array[0, 8] = 15.0  # position_x
-    features_array[0, 9] = -5.0  # position_y
-    features_array[0, 10] = 2.0  # jumps_left
+    features_array[0, 6] = 15.0  # position_x
+    features_array[0, 7] = -5.0  # position_y
+    features_array[0, 8] = 2.0  # jumps_left
 
     # Create dict version
     features_dict = {

@@ -37,7 +37,6 @@ PLAYER_SPEC = [
     ("position_y", np.float32),
     # Damage/stock & state bits
     ("percent", np.int32),
-    ("stock", np.int32),
     ("facing", np.float32),
     ("on_ground", np.float32),
     # Buttons
@@ -49,7 +48,6 @@ PLAYER_SPEC = [
     ("c_stick_y", np.float32),
     ("shoulder_analog", np.float32),  # game treats L/R shoulder identically
     # Additional state
-    ("shield_strength", np.float32),
     ("is_fastfalling", np.float32),
     ("is_defender_in_hitlag", np.float32),
     ("is_in_hitlag", np.float32),
@@ -104,7 +102,6 @@ PLAYER_EXTRACTORS: Dict[str, Callable[[PlayerState], Any]] = {
     "position_x": lambda player: _as_float32(player.position.x),
     "position_y": lambda player: _as_float32(player.position.y),
     "percent": lambda player: _as_int32(player.percent),
-    "stock": lambda player: _as_int32(player.stock),
     "facing": lambda player: _as_float32(player.facing),
     "on_ground": lambda player: _as_float32(player.on_ground),
     "button_a": _button_extractor(enums.Button.BUTTON_A),
@@ -133,7 +130,6 @@ PLAYER_EXTRACTORS: Dict[str, Callable[[PlayerState], Any]] = {
     "shoulder_analog": lambda player: _as_float32(
         _require_controller_state(player).l_shoulder
     ),
-    "shield_strength": lambda player: _as_float32(player.shield_strength),
     "is_fastfalling": lambda player: _as_float32(player.is_fastfalling),
     "is_defender_in_hitlag": lambda player: _as_float32(player.is_defender_in_hitlag),
     "is_in_hitlag": lambda player: _as_float32(player.is_in_hitlag),

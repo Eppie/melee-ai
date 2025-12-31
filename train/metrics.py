@@ -8,7 +8,6 @@ import numpy as np
 import torch
 
 
-# TODO: Do we really need this? Check sweep.py.
 class MetricsAccumulator:
     """Stateful metrics tracker for training/validation.
 

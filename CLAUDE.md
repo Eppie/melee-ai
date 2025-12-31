@@ -6,7 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Nano-Melee trains a GPT-style transformer to play Super Smash Bros. Melee. The model predicts controller outputs from game state via:
 1. **Imitation Learning** - Train on human replays from Slippi `.slp` files
-2. **Reinforcement Learning (PPO)** - Self-play with opponent pool (largely untested)
 
 ## Commands
 
@@ -35,13 +34,6 @@ python validation.py --checkpoint path/to/model.pt
 python -m stats                               # compute all statistics
 python -m stats --zarr-dir processed_data_100/ --max-episodes 100
 
-# PPO self-play (edit paths in script first)
-./run_ppo.sh
-python train_ppo.py --dolphin-path /path/to/dolphin-emu --iso /path/to/melee.iso
-
-# Hyperparameter sweeps
-python sweep.py
-
 # Analysis scripts
 python scripts/analyze_feature_importance.py
 python scripts/interpret.py
@@ -61,7 +53,6 @@ GPT architecture split across modular files:
 - `nano_gpt.py` - Main `GPT` class, `Block`, `MLP`
 - `attention.py` - Causal self-attention with MQA support
 - `output_head.py` - Simple output head implementation
-- `head_cross_attention.py` - Cross-attention between output heads
 - `positional_encoding.py` - Rotary positional embeddings
 - `norm.py` - RMSNorm implementation
 - `compile_utils.py` - torch.compile utilities
@@ -72,7 +63,7 @@ Architecture features:
 - Multi-Query Attention (configurable `n_kv_head`)
 - One-hot encoding for categoricals (stage, character, action)
 - 5 output heads: `main_stick`, `c_stick`, `buttons`, `shoulder`, `value`
-- Optional cross-attention between heads for information sharing
+- Sequential head computation with information flow between heads
 
 ### Controller Quantization (`controller_quantization.py`)
 - **Main stick**: 64 discrete positions (wavedash angles, DI, Firefox angles, etc.)
@@ -89,7 +80,6 @@ Modular Pydantic configs split by domain:
 - `loss_config.py` - `LossConfig` for loss function weights
 - `feature_config.py` - `FeatureConfig` for feature engineering
 - `rl_config.py` - `RLConfig` for reinforcement learning
-- `ppo_config.py` - `PPOConfig` for PPO-specific settings
 - `imitation_config.py` - `ImitationConfig` for imitation learning
 
 Features:
@@ -113,16 +103,6 @@ Modular training utilities with clean separation of concerns:
 - `lr_schedule.py` - Learning rate schedules (cosine)
 - `wandb_utils.py` - Weights & Biases integration
 - `components.py` - Shared training components
-
-### PPO Self-Play (`ppo/`)
-Distributed PPO implementation with parallel simulation:
-- `opponent_pool.py` - FIFO pool of frozen past models
-- `trajectory.py` - Experience buffer + GAE advantage estimation
-- `trajectory_slicer.py` - Slice trajectories for training sequences
-- `ppo_loss.py` - Clipped surrogate + value + entropy loss
-- `selfplay_env.py` - libmelee environment wrapper
-- `inference_coordinator.py` - Coordinate distributed inference
-- `simulation_worker.py` - Parallel simulation workers
 
 ### Statistics (`stats/`)
 Comprehensive data analysis module with modular collectors:
@@ -164,7 +144,6 @@ Analysis and utilities:
 | `loss.py` | Cross-entropy with class balancing, BCE for buttons |
 | `model_interface.py` | High-level inference API for live play |
 | `validation.py` | Model evaluation with detailed metrics |
-| `sweep.py` | Hyperparameter grid search with FLOP estimation |
 | `constants.py` | Shared constants used across the codebase |
 | `controller_quantization.py` | Controller input quantization tables |
 | `controller_utils.py` | Controller utilities and helper functions |

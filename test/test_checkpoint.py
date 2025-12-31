@@ -18,6 +18,7 @@ from train.checkpoint import (
     load_config_from_checkpoint,
     load_config_from_latest_checkpoint,
 )
+from utils import get_git_commit_hash
 
 
 def _write_mismatched_checkpoint(path: Path, model: torch.nn.Module) -> None:
@@ -229,7 +230,7 @@ def test_init_config_from_checkpoint_missing_config(tmp_path: Path) -> None:
 
 def test_config_round_trip_preserves_all_fields(tmp_path: Path) -> None:
     """Test that saving and loading preserves all config fields."""
-    from config.config import TrainConfig, GPTConfig, LossConfig, RLConfig, PPOConfig
+    from config.config import TrainConfig, GPTConfig, LossConfig, RLConfig
 
     model = torch.nn.Linear(4, 2)
 
@@ -254,9 +255,6 @@ def test_config_round_trip_preserves_all_fields(tmp_path: Path) -> None:
         rl=RLConfig(
             gamma=0.99,
         ),
-        ppo=PPOConfig(
-            clip_ratio=0.1,
-        ),
     )
 
     ckpt_path = tmp_path / "round_trip.pt"
@@ -276,7 +274,6 @@ def test_config_round_trip_preserves_all_fields(tmp_path: Path) -> None:
     assert loaded.loss_weights.main_change == 3.0
     assert loaded.loss_weights.button_z == 15.0
     assert loaded.rl.gamma == 0.99
-    assert loaded.ppo.clip_ratio == 0.1
 
 
 def test_set_config(tmp_path: Path) -> None:
@@ -291,3 +288,71 @@ def test_set_config(tmp_path: Path) -> None:
 
     assert get_config() is config
     assert get_config().train.lr == 9e-5
+
+
+def test_get_git_commit_hash_returns_string_or_none() -> None:
+    """Test that get_git_commit_hash returns a valid short hash or None."""
+    result = get_git_commit_hash()
+    # In a git repo, it should return a short hash (typically 7 chars)
+    # Outside a git repo, it returns None
+    if result is not None:
+        assert isinstance(result, str)
+        assert len(result) >= 7
+        # Should only contain hex characters
+        assert all(c in "0123456789abcdef" for c in result)
+
+
+def test_save_checkpoint_includes_git_commit(tmp_path: Path) -> None:
+    """Test that save_checkpoint includes the git commit hash."""
+    model = torch.nn.Linear(4, 2)
+    config = Config()
+
+    ckpt_path = tmp_path / "with_commit.pt"
+    save_checkpoint(
+        path=ckpt_path,
+        model=model,
+        config=config,
+        epoch=1,
+        global_step=100,
+    )
+
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    assert "git_commit" in ckpt
+    # The value should be either a string or None
+    if ckpt["git_commit"] is not None:
+        assert isinstance(ckpt["git_commit"], str)
+        assert len(ckpt["git_commit"]) >= 7
+
+
+def test_load_checkpoint_without_git_commit(tmp_path: Path) -> None:
+    """Test that loading old checkpoints without git_commit still works."""
+    model = torch.nn.Linear(4, 2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    scaler = GradScaler(enabled=False)
+
+    # Create a checkpoint without git_commit (simulating old checkpoint)
+    ckpt_path = tmp_path / "old_checkpoint.pt"
+    ckpt = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+        "resume_epoch": 5,
+        "resume_iter": 0,
+        "global_step": 500,
+        "config": Config().to_dict(),
+        # Note: no git_commit key
+    }
+    torch.save(ckpt, ckpt_path)
+
+    # Loading should succeed without errors
+    start_epoch, global_step, start_iter = _load_latest_checkpoint(
+        tmp_path,
+        model,
+        optimizer,
+        scaler,
+        torch.device("cpu"),
+    )
+
+    assert start_epoch == 5
+    assert global_step == 500
+    assert start_iter == 0

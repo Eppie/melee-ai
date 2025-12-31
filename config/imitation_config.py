@@ -96,7 +96,7 @@ class ImitationConfig(BaseModel):
         le=1,
         description=(
             "Lambda parameter for GAE advantage estimation. Only used if advantage_use_gae=True. "
-            "See PPOConfig.gae_lambda for detailed explanation. Reasonable range: [0.9, 0.99]."
+            "Higher values (0.95-0.99) give more weight to future rewards. Reasonable range: [0.9, 0.99]."
         ),
     )
     filter_percentile: float = Field(

@@ -21,13 +21,3 @@ class SimpleHead(nn.Module):
         h = F.relu(self.fc1(x))
         h = self.dropout(h)
         return self.fc2(h)
-
-    def forward_intermediate(self, x: torch.Tensor) -> torch.Tensor:
-        """Returns intermediate features after first layer (before final projection)."""
-        h = F.relu(self.fc1(x))
-        h = self.dropout(h)
-        return h
-
-    def forward_from_intermediate(self, h: torch.Tensor) -> torch.Tensor:
-        """Projects from intermediate features to output."""
-        return self.fc2(h)

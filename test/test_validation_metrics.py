@@ -30,16 +30,12 @@ def _build_feature_names(include_value_target: bool = True) -> list[str]:
         "p2_character",
         "p1_action",
         "p2_action",
-        "p1_stock",
-        "p2_stock",
         "p1_percent",
         "p2_percent",
         "p1_is_in_hitlag",
         "p2_is_in_hitlag",
         "p1_is_defender_in_hitlag",
         "p2_is_defender_in_hitlag",
-        "p1_shield_strength",
-        "p2_shield_strength",
         "p1_off_stage",
         "p2_off_stage",
         "p1_l_cancel_status",
@@ -109,16 +105,12 @@ def test_update_enhanced_metrics_accumulates_multimodal_statistics(
         ],
     )
     _set_feature(X, feat_idx, "p2_action", [[0, 0, 0], [0, 0, 0]])
-    _set_feature(X, feat_idx, "p1_stock", [[4, 4, 3], [4, 4, 4]])
-    _set_feature(X, feat_idx, "p2_stock", [[4, 3, 3], [4, 4, 3]])
     _set_feature(X, feat_idx, "p1_percent", [[10, 30, 60], [5, 5, 20]])
     _set_feature(X, feat_idx, "p2_percent", [[0, 10, 25], [0, 5, 5]])
     _set_feature(X, feat_idx, "p1_is_in_hitlag", [[0, 1, 0], [0, 0, 0]])
     _set_feature(X, feat_idx, "p2_is_in_hitlag", [[0, 0, 1], [0, 1, 0]])
     _set_feature(X, feat_idx, "p1_is_defender_in_hitlag", [[0, 0, 0], [0, 0, 0]])
     _set_feature(X, feat_idx, "p2_is_defender_in_hitlag", [[0, 0, 0], [0, 0, 0]])
-    _set_feature(X, feat_idx, "p1_shield_strength", [[0.2, 0.4, 0.1], [0.5, 0.5, 0.5]])
-    _set_feature(X, feat_idx, "p2_shield_strength", [[0.4, 0.4, 0.4], [0.5, 0.4, 0.4]])
     _set_feature(X, feat_idx, "value_target", [[0.5, 0.7, 1.0], [1.1, 1.2, 1.3]])
 
     target_main = torch.tensor([[0, 1, 1], [2, 2, 3]], dtype=torch.long)
@@ -399,16 +391,12 @@ def test_update_enhanced_metrics_handles_single_frame_batches_and_copies_frame_f
 
     _set_feature(X, feat_idx, "p1_action", [[Action.DEAD_DOWN.value]])
     _set_feature(X, feat_idx, "p2_action", [[0]])
-    _set_feature(X, feat_idx, "p1_stock", [[4]])
-    _set_feature(X, feat_idx, "p2_stock", [[4]])
     _set_feature(X, feat_idx, "p1_percent", [[10]])
     _set_feature(X, feat_idx, "p2_percent", [[5]])
     _set_feature(X, feat_idx, "p1_is_in_hitlag", [[0]])
     _set_feature(X, feat_idx, "p2_is_in_hitlag", [[0]])
     _set_feature(X, feat_idx, "p1_is_defender_in_hitlag", [[0]])
     _set_feature(X, feat_idx, "p2_is_defender_in_hitlag", [[0]])
-    _set_feature(X, feat_idx, "p1_shield_strength", [[0.3]])
-    _set_feature(X, feat_idx, "p2_shield_strength", [[0.4]])
 
     target_main = torch.tensor([[5]], dtype=torch.long)
     target_c = torch.tensor([[2]], dtype=torch.long)

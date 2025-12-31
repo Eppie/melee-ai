@@ -19,7 +19,6 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 
 from model.attention import CausalSelfAttention
-from model.head_cross_attention import HeadCrossAttention
 from model.norm import norm
 from model.output_head import SimpleHead
 from utils import _resolve_device
@@ -88,31 +87,20 @@ class GPT(nn.Module):
         # TODO: Move this to config
         head_hidden_dim = 128
 
-        # Controller output heads - input sizes depend on head_flow mode
-        self.head_flow = model_config.head_flow
-
-        if self.head_flow == "sequential":
-            # Sequential mode: each head receives concatenated outputs from previous heads
-            # Order: buttons → main_stick → c_stick → shoulder
-            button_input_size = self.embedding_dim
-            main_stick_input_size = self.embedding_dim + self.button_output_size
-            c_stick_input_size = (
-                self.embedding_dim
-                + self.button_output_size
-                + self.main_stick_output_size
-            )
-            shoulder_input_size = (
-                self.embedding_dim
-                + self.button_output_size
-                + self.main_stick_output_size
-                + self.c_stick_output_size
-            )
-        else:
-            # Parallel and mix modes: all heads receive same base features
-            button_input_size = self.embedding_dim
-            main_stick_input_size = self.embedding_dim
-            c_stick_input_size = self.embedding_dim
-            shoulder_input_size = self.embedding_dim
+        # Controller output heads - sequential mode where each head receives
+        # concatenated outputs from previous heads
+        # Order: buttons → main_stick → c_stick → shoulder
+        button_input_size = self.embedding_dim
+        main_stick_input_size = self.embedding_dim + self.button_output_size
+        c_stick_input_size = (
+            self.embedding_dim + self.button_output_size + self.main_stick_output_size
+        )
+        shoulder_input_size = (
+            self.embedding_dim
+            + self.button_output_size
+            + self.main_stick_output_size
+            + self.c_stick_output_size
+        )
 
         self.button_head = SimpleHead(
             button_input_size, self.button_output_size, hidden=head_hidden_dim
@@ -127,14 +115,6 @@ class GPT(nn.Module):
             shoulder_input_size, self.shoulder_output_size, hidden=head_hidden_dim
         )
         self.value_head = SimpleHead(self.embedding_dim, 1, hidden=head_hidden_dim * 2)
-
-        # Cross-attention for heads (only used in "mix" mode)
-        if self.head_flow == "mix":
-            self.head_cross_attention = HeadCrossAttention(
-                hidden_dim=head_hidden_dim,
-                num_head_types=4,  # buttons, main_stick, c_stick, shoulder
-                num_attn_heads=4,
-            )
 
         # TODO: Do we need this multiplier?
         self.rotary_sequence_length = self.block_size * 2
@@ -229,80 +209,32 @@ class GPT(nn.Module):
 
         hidden_states = norm(hidden_states)
 
-        base_hidden_states = hidden_states
+        # Sequential heads: each head receives concatenated outputs from previous heads
+        # Order: buttons → main_stick → c_stick → shoulder
+        button_logits = self.button_head(hidden_states)
 
-        if self.head_flow == "parallel":
-            # Parallel heads: each head operates independently on base features
-            button_logits = self.button_head(base_hidden_states)
-            main_stick = self.main_stick_head(base_hidden_states)
-            c_stick = self.c_stick_head(base_hidden_states)
-            shoulder = self.shoulder_head(base_hidden_states)
+        main_stick = self.main_stick_head(
+            torch.cat((hidden_states, button_logits.detach()), dim=-1)
+        )
 
-        elif self.head_flow == "mix":
-            # Mix mode: cross-attention between head intermediate features
-            # Get intermediate features from each head
-            button_features = self.button_head.forward_intermediate(base_hidden_states)
-            main_stick_features = self.main_stick_head.forward_intermediate(
-                base_hidden_states
+        c_stick = self.c_stick_head(
+            torch.cat(
+                (hidden_states, button_logits.detach(), main_stick.detach()),
+                dim=-1,
             )
-            c_stick_features = self.c_stick_head.forward_intermediate(
-                base_hidden_states
-            )
-            shoulder_features = self.shoulder_head.forward_intermediate(
-                base_hidden_states
-            )
+        )
 
-            # Apply cross-attention across heads
-            head_features_list = [
-                button_features,
-                main_stick_features,
-                c_stick_features,
-                shoulder_features,
-            ]
-            attended_features = self.head_cross_attention(head_features_list)
-
-            # Project to final outputs from attended features
-            button_logits = self.button_head.forward_from_intermediate(
-                attended_features[0]
+        shoulder = self.shoulder_head(
+            torch.cat(
+                (
+                    hidden_states,
+                    button_logits.detach(),
+                    main_stick.detach(),
+                    c_stick.detach(),
+                ),
+                dim=-1,
             )
-            main_stick = self.main_stick_head.forward_from_intermediate(
-                attended_features[1]
-            )
-            c_stick = self.c_stick_head.forward_from_intermediate(attended_features[2])
-            shoulder = self.shoulder_head.forward_from_intermediate(
-                attended_features[3]
-            )
-
-        elif self.head_flow == "sequential":
-            # Sequential heads: each head receives concatenated outputs from previous heads
-            # Order: buttons → main_stick → c_stick → shoulder
-            button_logits = self.button_head(base_hidden_states)
-
-            main_stick = self.main_stick_head(
-                torch.cat((base_hidden_states, button_logits.detach()), dim=-1)
-            )
-
-            c_stick = self.c_stick_head(
-                torch.cat(
-                    (base_hidden_states, button_logits.detach(), main_stick.detach()),
-                    dim=-1,
-                )
-            )
-
-            shoulder = self.shoulder_head(
-                torch.cat(
-                    (
-                        base_hidden_states,
-                        button_logits.detach(),
-                        main_stick.detach(),
-                        c_stick.detach(),
-                    ),
-                    dim=-1,
-                )
-            )
-
-        else:
-            raise ValueError(f"Unknown head_flow mode: {self.head_flow}")
+        )
 
         outputs = TensorDict(
             {

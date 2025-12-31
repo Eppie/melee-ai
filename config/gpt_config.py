@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from pydantic import BaseModel, Field, ValidationInfo, model_validator
 from pydantic_settings import SettingsConfigDict
@@ -110,7 +110,6 @@ class GPTConfig(BaseModel):
             "Discount factor for value head bootstrapping. Used when computing value targets. "
             "Effect: Higher gamma (0.999-0.9995) = value head considers longer horizons; "
             "lower gamma (0.99-0.995) = more myopic value estimates. Reasonable range: [0.99, 0.9995]. "
-            "Note: This is separate from rl_config.gamma which is used for PPO. "
             "Interacts with: value head training, reward scaling."
         ),
     )
@@ -123,15 +122,6 @@ class GPTConfig(BaseModel):
             "Effect: Lower n_kv_head (1-4) = less memory/compute, slightly lower quality; "
             "n_kv_head = n_head = standard attention. Reasonable values: 1 (MQA), n_head/2, n_head (standard). "
             "Interacts with: n_head (must be divisible by n_kv_head)."
-        ),
-    )
-    head_flow: Literal["sequential", "parallel", "mix"] = Field(
-        default="sequential",
-        description=(
-            "Output head computation mode. Controls how output heads (main_stick, c_stick, buttons, shoulder) "
-            "interact. Options: 'sequential' = heads computed in order with cross-attention (allows information flow), "
-            "'parallel' = all heads computed independently (faster but no inter-head communication), "
-            "'mix' = hybrid approach. Reasonable: 'sequential' for better accuracy, 'parallel' for speed."
         ),
     )
     target_shapes_by_head: Dict[str, int] = Field(

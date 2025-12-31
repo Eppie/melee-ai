@@ -18,7 +18,7 @@ class RLConfig(BaseModel):
             "At 60 FPS, gamma=0.995 gives effective horizon of ~200 frames (~3.3 seconds). "
             "Reasonable range: [0.99, 0.999]. Formula: effective_horizon ≈ 1/(1-gamma) frames. "
             "Interacts with: reward magnitudes (higher gamma amplifies cumulative rewards), "
-            "gae_lambda in PPO (both affect advantage estimation), episode length (longer episodes need higher gamma)."
+            "episode length (longer episodes need higher gamma)."
         ),
     )
     value_loss_coef: float = Field(
@@ -29,22 +29,22 @@ class RLConfig(BaseModel):
             "Effect: Higher values (0.5-2.0) prioritize accurate value estimation, improving advantage estimates but "
             "potentially slowing policy learning; lower values (0.1-0.5) prioritize policy learning. "
             "Reasonable range: [0.1, 2.0]. Common values: 0.5 (default), 1.0 (equal weighting). "
-            "Interacts with: PPO clip_ratio (both affect policy update magnitude), entropy_coef (three-way balance), "
-            "learning rate (affects how quickly value head adapts)."
+            "Interacts with: learning rate (affects how quickly value head adapts)."
         ),
     )
     reward_damage_dealt: float = Field(
         default=0.08,
         description=(
             "Reward per percent damage dealt to opponent. Encourages aggressive play and combos. "
-            "Reasonable range: [0.01, 0.2]. Interacts with: reward_stock_taken, gamma."
+            "Reasonable range: [0.01, 0.2]. Interacts with: gamma."
         ),
     )
     reward_stock_taken: float = Field(
         default=4.0,
         description=(
-            "Reward for taking an opponent's stock. Large bonus for eliminations. "
-            "Should be ~20-100x damage reward for proper scaling. Reasonable range: [1.0, 10.0]."
+            "Reward for taking an opponent's stock (detected via action state 0-10 transitions). "
+            "Large bonus for eliminations. Should be ~20-100x damage reward for proper scaling. "
+            "Reasonable range: [1.0, 10.0]."
         ),
     )
     reward_hitlag_opponent: float = Field(
@@ -52,12 +52,5 @@ class RLConfig(BaseModel):
         description=(
             "Reward per frame opponent is in hitlag. Encourages landing hits. "
             "Reasonable range: [0.01, 0.2]. Similar scale to damage reward."
-        ),
-    )
-    reward_low_shield: float = Field(
-        default=-0.1,
-        description=(
-            "Penalty per frame when shield is low (encourages shield management). "
-            "Negative value discourages shield breaks. Reasonable range: [-0.5, 0.0]."
         ),
     )

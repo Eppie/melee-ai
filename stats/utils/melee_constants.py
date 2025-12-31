@@ -350,8 +350,6 @@ GAME_LIMITS: Dict[str, Dict[str, float]] = {
     "position_x": {"min": -300.0, "max": 300.0},
     "position_y": {"min": -200.0, "max": 350.0},
     "percent": {"min": 0.0, "max": 999.0},
-    "stock": {"min": 0, "max": 99},
-    "shield_strength": {"min": 0.0, "max": 60.0},
     "jumps_left": {"min": 0, "max": 6},  # Kirby/Jigglypuff have 6
     "facing": {"min": -1.0, "max": 1.0},
     "main_stick_x": {"min": 0.0, "max": 1.0},

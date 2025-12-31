@@ -10,7 +10,7 @@ from torch.optim import Optimizer
 from train.gradients import _move_optimizer_state_to_device
 from train.components import TrainingComponents
 from train.validation import maybe_run_validation
-from utils import match_state_dict_keys
+from utils import get_git_commit_hash, match_state_dict_keys
 
 
 def _sorted_checkpoint_paths(directory: Path) -> List[Path]:
@@ -273,6 +273,7 @@ def save_checkpoint(
         "resume_iter": 0,
         "global_step": global_step,
         "config": config_dict,
+        "git_commit": get_git_commit_hash(),
     }
 
     if optimizer is not None:

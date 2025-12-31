@@ -20,11 +20,9 @@ class CrossFeatureCollector(StatsCollector):
         "p1_position_x",
         "p1_position_y",
         "p1_percent",
-        "p1_stock",
         "p2_position_x",
         "p2_position_y",
         "p2_percent",
-        "p2_stock",
     ]
 
     def __init__(self, feature_names: Sequence[str]) -> None:
@@ -40,10 +38,6 @@ class CrossFeatureCollector(StatsCollector):
         self._position_hist = np.zeros(
             (40, 40), dtype=np.int64
         )  # x: -200 to 200, y: -100 to 300
-
-        # Percent vs stock joint distribution
-        self._p1_percent_by_stock: Dict[int, List[float]] = {1: [], 2: [], 3: [], 4: []}
-        self._p2_percent_by_stock: Dict[int, List[float]] = {1: [], 2: [], 3: [], 4: []}
 
         # Action by position (which positions for attacks, movement, etc.)
         self._p1_attack_positions: List[Tuple[float, float]] = []
@@ -111,31 +105,6 @@ class CrossFeatureCollector(StatsCollector):
         except KeyError:
             pass
 
-        # Percent by stock
-        try:
-            p1_percent_idx = self.get_feature_idx("p1_percent")
-            p1_stock_idx = self.get_feature_idx("p1_stock")
-            p2_percent_idx = self.get_feature_idx("p2_percent")
-            p2_stock_idx = self.get_feature_idx("p2_stock")
-
-            # Sample to avoid memory issues
-            sample_indices = np.linspace(
-                0, num_frames - 1, min(100, num_frames)
-            ).astype(int)
-            for idx in sample_indices:
-                p1_stock = int(data[idx, p1_stock_idx])
-                p2_stock = int(data[idx, p2_stock_idx])
-                if 1 <= p1_stock <= 4:
-                    self._p1_percent_by_stock[p1_stock].append(
-                        float(data[idx, p1_percent_idx])
-                    )
-                if 1 <= p2_stock <= 4:
-                    self._p2_percent_by_stock[p2_stock].append(
-                        float(data[idx, p2_percent_idx])
-                    )
-        except KeyError:
-            pass
-
         self._record_episode(num_frames)
 
     def merge(self, other: "CrossFeatureCollector") -> None:
@@ -167,10 +136,6 @@ class CrossFeatureCollector(StatsCollector):
 
         self._position_hist += other._position_hist
 
-        for stock in [1, 2, 3, 4]:
-            self._p1_percent_by_stock[stock].extend(other._p1_percent_by_stock[stock])
-            self._p2_percent_by_stock[stock].extend(other._p2_percent_by_stock[stock])
-
         self._p1_attack_positions.extend(other._p1_attack_positions)
         self._p2_attack_positions.extend(other._p2_attack_positions)
 
@@ -190,24 +155,6 @@ class CrossFeatureCollector(StatsCollector):
                     corr = cov / (np.sqrt(var1) * np.sqrt(var2))
                     correlations[f"{name1}_vs_{name2}"] = float(np.clip(corr, -1, 1))
 
-        # Percent by stock analysis
-        percent_by_stock = {"p1": {}, "p2": {}}
-        for stock in [1, 2, 3, 4]:
-            if self._p1_percent_by_stock[stock]:
-                arr = np.array(self._p1_percent_by_stock[stock])
-                percent_by_stock["p1"][stock] = {
-                    "mean": float(arr.mean()),
-                    "std": float(arr.std()),
-                    "median": float(np.median(arr)),
-                }
-            if self._p2_percent_by_stock[stock]:
-                arr = np.array(self._p2_percent_by_stock[stock])
-                percent_by_stock["p2"][stock] = {
-                    "mean": float(arr.mean()),
-                    "std": float(arr.std()),
-                    "median": float(np.median(arr)),
-                }
-
         return {
             "correlations": correlations,
             "position_heatmap": self._position_hist.tolist(),
@@ -216,6 +163,5 @@ class CrossFeatureCollector(StatsCollector):
                 "y_range": [-100, 300],
                 "bin_size": 10,
             },
-            "percent_by_stock": percent_by_stock,
             "total_samples": self._n,
         }

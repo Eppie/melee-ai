@@ -44,26 +44,18 @@ def _row_to_winner_first(rows: List[Row]) -> List[Row]:
 
     Example
     -------
-    If the final row shows player 2 with more stocks, every row is swapped so the
-    eventual winner becomes ``p1``. When stocks tie, percent is used as the
-    tiebreaker, mirroring how training expects the protagonist to be indexed.
+    If the final row shows player 2 with lower percent, every row is swapped so the
+    eventual winner becomes ``p1``, mirroring how training expects the protagonist
+    to be indexed.
     """
     if not rows:
         return rows
 
     final_row = rows[-1]
-    p1_stock = final_row.p1_stock
-    p2_stock = final_row.p2_stock
-
-    if p1_stock > p2_stock:
-        return rows
-
-    if p2_stock > p1_stock:
-        return [_swap_row_players(row) for row in rows]
-
-    # Stocks tied (likely timeout) – fall back to percent comparison.
     p1_percent = final_row.p1_percent
     p2_percent = final_row.p2_percent
+
+    # Lower percent is better - if p1 has lower or equal, keep as-is
     if p1_percent <= p2_percent:
         return rows
 

@@ -29,8 +29,7 @@ class DataQualityCollector(StatsCollector):
         self._inf_counts: Dict[str, int] = {}
 
         # Consistency checks
-        self._stock_inconsistencies = 0  # Stock increased unexpectedly
-        self._percent_anomalies = 0  # Percent decreased without stock change
+        self._percent_anomalies = 0  # Unexpected percent decreases
 
         # Feature coverage (which features have non-default values)
         self._non_default_counts: Dict[str, int] = {}
@@ -116,31 +115,20 @@ class DataQualityCollector(StatsCollector):
     def _check_consistency(self, data: np.ndarray) -> None:
         """Check for logical inconsistencies in the data."""
         try:
-            p1_stock_idx = self.get_feature_idx("p1_stock")
-            p2_stock_idx = self.get_feature_idx("p2_stock")
             p1_percent_idx = self.get_feature_idx("p1_percent")
             p2_percent_idx = self.get_feature_idx("p2_percent")
         except KeyError:
             return
 
-        p1_stock = data[:, p1_stock_idx]
-        p2_stock = data[:, p2_stock_idx]
         p1_percent = data[:, p1_percent_idx]
         p2_percent = data[:, p2_percent_idx]
 
-        # Stock should never increase mid-game
-        for i in range(1, len(p1_stock)):
-            if p1_stock[i] > p1_stock[i - 1]:
-                self._stock_inconsistencies += 1
-            if p2_stock[i] > p2_stock[i - 1]:
-                self._stock_inconsistencies += 1
-
-        # Percent decreasing without stock change is suspicious
-        # (can happen legitimately with healing items, but rare in competitive)
+        # Percent decreasing significantly is suspicious
+        # (can happen legitimately with healing items or death, but rare in competitive)
         for i in range(1, len(p1_percent)):
-            if p1_percent[i] < p1_percent[i - 1] - 1 and p1_stock[i] == p1_stock[i - 1]:
+            if p1_percent[i] < p1_percent[i - 1] - 1:
                 self._percent_anomalies += 1
-            if p2_percent[i] < p2_percent[i - 1] - 1 and p2_stock[i] == p2_stock[i - 1]:
+            if p2_percent[i] < p2_percent[i - 1] - 1:
                 self._percent_anomalies += 1
 
     def _check_suspicious_patterns(self, data: np.ndarray) -> None:
@@ -192,7 +180,6 @@ class DataQualityCollector(StatsCollector):
         self._empty_episodes += other._empty_episodes
         self._very_short_episodes += other._very_short_episodes
         self._very_long_episodes += other._very_long_episodes
-        self._stock_inconsistencies += other._stock_inconsistencies
         self._percent_anomalies += other._percent_anomalies
         self._constant_position_frames += other._constant_position_frames
         self._teleport_frames += other._teleport_frames
@@ -246,7 +233,6 @@ class DataQualityCollector(StatsCollector):
                 "empty_episodes": self._empty_episodes,
                 "very_short_episodes": self._very_short_episodes,
                 "very_long_episodes": self._very_long_episodes,
-                "stock_inconsistencies": self._stock_inconsistencies,
                 "percent_anomalies": self._percent_anomalies,
                 "constant_position_frames": self._constant_position_frames,
                 "teleport_frames": self._teleport_frames,
@@ -275,9 +261,7 @@ class DataQualityCollector(StatsCollector):
         score -= min(20, nan_inf_rate * 1000)
 
         # Penalize inconsistencies
-        inconsistency_rate = (
-            self._stock_inconsistencies + self._percent_anomalies
-        ) / total_frames
+        inconsistency_rate = self._percent_anomalies / total_frames
         score -= min(20, inconsistency_rate * 100)
 
         # Penalize empty/short episodes

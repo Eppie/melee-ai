@@ -10,7 +10,6 @@ from .feature_config import FeatureConfig
 from .gpt_config import GPTConfig, _schema_feature_dims
 from .imitation_config import ImitationConfig
 from .loss_config import LossConfig
-from .ppo_config import PPOConfig
 from .rl_config import RLConfig
 from .train_config import TrainConfig
 from .zarr_config import ZarrConfig
@@ -31,7 +30,6 @@ class Config(BaseModel):
     model: GPTConfig = Field(default_factory=GPTConfig)
     features: FeatureConfig = Field(default_factory=FeatureConfig)
     rl: RLConfig = Field(default_factory=RLConfig)
-    ppo: PPOConfig = Field(default_factory=PPOConfig)
     loss_weights: LossConfig = Field(default_factory=LossConfig)
     imitation: ImitationConfig = Field(default_factory=ImitationConfig)
 

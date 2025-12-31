@@ -29,7 +29,7 @@ class DerivedMetricsCollector(StatsCollector):
         self._p1_combo_lengths: List[int] = []
         self._p2_combo_lengths: List[int] = []
 
-        # Advantage state tracking (who has more stocks, lower percent)
+        # Advantage state tracking (based on percent difference)
         self._p1_advantage_frames = 0
         self._p2_advantage_frames = 0
         self._neutral_frames = 0
@@ -42,10 +42,6 @@ class DerivedMetricsCollector(StatsCollector):
         self._p1_edgeguard_frames = 0
         self._p2_edgeguard_frames = 0
 
-        # Kill percent tracking
-        self._p1_kill_percents: List[float] = []
-        self._p2_kill_percents: List[float] = []
-
     def process_episode(self, data: np.ndarray, episode: EpisodeInfo) -> None:
         num_frames = data.shape[0]
 
@@ -56,8 +52,6 @@ class DerivedMetricsCollector(StatsCollector):
             p2_y_idx = self.get_feature_idx("p2_position_y")
             p1_percent_idx = self.get_feature_idx("p1_percent")
             p2_percent_idx = self.get_feature_idx("p2_percent")
-            p1_stock_idx = self.get_feature_idx("p1_stock")
-            p2_stock_idx = self.get_feature_idx("p2_stock")
             p1_hitstun_idx = self.get_feature_idx("p1_is_in_hitstun")
             p2_hitstun_idx = self.get_feature_idx("p2_is_in_hitstun")
             p1_offstage_idx = self.get_feature_idx("p1_off_stage")
@@ -73,8 +67,6 @@ class DerivedMetricsCollector(StatsCollector):
         p2_y = data[:, p2_y_idx]
         p1_percent = data[:, p1_percent_idx]
         p2_percent = data[:, p2_percent_idx]
-        p1_stock = data[:, p1_stock_idx]
-        p2_stock = data[:, p2_stock_idx]
         p1_hitstun = data[:, p1_hitstun_idx] > 0.5
         p2_hitstun = data[:, p2_hitstun_idx] > 0.5
         p1_offstage = data[:, p1_offstage_idx] > 0.5
@@ -93,14 +85,13 @@ class DerivedMetricsCollector(StatsCollector):
         self._detect_combos(p1_hitstun, self._p1_combo_lengths)
         self._detect_combos(p2_hitstun, self._p2_combo_lengths)
 
-        # Advantage tracking
+        # Advantage tracking (based on percent difference only)
         for i in range(num_frames):
-            p1_adv_score = (p1_stock[i] - p2_stock[i]) * 100 + (
-                p2_percent[i] - p1_percent[i]
-            )
-            if p1_adv_score > 50:
+            # Lower percent is better, so p2_percent - p1_percent gives p1's advantage
+            percent_diff = p2_percent[i] - p1_percent[i]
+            if percent_diff > 30:
                 self._p1_advantage_frames += 1
-            elif p1_adv_score < -50:
+            elif percent_diff < -30:
                 self._p2_advantage_frames += 1
             else:
                 self._neutral_frames += 1
@@ -114,13 +105,6 @@ class DerivedMetricsCollector(StatsCollector):
         p2_on_p1_off = (~p2_offstage) & p1_offstage
         self._p1_edgeguard_frames += int(p1_on_p2_off.sum())
         self._p2_edgeguard_frames += int(p2_on_p1_off.sum())
-
-        # Kill percent tracking (percent when stock decreases)
-        for i in range(1, num_frames):
-            if p1_stock[i] < p1_stock[i - 1]:
-                self._p1_kill_percents.append(float(p1_percent[i - 1]))
-            if p2_stock[i] < p2_stock[i - 1]:
-                self._p2_kill_percents.append(float(p2_percent[i - 1]))
 
         self._record_episode(num_frames)
 
@@ -161,9 +145,6 @@ class DerivedMetricsCollector(StatsCollector):
         self._p1_edgeguard_frames += other._p1_edgeguard_frames
         self._p2_edgeguard_frames += other._p2_edgeguard_frames
 
-        self._p1_kill_percents.extend(other._p1_kill_percents)
-        self._p2_kill_percents.extend(other._p2_kill_percents)
-
         self._episodes_processed += other._episodes_processed
         self._frames_processed += other._frames_processed
 
@@ -202,20 +183,6 @@ class DerivedMetricsCollector(StatsCollector):
                 "max_length_seconds": float(arr.max() / FRAMES_PER_SECOND),
             }
 
-        # Kill percent stats
-        def kill_stats(percents: List[float]) -> Dict:
-            if not percents:
-                return {"count": 0}
-            arr = np.array(percents)
-            return {
-                "count": len(percents),
-                "mean": float(arr.mean()),
-                "std": float(arr.std()),
-                "min": float(arr.min()),
-                "max": float(arr.max()),
-                "median": float(np.median(arr)),
-            }
-
         return {
             "distance": dist_stats,
             "combos": {
@@ -246,9 +213,5 @@ class DerivedMetricsCollector(StatsCollector):
             "edgeguards": {
                 "p1_frames": self._p1_edgeguard_frames,
                 "p2_frames": self._p2_edgeguard_frames,
-            },
-            "kill_percents": {
-                "p1": kill_stats(self._p1_kill_percents),
-                "p2": kill_stats(self._p2_kill_percents),
             },
         }

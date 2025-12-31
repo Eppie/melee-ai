@@ -11,31 +11,33 @@ from column_map import ColumnMap
 from config.config import get_config
 
 
+# Action state IDs 0-10 (0x00-0x0A) are death states
+DEATH_ACTION_STATES = frozenset(range(0, 11))
+
+
 @dataclass(frozen=True)
 class RewardFeatureIdx:
     """Cached indices for reward computation features."""
 
-    p1_stock: Optional[int] = None
-    p2_stock: Optional[int] = None
+    p1_action: Optional[int] = None
+    p2_action: Optional[int] = None
     p1_percent: Optional[int] = None
     p2_percent: Optional[int] = None
     p1_is_in_hitlag: Optional[int] = None
     p2_is_in_hitlag: Optional[int] = None
     p1_is_defender_in_hitlag: Optional[int] = None
     p2_is_defender_in_hitlag: Optional[int] = None
-    p1_shield_strength: Optional[int] = None
-    p2_shield_strength: Optional[int] = None
 
 
 def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
     """Resolve frequently accessed feature indices from a :class:`ColumnMap` in one pass.
 
     Example:
-        If ``colmap.feat_names`` equals ``["p1_stock", "p2_stock", "p1_percent"]``, calling
-        ``build_reward_feature_index`` returns ``RewardFeatureIdx(p1_stock=0, p2_stock=1,
-        p1_percent=2, ...)`` while any missing names (such as ``p2_percent``) remain ``None``. The
-        example demonstrates how the helper searches each feature name and records the integer
-        position so later reward computations can index into tensors without repeated list lookups.
+        If ``colmap.feat_names`` equals ``["p1_percent", "p2_percent"]``, calling
+        ``build_reward_feature_index`` returns ``RewardFeatureIdx(p1_percent=0, p2_percent=1,
+        ...)`` while any missing names remain ``None``. The example demonstrates how the helper
+        searches each feature name and records the integer position so later reward computations
+        can index into tensors without repeated list lookups.
 
     Args:
         column_map: Column mapping that lists feature names in order.
@@ -46,19 +48,20 @@ def build_reward_feature_index(column_map: ColumnMap) -> RewardFeatureIdx:
     names = column_map.feat_names
 
     def idx(name: str) -> Optional[int]:
-        return names.index(name)
+        try:
+            return names.index(name)
+        except ValueError:
+            return None
 
     return RewardFeatureIdx(
-        p1_stock=idx("p1_stock"),
-        p2_stock=idx("p2_stock"),
+        p1_action=idx("p1_action"),
+        p2_action=idx("p2_action"),
         p1_percent=idx("p1_percent"),
         p2_percent=idx("p2_percent"),
         p1_is_in_hitlag=idx("p1_is_in_hitlag"),
         p2_is_in_hitlag=idx("p2_is_in_hitlag"),
         p1_is_defender_in_hitlag=idx("p1_is_defender_in_hitlag"),
         p2_is_defender_in_hitlag=idx("p2_is_defender_in_hitlag"),
-        p1_shield_strength=idx("p1_shield_strength"),
-        p2_shield_strength=idx("p2_shield_strength"),
     )
 
 
@@ -104,24 +107,20 @@ def _compute_player_rewards(
     d_opp.clamp_min_(0.0)
     rewards[:, prev_slice].add_(d_opp.mul_(cfg.reward_damage_dealt))
 
-    # --- Stock changes
-    opp_stock_idx = getattr(idx, f"{opponent}_stock")
-    d_opp_stock = torch.diff(X[:, :, opp_stock_idx], dim=1)
-    stock_taken = (-d_opp_stock).clamp_min_(0)
-    rewards[:, prev_slice].add_(stock_taken.mul_(cfg.reward_stock_taken))
+    # --- Death detection via action state transitions (0-10 are death states) ---
+    opp_action_idx = getattr(idx, f"{opponent}_action")
+    opp_actions = X[:, :, opp_action_idx]
+    is_dying = opp_actions <= 10
+    # Detect transition INTO death state (was not dying, now dying)
+    death_transition = is_dying[:, 1:] & ~is_dying[:, :-1]
+    rewards[:, prev_slice].add_(death_transition.to(dtype).mul_(cfg.reward_stock_taken))
 
-    # --- Hitlag rewards/penalties (per-frame) ---
-    opp_hitlag_idx = getattr(idx, f"{opponent}_is_in_hitlag")
+    # --- Hitlag rewards (per-frame) ---
+    # Reward when opponent is in defender hitlag (they got hit by us)
     opp_def_hitlag_idx = getattr(idx, f"{opponent}_is_defender_in_hitlag")
-    opp_metric = X[:, :, opp_hitlag_idx] - X[:, :, opp_def_hitlag_idx]
-    hitlag_reward = (opp_metric == 1).to(dtype).mul_(cfg.reward_hitlag_opponent)
+    opp_in_def_hitlag = (X[:, :, opp_def_hitlag_idx] > 0.5).to(dtype)
+    hitlag_reward = opp_in_def_hitlag.mul_(cfg.reward_hitlag_opponent)
     rewards[:, prev_slice].add_(hitlag_reward[:, curr_slice])
-
-    # --- Shield penalty (per-frame) ---
-    shield_idx = getattr(idx, f"{player}_shield_strength")
-    shield = X[:, :, shield_idx]
-    penalty = (1.0 - 2.0 * shield).clamp_min_(0.0).clamp_max_(1.0)
-    rewards[:, prev_slice].add_(penalty[:, curr_slice].mul_(cfg.reward_low_shield))
 
     return rewards
 

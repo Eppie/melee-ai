@@ -45,15 +45,9 @@ def perform_forward_pass(
         # Clone to prevent CUDA graph overwriting when using torch.compile()
         pred = pred.clone()
 
-        base_smoothing = config.train.label_smoothing
-        final_smoothing = 0.5 * base_smoothing
-        if in_warmup:
-            label_smoothing = base_smoothing
-        else:
-            label_smoothing = (
-                base_smoothing + (final_smoothing - base_smoothing) * progress
-            )
-        label_smoothing = float(max(label_smoothing, 0.0))
+        # Label smoothing is kept constant throughout training
+        # (previously decayed to 0.5x, but this contributed to overconfidence)
+        label_smoothing = float(config.train.label_smoothing)
 
         # Imbalance scale scheduling: three-phase approach
         # Phase 1: Keep at initial value for first initial_fraction (learn action space)
@@ -125,6 +119,13 @@ def perform_forward_pass(
         loss_components = dict(policy_loss_components)
 
         value_pred = pred["value"]
+        if components.value_idx is None:
+            raise RuntimeError(
+                "value_idx is None during training. Pre-computed value_target column "
+                "is required because X features are transformed (percent scaled by 1/100) "
+                "but reward computation expects RAW percent values. Ensure 'value_target' "
+                "is in your dataset schema and zarr files."
+            )
         value_target = compute_value_targets(
             X,
             components.column_map,
@@ -156,6 +157,7 @@ def perform_forward_pass(
         batch_targets=batch_targets,
         label_smoothing=label_smoothing,
         change_scale=imbalance_scale,
+        imitation_weights=imitation_weights_tensor,
     )
 
 

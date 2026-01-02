@@ -12,7 +12,7 @@ from torch.amp import GradScaler
 from column_map import ColumnMap
 from model.nano_gpt import GPT
 from train.batch_utils import SampleWeightRatios
-from train.wandb_utils import WandbLogger
+from train.wandb_utils import LocalLogger, WandbLogger
 
 
 @dataclass
@@ -29,6 +29,7 @@ class TrainingComponents:
     optimizer: torch.optim.Optimizer
     scaler: GradScaler
     logger: WandbLogger
+    local_logger: LocalLogger
     device: torch.device
     amp: AMPContext
     ratios: SampleWeightRatios
@@ -91,6 +92,7 @@ class ForwardPassResult:
     batch_targets: Dict[str, torch.Tensor]
     label_smoothing: float
     change_scale: float
+    imitation_weights: torch.Tensor = None  # Value-based sample weights [B, L]
 
 
 @dataclass

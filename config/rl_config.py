@@ -33,24 +33,25 @@ class RLConfig(BaseModel):
         ),
     )
     reward_damage_dealt: float = Field(
-        default=0.08,
+        default=0.01,
         description=(
-            "Reward per percent damage dealt to opponent. Encourages aggressive play and combos. "
-            "Reasonable range: [0.01, 0.2]. Interacts with: gamma."
+            "Reward per percent damage dealt to opponent (RAW scale where 100%=100). "
+            "With default 0.01: dealing 100% damage = 1.0 reward (same as 1 stock). "
+            "Encourages aggressive play and combos. Reasonable range: [0.005, 0.02]."
         ),
     )
     reward_stock_taken: float = Field(
-        default=4.0,
+        default=1.0,
         description=(
             "Reward for taking an opponent's stock (detected via action state 0-10 transitions). "
-            "Large bonus for eliminations. Should be ~20-100x damage reward for proper scaling. "
-            "Reasonable range: [1.0, 10.0]."
+            "With default 1.0: taking 1 stock = 1.0 reward (same as dealing 100% damage). "
+            "Reasonable range: [0.5, 2.0]."
         ),
     )
     reward_hitlag_opponent: float = Field(
-        default=0.08,
+        default=0.0,
         description=(
-            "Reward per frame opponent is in hitlag. Encourages landing hits. "
-            "Reasonable range: [0.01, 0.2]. Similar scale to damage reward."
+            "Reward per frame opponent is in hitlag. Set to 0.0 to disable. "
+            "When enabled, rewards sustained offensive pressure. Reasonable range: [0.0, 0.02]."
         ),
     )

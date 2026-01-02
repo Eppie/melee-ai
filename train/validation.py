@@ -187,19 +187,20 @@ def run_validation(
 
             # Compute value loss (same as training)
             value_pred = pred["value"]
+            if value_idx is None:
+                raise RuntimeError(
+                    "value_idx is None during validation. Pre-computed value_target column "
+                    "is required because X features are transformed. Ensure 'value_target' "
+                    "is in your dataset schema and zarr files."
+                )
             value_target = compute_value_targets(
                 X,
                 colmap,
                 gamma=config.rl.gamma,
                 reward_idx=value_idx,
             )
-            value_loss_raw = torch.nn.functional.mse_loss(
-                value_pred, value_target, reduction="none"
-            ).squeeze(-1)
-            value_w = weights.get("global", weights["main"])
-            loss_value = (value_loss_raw * value_w).sum() / value_w.sum().clamp_min(
-                1e-12
-            )
+            # Unweighted loss to match training (value head learns all states equally)
+            loss_value = torch.nn.functional.mse_loss(value_pred, value_target)
             loss_sums["value"] += loss_value.item()
 
             pred_main_idx = logits_main.argmax(dim=-1)
@@ -334,6 +335,10 @@ def maybe_run_validation(
 
         # Log to wandb
         components.logger.log_metrics(val_metrics, step=global_step, commit=True)
+
+        # Log to local file (training_metrics.jsonl)
+        if components.local_logger.enabled:
+            components.local_logger.log_metrics(val_metrics, step=global_step, log_type="val")
 
         elapsed = time.time() - start_time
         print(

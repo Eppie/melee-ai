@@ -26,6 +26,7 @@ def build_training_components() -> TrainingComponents:
         optimizer=optimizer,
         scaler=scaler,
         logger=mock.MagicMock(),
+        local_logger=mock.MagicMock(),
         device=torch.device("cpu"),
         amp=AMPContext(enabled=False, device_type="cpu", dtype=torch.float16),
         ratios=None,

@@ -200,18 +200,21 @@ def test_compute_value_targets_fallback_reward_computation(reward_setup):
 def test_replay_rewards_shape_and_sparsity(replay_reward_data):
     rewards = replay_reward_data["rewards"]
     assert rewards.shape[0] == 6956
-    # 409 nonzero with action state-based death detection and defender hitlag
-    assert torch.count_nonzero(rewards).item() == 409
+    # With hitlag=0, fewer nonzero frames (only damage and stock events)
+    # 117 nonzero with action state-based death detection and no hitlag reward
+    assert torch.count_nonzero(rewards).item() == 117
 
 
 @pytest.mark.parametrize(
     ("frame", "value"),
     [
-        # Frames 31 and 36: damage dealt + defender hitlag reward
-        (31, 0.0816),
-        (36, 0.0816),
+        # Frames 31 and 36: damage dealt only (hitlag reward is disabled)
+        # 2% damage dealt: 0.02 * reward_damage_dealt(0.01) = 0.0002
+        (31, 0.0002),
+        (36, 0.0002),
         # Frame 6917: death detected via action state transition
-        (6917, -4.0),
+        # reward_stock_taken = 1.0, and ego player died so -1.0
+        (6917, -1.0),
     ],
 )
 def test_replay_rewards_matches_known_frames(replay_reward_data, frame, value):

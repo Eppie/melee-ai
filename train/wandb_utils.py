@@ -5,10 +5,91 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import wandb
+
+
+class LocalLogger:
+    """Local file logger that writes metrics as JSON lines.
+
+    Writes structured training metrics to a JSONL file for later analysis.
+    Each line is a JSON object with timestamp, step, type, and metrics.
+    """
+
+    def __init__(self, log_path: Path, enabled: bool = True):
+        """Initialize local logger.
+
+        Args:
+            log_path: Path to the JSONL log file.
+            enabled: Whether logging is enabled.
+        """
+        self.log_path = log_path
+        self.enabled = enabled
+        self._file = None
+
+        if self.enabled:
+            # Ensure parent directory exists
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            # Open in append mode for resumability
+            self._file = open(self.log_path, "a", encoding="utf-8")
+
+    def log_metrics(
+        self,
+        metrics: Dict[str, float],
+        step: int,
+        log_type: str = "train",
+    ) -> None:
+        """Log metrics to local JSONL file.
+
+        Args:
+            metrics: Dictionary of metric names to values.
+            step: Global step number.
+            log_type: Type of log entry ("train", "val", "gradient", etc.).
+        """
+        if not self.enabled or self._file is None:
+            return
+
+        try:
+            entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "step": step,
+                "type": log_type,
+                **metrics,
+            }
+            self._file.write(json.dumps(entry) + "\n")
+            self._file.flush()  # Ensure data is written immediately
+        except Exception:
+            pass  # Silent fail to not disrupt training
+
+    def log_gradients(self, grad_stats: Dict[str, float], step: int) -> None:
+        """Log gradient statistics.
+
+        Args:
+            grad_stats: Dictionary of gradient statistics.
+            step: Global step number.
+        """
+        if not self.enabled:
+            return
+
+        # Prefix with "gradients/" for consistency with wandb
+        prefixed = {f"gradients/{k}": v for k, v in grad_stats.items()}
+        self.log_metrics(prefixed, step, log_type="gradient")
+
+    def close(self) -> None:
+        """Close the log file."""
+        if self._file is not None:
+            try:
+                self._file.close()
+            except Exception:
+                pass
+            self._file = None
+
+    def __del__(self):
+        """Ensure file is closed on garbage collection."""
+        self.close()
 
 
 @dataclass

@@ -41,7 +41,7 @@ class TrainConfig(BaseModel):
         description="Learning rate for AdamW optimizer. Interacts with warmup_steps and schedule.",
     )
     weight_decay: float = Field(
-        default=0.002,
+        default=0.01,
         ge=0,
         description=(
             "L2 regularization strength for AdamW optimizer. Prevents overfitting by "
@@ -92,7 +92,7 @@ class TrainConfig(BaseModel):
         description="Keep dataloader workers alive between epochs. Faster but uses more memory.",
     )
     stride: int = Field(
-        default=16,
+        default=8,
         ge=1,
         description=(
             "Stride between consecutive training windows. Lower stride = more overlapping windows = "
@@ -161,7 +161,7 @@ class TrainConfig(BaseModel):
         ),
     )
     imbalance_scale_final: float = Field(
-        default=0.5,
+        default=1,
         ge=0,
         le=1,
         description=(

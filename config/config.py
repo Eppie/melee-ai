@@ -143,6 +143,11 @@ def apply_overrides_(cfg: Config, overrides: Dict[str, str]) -> None:
                 raw_value[0] == "-" and raw_value[1:].isdigit()
             ):
                 value = int(raw_value)
+            elif raw_value.startswith("[") or raw_value.startswith("{"):
+                # Parse JSON for lists and dicts
+                import json
+
+                value = json.loads(raw_value)
             else:
                 # Try to parse as float, but fall back to string if it fails
                 try:

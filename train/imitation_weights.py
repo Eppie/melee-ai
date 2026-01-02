@@ -39,8 +39,11 @@ def compute_value_weighted_weights(
         scaled = scaled - scaled.max()  # prevent overflow
         weights = torch.exp(scaled)
     else:
-        # Linear weighting: gentler emphasis
-        weights = (k * values / temperature).clamp_min(0.0)
+        # Linear weighting: shift values to be non-negative first
+        # This ensures no samples get zeroed out (the old clamp_min(0) bug)
+        # Base weight of 1.0 for minimum value, higher values get more weight
+        v_shifted = values - values.min()
+        weights = 1.0 + k * v_shifted / temperature
 
     # Normalize to mean=1 to maintain loss scale
     return weights / (weights.mean() + 1e-8)

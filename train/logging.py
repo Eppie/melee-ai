@@ -422,6 +422,40 @@ def prepare_logging_bundle(
         }
     )
 
+    # Sample weight statistics (imitation learning weights)
+    if forward_result.imitation_weights is not None:
+        weights = forward_result.imitation_weights  # [B, L]
+        weights_sq = weights**2
+
+        # Compute effective batch size: (sum w)^2 / sum(w^2)
+        # This shows how many samples are effectively contributing
+        eff_batch_size = (weights.sum() ** 2) / (weights_sq.sum() + 1e-9)
+
+        weight_stats_tensor = torch.stack(
+            [
+                weights.mean(),
+                weights.std(),
+                weights.max(),
+                weights.min(),
+                torch.quantile(weights.flatten(), 0.95),
+                torch.quantile(weights.flatten(), 0.05),
+                eff_batch_size / weights.numel(),  # Normalized by actual batch size
+            ]
+        )
+        weight_stats_cpu = weight_stats_tensor.cpu().tolist()
+
+        log_payload.update(
+            {
+                "imitation/weight_mean": weight_stats_cpu[0],
+                "imitation/weight_std": weight_stats_cpu[1],
+                "imitation/weight_max": weight_stats_cpu[2],
+                "imitation/weight_min": weight_stats_cpu[3],
+                "imitation/weight_p95": weight_stats_cpu[4],
+                "imitation/weight_p05": weight_stats_cpu[5],
+                "imitation/effective_batch_fraction": weight_stats_cpu[6],
+            }
+        )
+
     return LoggingBundle(log_lines=log_lines, payload=log_payload)
 
 
@@ -434,6 +468,7 @@ def emit_logging(
 ) -> None:
     print("\n".join(bundle.log_lines))
 
+    # Log to wandb
     if components.logger.enabled:
         components.logger.log_gradients(grad_stats, step=global_step)
         components.logger.log_metrics(bundle.payload, step=global_step)
@@ -441,6 +476,11 @@ def emit_logging(
             components.last_step_file.write_text(str(global_step))
         except Exception:
             pass
+
+    # Log to local file (training_metrics.jsonl)
+    if components.local_logger.enabled:
+        components.local_logger.log_gradients(grad_stats, step=global_step)
+        components.local_logger.log_metrics(bundle.payload, step=global_step, log_type="train")
 
     epoch_ctx.last_log_time = time.time()
     epoch_ctx.frames_since_last_log = 0.0

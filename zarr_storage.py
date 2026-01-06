@@ -271,6 +271,9 @@ class EpisodeWriter:
         Given ``features`` with shape ``(300, num_features)`` and ``targets`` with ``(300, Yd)``, the method
         creates ``ep_000123/X`` and ``ep_000123/Y`` arrays (chunked along time),
         fills them with the provided data, and returns the episode group name.
+
+        When ``config.zarr.sequential_episodes`` is True, the entire episode is stored
+        as a single chunk to optimize sequential within-episode access patterns.
         """
         config = get_config()
         assert features.dtype == np.float32 and targets.dtype == np.float32
@@ -279,11 +282,20 @@ class EpisodeWriter:
         for name in ("X", "Y"):
             if name in epg:
                 del epg[name]
-        chunk_t = self._chunk_t(features.shape[1], elem_bytes=4)
+
+        # When sequential_episodes is enabled, use full episode as one chunk
+        if config.zarr.sequential_episodes:
+            chunk_t_features = features.shape[0]
+            chunk_t_targets = targets.shape[0]
+        else:
+            chunk_t = self._chunk_t(features.shape[1], elem_bytes=4)
+            chunk_t_features = min(chunk_t, features.shape[0])
+            chunk_t_targets = min(chunk_t, targets.shape[0])
+
         features_array = epg.create_array(
             "X",
             shape=features.shape,
-            chunks=(min(chunk_t, features.shape[0]), features.shape[1]),
+            chunks=(chunk_t_features, features.shape[1]),
             compressors=[config.zarr.compressor],
             dtype="float32",
             overwrite=True,
@@ -292,7 +304,7 @@ class EpisodeWriter:
         targets_array = epg.create_array(
             "Y",
             shape=targets.shape,
-            chunks=(min(chunk_t, targets.shape[0]), targets.shape[1]),
+            chunks=(chunk_t_targets, targets.shape[1]),
             compressors=[config.zarr.compressor],
             dtype="float32",
             overwrite=True,
@@ -500,6 +512,7 @@ def _merge_and_write_metadata(
     meta = {
         "version": 1,
         "created_at_unix": int(time.time()),
+        "sequential_episodes": config.zarr.sequential_episodes,
         "build_config": config.model_dump(mode="json"),
         "schema": {"features": list(feature_names), "targets": list(target_names)},
         "feat_dtypes": feat_dtypes,
@@ -712,17 +725,25 @@ def main():
     Running ``python zarr_storage.py`` discovers replay files under the configured
     input root, builds validation then training shards via :func:`build_dataset`,
     and prints summary statistics such as average frames per episode.
+
+    Supports CLI overrides via ``--set section.key=value``, e.g.::
+
+        python zarr_storage.py --set zarr.sequential_episodes=true
     """
     import glob
+    import sys
 
-    init_config()
+    from train.setup import parse_cli_overrides
+
+    overrides = parse_cli_overrides(sys.argv[1:])
+    init_config(overrides=overrides)
     config = get_config()
 
     train_slp_files = sorted(
-        glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp"))
+        glob.glob(os.path.join(config.zarr.input_root, "*.slp"))
     )[: config.zarr.episode_count]
     validation_slp_files = sorted(
-        glob.glob(os.path.join(config.zarr.input_root, "master-master*.slp"))
+        glob.glob(os.path.join(config.zarr.input_root, "*.slp"))
     )[
         config.zarr.episode_count : config.zarr.episode_count
         + config.zarr.validation_count

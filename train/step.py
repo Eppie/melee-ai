@@ -39,7 +39,32 @@ def perform_forward_pass(
         dtype=amp.dtype,
         enabled=amp.enabled,
     ):
-        inputs_td = build_model_inputs(X, components.column_map)
+        # Schedule P1 controller noise rate: high -> low curriculum
+        # Uses same phase structure as imbalance_scale for consistency
+        noise_initial = config.train.p1_controller_noise_rate_initial
+        noise_final = config.train.p1_controller_noise_rate_final
+        initial_fraction = config.train.imbalance_scale_initial_fraction
+        final_fraction = config.train.imbalance_scale_final_fraction
+
+        if progress < initial_fraction:
+            p1_noise_rate = noise_initial
+        elif progress >= (1.0 - final_fraction):
+            p1_noise_rate = noise_final
+        else:
+            ramp_start = initial_fraction
+            ramp_end = 1.0 - final_fraction
+            ramp_progress = (progress - ramp_start) / (ramp_end - ramp_start)
+            p1_noise_rate = noise_initial + (noise_final - noise_initial) * ramp_progress
+
+        p1_noise_rate = float(max(min(p1_noise_rate, 1.0), 0.0))
+
+        inputs_td = build_model_inputs(
+            X,
+            components.column_map,
+            p1_controller_noise_rate=p1_noise_rate,
+            training=True,
+            exclude_p1_controller=config.model.exclude_p1_controller,
+        )
         target_info = quantize_targets(Y, components.column_map, input_domain="unit01")
         pred = components.model(inputs_td)
         # Clone to prevent CUDA graph overwriting when using torch.compile()

@@ -20,8 +20,15 @@ from train.batch_utils import (
     compute_component_sample_weights,
 )
 from train.metrics import multilabel_prf
+from train.shared_metrics import (
+    compute_button_em_change_hold,
+    compute_hold_change_accuracy,
+    compute_per_button_metrics,
+    compute_value_head_metrics,
+    gather_logit_metrics,
+)
 from train.value_head import compute_value_targets
-from window_dataset import RandomWindowSampler
+from window_dataset import RandomWindowSampler, SequentialEpisodeSampler
 
 if TYPE_CHECKING:
     from model.nano_gpt import GPT
@@ -82,10 +89,17 @@ def _get_validation_loader(
         progress=True,
     )
 
-    sampler = RandomWindowSampler(
-        index=dataset.index,
-        stride=window_stride,
-    )
+    # Select sampler based on dataset build configuration
+    if dataset.index.sequential_episodes:
+        sampler = SequentialEpisodeSampler(
+            index=dataset.index,
+            stride=window_stride,
+        )
+    else:
+        sampler = RandomWindowSampler(
+            index=dataset.index,
+            stride=window_stride,
+        )
 
     loader = DataLoader(
         dataset,
@@ -140,6 +154,10 @@ def run_validation(
         key: 0.0 for key in ("total", "main", "c", "buttons", "shoulder", "value")
     }
 
+    # Accumulators for per-button and value metrics
+    button_metrics_sums: Dict[str, float] = defaultdict(float)
+    value_metrics_sums: Dict[str, float] = defaultdict(float)
+    logit_metrics_sums: Dict[str, float] = defaultdict(float)
     total_frames = 0
     batches_processed = 0
     start_time = time.time()
@@ -155,7 +173,11 @@ def run_validation(
             X: torch.Tensor = batch["X"].to(device, non_blocking=True)
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
-            inputs_td = build_model_inputs(X, colmap)
+            # training=False ensures no P1 controller noise during validation
+            inputs_td = build_model_inputs(
+                X, colmap, training=False,
+                exclude_p1_controller=config.model.exclude_p1_controller,
+            )
             target_info = quantize_targets(Y, colmap, input_domain="unit01")
             weights = compute_component_sample_weights(
                 target_info,
@@ -203,10 +225,25 @@ def run_validation(
             loss_value = torch.nn.functional.mse_loss(value_pred, value_target)
             loss_sums["value"] += loss_value.item()
 
+            # Accumulate logit statistics
+            logit_batch = gather_logit_metrics(pred)
+            for k, v in logit_batch.items():
+                logit_metrics_sums[k] += v
+
             pred_main_idx = logits_main.argmax(dim=-1)
             pred_c_idx = logits_c.argmax(dim=-1)
             btn_probs = torch.sigmoid(logits_btn)
             btn_pred = (btn_probs > 0.5).to(target_info["buttons"].dtype)
+
+            # Per-button metrics
+            per_btn_batch = compute_per_button_metrics(target_info["buttons"], btn_pred)
+            for k, v in per_btn_batch.items():
+                button_metrics_sums[k] += v
+
+            # Value head metrics
+            value_batch = compute_value_head_metrics(value_pred, value_target)
+            for k, v in value_batch.items():
+                value_metrics_sums[k] += v
 
             B, L = pred_main_idx.shape
             target_main = target_info["main_idx"].view(B, L)
@@ -226,7 +263,29 @@ def run_validation(
             metrics["btn_f1_micro_sum"] += f1_b * B * L
             metrics["btn_f1_macro_sum"] += f1_macro_b * B * L
 
-            # Change accuracy for main stick
+            # Hold/change accuracy using shared functions
+            main_acc, main_chg, main_hold = compute_hold_change_accuracy(
+                pred_main_idx, target_main, device
+            )
+            metrics["main_acc_sum"] += main_acc * B * L
+            metrics["main_change_sum"] += main_chg * B * L
+            metrics["main_hold_sum"] += main_hold * B * L
+
+            c_acc, c_chg, c_hold = compute_hold_change_accuracy(
+                pred_c_idx, target_c, device
+            )
+            metrics["c_acc_sum"] += c_acc * B * L
+            metrics["c_change_sum"] += c_chg * B * L
+            metrics["c_hold_sum"] += c_hold * B * L
+
+            # Button EM hold/change
+            btn_chg_em, btn_hold_em = compute_button_em_change_hold(
+                target_btn, btn_pred, device
+            )
+            metrics["btn_change_em_sum"] += btn_chg_em * B * L
+            metrics["btn_hold_em_sum"] += btn_hold_em * B * L
+
+            # Legacy change accuracy (for backwards compatibility)
             main_change_mask = torch.zeros_like(target_main, dtype=torch.bool)
             main_change_mask[:, 1:] = target_main[:, 1:] != target_main[:, :-1]
             main_correct_mask = pred_main_idx == target_main
@@ -270,11 +329,39 @@ def run_validation(
         result["val/btn_f1_micro"] = metrics["btn_f1_micro_sum"] / metrics["btn_total"]
         result["val/btn_f1_macro"] = metrics["btn_f1_macro_sum"] / metrics["btn_total"]
 
-    # Change accuracy
+    # Change accuracy (legacy)
     if metrics.get("main_change_total", 0) > 0:
         result["val/acc_main_change"] = (
             metrics["main_change_correct"] / metrics["main_change_total"]
         )
+
+    # Hold/change breakdown (new - matches training metrics)
+    if metrics["main_total"] > 0:
+        result["val/acc_main_hold"] = metrics["main_hold_sum"] / metrics["main_total"]
+    if metrics["c_total"] > 0:
+        result["val/acc_c_change"] = metrics["c_change_sum"] / metrics["c_total"]
+        result["val/acc_c_hold"] = metrics["c_hold_sum"] / metrics["c_total"]
+    if metrics["btn_total"] > 0:
+        result["val/btn_em_change"] = metrics["btn_change_em_sum"] / metrics["btn_total"]
+        result["val/btn_em_hold"] = metrics["btn_hold_em_sum"] / metrics["btn_total"]
+
+    # Per-button metrics (averaged over batches)
+    if batches_processed > 0:
+        for key, value in button_metrics_sums.items():
+            result[f"val/{key}"] = value / batches_processed
+
+    # Value head metrics (averaged over batches)
+    if batches_processed > 0:
+        for key, value in value_metrics_sums.items():
+            result[f"val/{key}"] = value / batches_processed
+
+    # Logit statistics (averaged over batches)
+    # Note: These are averages of the batch min/max/mean/std, not global stats.
+    # For button logits, min trending more negative (-0.5 → -16.5) is expected
+    # as the model learns buttons are usually NOT pressed (sigmoid → 0).
+    if batches_processed > 0:
+        for key, value in logit_metrics_sums.items():
+            result[f"val/{key}"] = value / batches_processed
 
     # Metadata
     result["val/batches"] = float(batches_processed)

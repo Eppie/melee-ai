@@ -26,7 +26,7 @@ class TrainConfig(BaseModel):
         ),
     )
     epochs: int = Field(
-        default=32,
+        default=128,
         ge=1,
         description=(
             "Number of training epochs. One epoch = one pass through the entire dataset. "
@@ -217,6 +217,31 @@ class TrainConfig(BaseModel):
             "'float32' (full precision, no AMP). "
             "Auto-selected based on hardware. Recommended: Keep default (auto-detect). "
             "Interacts with: use_amp (only used if AMP enabled)."
+        ),
+    )
+
+    # Controller noise for distribution shift mitigation
+    p1_controller_noise_rate_initial: float = Field(
+        default=1.0,
+        ge=0,
+        le=1,
+        description=(
+            "Initial rate for replacing P1 controller inputs with noise (early training). "
+            "Curriculum: start high (1.0 = all frames) to force game-state learning, "
+            "decay to lower rate to allow refinement with true controller context. "
+            "This addresses training/inference distribution shift."
+        ),
+    )
+    p1_controller_noise_rate_final: float = Field(
+        default=0.25,
+        ge=0,
+        le=1,
+        description=(
+            "Final rate for replacing P1 controller inputs with noise (late training). "
+            "Lower than initial allows model to refine using true controller context "
+            "after learning robust game-state representations. "
+            "Noise is sampled from quantized palettes: main stick (64 positions), "
+            "C-stick (9 positions), shoulder (5 levels), buttons (random 0/1)."
         ),
     )
 

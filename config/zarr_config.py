@@ -23,7 +23,7 @@ def _get_default_paths() -> Tuple[str, str, str]:
         )
     elif system == "Linux":
         return (
-            "/home/eppie/hal/FOX",
+            "/home/eppie/hal/fox_dittos",
             "/home/eppie/melee-ai/processed_data_1000",
             "/home/eppie/melee-ai/validation_set",
         )
@@ -72,7 +72,7 @@ class ZarrConfig(BaseModel):
         ),
     )
     validation_count: int = Field(
-        default=100,
+        default=500,
         ge=1,
         description=(
             "Number of episodes to process for validation dataset. Held out from training. "
@@ -107,7 +107,18 @@ class ZarrConfig(BaseModel):
             "Number of frames per Zarr chunk along the time axis. Optimized for typical window sizes. "
             "Effect: Should be >= block_size to minimize chunk reads per window. "
             "Default 512 ensures 256-512 frame windows usually hit 1-2 chunks. "
-            "Reasonable range: [256, 1024]. Interacts with: model.block_size (should be >= block_size)."
+            "Reasonable range: [256, 1024]. Interacts with: model.block_size (should be >= block_size). "
+            "Ignored when sequential_episodes=True (each episode becomes one chunk)."
+        ),
+    )
+    sequential_episodes: bool = Field(
+        default=False,
+        description=(
+            "When True, chunk each episode as a single unit and use sequential sampling within episodes. "
+            "Effect: Episodes are shuffled, but windows within each episode are sampled sequentially. "
+            "This improves temporal locality for recurrent-style training. "
+            "When False (default), windows are sampled globally with random shuffling. "
+            "Interacts with: chunk_frames (ignored when True), training sampler selection."
         ),
     )
     seed: int = Field(

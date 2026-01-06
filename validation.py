@@ -45,6 +45,7 @@ from feature_transforms import apply_feature_transforms
 from window_dataset import (
     WindowDataset,
     RandomWindowSampler,
+    SequentialEpisodeSampler,
     worker_init_fn,
     EpisodeInfo,
 )
@@ -759,10 +760,17 @@ def _prepare_dataloader(
             "In-memory validation only supports --num-workers=0 to avoid duplicating the dataset cache."
         )
 
-    sampler = RandomWindowSampler(
-        index=dataset.index,
-        stride=window_stride,
-    )
+    # Select sampler based on dataset build configuration
+    if dataset.index.sequential_episodes:
+        sampler = SequentialEpisodeSampler(
+            index=dataset.index,
+            stride=window_stride,
+        )
+    else:
+        sampler = RandomWindowSampler(
+            index=dataset.index,
+            stride=window_stride,
+        )
 
     mp_ctx = None
     if num_workers and num_workers > 0:
@@ -1371,7 +1379,11 @@ def _evaluate(
             X: torch.Tensor = batch["X"].to(device, non_blocking=True)
             Y: torch.Tensor = batch["Y"].to(device, non_blocking=True)
 
-            inputs_td = build_inputs_for_gpt(X, colmap)
+            # training=False ensures no P1 controller dropout during validation
+            inputs_td = build_inputs_for_gpt(
+                X, colmap, training=False,
+                exclude_p1_controller=config.model.exclude_p1_controller,
+            )
             target_info = quantize_targets(Y, colmap, input_domain="unit01")
             weights = compute_component_sample_weights(
                 target_info,

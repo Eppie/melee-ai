@@ -18,10 +18,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tensordict import TensorDict
 
+from constants import CONTROLLER_KEY_GROUPS
 from model.attention import CausalSelfAttention
 from model.norm import norm
 from model.output_head import SimpleHead
 from utils import _resolve_device
+
+# Button names for separate heads
+BUTTON_NAMES = CONTROLLER_KEY_GROUPS["buttons"]  # ("button_a", "button_b", "button_xy", "button_z", "button_lr")
 
 
 class MLP(nn.Module):
@@ -102,9 +106,30 @@ class GPT(nn.Module):
             + self.c_stick_output_size
         )
 
-        self.button_head = SimpleHead(
-            button_input_size, self.button_output_size, hidden=head_hidden_dim
-        )
+        # Button heads: either unified (single head predicting all 5 buttons)
+        # or separate (5 autoregressive heads, each predicting one button)
+        # Order: A → B → X/Y → Z → L/R (each sees previous button predictions)
+        self.separate_button_heads = model_config.separate_button_heads
+        if self.separate_button_heads:
+            # Create separate heads for each button with autoregressive input sizes
+            # Each head receives hidden_states + all previous button logits
+            self.button_heads = nn.ModuleDict(
+                {
+                    name: SimpleHead(
+                        button_input_size + i,  # +i for previous button logits
+                        1,
+                        hidden=head_hidden_dim,
+                    )
+                    for i, name in enumerate(BUTTON_NAMES)
+                }
+            )
+            self.button_head = None  # Not used in separate mode
+        else:
+            # Unified button head (default) - outputs all 5 button logits
+            self.button_head = SimpleHead(
+                button_input_size, self.button_output_size, hidden=head_hidden_dim
+            )
+            self.button_heads = None  # Not used in unified mode
         self.main_stick_head = SimpleHead(
             main_stick_input_size, self.main_stick_output_size, hidden=head_hidden_dim
         )
@@ -211,7 +236,22 @@ class GPT(nn.Module):
 
         # Sequential heads: each head receives concatenated outputs from previous heads
         # Order: buttons → main_stick → c_stick → shoulder
-        button_logits = self.button_head(hidden_states)
+        if self.separate_button_heads:
+            # Autoregressive button heads: each head sees previous button predictions
+            # Order: A → B → X/Y → Z → L/R
+            button_logit_list = []
+            button_input = hidden_states
+            for name in BUTTON_NAMES:
+                logit = self.button_heads[name](button_input)  # [B, L, 1]
+                button_logit_list.append(logit)
+                # Next head receives hidden_states + all previous logits (detached)
+                button_input = torch.cat(
+                    [hidden_states] + [l.detach() for l in button_logit_list], dim=-1
+                )
+            button_logits = torch.cat(button_logit_list, dim=-1)  # [B, L, 5]
+        else:
+            # Unified button head (default)
+            button_logits = self.button_head(hidden_states)
 
         main_stick = self.main_stick_head(
             torch.cat((hidden_states, button_logits.detach()), dim=-1)

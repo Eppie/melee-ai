@@ -73,6 +73,15 @@ def gather_logit_and_bias_metrics_batched(
             f"{module.__class__.__name__} does not expose a bias parameter."
         )
 
+    # Handle separate button heads: concatenate biases from each head
+    if model.separate_button_heads:
+        button_biases = torch.cat(
+            [get_head_bias(model.button_heads[name]) for name in CONTROLLER_KEY_GROUPS["buttons"]],
+            dim=-1,
+        )
+    else:
+        button_biases = get_head_bias(model.button_head)
+
     # Collect all tensors we need stats for
     tensor_names = [
         "logits/main",
@@ -92,7 +101,7 @@ def gather_logit_and_bias_metrics_batched(
         pred["buttons"],
         pred["shoulder"],
         model.projection_down.bias,
-        get_head_bias(model.button_head),
+        button_biases,
         get_head_bias(model.main_stick_head),
         get_head_bias(model.c_stick_head),
         get_head_bias(model.shoulder_head),

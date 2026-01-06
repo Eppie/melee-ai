@@ -136,6 +136,25 @@ class GPTConfig(BaseModel):
             "main_stick: 64 positions, c_stick: 9 positions, buttons: 5 binary, shoulder: 5 levels."
         ),
     )
+    separate_button_heads: bool = Field(
+        default=True,
+        description=(
+            "If True, use separate heads for each button (A, B, X/Y, Z, L/R) instead of a single "
+            "unified button head. Each separate head independently predicts one button. "
+            "Effect: May improve button prediction by allowing specialized representations per button. "
+            "Disabled by default for backward compatibility."
+        ),
+    )
+    exclude_p1_controller: bool = Field(
+        default=True,
+        description=(
+            "If True, exclude P1 (ego) controller features from model input. "
+            "The model will only see P2 (opponent) controller state, not its own previous inputs. "
+            "Effect: Forces the model to rely solely on game state without autoregressive controller conditioning. "
+            "May reduce training/inference distribution shift but removes useful temporal information. "
+            "Disabled by default for backward compatibility."
+        ),
+    )
 
     # TODO: This wasn't working before, so we might have implemented the same logic elsewhere, find it and remove it
     @model_validator(mode="before")
@@ -162,6 +181,14 @@ class GPTConfig(BaseModel):
             "num_characters", cls.model_fields["num_characters"].default
         )
         num_actions = data.get("num_actions", cls.model_fields["num_actions"].default)
+
+        # If excluding P1 controller, subtract 10 features (main_stick: 2, c_stick: 2,
+        # buttons: 5, shoulder: 1)
+        exclude_p1_controller = data.get(
+            "exclude_p1_controller", cls.model_fields["exclude_p1_controller"].default
+        )
+        if exclude_p1_controller:
+            controller_dim = controller_dim - 10
 
         data = dict(data)
         data["input_size"] = (

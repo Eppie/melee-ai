@@ -11,9 +11,16 @@ from torch import Tensor
 
 from column_map import ColumnMap
 from controller_quantization import quantize_targets
+from controller_utils import C_STICK_QUANTIZED, CONTROL_STICK_QUANTIZED, SHOULDER_QUANTIZED
 
 
-def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorDict:
+def build_model_inputs(
+    features_batch: Tensor,
+    column_map: ColumnMap,
+    p1_controller_noise_rate: float = 0.0,
+    training: bool = True,
+    exclude_p1_controller: bool = False,
+) -> TensorDict:
     """Convert raw feature tensors into the structured ``TensorDict`` expected by the model.
 
     The function slices the ``features_batch`` tensor using indices stored in ``column_map`` and casts
@@ -46,6 +53,15 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
     Args:
         features_batch: ``[batch_size, sequence_length, F]`` float32 features of the current frame sequence.
         column_map: Column mapping for feature indices.
+        p1_controller_noise_rate: Rate for replacing P1 controller features with noise (0.0 to 1.0).
+            When > 0, randomly replaces P1 controller inputs with random samples from quantized
+            palettes at the frame level. Main stick samples from 64 positions, C-stick from 9,
+            shoulder from 5 levels, buttons get random 0/1. P2 controller is not affected.
+            Ignored if ``exclude_p1_controller`` is True.
+        training: Whether the model is in training mode. Noise only applies when True.
+        exclude_p1_controller: If True, exclude P1 (ego) controller features from the output.
+            Only P2 (opponent) controller features will be included. This reduces the controller
+            tensor from 20 features to 10 features.
 
     Returns:
         ``TensorDict`` with the keys the model expects: ``stage``, ``ego_character``,
@@ -77,6 +93,94 @@ def build_model_inputs(features_batch: Tensor, column_map: ColumnMap) -> TensorD
     controller = features_batch[
         ..., column_map.controller_idxs
     ]  # [batch_size,sequence_length,Gc]
+
+    # Controller layout: [p1_main_x, p1_main_y, p1_c_x, p1_c_y, p1_buttons(5), p1_shoulder,
+    #                     p2_main_x, p2_main_y, p2_c_x, p2_c_y, p2_buttons(5), p2_shoulder]
+    # P1 features are indices 0-9, P2 features are indices 10-19.
+
+    # If excluding P1 controller, only keep P2 features (indices 10-19)
+    if exclude_p1_controller:
+        controller = controller[..., 10:]  # [batch_size, sequence_length, 10]
+    # Apply P1 controller noise during training to reduce reliance on previous
+    # controller state. This addresses training/inference distribution shift where
+    # the model sees ground-truth inputs during training but its own predictions
+    # at inference. P2 controller (opponent observation) is preserved.
+    # Noise is skipped when exclude_p1_controller is True since there's nothing to noise.
+    elif training and p1_controller_noise_rate > 0:
+        # Frame-level noise: generate one mask per (batch, frame), broadcast to all P1 features
+        # Shape: [batch_size, sequence_length, 1]
+        keep_prob = 1.0 - p1_controller_noise_rate
+        keep_mask = torch.bernoulli(
+            torch.full(
+                (batch_size, sequence_length, 1),
+                keep_prob,
+                device=controller.device,
+                dtype=controller.dtype,
+            )
+        )
+        controller = controller.clone()
+        drop_mask = 1.0 - keep_mask  # Where to apply noise
+
+        # Main stick (indices 0-1): Sample from 64-position quantized palette
+        main_palette = torch.tensor(
+            CONTROL_STICK_QUANTIZED,
+            device=controller.device,
+            dtype=controller.dtype,
+        )  # [64, 2]
+        main_indices = torch.randint(
+            0, len(CONTROL_STICK_QUANTIZED),
+            (batch_size, sequence_length),
+            device=controller.device,
+        )
+        main_noise = main_palette[main_indices]  # [B, L, 2]
+        controller[..., :2] = (
+            controller[..., :2] * keep_mask + main_noise * drop_mask
+        )
+
+        # C-stick (indices 2-3): Sample from 9-position quantized palette
+        c_palette = torch.tensor(
+            C_STICK_QUANTIZED,
+            device=controller.device,
+            dtype=controller.dtype,
+        )  # [9, 2]
+        c_indices = torch.randint(
+            0, len(C_STICK_QUANTIZED),
+            (batch_size, sequence_length),
+            device=controller.device,
+        )
+        c_noise = c_palette[c_indices]  # [B, L, 2]
+        controller[..., 2:4] = (
+            controller[..., 2:4] * keep_mask + c_noise * drop_mask
+        )
+
+        # Buttons (indices 4-8): Random binary (Bernoulli 0.5)
+        button_noise = torch.bernoulli(
+            torch.full(
+                (batch_size, sequence_length, 5),
+                0.5,
+                device=controller.device,
+                dtype=controller.dtype,
+            )
+        )
+        controller[..., 4:9] = (
+            controller[..., 4:9] * keep_mask + button_noise * drop_mask
+        )
+
+        # Shoulder (index 9): Sample from 5-position quantized palette
+        shoulder_palette = torch.tensor(
+            SHOULDER_QUANTIZED,
+            device=controller.device,
+            dtype=controller.dtype,
+        )  # [5]
+        shoulder_indices = torch.randint(
+            0, len(SHOULDER_QUANTIZED),
+            (batch_size, sequence_length),
+            device=controller.device,
+        )
+        shoulder_noise = shoulder_palette[shoulder_indices].unsqueeze(-1)  # [B, L, 1]
+        controller[..., 9:10] = (
+            controller[..., 9:10] * keep_mask + shoulder_noise * drop_mask
+        )
 
     return TensorDict(
         {

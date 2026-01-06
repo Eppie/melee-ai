@@ -402,6 +402,7 @@ class GPTInferenceEngine:
                     setattr(config.model, field, value)
 
         self.model = GPT(config).to(self.device)
+        self._exclude_p1_controller = config.model.exclude_p1_controller
 
         # Handle torch.compile() prefix mismatch (both directions)
         model_state = match_state_dict_keys(ckpt["model"], self.model)
@@ -467,7 +468,11 @@ class GPTInferenceEngine:
 
     def _build_inputs(self, batch_X: torch.Tensor) -> TensorDict:
         """Wrap batch_X in the structured TensorDict used by the model."""
-        return build_model_inputs(batch_X, self.colmap)
+        # training=False ensures no controller dropout during inference
+        return build_model_inputs(
+            batch_X, self.colmap, training=False,
+            exclude_p1_controller=self._exclude_p1_controller,
+        )
 
     def _override_controller_features(
         self, features: Mapping[str, float]

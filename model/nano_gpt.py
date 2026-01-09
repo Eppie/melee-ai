@@ -95,7 +95,19 @@ class GPT(nn.Module):
         # concatenated outputs from previous heads
         # Order: buttons → main_stick → c_stick → shoulder
         button_input_size = self.embedding_dim
-        main_stick_input_size = self.embedding_dim + self.button_output_size
+
+        # Option to pass button hidden activations to main_stick_head for better coordination
+        self.pass_button_hidden_to_stick = (
+            model_config.pass_button_hidden_to_stick
+            and model_config.separate_button_heads
+        )
+        # If passing button hidden, add 5 * head_hidden_dim = 640 extra dims
+        button_hidden_size = (
+            len(BUTTON_NAMES) * head_hidden_dim if self.pass_button_hidden_to_stick else 0
+        )
+        main_stick_input_size = (
+            self.embedding_dim + self.button_output_size + button_hidden_size
+        )
         c_stick_input_size = (
             self.embedding_dim + self.button_output_size + self.main_stick_output_size
         )
@@ -236,26 +248,44 @@ class GPT(nn.Module):
 
         # Sequential heads: each head receives concatenated outputs from previous heads
         # Order: buttons → main_stick → c_stick → shoulder
+        button_hidden_concat = None  # Will hold concatenated button hiddens if needed
         if self.separate_button_heads:
             # Autoregressive button heads: each head sees previous button predictions
             # Order: A → B → X/Y → Z → L/R
             button_logit_list = []
+            button_hidden_list = []
             button_input = hidden_states
             for name in BUTTON_NAMES:
-                logit = self.button_heads[name](button_input)  # [B, L, 1]
+                if self.pass_button_hidden_to_stick:
+                    # Get both logits and hidden activations
+                    logit, h = self.button_heads[name].forward_with_hidden(button_input)
+                    button_hidden_list.append(h)
+                else:
+                    logit = self.button_heads[name](button_input)  # [B, L, 1]
                 button_logit_list.append(logit)
                 # Next head receives hidden_states + all previous logits (detached)
                 button_input = torch.cat(
                     [hidden_states] + [l.detach() for l in button_logit_list], dim=-1
                 )
             button_logits = torch.cat(button_logit_list, dim=-1)  # [B, L, 5]
+            if self.pass_button_hidden_to_stick:
+                # Concatenate all button hidden activations [B, L, 5*128=640]
+                button_hidden_concat = torch.cat(button_hidden_list, dim=-1)
         else:
             # Unified button head (default)
             button_logits = self.button_head(hidden_states)
 
-        main_stick = self.main_stick_head(
-            torch.cat((hidden_states, button_logits.detach()), dim=-1)
-        )
+        # Build main_stick input: hidden_states + button_logits + optional button_hidden
+        if self.pass_button_hidden_to_stick and button_hidden_concat is not None:
+            main_stick_input = torch.cat(
+                (hidden_states, button_logits.detach(), button_hidden_concat.detach()),
+                dim=-1,
+            )
+        else:
+            main_stick_input = torch.cat(
+                (hidden_states, button_logits.detach()), dim=-1
+            )
+        main_stick = self.main_stick_head(main_stick_input)
 
         c_stick = self.c_stick_head(
             torch.cat(

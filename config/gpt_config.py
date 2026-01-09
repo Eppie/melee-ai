@@ -155,6 +155,17 @@ class GPTConfig(BaseModel):
             "Disabled by default for backward compatibility."
         ),
     )
+    pass_button_hidden_to_stick: bool = Field(
+        default=True,
+        description=(
+            "If True and separate_button_heads is True, pass the hidden activations from each "
+            "button head (5 x 128 = 640 dim) to the main_stick_head in addition to the button logits. "
+            "This provides richer context about the button heads' reasoning, helping the stick head "
+            "coordinate better with button predictions (e.g., for wavedash coordination). "
+            "Effect: Increases main_stick_head input size by 640 dimensions. "
+            "Only effective when separate_button_heads=True."
+        ),
+    )
 
     # TODO: This wasn't working before, so we might have implemented the same logic elsewhere, find it and remove it
     @model_validator(mode="before")

@@ -67,6 +67,25 @@ if __name__ == "__main__":
         default=None,
         help="Path to trained model checkpoint (.pt)",
     )
+    parser.add_argument(
+        "--steering",
+        "-s",
+        type=Path,
+        default=None,
+        help="Path to steering vectors file (from persona_vectors.py)",
+    )
+    parser.add_argument(
+        "--steering-scale",
+        type=float,
+        default=1.0,
+        help="Steering magnitude. Positive=aggressive, negative=passive, 0=disabled (default: 1.0)",
+    )
+    parser.add_argument(
+        "--steering-layer",
+        type=int,
+        default=5,
+        help="Which transformer layer to inject steering (0-7, default: 5)",
+    )
 
     args = parser.parse_args()
     checkpoint_path = args.checkpoint
@@ -82,6 +101,12 @@ if __name__ == "__main__":
     engine = GPTInferenceEngine(
         checkpoint_path=checkpoint_path,
     )
+
+    # Load steering vectors if provided
+    if args.steering is not None:
+        engine.load_steering_vectors(args.steering)
+        engine.set_steering(layer=args.steering_layer, scale=args.steering_scale)
+
     console = Console(
         path=args.dolphin_executable_path,
         # dolphin_home_path=str(default_dolphin_home),

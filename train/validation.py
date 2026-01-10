@@ -420,8 +420,9 @@ def maybe_run_validation(
             imbalance_scale=imbalance_scale,
         )
 
-        # Log to wandb
-        components.logger.log_metrics(val_metrics, step=global_step, commit=True)
+        # Log to wandb (commit=False to avoid advancing wandb's step counter;
+        # the training loop's log_metrics call will commit)
+        components.logger.log_metrics(val_metrics, step=global_step, commit=False)
 
         # Log to local file (training_metrics.jsonl)
         if components.local_logger.enabled:

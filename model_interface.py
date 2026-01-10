@@ -43,6 +43,10 @@ from schema import (
 from train import build_model_inputs
 from utils import _resolve_device, match_state_dict_keys
 
+# Steering vector support
+from model.norm import norm
+from model.nano_gpt import BUTTON_NAMES
+
 """
 Add this code to the TOP of model_interface.py (after imports)
 """
@@ -447,6 +451,157 @@ class GPTInferenceEngine:
         self._death_counter = 0
         self._prev_action: Optional[int] = None
 
+        # Steering vector support
+        self._steering_vectors: Optional[Dict[int, torch.Tensor]] = None
+        self._steering_layer: int = 5  # Default to mid-late layer
+        self._steering_scale: float = 0.0  # 0 = no steering
+
+    # -------------------------------------------------------------------------
+    # Steering Vector API
+    # -------------------------------------------------------------------------
+
+    def load_steering_vectors(self, path: str | Path) -> None:
+        """Load steering vectors from a saved file.
+
+        Args:
+            path: Path to steering vectors file (created by persona_vectors.py)
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Steering vectors not found: {path}")
+
+        vectors = torch.load(path, map_location=self.device, weights_only=True)
+        # Ensure vectors are on the right device
+        self._steering_vectors = {
+            layer: vec.to(self.device) for layer, vec in vectors.items()
+        }
+        print(f"[Steering] Loaded vectors for layers: {sorted(self._steering_vectors.keys())}")
+
+    def set_steering(self, layer: int, scale: float) -> None:
+        """Configure steering parameters.
+
+        Args:
+            layer: Which transformer layer to inject steering (0-indexed)
+            scale: Steering magnitude. Positive = toward trained direction (e.g., aggressive),
+                   negative = away from it (e.g., passive). 0 = disabled.
+        """
+        self._steering_layer = layer
+        self._steering_scale = scale
+        if scale != 0:
+            print(f"[Steering] Active: layer={layer}, scale={scale:+.2f}")
+        else:
+            print("[Steering] Disabled")
+
+    @property
+    def steering_active(self) -> bool:
+        """Check if steering is currently active."""
+        return (
+            self._steering_vectors is not None
+            and self._steering_scale != 0
+            and self._steering_layer in self._steering_vectors
+        )
+
+    def _steered_forward(self, inputs_td: TensorDict) -> TensorDict:
+        """Forward pass with steering vector injection.
+
+        Injects the steering vector at the configured layer, affecting only
+        the last position (the decision point).
+        """
+        model = self.model
+        steering_vec = self._steering_vectors[self._steering_layer]
+
+        # Embed inputs
+        combined = model._embed_inputs(inputs_td)
+        hidden_states = model.projection_down(combined)
+        hidden_states = model.dropout(hidden_states)
+
+        batch_size, seq_len, _ = hidden_states.shape
+
+        cos = model.cos[:, :seq_len]
+        sin = model.sin[:, :seq_len]
+
+        # Forward through blocks with steering injection
+        for i, block in enumerate(model.blocks):
+            hidden_states = block(hidden_states, cos, sin)
+            if i == self._steering_layer:
+                # Inject steering at last position only
+                hidden_states = hidden_states.clone()
+                hidden_states[:, -1, :] = (
+                    hidden_states[:, -1, :]
+                    + self._steering_scale * steering_vec
+                )
+
+        hidden_states = norm(hidden_states)
+
+        # Output heads (mirrors GPT.forward)
+        button_hidden_concat = None
+        if model.separate_button_heads:
+            button_logit_list = []
+            button_hidden_list = []
+            button_input = hidden_states
+            for name in BUTTON_NAMES:
+                if model.pass_button_hidden_to_stick:
+                    logit, h = model.button_heads[name].forward_with_hidden(button_input)
+                    button_hidden_list.append(h)
+                else:
+                    logit = model.button_heads[name](button_input)
+                button_logit_list.append(logit)
+                button_input = torch.cat(
+                    [hidden_states] + [l.detach() for l in button_logit_list], dim=-1
+                )
+            button_logits = torch.cat(button_logit_list, dim=-1)
+            if model.pass_button_hidden_to_stick:
+                button_hidden_concat = torch.cat(button_hidden_list, dim=-1)
+        else:
+            button_logits = model.button_head(hidden_states)
+
+        # Main stick
+        if model.pass_button_hidden_to_stick and button_hidden_concat is not None:
+            main_stick_input = torch.cat(
+                (hidden_states, button_logits.detach(), button_hidden_concat.detach()),
+                dim=-1,
+            )
+        else:
+            main_stick_input = torch.cat((hidden_states, button_logits.detach()), dim=-1)
+        main_stick = model.main_stick_head(main_stick_input)
+
+        # C-stick
+        c_stick = model.c_stick_head(
+            torch.cat(
+                (hidden_states, button_logits.detach(), main_stick.detach()),
+                dim=-1,
+            )
+        )
+
+        # Shoulder
+        shoulder = model.shoulder_head(
+            torch.cat(
+                (
+                    hidden_states,
+                    button_logits.detach(),
+                    main_stick.detach(),
+                    c_stick.detach(),
+                ),
+                dim=-1,
+            )
+        )
+
+        # Value
+        value = model.value_head(hidden_states)
+
+        outputs = TensorDict(
+            {
+                "buttons": button_logits,
+                "main_stick": main_stick,
+                "c_stick": c_stick,
+                "shoulder": shoulder,
+                "value": value,
+            },
+            batch_size=(batch_size, seq_len),
+        )
+
+        return outputs
+
     def _frame_to_tensor(self, raw_inputs: Dict[str, float]) -> torch.Tensor:
         """Convert raw_inputs into an ordered tensor of feature values (optimized)."""
         # Use pre-allocated tensor and vectorized assignment
@@ -689,7 +844,10 @@ class GPTInferenceEngine:
             return controller
 
         with torch.inference_mode():
-            outputs = self.model(inputs_td)
+            if self.steering_active:
+                outputs = self._steered_forward(inputs_td)
+            else:
+                outputs = self.model(inputs_td)
 
         record.logits = self._capture_logits(outputs)
         controller = self._decode_outputs(outputs)

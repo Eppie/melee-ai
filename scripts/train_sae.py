@@ -4,20 +4,32 @@ Train Sparse Autoencoders (SAEs) on transformer residual stream activations.
 
 Usage:
     # Train SAE on layer 4 (middle layer)
-    python scripts/train_sae.py --checkpoint checkpoints/model.pt --layer 4
+    python -m scripts.train_sae --checkpoint checkpoints/model.pt --layer 4
 
     # Train on all layers
-    python scripts/train_sae.py --checkpoint checkpoints/model.pt --layer all
+    python -m scripts.train_sae --checkpoint checkpoints/model.pt --layer all
 
     # Train on MLP activations (4x dimension)
-    python scripts/train_sae.py --checkpoint checkpoints/model.pt --hook-type mlp_post_act --layer 3
+    python -m scripts.train_sae --checkpoint checkpoints/model.pt --hook-type mlp_post_act --layer 3
 
     # Custom hyperparameters
-    python scripts/train_sae.py --checkpoint checkpoints/model.pt \
+    python -m scripts.train_sae --checkpoint checkpoints/model.pt \\
         --expansion-factor 16 --k 64 --training-steps 50000
 
     # With stratified sampling (oversample high-loss frames)
-    python scripts/train_sae.py --checkpoint checkpoints/model.pt --stratified
+    python -m scripts.train_sae --checkpoint checkpoints/model.pt --stratified
+
+    # Train from pre-cached activations (faster for multiple experiments)
+    # First cache activations:
+    python -m scripts.cache_activations --checkpoint model.pt --layer all --compute-loss
+    # Then train from cache:
+    python -m scripts.train_sae --cache-dir activation_cache/ --layer 4 --stratified
+
+    # Streaming mode for larger-than-memory datasets (maintains ~500k frames/sec)
+    # First cache a large dataset:
+    python -m scripts.cache_activations --checkpoint model.pt --layer 4 --max-samples 10000000
+    # Then train with streaming (uses shuffle buffer + background prefetch):
+    python -m scripts.train_sae --cache-dir activation_cache/ --layer 4 --streaming --buffer-size 500000
 """
 
 from __future__ import annotations
@@ -58,12 +70,12 @@ def parse_args() -> argparse.Namespace:
         epilog=__doc__,
     )
 
-    # Required
+    # Model checkpoint (required unless using --cache-dir)
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        required=True,
-        help="Path to model checkpoint (.pt file)",
+        default=None,
+        help="Path to model checkpoint (.pt file). Required unless using --cache-dir.",
     )
 
     # Hook point configuration
@@ -125,7 +137,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stratified",
         action="store_true",
-        help="Use loss-stratified sampling (oversample uncertain frames)",
+        help="Use inverse-density stratified sampling (oversample rare loss values)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Temperature for inverse-density weighting. 1.0=pure inverse density, <1=gentler, >1=more aggressive (default: 1.0)",
     )
 
     # Output
@@ -142,6 +160,23 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Override data directory (default: use checkpoint config)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Load pre-cached activations from this directory (from cache_activations.py)",
+    )
+    parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help="Use streaming mode for larger-than-memory datasets. Requires --cache-dir.",
+    )
+    parser.add_argument(
+        "--buffer-size",
+        type=int,
+        default=500_000,
+        help="Shuffle buffer size for streaming mode (default: 500000)",
     )
     parser.add_argument(
         "--dataloader-batch-size",
@@ -244,6 +279,7 @@ def train_single_sae(
     output_dir: Path,
     max_activation_samples: int,
     stratified: bool,
+    stratified_temperature: float = 1.0,
 ) -> tuple[TopKSparseAutoencoder, dict]:
     """Train a single SAE and save it."""
     print(f"\n{'=' * 60}")
@@ -264,6 +300,7 @@ def train_single_sae(
         device=device,
         max_activation_samples=max_activation_samples,
         stratified=stratified,
+        stratified_temperature=stratified_temperature,
         show_progress=True,
         checkpoint_dir=checkpoint_dir,
     )
@@ -298,47 +335,281 @@ def train_single_sae(
     return sae, metadata
 
 
+def train_sae_from_cache(
+    cache_dir: Path,
+    hook_type: str,
+    layer_idx: int,
+    config: SAEConfig,
+    device: torch.device,
+    output_dir: Path,
+    max_samples: int,
+    stratified: bool,
+    stratified_temperature: float = 1.0,
+    streaming: bool = False,
+    buffer_size: int = 500_000,
+) -> tuple[TopKSparseAutoencoder, dict]:
+    """Train SAE from pre-cached activations.
+
+    Args:
+        streaming: If True, use memory-mapped streaming instead of loading all data.
+                   This allows training on datasets larger than RAM.
+        buffer_size: Shuffle buffer size for streaming mode.
+    """
+    import numpy as np
+    from interp.cache import CachedActivations
+    from interp.sae.trainer import SAETrainer
+    from interp.sae.topk import TopKSparseAutoencoder
+
+    layer_cache_dir = cache_dir / f"{hook_type}_L{layer_idx}"
+
+    print(f"\n{'=' * 60}")
+    print(f"Training SAE from cached activations")
+    print(f"{'=' * 60}")
+    print(f"  Cache: {layer_cache_dir}")
+
+    # Load cached data
+    if not layer_cache_dir.exists():
+        raise FileNotFoundError(f"Cache not found: {layer_cache_dir}")
+
+    # Streaming mode - use memory-mapped file with shuffle buffer
+    if streaming:
+        from interp.cache import StreamingActivations
+
+        streaming_data = StreamingActivations.from_cache_dir(
+            cache_dir=cache_dir,
+            hook_type=hook_type,
+            layer_idx=layer_idx,
+            buffer_size=buffer_size,
+            normalize=True,
+            stratified=stratified,
+            stratified_temperature=stratified_temperature,
+        )
+
+        mode_str = "stratified streaming" if stratified else "streaming"
+        print(f"  Mode: {mode_str}")
+        print(f"  Samples: {streaming_data.n_samples:,}, dim={streaming_data.activation_dim}")
+        print(f"  Buffer size: {buffer_size:,}")
+
+        # Create SAE
+        input_dim = streaming_data.activation_dim
+        sae = TopKSparseAutoencoder(
+            input_dim=input_dim,
+            expansion_factor=config.expansion_factor,
+            k=config.k,
+            normalize_decoder=config.normalize_decoder,
+        )
+
+        # Create checkpoint directory
+        checkpoint_dir = output_dir / f"{hook_type}_L{layer_idx}"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # Train with streaming data
+        trainer = SAETrainer(sae, config, device)
+        history = trainer.train(streaming_data, show_progress=True, checkpoint_dir=checkpoint_dir)
+
+        # Unwrap compiled model if needed
+        trained_sae = trainer.sae
+        if hasattr(trained_sae, '_orig_mod'):
+            trained_sae = trained_sae._orig_mod
+
+        # Save metadata
+        metadata = {
+            "hook_type": hook_type,
+            "layer_idx": layer_idx,
+            "input_dim": trained_sae.input_dim,
+            "hidden_dim": trained_sae.hidden_dim,
+            "expansion_factor": config.expansion_factor,
+            "k": config.k,
+            "training_steps": config.training_steps,
+            "batch_size": config.batch_size,
+            "lr": config.lr,
+            "streaming": True,
+            "stratified": stratified,
+            "stratified_temperature": stratified_temperature if stratified else None,
+            "buffer_size": buffer_size,
+            "total_samples": streaming_data.n_samples,
+            "from_cache": str(layer_cache_dir),
+            "final_loss": history.losses[-1] if history.losses else None,
+            "num_dead_features": len(history.final_dead_features),
+        }
+
+    else:
+        # In-memory mode - load everything
+        activations = torch.load(layer_cache_dir / "activations.pt")
+        inputs = torch.load(layer_cache_dir / "inputs.pt")
+        mean = torch.load(layer_cache_dir / "mean.pt")
+        std = torch.load(layer_cache_dir / "std.pt")
+
+        # Load losses if available and stratified sampling requested
+        losses_path = layer_cache_dir / "losses.pt"
+        has_losses = losses_path.exists()
+
+        if stratified and not has_losses:
+            print(f"  Warning: --stratified requested but no losses in cache")
+            print(f"           Re-run cache_activations.py with --compute-loss")
+            stratified = False
+
+        print(f"  Loaded {len(activations):,} samples, dim={activations.shape[1]}")
+
+        # Apply stratified sampling if requested
+        if stratified and has_losses:
+            print(f"\n  Applying inverse-density stratification (temperature={stratified_temperature})...")
+            losses = torch.load(losses_path)
+            losses_np = losses.numpy()
+
+            # Histogram-based density estimation
+            n_bins = min(int(np.ceil(np.log2(len(losses_np))) + 1) * 10, 500)
+            hist, bin_edges = np.histogram(losses_np, bins=n_bins)
+            bin_indices = np.digitize(losses_np, bin_edges[:-1]) - 1
+            bin_indices = np.clip(bin_indices, 0, n_bins - 1)
+
+            density = hist[bin_indices].astype(np.float64)
+            density = density / density.sum()
+            weights = 1.0 / (density + 1e-10)
+            weights = weights ** stratified_temperature
+            weights = weights / weights.sum()
+
+            effective_ratio = weights.max() / weights.min()
+            print(f"  Loss range: [{losses_np.min():.4f}, {losses_np.max():.4f}]")
+            print(f"  Effective weight ratio: {effective_ratio:.1f}x")
+
+            # Weighted sampling
+            n_select = min(max_samples, len(weights))
+            weights_tensor = torch.from_numpy(weights).float()
+            selected = torch.multinomial(weights_tensor, n_select, replacement=False)
+
+            activations = activations[selected]
+            inputs = inputs[selected]
+
+            # Recompute stats on selected subset
+            mean = activations.mean(dim=0)
+            std = activations.std(dim=0)
+            print(f"  Selected {len(activations):,} samples")
+        else:
+            # Just truncate to max_samples
+            if len(activations) > max_samples:
+                perm = torch.randperm(len(activations))[:max_samples]
+                activations = activations[perm]
+                inputs = inputs[perm]
+                mean = activations.mean(dim=0)
+                std = activations.std(dim=0)
+
+        # Create CachedActivations object
+        cached = CachedActivations(
+            activations=activations,
+            inputs=inputs,
+            mean=mean,
+            std=std,
+        )
+
+        # Create SAE
+        input_dim = activations.shape[1]
+        sae = TopKSparseAutoencoder(
+            input_dim=input_dim,
+            expansion_factor=config.expansion_factor,
+            k=config.k,
+            normalize_decoder=config.normalize_decoder,
+        )
+
+        # Create checkpoint directory
+        checkpoint_dir = output_dir / f"{hook_type}_L{layer_idx}"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # Train
+        trainer = SAETrainer(sae, config, device)
+        history = trainer.train(cached, show_progress=True, checkpoint_dir=checkpoint_dir)
+
+        # Unwrap compiled model if needed
+        trained_sae = trainer.sae
+        if hasattr(trained_sae, '_orig_mod'):
+            trained_sae = trained_sae._orig_mod
+
+        # Save metadata
+        metadata = {
+            "hook_type": hook_type,
+            "layer_idx": layer_idx,
+            "input_dim": trained_sae.input_dim,
+            "hidden_dim": trained_sae.hidden_dim,
+            "expansion_factor": config.expansion_factor,
+            "k": config.k,
+            "training_steps": config.training_steps,
+            "batch_size": config.batch_size,
+            "lr": config.lr,
+            "stratified_sampling": stratified,
+            "stratified_temperature": stratified_temperature if stratified else None,
+            "from_cache": str(layer_cache_dir),
+            "final_loss": history.losses[-1] if history.losses else None,
+            "num_dead_features": len(history.final_dead_features),
+        }
+
+    with open(checkpoint_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"\nSAE saved to: {checkpoint_dir}")
+    print(f"  Final loss: {metadata['final_loss']:.6f}")
+    print(f"  Dead features: {metadata['num_dead_features']} / {trained_sae.hidden_dim}")
+
+    return trained_sae, metadata
+
+
+def resolve_layers_from_cache(layer_arg: str, cache_dir: Path, hook_type: str) -> List[int]:
+    """Resolve layer argument from available cached layers."""
+    # Find available layers in cache
+    available = []
+    for subdir in cache_dir.iterdir():
+        if subdir.is_dir() and subdir.name.startswith(f"{hook_type}_L"):
+            try:
+                layer_idx = int(subdir.name.split("_L")[1])
+                available.append(layer_idx)
+            except (ValueError, IndexError):
+                continue
+    available.sort()
+
+    if not available:
+        print(f"Error: No cached layers found for hook_type '{hook_type}' in {cache_dir}")
+        sys.exit(1)
+
+    n_cached = len(available)
+    max_layer = max(available)
+
+    if layer_arg == "all":
+        return available
+    elif layer_arg == "middle":
+        return [available[n_cached // 2]]
+    elif layer_arg == "first":
+        return [available[0]]
+    elif layer_arg == "last":
+        return [available[-1]]
+    else:
+        try:
+            layer_idx = int(layer_arg)
+            if layer_idx not in available:
+                print(f"Error: Layer {layer_idx} not in cache. Available: {available}")
+                sys.exit(1)
+            return [layer_idx]
+        except ValueError:
+            print(f"Error: Invalid layer argument: {layer_arg}")
+            sys.exit(1)
+
+
 def main() -> None:
     """Main entry point."""
     args = parse_args()
 
+    # Validate arguments
+    if args.cache_dir is None and args.checkpoint is None:
+        print("Error: Either --checkpoint or --cache-dir must be provided")
+        sys.exit(1)
+    if args.cache_dir is None and not args.checkpoint.exists():
+        print(f"Error: Checkpoint not found: {args.checkpoint}")
+        sys.exit(1)
+    if args.streaming and args.cache_dir is None:
+        print("Error: --streaming requires --cache-dir")
+        sys.exit(1)
+
     # Resolve device
     device = _resolve_device(None)
     print(f"Using device: {device}")
-
-    # Build config overrides
-    overrides = {
-        "train.batch_size": str(args.dataloader_batch_size),
-        "train.num_workers": str(args.num_workers),
-    }
-    if args.data_dir is not None:
-        # Note: ZarrConfig has a validator that appends _{episode_count} to out_root
-        # We need to set the path WITHOUT the suffix and set episode_count to match
-        import re
-        data_dir_str = str(args.data_dir)
-        # Extract episode count from path if present (e.g., "processed_data_1" -> 1)
-        match = re.search(r"_(\d+)$", data_dir_str)
-        if match:
-            episode_count = int(match.group(1))
-            base_path = data_dir_str[: match.start()]  # Remove the _N suffix
-            overrides["zarr.out_root"] = base_path
-            overrides["zarr.episode_count"] = str(episode_count)
-        else:
-            overrides["zarr.out_root"] = data_dir_str
-
-    # Load model with all overrides
-    print(f"\nLoading model from: {args.checkpoint}")
-    model, config = load_model_from_checkpoint(
-        args.checkpoint,
-        device,
-        overrides=overrides,
-    )
-    n_layers = config.model.n_layer
-    print(f"Model loaded: {n_layers} layers, {config.model.n_embd} embedding dim")
-
-    # Resolve layers to train
-    layers = resolve_layers(args.layer, n_layers)
-    print(f"Training SAEs on layers: {layers}")
 
     # Create SAE config
     sae_config = SAEConfig(
@@ -355,47 +626,127 @@ def main() -> None:
     print(f"  Batch size: {sae_config.batch_size}")
     print(f"  Learning rate: {sae_config.lr}")
 
-    # Create dataloader
-    print(f"\nCreating dataloader from: {config.zarr.out_root}")
-    loader, ds, _ = make_dataloader(config)
-    colmap = ColumnMap.from_dataset(ds)
-
     # Create output directory
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Train SAEs
-    all_metadata = {}
-    for layer_idx in layers:
-        hook_point = get_hook_point(args.hook_type, layer_idx)
+    # Branch based on whether we're using cached activations
+    if args.cache_dir is not None:
+        # Training from pre-cached activations
+        print(f"\nUsing cached activations from: {args.cache_dir}")
 
-        sae, metadata = train_single_sae(
-            model=model,
-            dataloader=loader,
-            colmap=colmap,
-            hook_point=hook_point,
-            config=sae_config,
-            device=device,
-            output_dir=args.output_dir,
-            max_activation_samples=args.max_activation_samples,
-            stratified=args.stratified,
-        )
-        all_metadata[str(hook_point)] = metadata
+        # Resolve layers from cache
+        layers = resolve_layers_from_cache(args.layer, args.cache_dir, args.hook_type)
+        print(f"Training SAEs on layers: {layers}")
 
-    # Save summary
-    summary_path = args.output_dir / "training_summary.json"
-    with open(summary_path, "w") as f:
-        json.dump(
-            {
-                "checkpoint": str(args.checkpoint),
-                "hook_type": args.hook_type,
-                "layers": layers,
-                "sae_config": sae_config.model_dump(),
-                "stratified": args.stratified,
-                "saes": all_metadata,
-            },
-            f,
-            indent=2,
+        all_metadata = {}
+        for layer_idx in layers:
+            sae, metadata = train_sae_from_cache(
+                cache_dir=args.cache_dir,
+                hook_type=args.hook_type,
+                layer_idx=layer_idx,
+                config=sae_config,
+                device=device,
+                output_dir=args.output_dir,
+                max_samples=args.max_activation_samples,
+                stratified=args.stratified,
+                stratified_temperature=args.temperature,
+                streaming=args.streaming,
+                buffer_size=args.buffer_size,
+            )
+            all_metadata[f"{args.hook_type}_L{layer_idx}"] = metadata
+
+        # Save summary
+        summary_path = args.output_dir / "training_summary.json"
+        with open(summary_path, "w") as f:
+            json.dump(
+                {
+                    "cache_dir": str(args.cache_dir),
+                    "hook_type": args.hook_type,
+                    "layers": layers,
+                    "sae_config": sae_config.model_dump(),
+                    "stratified": args.stratified,
+                    "stratified_temperature": args.temperature if args.stratified else None,
+                    "saes": all_metadata,
+                },
+                f,
+                indent=2,
+            )
+    else:
+        # Live activation collection from model
+        # Build config overrides
+        overrides = {
+            "train.batch_size": str(args.dataloader_batch_size),
+            "train.num_workers": str(args.num_workers),
+        }
+        if args.data_dir is not None:
+            # Note: ZarrConfig has a validator that appends _{episode_count} to out_root
+            # We need to set the path WITHOUT the suffix and set episode_count to match
+            import re
+            data_dir_str = str(args.data_dir)
+            # Extract episode count from path if present (e.g., "processed_data_1" -> 1)
+            match = re.search(r"_(\d+)$", data_dir_str)
+            if match:
+                episode_count = int(match.group(1))
+                base_path = data_dir_str[: match.start()]  # Remove the _N suffix
+                overrides["zarr.out_root"] = base_path
+                overrides["zarr.episode_count"] = str(episode_count)
+            else:
+                overrides["zarr.out_root"] = data_dir_str
+
+        # Load model with all overrides
+        print(f"\nLoading model from: {args.checkpoint}")
+        model, config = load_model_from_checkpoint(
+            args.checkpoint,
+            device,
+            overrides=overrides,
         )
+        n_layers = config.model.n_layer
+        print(f"Model loaded: {n_layers} layers, {config.model.n_embd} embedding dim")
+
+        # Resolve layers to train
+        layers = resolve_layers(args.layer, n_layers)
+        print(f"Training SAEs on layers: {layers}")
+
+        # Create dataloader
+        print(f"\nCreating dataloader from: {config.zarr.out_root}")
+        loader, ds, _ = make_dataloader(config)
+        colmap = ColumnMap.from_dataset(ds)
+
+        # Train SAEs
+        all_metadata = {}
+        for layer_idx in layers:
+            hook_point = get_hook_point(args.hook_type, layer_idx)
+
+            sae, metadata = train_single_sae(
+                model=model,
+                dataloader=loader,
+                colmap=colmap,
+                hook_point=hook_point,
+                config=sae_config,
+                device=device,
+                output_dir=args.output_dir,
+                max_activation_samples=args.max_activation_samples,
+                stratified=args.stratified,
+                stratified_temperature=args.temperature,
+            )
+            all_metadata[str(hook_point)] = metadata
+
+        # Save summary
+        summary_path = args.output_dir / "training_summary.json"
+        with open(summary_path, "w") as f:
+            json.dump(
+                {
+                    "checkpoint": str(args.checkpoint),
+                    "hook_type": args.hook_type,
+                    "layers": layers,
+                    "sae_config": sae_config.model_dump(),
+                    "stratified": args.stratified,
+                    "stratified_temperature": args.temperature if args.stratified else None,
+                    "saes": all_metadata,
+                },
+                f,
+                indent=2,
+            )
 
     print(f"\n{'=' * 60}")
     print(f"Training complete!")

@@ -38,7 +38,7 @@ class GPTConfig(BaseModel):
         ),
     )
     n_embd: int = Field(
-        default=512,
+        default=768,
         ge=1,
         description=(
             "Model embedding dimension. Controls model capacity. "
@@ -48,7 +48,7 @@ class GPTConfig(BaseModel):
         ),
     )
     n_layer: int = Field(
-        default=8,
+        default=4,
         ge=1,
         description=(
             "Number of transformer layers. Controls model depth and abstraction capability. "
@@ -58,7 +58,7 @@ class GPTConfig(BaseModel):
         ),
     )
     n_head: int = Field(
-        default=8,
+        default=12,
         ge=1,
         description=(
             "Number of attention heads. Controls attention parallelism. "
@@ -114,7 +114,7 @@ class GPTConfig(BaseModel):
         ),
     )
     n_kv_head: Optional[int] = Field(
-        default=8,
+        default=12,
         ge=1,
         description=(
             "Number of key-value heads for Multi-Query Attention (MQA). "

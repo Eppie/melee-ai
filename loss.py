@@ -43,8 +43,8 @@ def _compute_pos_weights(
     return pos_weight.clamp(min=1.0, max=loss_config.pos_weight_max).to(targets.device)
 
 
-def _mean_with_weights(x: Tensor, w: Tensor, loss_config: "LossConfig") -> Tensor:
-    if not loss_config.use_weighted_component_means:
+def _mean_with_weights(x: Tensor, w: Optional[Tensor], loss_config: "LossConfig") -> Tensor:
+    if not loss_config.use_weighted_component_means or w is None:
         return x.mean()
     # Match dims to broadcast, then true weighted mean:
     w = w.to(x.dtype)

@@ -56,10 +56,16 @@ def _quantize_stick(
         # Convert from [0,1] to [-1,1]
         xy11 = _sticks01_to_unit11(values.copy())
 
+    # Replace any NaN/Inf with zero (neutral stick)
+    xy11 = np.nan_to_num(xy11, nan=0.0, posinf=0.0, neginf=0.0)
+
     # Find nearest palette entry via squared distance
-    dot = xy11 @ palette.T
-    norm = np.sum(xy11**2, axis=1, keepdims=True)
-    d2 = norm - 2.0 * dot + palette_norm.T
+    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+        dot = xy11 @ palette.T
+        norm = np.sum(xy11**2, axis=1, keepdims=True)
+        d2 = norm - 2.0 * dot + palette_norm.T
+        # Handle any remaining NaN by defaulting to neutral (index 0)
+        d2 = np.nan_to_num(d2, nan=np.inf)
     idx = np.argmin(d2, axis=1)
     return palette[idx]
 

@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import math
+from typing import Optional, Tuple
+
 import torch
 from torch import nn as nn
 from torch.nn import functional as F
@@ -31,9 +36,10 @@ class CausalSelfAttention(nn.Module):
 
         self.residual_dropout = nn.Dropout(dropout)
 
-    def forward(
+    def _prepare_qkv(
         self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Prepare query, key, value tensors with RoPE and normalization."""
         batch_size, sequence_length, channels = hidden_states.size()
 
         # Project the input to get queries, keys, and values
@@ -65,6 +71,17 @@ class CausalSelfAttention(nn.Module):
         key_states = repeat_key_value_heads(key_states, num_repetitions)
         value_states = repeat_key_value_heads(value_states, num_repetitions)
 
+        return query_states, key_states, value_states
+
+    def forward(
+        self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> torch.Tensor:
+        batch_size, sequence_length, channels = hidden_states.size()
+
+        query_states, key_states, value_states = self._prepare_qkv(
+            hidden_states, cos, sin
+        )
+
         attention_output = F.scaled_dot_product_attention(
             query_states,
             key_states,
@@ -84,6 +101,99 @@ class CausalSelfAttention(nn.Module):
             self.output_projection(attention_output)
         )
         return attention_output
+
+    def forward_with_attention_weights(
+        self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass that also returns attention weights for interpretability.
+
+        This is slower than the standard forward() since it manually computes
+        attention weights instead of using the fused SDPA kernel.
+
+        Args:
+            hidden_states: [batch, seq_len, embedding_dim]
+            cos, sin: Rotary embedding components
+
+        Returns:
+            attention_output: [batch, seq_len, embedding_dim]
+            attention_weights: [batch, num_heads, seq_len, seq_len]
+        """
+        batch_size, sequence_length, channels = hidden_states.size()
+
+        query_states, key_states, value_states = self._prepare_qkv(
+            hidden_states, cos, sin
+        )
+
+        # Compute attention scores manually
+        # query_states, key_states: [batch, num_heads, seq_len, head_dim]
+        scale = 1.0 / math.sqrt(self.head_dim)
+        attention_scores = torch.matmul(
+            query_states, key_states.transpose(-2, -1)
+        ) * scale
+        # attention_scores: [batch, num_heads, seq_len, seq_len]
+
+        # Apply causal mask (lower triangular)
+        causal_mask = torch.triu(
+            torch.ones(sequence_length, sequence_length, device=hidden_states.device),
+            diagonal=1,
+        ).bool()
+        attention_scores = attention_scores.masked_fill(causal_mask, float("-inf"))
+
+        # Softmax to get attention weights
+        attention_weights = F.softmax(attention_scores, dim=-1)
+
+        # Apply dropout during training
+        if self.training and self.dropout > 0:
+            attention_weights = F.dropout(attention_weights, p=self.dropout)
+
+        # Apply attention to values
+        attention_output = torch.matmul(attention_weights, value_states)
+
+        # Reshape back to (batch_size, sequence_length, embedding_dim)
+        attention_output = (
+            attention_output.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, sequence_length, channels)
+        )
+        attention_output = self.residual_dropout(
+            self.output_projection(attention_output)
+        )
+
+        return attention_output, attention_weights
+
+    def get_attention_weights(
+        self, hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute only attention weights without the full forward pass.
+
+        Useful for visualization when you don't need the output.
+
+        Returns:
+            attention_weights: [batch, num_heads, seq_len, seq_len]
+        """
+        batch_size, sequence_length, _ = hidden_states.size()
+
+        query_states, key_states, _ = self._prepare_qkv(hidden_states, cos, sin)
+
+        # Compute attention scores
+        scale = 1.0 / math.sqrt(self.head_dim)
+        attention_scores = torch.matmul(
+            query_states, key_states.transpose(-2, -1)
+        ) * scale
+
+        # Apply causal mask
+        causal_mask = torch.triu(
+            torch.ones(sequence_length, sequence_length, device=hidden_states.device),
+            diagonal=1,
+        ).bool()
+        attention_scores = attention_scores.masked_fill(causal_mask, float("-inf"))
+
+        # Softmax
+        attention_weights = F.softmax(attention_scores, dim=-1)
+
+        return attention_weights
 
 
 def repeat_key_value_heads(hidden_states, num_repetitions):

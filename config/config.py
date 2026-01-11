@@ -277,6 +277,40 @@ def set_config(config: Config) -> Config:
     return config
 
 
+def _filter_extra_keys(config_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter out unknown keys from config dict to handle schema evolution.
+
+    This allows loading checkpoints saved with newer/different config schemas.
+    """
+    from pydantic import BaseModel
+
+    # Get known fields for each sub-config
+    known_fields = {
+        "train": set(TrainConfig.model_fields.keys()),
+        "model": set(GPTConfig.model_fields.keys()),
+        "zarr": set(ZarrConfig.model_fields.keys()),
+        "features": set(FeatureConfig.model_fields.keys()),
+        "rl": set(RLConfig.model_fields.keys()),
+        "loss_weights": set(LossConfig.model_fields.keys()),
+        "imitation": set(ImitationConfig.model_fields.keys()),
+    }
+    top_level_known = set(Config.model_fields.keys())
+
+    filtered = {}
+    for key, value in config_dict.items():
+        if key not in top_level_known:
+            # Skip unknown top-level keys
+            continue
+
+        if key in known_fields and isinstance(value, dict):
+            # Filter nested config
+            filtered[key] = {k: v for k, v in value.items() if k in known_fields[key]}
+        else:
+            filtered[key] = value
+
+    return filtered
+
+
 def init_config_from_checkpoint(
     checkpoint_path: Union[str, Path],
     overrides: Optional[Dict[str, str]] = None,
@@ -317,7 +351,8 @@ def init_config_from_checkpoint(
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    # weights_only=False needed for zarr codec objects in config
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config_dict = ckpt.get("config")
 
     if config_dict is None:
@@ -330,6 +365,9 @@ def init_config_from_checkpoint(
             f"Warning: Checkpoint contains legacy TrainConfig format, using defaults for other configs"
         )
         config_dict = {"train": config_dict}
+
+    # Filter out extra keys from nested configs to handle schema evolution
+    config_dict = _filter_extra_keys(config_dict)
 
     cfg = Config.model_validate(config_dict)
 

@@ -17,7 +17,7 @@ def _get_default_paths() -> Tuple[str, str, str]:
 
     if system == "Darwin":
         return (
-            "/Users/eppie/Downloads/ALL_REPLAYS/FOX_vs_FOX",
+            "/Users/eppie/PycharmProjects/nano-melee/fox_dittos",
             "/Users/eppie/PycharmProjects/nano-melee/processed_data_1000",
             "/Users/eppie/PycharmProjects/nano-melee/validation_set",
         )
@@ -72,7 +72,7 @@ class ZarrConfig(BaseModel):
         ),
     )
     validation_count: int = Field(
-        default=500,
+        default=100,
         ge=1,
         description=(
             "Number of episodes to process for validation dataset. Held out from training. "

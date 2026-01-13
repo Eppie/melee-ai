@@ -19,6 +19,7 @@ from train.batch_utils import (
     build_model_inputs,
     compute_component_sample_weights,
 )
+from train.imitation_weights import compute_imitation_weights
 from train.metrics import multilabel_prf
 from train.shared_metrics import (
     compute_button_em_change_hold,
@@ -179,13 +180,26 @@ def run_validation(
                 exclude_p1_controller=config.model.exclude_p1_controller,
             )
             target_info = quantize_targets(Y, colmap, input_domain="unit01")
-            weights = compute_component_sample_weights(
+            change_weights = compute_component_sample_weights(
                 target_info,
                 device,
                 ratios=ratios,
                 button_names=CONTROLLER_KEY_GROUPS["buttons"],
                 change_scale=imbalance_scale,
             )
+
+            # Apply imitation weights to match training (focus on high-value states)
+            imitation_weights_tensor = compute_imitation_weights(
+                X, value_idx, config.imitation
+            )  # [B, L]
+
+            # Combine change-based and value-based weights (same as training)
+            weights = {}
+            for key, change_w in change_weights.items():
+                if change_w.dim() == 3:
+                    weights[key] = change_w * imitation_weights_tensor.unsqueeze(-1)
+                else:
+                    weights[key] = change_w * imitation_weights_tensor
 
             pred = model(inputs_td)
 

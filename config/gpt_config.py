@@ -27,7 +27,7 @@ class GPTConfig(BaseModel):
     model_config = SettingsConfigDict(validate_assignment=True, extra="forbid")
 
     block_size: int = Field(
-        default=512,
+        default=256,
         ge=1,
         description=(
             "Maximum sequence length (context window) in frames. Determines how much game history "
@@ -48,7 +48,7 @@ class GPTConfig(BaseModel):
         ),
     )
     n_layer: int = Field(
-        default=4,
+        default=8,
         ge=1,
         description=(
             "Number of transformer layers. Controls model depth and abstraction capability. "

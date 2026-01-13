@@ -136,7 +136,7 @@ class LossConfig(BaseModel):
         ),
     )
     button_lr: float = Field(
-        default=5.0,
+        default=2.0,
         gt=0,
         description=(
             "Weight for L/R digital press (shield/airdodge when combined with shoulder analog). "
